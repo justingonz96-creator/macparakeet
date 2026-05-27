@@ -50,4 +50,65 @@ final class AppRuntimePreferencesTests: XCTestCase {
 
         XCTAssertTrue(UserDefaultsAppRuntimePreferences(defaults: defaults).pauseMediaDuringDictation)
     }
+
+    // MARK: - NumberRefinementMode migration
+
+    func testNumberRefinementModeMigratesLegacyTrueToDeterministic() {
+        let suite = "app-runtime-prefs-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        defaults.set(true, forKey: UserDefaultsAppRuntimePreferences.numberNormalizationEnabledKey)
+
+        let prefs = UserDefaultsAppRuntimePreferences(defaults: defaults)
+        XCTAssertEqual(prefs.numberRefinementMode, .deterministic)
+
+        // Legacy key is consumed; new key holds the value.
+        XCTAssertNil(defaults.object(forKey: UserDefaultsAppRuntimePreferences.numberNormalizationEnabledKey))
+        XCTAssertEqual(
+            defaults.string(forKey: UserDefaultsAppRuntimePreferences.numberRefinementModeKey),
+            "deterministic"
+        )
+    }
+
+    func testNumberRefinementModeMigratesLegacyFalseToOff() {
+        let suite = "app-runtime-prefs-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        defaults.set(false, forKey: UserDefaultsAppRuntimePreferences.numberNormalizationEnabledKey)
+
+        let prefs = UserDefaultsAppRuntimePreferences(defaults: defaults)
+        XCTAssertEqual(prefs.numberRefinementMode, .off)
+        XCTAssertNil(defaults.object(forKey: UserDefaultsAppRuntimePreferences.numberNormalizationEnabledKey))
+    }
+
+    func testNumberRefinementModeMigratesAbsentLegacyToOff() {
+        let suite = "app-runtime-prefs-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let prefs = UserDefaultsAppRuntimePreferences(defaults: defaults)
+        XCTAssertEqual(prefs.numberRefinementMode, .off)
+    }
+
+    func testNumberRefinementModeUsesNewKeyWhenAlreadySet() {
+        let suite = "app-runtime-prefs-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        // New key set to .smart; legacy key set to true — fast path should
+        // ignore the legacy key entirely.
+        defaults.set("smart", forKey: UserDefaultsAppRuntimePreferences.numberRefinementModeKey)
+        defaults.set(true, forKey: UserDefaultsAppRuntimePreferences.numberNormalizationEnabledKey)
+
+        let prefs = UserDefaultsAppRuntimePreferences(defaults: defaults)
+        XCTAssertEqual(prefs.numberRefinementMode, .smart)
+
+        // Legacy key is untouched on the fast path.
+        XCTAssertEqual(
+            defaults.object(forKey: UserDefaultsAppRuntimePreferences.numberNormalizationEnabledKey) as? Bool,
+            true
+        )
+    }
 }
