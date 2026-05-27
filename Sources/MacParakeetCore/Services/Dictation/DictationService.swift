@@ -76,7 +76,10 @@ public actor DictationService: DictationServiceProtocol {
     private let llmRunRecorder: LLMRunRecorder
     private let shouldUseAIFormatter: @Sendable () -> Bool
     private let aiFormatterPromptTemplate: @Sendable () -> String
-    private let shouldNormalizeNumbers: @Sendable () -> Bool
+    /// Three-state number-formatting preference. Dictation collapses `.smart`
+    /// to `.deterministic` (the LLM round-trip is unacceptable for paste
+    /// latency); only `TranscriptionService` runs the Smart LLM step.
+    private let numberRefinementMode: @Sendable () -> NumberRefinementMode
     private let markFirstDictationCompleted: (@Sendable () -> Void)?
     private let cancelWindow: Duration
 
@@ -116,7 +119,7 @@ public actor DictationService: DictationServiceProtocol {
         llmRunRepo: LLMRunRepositoryProtocol? = nil,
         shouldUseAIFormatter: (@Sendable () -> Bool)? = nil,
         aiFormatterPromptTemplate: (@Sendable () -> String)? = nil,
-        shouldNormalizeNumbers: (@Sendable () -> Bool)? = nil,
+        numberRefinementMode: (@Sendable () -> NumberRefinementMode)? = nil,
         markFirstDictationCompleted: (@Sendable () -> Void)? = nil,
         cancelWindow: Duration = .seconds(5)
     ) {
@@ -135,7 +138,7 @@ public actor DictationService: DictationServiceProtocol {
         self.llmRunRecorder = LLMRunRecorder(repository: llmRunRepo)
         self.shouldUseAIFormatter = shouldUseAIFormatter ?? { false }
         self.aiFormatterPromptTemplate = aiFormatterPromptTemplate ?? { AIFormatter.defaultPromptTemplate }
-        self.shouldNormalizeNumbers = shouldNormalizeNumbers ?? { false }
+        self.numberRefinementMode = numberRefinementMode ?? { .off }
         self.markFirstDictationCompleted = markFirstDictationCompleted
         self.cancelWindow = cancelWindow
     }
@@ -635,7 +638,7 @@ public actor DictationService: DictationServiceProtocol {
             mode: mode,
             customWords: words,
             snippets: snippets,
-            normalizeNumbers: shouldNormalizeNumbers()
+            normalizeNumbers: numberRefinementMode() != .off
         )
         let cleanTranscript = refinement.text
         let expandedSnippetIDs = refinement.expandedSnippetIDs

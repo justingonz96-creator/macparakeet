@@ -175,8 +175,8 @@ final class AppEnvironment {
             runtimePreferences.aiFormatterPrompt
         }
 
-        let numberNormalizationClosure: @Sendable () -> Bool = { [runtimePreferences] in
-            runtimePreferences.numberNormalizationEnabled
+        let numberRefinementModeClosure: @Sendable () -> NumberRefinementMode = { [runtimePreferences] in
+            runtimePreferences.numberRefinementMode
         }
 
         llmClient = RoutingLLMClient()
@@ -188,6 +188,7 @@ final class AppEnvironment {
                 cliConfigStore: LocalCLIConfigStore()
             )
         )
+        let numberLLMRefiner = NumberLLMRefiner(llmService: llmService)
 
         dictationService = DictationService(
             audioProcessor: audioProcessor,
@@ -204,7 +205,7 @@ final class AppEnvironment {
             llmRunRepo: llmRunRepo,
             shouldUseAIFormatter: aiFormatterEnabledClosure,
             aiFormatterPromptTemplate: aiFormatterPromptClosure,
-            shouldNormalizeNumbers: numberNormalizationClosure,
+            numberRefinementMode: numberRefinementModeClosure,
             markFirstDictationCompleted: { [runtimePreferences] in
                 // Fire the activation milestone exactly once, the first time a
                 // dictation ever completes on this install. `activation_window`
@@ -240,7 +241,8 @@ final class AppEnvironment {
             llmRunRepo: llmRunRepo,
             shouldUseAIFormatter: aiFormatterEnabledClosure,
             aiFormatterPromptTemplate: aiFormatterPromptClosure,
-            shouldNormalizeNumbers: numberNormalizationClosure,
+            numberRefinementMode: numberRefinementModeClosure,
+            numberLLMRefiner: numberLLMRefiner,
             shouldKeepDownloadedAudio: { [runtimePreferences] in runtimePreferences.shouldSaveTranscriptionAudio },
             shouldDiarize: { [runtimePreferences] in runtimePreferences.shouldDiarize },
             youtubeDownloader: youtubeDownloader,
