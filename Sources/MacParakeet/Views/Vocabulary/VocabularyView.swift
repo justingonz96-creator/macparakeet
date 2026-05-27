@@ -27,7 +27,6 @@ struct VocabularyView: View {
                     rawModeCard
                 } else {
                     pipelineCard
-                    numbersBreadcrumb
                     VocabularyBackupSection(
                         viewModel: backupViewModel,
                         wordCount: settingsViewModel.customWordCount,
@@ -216,46 +215,6 @@ struct VocabularyView: View {
                 }
             }
         }
-    }
-
-    // MARK: - Numbers breadcrumb
-
-    /// Replaces the old Numbers card now that number formatting lives in
-    /// Settings → AI (next to AI Formatter and AI Subtitle Refinement).
-    /// A quiet signpost so users who go looking for it here find their way.
-    /// Permanent for v1 — revisit later whether to hide after N launches.
-    private var numbersBreadcrumb: some View {
-        Button {
-            NotificationCenter.default.post(
-                name: .macParakeetOpenSettingsTab,
-                object: nil,
-                userInfo: ["tab": "ai", "scrollTo": "ai.number-formatting"]
-            )
-        } label: {
-            HStack(spacing: DesignSystem.Spacing.sm) {
-                Image(systemName: "arrow.up.right.square")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(DesignSystem.Colors.accent)
-                Text("Number formatting moved to the AI tab")
-                    .font(DesignSystem.Typography.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("Open")
-                    .font(DesignSystem.Typography.caption.weight(.semibold))
-                    .foregroundStyle(DesignSystem.Colors.accent)
-            }
-            .padding(.horizontal, DesignSystem.Spacing.md)
-            .padding(.vertical, DesignSystem.Spacing.sm)
-            .background(
-                RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
-                    .fill(DesignSystem.Colors.surfaceElevated)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
-                    .strokeBorder(DesignSystem.Colors.border.opacity(0.6), lineWidth: 0.5)
-            )
-        }
-        .buttonStyle(.plain)
     }
 
     private var rawModeCard: some View {
