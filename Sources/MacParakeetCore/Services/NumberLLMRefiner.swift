@@ -290,50 +290,81 @@ public actor NumberLLMRefiner {
 
     // MARK: - Safety gate
 
-    /// `true` when input and output differ only in number / punctuation content.
-    /// We compute a "non-number skeleton" of each (strip digits + common
-    /// punctuation + lowercase + collapse whitespace) and compare character
-    /// counts. A 2%-of-input tolerance (floor 5 chars) covers tiny noise
-    /// like curly-quote substitution without letting in real paraphrasing.
+    /// `true` when input and output differ only in number content.
+    ///
+    /// Both sides are tokenized into letter-only words (anything non-letter is
+    /// a separator, which splits `twenty-five` into two tokens and drops
+    /// digits / punctuation entirely). Known spelled cardinal/ordinal/decimal
+    /// words are then removed, and the remaining word multisets are compared.
+    /// A small mismatch budget (5% of input tokens, floor 2) absorbs noise
+    /// like the LLM normalizing "and" between number components or
+    /// substituting curly quotes.
+    ///
+    /// Worked example: input "next thirty seconds, twenty-five reps" tokenizes
+    /// to {next, thirty, seconds, twenty, five, reps}; filtering number words
+    /// leaves {next, seconds, reps}. Output "next 30 seconds, 25 reps"
+    /// tokenizes to {next, seconds, reps}. Multisets match → passes.
     static func safetyGatePasses(input: String, output: String) -> Bool {
-        let inSkel = nonNumberSkeleton(input)
-        let outSkel = nonNumberSkeleton(output)
-        let delta = abs(inSkel.count - outSkel.count)
-        let threshold = max(input.count / 50, 5)
-        return delta <= threshold
-    }
+        let inFreq = tokenFrequencies(nonNumberWords(input))
+        let outFreq = tokenFrequencies(nonNumberWords(output))
 
-    static func nonNumberSkeleton(_ text: String) -> String {
-        var out = ""
-        out.reserveCapacity(text.count)
-        var lastWasSpace = false
-        for char in text {
-            if char.isNumber { continue }
-            if Self.skeletonStripPunctuation.contains(char) { continue }
-            if char.isWhitespace {
-                if !lastWasSpace {
-                    out.append(" ")
-                    lastWasSpace = true
-                }
-                continue
-            }
-            // Use lowercased() to fold case differences; falls back to the
-            // original character if lowercasing produces multiple characters
-            // (some Unicode characters do — we just take the first to keep
-            // the length comparison meaningful).
-            let lower = String(char).lowercased()
-            if let first = lower.first {
-                out.append(first)
-            } else {
-                out.append(char)
-            }
-            lastWasSpace = false
+        let allKeys = Set(inFreq.keys).union(outFreq.keys)
+        var diffCount = 0
+        for key in allKeys {
+            diffCount += abs((inFreq[key] ?? 0) - (outFreq[key] ?? 0))
         }
-        return out.trimmingCharacters(in: .whitespaces)
+
+        let inTotalTokens = inFreq.values.reduce(0, +)
+        let threshold = max(inTotalTokens / 20, 2)
+        return diffCount <= threshold
     }
 
-    private static let skeletonStripPunctuation: Set<Character> = [
-        ".", ",", "!", "?", ";", ":", "'", "\"", "(", ")", "[", "]", "-",
+    /// Returns the lowercased letter-only words in `text` with known
+    /// number-related words filtered out. Splits on any non-letter character
+    /// (so hyphens in `twenty-five` become token boundaries and digits drop
+    /// out entirely).
+    static func nonNumberWords(_ text: String) -> [String] {
+        let lowered = text.lowercased()
+        var tokens: [String] = []
+        var current = ""
+        for char in lowered {
+            if char.isLetter {
+                current.append(char)
+            } else if !current.isEmpty {
+                tokens.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty { tokens.append(current) }
+        return tokens.filter { !Self.numberWords.contains($0) }
+    }
+
+    private static func tokenFrequencies(_ tokens: [String]) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        counts.reserveCapacity(tokens.count)
+        for token in tokens { counts[token, default: 0] += 1 }
+        return counts
+    }
+
+    /// Lexicon of words that count as "number-like" for the safety gate. Kept
+    /// narrow on purpose — only words that would be REPLACED by a digit form
+    /// when the LLM rewrites the transcript. Common prose words like "and"
+    /// or "of" stay in the comparison so adding/removing them around numbers
+    /// shows up as drift (but is absorbed by the mismatch budget for typical
+    /// cases like `three hundred and twenty` → `320`).
+    private static let numberWords: Set<String> = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+        "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+        "seventeen", "eighteen", "nineteen",
+        "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+        "hundred", "thousand", "million", "billion", "trillion",
+        "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth",
+        "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth", "sixteenth",
+        "seventeenth", "eighteenth", "nineteenth", "twentieth", "thirtieth",
+        "fortieth", "fiftieth", "sixtieth", "seventieth", "eightieth", "ninetieth",
+        "hundredth", "thousandth", "millionth",
+        "half", "quarter", "third",
+        "am", "pm", "oh", "point",
     ]
 
     // MARK: - Error classification
