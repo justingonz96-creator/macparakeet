@@ -243,10 +243,10 @@ private struct SubtitleConfigSection: View {
             StableSlider(
                 title: "End time buffer (ms)",
                 intValue: $config.endTimeBufferMs,
-                range: 0...200,
-                step: 5
+                range: 0...5000,
+                step: 50
             )
-            Text("Extends each cue slightly past the last word to cover audio decay. Typical: 40–80 ms.")
+            Text("Extends each cue past the last word. 40–80 ms covers audio decay for natural reading. Higher values fill the silent gap between cues — at 5000 ms each cue holds until the next one starts (or 5 s if there is no next cue).")
                 .font(DesignSystem.Typography.caption)
                 .foregroundStyle(DesignSystem.Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)

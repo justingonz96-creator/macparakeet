@@ -117,9 +117,14 @@ public struct SubtitleExportConfig: Sendable, Equatable, Codable {
     /// extra beat to finish reading the last word.
     ///
     /// Default: 60 (mid-range of the typical 40–80 ms band, matching
-    /// professional subtitle pacing). Set to 0 to disable. `applyEndTimeBuffer`
-    /// clamps so the buffer never pushes a cue past the next cue's start
-    /// (always leaves at least 1 ms gap to keep SRT ordering valid).
+    /// professional subtitle pacing). Set to 0 to disable.
+    ///
+    /// `applyEndTimeBuffer` clamps so the buffer never pushes a cue past the
+    /// next cue's start (always leaves at least 1 ms gap to keep SRT
+    /// ordering valid). This means very high values double as a "hold each
+    /// cue until the next one starts" mode — e.g. 5000 ms fills any
+    /// inter-cue gap shorter than 5 s. The last cue (no next cue to clamp
+    /// against) gets the full buffer.
     public var endTimeBufferMs: Int
     /// When non-nil, cue start/end times are snapped to the nearest video frame
     /// boundary at this frame rate (e.g. 24.0, 25.0, 29.97, 30.0).

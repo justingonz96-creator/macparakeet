@@ -1257,6 +1257,28 @@ final class ExportServiceTests: XCTestCase {
         XCTAssertEqual(cues[0].endMs, 500 + 60, "Default config should add 60 ms tail buffer")
     }
 
+    /// A very large endTimeBufferMs effectively means "hold each cue until the
+    /// next cue starts" — the existing clamp inside applyEndTimeBuffer caps
+    /// each cue at `nextCue.startMs - 1`, so a 5000 ms buffer fills any
+    /// inter-cue gap shorter than 5 s without overlap.
+    func testLargeBufferHoldsCueUntilNextCueStarts() {
+        let words: [WordTimestamp] = [
+            // Two utterances separated by a 1500 ms silence — long enough to
+            // produce two cues at the default gapThresholdMs of 800.
+            WordTimestamp(word: "First.",  startMs: 0,    endMs: 500,  confidence: 0.99),
+            WordTimestamp(word: "Second.", startMs: 2000, endMs: 2500, confidence: 0.99),
+        ]
+        let config = SubtitleExportConfig(endTimeBufferMs: 5000)
+        let cues = exportService.buildSubtitleCues(from: words, config: config)
+        XCTAssertEqual(cues.count, 2)
+        // First cue's endMs should be clamped to `secondCue.startMs - 1`.
+        XCTAssertEqual(cues[0].endMs, cues[1].startMs - 1,
+            "Large buffer should extend first cue right up to the next cue's start")
+        // Last cue (no next cue) gets the full 5000 ms buffer.
+        XCTAssertEqual(cues[1].endMs, 2500 + 5000,
+            "Last cue should get the full buffer when there's no next cue to clamp against")
+    }
+
     /// SubtitleExportConfig can be encoded and decoded without data loss.
     /// New fields (endTimeBufferMs, snapToFrameRate) survive the round-trip.
     func testSubtitleExportConfigCodableRoundTrip() throws {
