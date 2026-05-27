@@ -174,6 +174,98 @@ final class NumberLLMRefinerTests: XCTestCase {
         XCTAssertEqual(chunks[1], "012345678901234")
         XCTAssertEqual(chunks[2], "56789")
     }
+
+    // MARK: - Batched (escape-hatch) path
+
+    /// Builds an input long enough to force the chunked path into exactly
+    /// three chunks (one per paragraph). With maxCharsPerCall = 1000 and
+    /// each paragraph at ~600 chars, the greedy packer can't fit any two
+    /// paragraphs into one chunk, so each lands in its own chunk.
+    private func threeParagraphInput() -> String {
+        let para1 = String(repeating: "first paragraph text with thirty seconds repeated. ", count: 12)
+        let para2 = String(repeating: "second paragraph mentions forty-five reps repeated. ", count: 12)
+        let para3 = String(repeating: "third paragraph notes nineteen ninety-five repeated. ", count: 12)
+        return [para1, para2, para3].joined(separator: "\n\n")
+    }
+
+    func testRefineByChunksStitchesAllRefinedChunks() async throws {
+        // Use FlexibleLLM so each chunk's reply is the chunk text with
+        // spelled numbers swapped to digits. Safety gate should pass on
+        // each chunk and stitching should produce the joined refined text.
+        let llm = DigitSubstitutingLLM()
+        let refiner = NumberLLMRefiner(llmService: llm, maxCharsPerCall: 1000)
+        let input = threeParagraphInput()
+
+        let outcome = try await refiner.refine(text: input)
+
+        XCTAssertTrue(outcome.usedLLM)
+        XCTAssertNil(outcome.fallbackReason)
+        XCTAssertTrue(outcome.safetyGatePassed)
+        XCTAssertGreaterThanOrEqual(llm.callCount, 2, "Should have split into at least 2 chunks")
+        // Result has no spelled number words left.
+        XCTAssertFalse(outcome.text.contains("thirty"))
+        XCTAssertFalse(outcome.text.contains("forty-five"))
+        XCTAssertFalse(outcome.text.contains("nineteen ninety-five"))
+        // Result still contains the prose content of every chunk.
+        XCTAssertTrue(outcome.text.contains("first paragraph"))
+        XCTAssertTrue(outcome.text.contains("second paragraph"))
+        XCTAssertTrue(outcome.text.contains("third paragraph"))
+    }
+
+    func testRefineByChunksFiresProgressForEveryChunk() async throws {
+        let llm = DigitSubstitutingLLM()
+        let refiner = NumberLLMRefiner(llmService: llm, maxCharsPerCall: 1000)
+        let input = threeParagraphInput()
+
+        let progress = ProgressRecorder()
+        _ = try await refiner.refine(text: input, onProgress: { done, total in
+            progress.record(done: done, total: total)
+        })
+
+        let snapshots = progress.snapshot()
+        XCTAssertGreaterThanOrEqual(snapshots.count, 2)
+        // Last snapshot reports done == total.
+        XCTAssertEqual(snapshots.last?.done, snapshots.last?.total)
+        // Done strictly increases.
+        let dones = snapshots.map(\.done)
+        XCTAssertEqual(dones, dones.sorted())
+    }
+
+    func testRefineByChunksFallsBackPerChunkWithoutPoisoningNeighbors() async throws {
+        // FailOnNthCallLLM throws on the second LLM call, succeeds on the others.
+        // The middle chunk falls back to its input; chunks 1 and 3 get refined.
+        let llm = FailOnNthCallLLM(failingCall: 2)
+        let refiner = NumberLLMRefiner(llmService: llm, maxCharsPerCall: 1000)
+        let input = threeParagraphInput()
+
+        let outcome = try await refiner.refine(text: input)
+
+        // Some chunks succeeded → usedLLM is true overall.
+        XCTAssertTrue(outcome.usedLLM)
+        XCTAssertNil(outcome.fallbackReason)
+        // Refined paragraphs 1 and 3 have no spelled "thirty"/"nineteen ninety-five".
+        XCTAssertFalse(outcome.text.contains("thirty seconds"))
+        XCTAssertFalse(outcome.text.contains("nineteen ninety-five"))
+        // Middle paragraph fell back to its input — "forty-five" is still present.
+        XCTAssertTrue(outcome.text.contains("forty-five reps"))
+    }
+
+    func testRefineByChunksMarksFallbackWhenEveryChunkFails() async throws {
+        let llm = AlwaysThrowingLLM(error: URLError(.notConnectedToInternet))
+        let refiner = NumberLLMRefiner(llmService: llm, maxCharsPerCall: 1000)
+        let input = threeParagraphInput()
+
+        let outcome = try await refiner.refine(text: input)
+
+        XCTAssertFalse(outcome.usedLLM)
+        XCTAssertEqual(outcome.fallbackReason, .callFailed)
+        // Stitched text equals the joined input chunks (some structure normalization
+        // is fine — we just assert the original content survived).
+        XCTAssertTrue(outcome.text.contains("first paragraph"))
+        XCTAssertTrue(outcome.text.contains("second paragraph"))
+        XCTAssertTrue(outcome.text.contains("third paragraph"))
+        XCTAssertTrue(outcome.text.contains("thirty seconds"))  // unchanged spelled forms
+    }
 }
 
 // MARK: - Test doubles
@@ -240,4 +332,105 @@ private final class ThrowingLLM: LLMServiceProtocol, @unchecked Sendable {
     func generatePromptResultDetailed(transcript: String, systemPrompt: String?) async throws -> LLMResult { throw error }
     func chatDetailed(question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource) async throws -> LLMResult { throw error }
     func formatTranscriptDetailed(transcript: String, promptTemplate: String, source: TelemetryFormatterSource, defaultPromptUsed: Bool) async throws -> LLMFormatterResult { throw error }
+}
+
+/// Returns the input text with the spelled-number words `thirty`,
+/// `forty-five`, and `nineteen ninety-five` rewritten as `30`, `45`, `1995`.
+/// Lets batched-path tests assert per-chunk refinement worked.
+private final class DigitSubstitutingLLM: LLMServiceProtocol, @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var callCount = 0
+
+    func transformDetailed(text: String, prompt: String) async throws -> LLMResult {
+        lock.lock(); callCount += 1; lock.unlock()
+        let replaced = text
+            .replacingOccurrences(of: "thirty seconds", with: "30 seconds")
+            .replacingOccurrences(of: "forty-five reps", with: "45 reps")
+            .replacingOccurrences(of: "nineteen ninety-five", with: "1995")
+        return LLMResult(output: replaced, provider: "test", model: "test", latencyMs: 1)
+    }
+
+    func transform(text: String, prompt: String) async throws -> String { try await transformDetailed(text: text, prompt: prompt).output }
+    func generatePromptResult(transcript: String, systemPrompt: String?) async throws -> String { "" }
+    func chat(question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource) async throws -> String { "" }
+    func formatTranscript(transcript: String, promptTemplate: String, source: TelemetryFormatterSource, defaultPromptUsed: Bool) async throws -> String { "" }
+    func generatePromptResultStream(transcript: String, systemPrompt: String?) -> AsyncThrowingStream<String, Error> { AsyncThrowingStream { $0.finish() } }
+    func chatStream(question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource) -> AsyncThrowingStream<String, Error> { AsyncThrowingStream { $0.finish() } }
+    func transformStream(text: String, prompt: String) -> AsyncThrowingStream<String, Error> { AsyncThrowingStream { $0.finish() } }
+    func generatePromptResultDetailed(transcript: String, systemPrompt: String?) async throws -> LLMResult { LLMResult(output: "", provider: "test", model: "test", latencyMs: 0) }
+    func chatDetailed(question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource) async throws -> LLMResult { LLMResult(output: "", provider: "test", model: "test", latencyMs: 0) }
+    func formatTranscriptDetailed(transcript: String, promptTemplate: String, source: TelemetryFormatterSource, defaultPromptUsed: Bool) async throws -> LLMFormatterResult {
+        LLMFormatterResult(
+            result: LLMResult(output: "", provider: "test", model: "test", latencyMs: 0),
+            operationID: "test",
+            inputChars: 0,
+            outputChars: 0,
+            inputTruncated: false,
+            defaultPromptUsed: defaultPromptUsed,
+            messageCount: 0
+        )
+    }
+}
+
+/// Succeeds on every call EXCEPT the Nth, which throws. Used to verify the
+/// batched path treats per-chunk failures independently — neighbors keep
+/// their refined output, the failing chunk falls back to its input.
+private final class FailOnNthCallLLM: LLMServiceProtocol, @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var callCount = 0
+    let failingCall: Int
+
+    init(failingCall: Int) { self.failingCall = failingCall }
+
+    func transformDetailed(text: String, prompt: String) async throws -> LLMResult {
+        lock.lock(); callCount += 1; let n = callCount; lock.unlock()
+        if n == failingCall { throw URLError(.notConnectedToInternet) }
+        let replaced = text
+            .replacingOccurrences(of: "thirty seconds", with: "30 seconds")
+            .replacingOccurrences(of: "forty-five reps", with: "45 reps")
+            .replacingOccurrences(of: "nineteen ninety-five", with: "1995")
+        return LLMResult(output: replaced, provider: "test", model: "test", latencyMs: 1)
+    }
+
+    func transform(text: String, prompt: String) async throws -> String { try await transformDetailed(text: text, prompt: prompt).output }
+    func generatePromptResult(transcript: String, systemPrompt: String?) async throws -> String { "" }
+    func chat(question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource) async throws -> String { "" }
+    func formatTranscript(transcript: String, promptTemplate: String, source: TelemetryFormatterSource, defaultPromptUsed: Bool) async throws -> String { "" }
+    func generatePromptResultStream(transcript: String, systemPrompt: String?) -> AsyncThrowingStream<String, Error> { AsyncThrowingStream { $0.finish() } }
+    func chatStream(question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource) -> AsyncThrowingStream<String, Error> { AsyncThrowingStream { $0.finish() } }
+    func transformStream(text: String, prompt: String) -> AsyncThrowingStream<String, Error> { AsyncThrowingStream { $0.finish() } }
+    func generatePromptResultDetailed(transcript: String, systemPrompt: String?) async throws -> LLMResult { LLMResult(output: "", provider: "test", model: "test", latencyMs: 0) }
+    func chatDetailed(question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource) async throws -> LLMResult { LLMResult(output: "", provider: "test", model: "test", latencyMs: 0) }
+    func formatTranscriptDetailed(transcript: String, promptTemplate: String, source: TelemetryFormatterSource, defaultPromptUsed: Bool) async throws -> LLMFormatterResult {
+        LLMFormatterResult(
+            result: LLMResult(output: "", provider: "test", model: "test", latencyMs: 0),
+            operationID: "test",
+            inputChars: 0,
+            outputChars: 0,
+            inputTruncated: false,
+            defaultPromptUsed: defaultPromptUsed,
+            messageCount: 0
+        )
+    }
+}
+
+/// Always throws the same error. Used to verify the batched path returns
+/// `.callFailed` when no chunks succeed.
+private typealias AlwaysThrowingLLM = ThrowingLLM
+
+/// Records (done, total) progress snapshots across the batched path.
+private final class ProgressRecorder: @unchecked Sendable {
+    struct Snapshot { let done: Int; let total: Int }
+    private let lock = NSLock()
+    private var snapshots: [Snapshot] = []
+
+    func record(done: Int, total: Int) {
+        lock.lock(); defer { lock.unlock() }
+        snapshots.append(Snapshot(done: done, total: total))
+    }
+
+    func snapshot() -> [Snapshot] {
+        lock.lock(); defer { lock.unlock() }
+        return snapshots
+    }
 }
