@@ -61,4 +61,9 @@ extension Notification.Name {
     /// Posted after a successful Transform is saved to local history so the
     /// Transforms tab can refresh if it is visible.
     static let transformHistoryChanged = Notification.Name("com.macparakeet.transforms.historyChanged")
+    /// Posted by the Vocabulary breadcrumb (and any other cross-tab navigator)
+    /// to open the Settings window on a specific tab and optionally scroll to
+    /// a named anchor. UserInfo: `tab` (String, one of SettingsTab raw values),
+    /// optional `scrollTo` (String anchor id).
+    static let macParakeetOpenSettingsTab = Notification.Name("com.macparakeet.settings.openTab")
 }
