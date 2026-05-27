@@ -264,7 +264,11 @@ final class ExportServiceTests: XCTestCase {
             WordTimestamp(word: "world.", startMs: 600, endMs: 1000, confidence: 0.98),
         ]
 
-        let cues = exportService.buildSubtitleCues(from: words)
+        // Disable the production default tail buffer (60 ms) so this test
+        // asserts the raw cue construction behavior.
+        let cues = exportService.buildSubtitleCues(
+            from: words, config: SubtitleExportConfig(endTimeBufferMs: 0)
+        )
         XCTAssertEqual(cues.count, 1)
         XCTAssertEqual(cues[0].text, "Hello world.")
         XCTAssertEqual(cues[0].startMs, 0)
@@ -350,7 +354,9 @@ final class ExportServiceTests: XCTestCase {
             WordTimestamp(word: "world.", startMs: 2600, endMs: 3000, confidence: 0.96),
         ]
 
-        let srt = exportService.formatSRT(words: words)
+        // Disable tail buffer so we can assert the raw timestamps. The default
+        // 60 ms buffer adds 60 ms to each cue's end and is covered separately.
+        let srt = exportService.formatSRT(words: words, config: SubtitleExportConfig(endTimeBufferMs: 0))
         XCTAssertTrue(srt.contains("1\n00:00:00,000 --> 00:00:01,000\nHello world."))
         XCTAssertTrue(srt.contains("2\n00:00:02,000 --> 00:00:03,000\nGoodbye world."))
     }
@@ -363,7 +369,7 @@ final class ExportServiceTests: XCTestCase {
             WordTimestamp(word: "world.", startMs: 2600, endMs: 3000, confidence: 0.96),
         ]
 
-        let vtt = exportService.formatVTT(words: words)
+        let vtt = exportService.formatVTT(words: words, config: SubtitleExportConfig(endTimeBufferMs: 0))
         XCTAssertTrue(vtt.hasPrefix("WEBVTT\n"))
         XCTAssertTrue(vtt.contains("00:00:00.000 --> 00:00:01.000\nHello world."))
         XCTAssertTrue(vtt.contains("00:00:02.000 --> 00:00:03.000\nGoodbye world."))
@@ -412,7 +418,10 @@ final class ExportServiceTests: XCTestCase {
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("test_export_\(UUID().uuidString).srt")
 
-        try exportService.exportToSRT(transcription: transcription, url: tempURL)
+        try exportService.exportToSRT(
+            transcription: transcription, url: tempURL,
+            config: SubtitleExportConfig(endTimeBufferMs: 0)
+        )
 
         let content = try String(contentsOf: tempURL, encoding: .utf8)
         XCTAssertTrue(content.contains("1\n00:00:00,000 --> 00:00:01,000\nHello world."))
@@ -433,7 +442,10 @@ final class ExportServiceTests: XCTestCase {
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("test_export_\(UUID().uuidString).vtt")
 
-        try exportService.exportToVTT(transcription: transcription, url: tempURL)
+        try exportService.exportToVTT(
+            transcription: transcription, url: tempURL,
+            config: SubtitleExportConfig(endTimeBufferMs: 0)
+        )
 
         let content = try String(contentsOf: tempURL, encoding: .utf8)
         XCTAssertTrue(content.hasPrefix("WEBVTT\n"))
@@ -1080,10 +1092,13 @@ final class ExportServiceTests: XCTestCase {
         ]
         // Config: wide char budget (only CPS triggers split); maxCPS very low to force it.
         // Total text ≈ 41 chars over 2.0s ≈ 20 CPS >> 5.0 → split required.
+        // endTimeBufferMs=0 keeps this test focused on split-point selection,
+        // not the production tail-padding behavior.
         let config = SubtitleExportConfig(
             maxCharsPerLine: 100,
             gapThresholdMs: 800,  // 600ms gap < threshold, so all words stay in one cue
-            maxCPS: 5.0
+            maxCPS: 5.0,
+            endTimeBufferMs: 0
         )
         let cues = exportService.buildSubtitleCues(from: words, config: config)
         XCTAssertGreaterThan(cues.count, 1, "High-CPS cue should be split by enforceReadingSpeed")
@@ -1180,7 +1195,8 @@ final class ExportServiceTests: XCTestCase {
             WordTimestamp(word: "Hello", startMs: 100, endMs: 600, confidence: 0.99),
             WordTimestamp(word: "world", startMs: 700, endMs: 950, confidence: 0.99),
         ]
-        let config = SubtitleExportConfig(snapToFrameRate: 24.0)
+        // Disable tail buffer so the snap-up math is testable directly.
+        let config = SubtitleExportConfig(endTimeBufferMs: 0, snapToFrameRate: 24.0)
         let cues = exportService.buildSubtitleCues(from: words, config: config)
         XCTAssertFalse(cues.isEmpty)
         let cue = cues[0]
@@ -1197,16 +1213,18 @@ final class ExportServiceTests: XCTestCase {
         let words: [WordTimestamp] = [
             WordTimestamp(word: "Hello", startMs: 123, endMs: 456, confidence: 0.99),
         ]
-        let config = SubtitleExportConfig(snapToFrameRate: nil)
+        // Disable tail buffer so we can assert raw timestamps survived unchanged.
+        let config = SubtitleExportConfig(endTimeBufferMs: 0, snapToFrameRate: nil)
         let cues = exportService.buildSubtitleCues(from: words, config: config)
         XCTAssertFalse(cues.isEmpty)
         XCTAssertEqual(cues[0].startMs, 123, "startMs should be unchanged when snapToFrameRate is nil")
         XCTAssertEqual(cues[0].endMs,   456, "endMs should be unchanged when snapToFrameRate is nil")
     }
 
-    /// The default config (endTimeBufferMs: 0, snapToFrameRate: nil) produces the
-    /// same output as before these improvements were added.
-    func testDefaultConfigProducesUnchangedBehavior() {
+    /// The default config matches an explicit construction with the current
+    /// default values. Guards against drift between the init defaults and any
+    /// other "what does .default look like" reference.
+    func testDefaultConfigMatchesExplicitConstruction() {
         let words: [WordTimestamp] = [
             WordTimestamp(word: "This",    startMs:    0, endMs:  200, confidence: 0.99),
             WordTimestamp(word: "is",      startMs:  220, endMs:  350, confidence: 0.99),
@@ -1214,7 +1232,7 @@ final class ExportServiceTests: XCTestCase {
             WordTimestamp(word: "test.",   startMs:  410, endMs:  600, confidence: 0.99),
         ]
         let defaultConfig = SubtitleExportConfig()
-        let explicitConfig = SubtitleExportConfig(endTimeBufferMs: 0, snapToFrameRate: nil)
+        let explicitConfig = SubtitleExportConfig(endTimeBufferMs: 60, snapToFrameRate: nil)
         let cuesDefault  = exportService.buildSubtitleCues(from: words, config: defaultConfig)
         let cuesExplicit = exportService.buildSubtitleCues(from: words, config: explicitConfig)
         XCTAssertEqual(cuesDefault.count, cuesExplicit.count)
@@ -1223,6 +1241,20 @@ final class ExportServiceTests: XCTestCase {
             XCTAssertEqual(a.endMs,   b.endMs)
             XCTAssertEqual(a.text,    b.text)
         }
+    }
+
+    /// The default config applies a 60 ms tail buffer to cue end times so cues
+    /// don't disappear the instant the speaker stops. Verifies the default
+    /// reaches the production pipeline (not just the field value).
+    func testDefaultConfigAppliesTailBuffer() {
+        let words: [WordTimestamp] = [
+            WordTimestamp(word: "Hello.", startMs: 0, endMs: 500, confidence: 0.99),
+        ]
+        let cues = exportService.buildSubtitleCues(from: words, config: SubtitleExportConfig())
+        XCTAssertEqual(cues.count, 1)
+        // The single cue has no "next cue" to clamp against, so it gets the
+        // full 60 ms buffer past the last word.
+        XCTAssertEqual(cues[0].endMs, 500 + 60, "Default config should add 60 ms tail buffer")
     }
 
     /// SubtitleExportConfig can be encoded and decoded without data loss.
@@ -1309,7 +1341,9 @@ final class ExportServiceTests: XCTestCase {
         """
         let data    = legacyJSON.data(using: .utf8)!
         let decoded = try JSONDecoder().decode(SubtitleExportConfig.self, from: data)
-        XCTAssertEqual(decoded.endTimeBufferMs, 0,   "Missing key should default to 0")
+        // Legacy payloads (missing endTimeBufferMs) get the current default —
+        // intentional opt-in to the improved tail-padding behavior on upgrade.
+        XCTAssertEqual(decoded.endTimeBufferMs, 60,  "Missing key should default to 60 ms tail buffer")
         XCTAssertNil(decoded.snapToFrameRate,        "Missing key should default to nil")
     }
 

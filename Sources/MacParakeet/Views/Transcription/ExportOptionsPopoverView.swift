@@ -187,11 +187,15 @@ private struct SubtitleConfigSection: View {
             )
 
             StableSlider(
-                title: "Gap between captions (ms)",
+                title: "Pause-gap threshold (ms)",
                 intValue: $config.gapThresholdMs,
                 range: 0...2000,
                 step: 50
             )
+            Text("Speech pauses longer than this trigger a new cue. This is NOT the visual gap between captions — that's controlled by End time buffer below.")
+                .font(DesignSystem.Typography.caption)
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack {
                 Text("Lines")

@@ -138,7 +138,11 @@ final class ExportCommandTests: XCTestCase {
             .appendingPathComponent("srt-test-\(UUID().uuidString).srt")
         defer { try? FileManager.default.removeItem(at: tmpURL) }
 
-        try exportService.exportToSRT(transcription: t, url: tmpURL)
+        // Disable tail buffer so the asserted endMs matches the raw word timestamps.
+        try exportService.exportToSRT(
+            transcription: t, url: tmpURL,
+            config: SubtitleExportConfig(endTimeBufferMs: 0)
+        )
 
         let content = try String(contentsOf: tmpURL, encoding: .utf8)
         // Verify SRT timestamp format (HH:MM:SS,mmm) — not just "-->" which the fallback also emits
@@ -164,7 +168,10 @@ final class ExportCommandTests: XCTestCase {
             .appendingPathComponent("vtt-test-\(UUID().uuidString).vtt")
         defer { try? FileManager.default.removeItem(at: tmpURL) }
 
-        try exportService.exportToVTT(transcription: t, url: tmpURL)
+        try exportService.exportToVTT(
+            transcription: t, url: tmpURL,
+            config: SubtitleExportConfig(endTimeBufferMs: 0)
+        )
 
         let content = try String(contentsOf: tmpURL, encoding: .utf8)
         XCTAssertTrue(content.hasPrefix("WEBVTT"), "VTT must start with WEBVTT header")

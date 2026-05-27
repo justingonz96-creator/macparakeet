@@ -111,10 +111,15 @@ public struct SubtitleExportConfig: Sendable, Equatable, Codable {
     /// Maximum reading speed in characters per second. Cues exceeding this will be split.
     /// Professional standard (Netflix, BBC): 17.0. Set to 0 to disable.
     public var maxCPS: Double
-    /// Milliseconds added to the end of every cue before gap enforcement runs.
-    /// Compensates for acoustic decay — Parakeet timestamps the amplitude crossing
-    /// point, but the audible sound continues briefly after that. Typical: 40–80 ms.
-    /// Default: 0 (no change). `enforceMinGap` trims any overlap introduced.
+    /// Milliseconds added to the end of every cue. Compensates for acoustic
+    /// decay — Parakeet timestamps the amplitude crossing point, but the
+    /// audible sound continues briefly after that, and the eye needs an
+    /// extra beat to finish reading the last word.
+    ///
+    /// Default: 60 (mid-range of the typical 40–80 ms band, matching
+    /// professional subtitle pacing). Set to 0 to disable. `applyEndTimeBuffer`
+    /// clamps so the buffer never pushes a cue past the next cue's start
+    /// (always leaves at least 1 ms gap to keep SRT ordering valid).
     public var endTimeBufferMs: Int
     /// When non-nil, cue start/end times are snapped to the nearest video frame
     /// boundary at this frame rate (e.g. 24.0, 25.0, 29.97, 30.0).
@@ -148,7 +153,7 @@ public struct SubtitleExportConfig: Sendable, Equatable, Codable {
         preferBalancedLines: Bool = true,
         useLLMRefinement: Bool = false,
         maxCPS: Double = 17.0,
-        endTimeBufferMs: Int = 0,
+        endTimeBufferMs: Int = 60,
         snapToFrameRate: Double? = nil,
         normalizeNumbers: Bool = false,
         reviewerPairsPerBatch: Int = 5
@@ -195,7 +200,9 @@ extension SubtitleExportConfig {
         preferBalancedLines          = try c.decode(Bool.self, forKey: .preferBalancedLines)
         useLLMRefinement             = try c.decode(Bool.self, forKey: .useLLMRefinement)
         maxCPS                       = try c.decode(Double.self, forKey: .maxCPS)
-        endTimeBufferMs              = try c.decodeIfPresent(Int.self, forKey: .endTimeBufferMs) ?? 0
+        // Legacy configs saved before this field existed get the new 60 ms
+        // default; explicit values (including 0) are respected.
+        endTimeBufferMs              = try c.decodeIfPresent(Int.self, forKey: .endTimeBufferMs) ?? 60
         snapToFrameRate              = try c.decodeIfPresent(Double.self, forKey: .snapToFrameRate)
         normalizeNumbers             = try c.decodeIfPresent(Bool.self, forKey: .normalizeNumbers) ?? false
         reviewerPairsPerBatch        = try c.decodeIfPresent(Int.self, forKey: .reviewerPairsPerBatch) ?? 5
