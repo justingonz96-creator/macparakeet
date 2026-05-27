@@ -40,6 +40,113 @@ final class NumberLLMRefinerTests: XCTestCase {
         ))
     }
 
+    /// Fixture suite locking the safety gate's behavior across realistic
+    /// LLM outputs. Update this when the threshold changes — it's the
+    /// guardrail telling future-us whether a tuning change has the
+    /// expected effect on actual LLM-shaped responses.
+    ///
+    /// Threshold today: 5% of input tokens (floor 2). Each fixture asserts
+    /// whether `safetyGatePasses` should return `true` (LLM reply is kept)
+    /// or `false` (reply is discarded and deterministic input is used).
+    func testSafetyGateFixtureSuite() {
+        struct Fixture {
+            let label: String
+            let input: String
+            let output: String
+            let shouldPass: Bool
+        }
+        let fixtures: [Fixture] = [
+            // MARK: should PASS — clean number-form rewrites
+
+            .init(label: "pure digit substitution",
+                  input: "next thirty seconds for forty-five reps",
+                  output: "next 30 seconds for 45 reps",
+                  shouldPass: true),
+
+            .init(label: "year normalization",
+                  input: "the meeting in nineteen ninety-five was important to us",
+                  output: "the meeting in 1995 was important to us",
+                  shouldPass: true),
+
+            .init(label: "clock time with am",
+                  input: "the call is scheduled for ten thirty AM tomorrow",
+                  output: "the call is scheduled for 10:30 AM tomorrow",
+                  shouldPass: true),
+
+            .init(label: "decimal expansion",
+                  input: "the timer rang after two point five seconds had passed",
+                  output: "the timer rang after 2.5 seconds had passed",
+                  shouldPass: true),
+
+            .init(label: "large cardinal with thousands",
+                  input: "the budget came to three thousand four hundred and twenty five dollars",
+                  output: "the budget came to 3,425 dollars",
+                  shouldPass: true),
+
+            .init(label: "multiple number forms in one sentence",
+                  input: "in nineteen ninety-five we ran for thirty seconds doing forty-five reps",
+                  output: "in 1995 we ran for 30 seconds doing 45 reps",
+                  shouldPass: true),
+
+            .init(label: "curly quote substitution",
+                  input: "she said \"twenty-five reps\" before stopping for a brief moment",
+                  output: "she said \u{201C}25 reps\u{201D} before stopping for a brief moment",
+                  shouldPass: true),
+
+            .init(label: "sentence-split rewording stays equivalent",
+                  input: "thirty seconds, then forty-five reps to finish the set strong",
+                  output: "30 seconds. Then 45 reps to finish the set strong",
+                  shouldPass: true),
+
+            .init(label: "dropped redundant adverb",
+                  input: "we ran for thirty seconds approximately to warm up the group",
+                  output: "we ran for 30 seconds to warm up the group",
+                  shouldPass: true),
+
+            // MARK: should REJECT — paraphrasing or content drift
+
+            .init(label: "added commentary at end",
+                  input: "next thirty seconds",
+                  output: "next 30 seconds — note that this is an approximate timing for the warmup phase",
+                  shouldPass: false),
+
+            .init(label: "dropped half the sentence",
+                  input: "we ran for thirty seconds and then jogged for two minutes and finished with fifteen squats",
+                  output: "we ran for 30 seconds",
+                  shouldPass: false),
+
+            .init(label: "synonym/paraphrase rewrite",
+                  input: "he ran for thirty seconds during the cooldown phase of the workout",
+                  output: "he jogged briefly during the cooldown phase of the workout for about half a minute",
+                  shouldPass: false),
+
+            .init(label: "added explanatory parenthetical",
+                  input: "thirty seconds",
+                  output: "30 seconds (which corresponds to roughly half a minute in real time)",
+                  shouldPass: false),
+
+            .init(label: "completely different content",
+                  input: "we did forty-five reps today",
+                  output: "the weather is nice today and birds are singing",
+                  shouldPass: false),
+        ]
+
+        for fixture in fixtures {
+            let actual = NumberLLMRefiner.safetyGatePasses(
+                input: fixture.input, output: fixture.output
+            )
+            XCTAssertEqual(
+                actual,
+                fixture.shouldPass,
+                """
+                Fixture '\(fixture.label)' expected \(fixture.shouldPass ? "PASS" : "REJECT") but got \(actual ? "PASS" : "REJECT").
+                Input:  '\(fixture.input)'
+                Output: '\(fixture.output)'
+                """
+            )
+        }
+    }
+
     // MARK: - Reply cleaner
 
     func testCleanReplyStripsLeadingAndTrailingWhitespace() {
