@@ -231,7 +231,7 @@ public final class SettingsViewModel {
     public var numberNormalizationEnabled: Bool {
         didSet {
             defaults.set(numberNormalizationEnabled, forKey: UserDefaultsAppRuntimePreferences.numberNormalizationEnabledKey)
-            Telemetry.send(.settingChanged(setting: .numberNormalization))
+            Telemetry.send(.settingChanged(setting: .numberRefinementMode))
         }
     }
 

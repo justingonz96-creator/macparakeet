@@ -32,6 +32,8 @@ public enum TelemetryEventName: String, Sendable, CaseIterable {
     case llmChatFailed = "llm_chat_failed"
     case llmTransformUsed = "llm_transform_used"
     case llmTransformFailed = "llm_transform_failed"
+    case numberRefinerUsed = "number_refiner_used"
+    case numberRefinerFallback = "number_refiner_fallback"
     /// Transforms feature surface (ADR-022). Distinct from
     /// `llm_transform_used` (the call-level event fired by
     /// `LLMService.transformStream`). `transform_executed` is the
@@ -389,7 +391,7 @@ public enum TelemetrySettingName: String, Sendable, Equatable {
     case launchAtLogin = "launch_at_login"
     case silenceAutoStop = "silence_auto_stop"
     case voiceReturn = "voice_return"
-    case numberNormalization = "number_normalization"
+    case numberRefinementMode = "number_refinement_mode"
 
     // Calendar auto-start (ADR-017)
     case calendarAutoStartMode = "calendar_auto_start_mode"
@@ -494,6 +496,28 @@ public enum TelemetryEventSpec: Sendable {
     case llmChatFailed(provider: String, source: TelemetryChatSource, errorType: String, errorDetail: String? = nil)
     case llmTransformUsed(provider: String)
     case llmTransformFailed(provider: String, errorType: String, errorDetail: String? = nil)
+    /// Smart number-formatting refinement reached the safety gate.
+    /// `safetyGatePassed == true` means the LLM reply was kept; `false`
+    /// means the gate rejected it (and `.numberRefinerFallback` also fires
+    /// with `reason: safety_gate_rejected`). Does NOT fire when the LLM
+    /// call short-circuited before the gate (not configured, call failed,
+    /// parse failed) — those go directly to `.numberRefinerFallback`.
+    case numberRefinerUsed(
+        provider: String,
+        inputChars: Int,
+        outputChars: Int,
+        latencyMs: Int,
+        safetyGatePassed: Bool
+    )
+    /// Smart number-formatting refinement fell back to the deterministic input.
+    /// Fires for every Smart run that did not use the LLM's reply. `provider`
+    /// is nil only when the reason is `not_configured`. `errorType` is
+    /// populated only when reason is `call_failed`.
+    case numberRefinerFallback(
+        reason: String,
+        provider: String?,
+        errorType: String?
+    )
     /// Transforms (ADR-022) feature-level success. Fired by
     /// `TransformsCoordinator` when a hotkey-bound Transform finishes
     /// end-to-end. NO content captured — see
@@ -786,6 +810,8 @@ extension TelemetryEventSpec {
         case .llmChatFailed: return .llmChatFailed
         case .llmTransformUsed: return .llmTransformUsed
         case .llmTransformFailed: return .llmTransformFailed
+        case .numberRefinerUsed: return .numberRefinerUsed
+        case .numberRefinerFallback: return .numberRefinerFallback
         case .transformExecuted: return .transformExecuted
         case .transformFailed: return .transformFailed
         case .transformOperation: return .transformOperation
@@ -1087,6 +1113,19 @@ extension TelemetryEventSpec {
         case .llmTransformFailed(let provider, let errorType, let errorDetail):
             var props = ["provider": provider, "error_type": errorType]
             if let errorDetail = Self.sanitizedErrorDetail(errorDetail) { props["error_detail"] = errorDetail }
+            return props
+        case .numberRefinerUsed(let provider, let inputChars, let outputChars, let latencyMs, let safetyGatePassed):
+            return [
+                "provider": provider,
+                "input_chars": "\(inputChars)",
+                "output_chars": "\(outputChars)",
+                "latency_ms": "\(latencyMs)",
+                "safety_gate_passed": safetyGatePassed ? "true" : "false",
+            ]
+        case .numberRefinerFallback(let reason, let provider, let errorType):
+            var props = ["reason": reason]
+            if let provider { props["provider"] = provider }
+            if let errorType { props["error_type"] = errorType }
             return props
         case .transformExecuted(let name, let capture, let replace, let llmMs, let totalMs, let appCategory):
             return Self.compactProps(
@@ -1582,6 +1621,8 @@ public enum TelemetryImplementedContract {
         .llmChatFailed: ["provider", "source", "error_type"],
         .llmTransformUsed: ["provider"],
         .llmTransformFailed: ["provider", "error_type"],
+        .numberRefinerUsed: ["provider", "input_chars", "output_chars", "latency_ms", "safety_gate_passed"],
+        .numberRefinerFallback: ["reason", "provider", "error_type"],
         .transformExecuted: ["transform_name", "capture_path", "replace_path", "llm_ms", "total_ms"],
         .transformFailed: ["transform_name", "reason"],
         .transformOperation: ["operation_id", "outcome", "transform_name", "duration_seconds"],
