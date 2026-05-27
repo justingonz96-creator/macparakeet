@@ -299,6 +299,119 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertTrue(try transcriptionRepo.fetchAll(limit: nil).isEmpty)
     }
 
+    // MARK: - Smart number refinement
+
+    func testSmartModeAppliesNumberLLMRefinerWhenInjected() async throws {
+        await mockSTT.configure(result: STTResult(text: "Next thirty seconds for forty-five reps in nineteen ninety-five"))
+        let mockLLMService = MockLLMService()
+        // Polished reply with only number forms changed (safety gate passes).
+        mockLLMService.transformResult = "Next 30 seconds for 45 reps in 1995"
+        let refiner = NumberLLMRefiner(llmService: mockLLMService)
+
+        let service = TranscriptionService(
+            audioProcessor: mockAudio,
+            sttTranscriber: mockSTT,
+            transcriptionRepo: transcriptionRepo,
+            processingMode: { .clean },
+            llmService: mockLLMService,
+            llmRunRepo: llmRunRepo,
+            numberRefinementMode: { .smart },
+            numberLLMRefiner: refiner
+        )
+
+        let result = try await service.transcribe(fileURL: URL(fileURLWithPath: "/tmp/smart.mp3"))
+
+        XCTAssertEqual(result.cleanTranscript, "Next 30 seconds for 45 reps in 1995")
+        XCTAssertEqual(mockLLMService.transformCallCount, 1)
+        XCTAssertEqual(try llmRunRepo.count(), 1)
+    }
+
+    func testSmartModeFallsBackToDeterministicWhenRefinerAbsent() async throws {
+        await mockSTT.configure(result: STTResult(text: "Next thirty seconds"))
+
+        let service = TranscriptionService(
+            audioProcessor: mockAudio,
+            sttTranscriber: mockSTT,
+            transcriptionRepo: transcriptionRepo,
+            processingMode: { .clean },
+            llmRunRepo: llmRunRepo,
+            numberRefinementMode: { .smart },
+            numberLLMRefiner: nil
+        )
+
+        let result = try await service.transcribe(fileURL: URL(fileURLWithPath: "/tmp/smart-nofiner.mp3"))
+
+        // Deterministic NumberNormalizer catches "thirty" in "next thirty seconds"
+        // → "next 30 seconds" via the measurement pass. No LLMRun recorded.
+        XCTAssertEqual(result.cleanTranscript, "Next 30 seconds")
+        XCTAssertEqual(try llmRunRepo.count(), 0)
+    }
+
+    func testSmartModeFallsBackSilentlyWhenLLMNotConfigured() async throws {
+        await mockSTT.configure(result: STTResult(text: "Next thirty seconds"))
+        let mockLLMService = MockLLMService()
+        mockLLMService.transformErrorToThrow = LLMError.notConfigured
+        let refiner = NumberLLMRefiner(llmService: mockLLMService)
+
+        let service = TranscriptionService(
+            audioProcessor: mockAudio,
+            sttTranscriber: mockSTT,
+            transcriptionRepo: transcriptionRepo,
+            processingMode: { .clean },
+            llmService: mockLLMService,
+            llmRunRepo: llmRunRepo,
+            numberRefinementMode: { .smart },
+            numberLLMRefiner: refiner
+        )
+
+        let result = try await service.transcribe(fileURL: URL(fileURLWithPath: "/tmp/smart-noprovider.mp3"))
+
+        // LLM threw notConfigured → silent fallback to deterministic output.
+        XCTAssertEqual(result.cleanTranscript, "Next 30 seconds")
+        XCTAssertEqual(mockLLMService.transformCallCount, 1)
+        XCTAssertEqual(try llmRunRepo.count(), 0)
+    }
+
+    func testDeterministicModeSkipsLLMRefiner() async throws {
+        await mockSTT.configure(result: STTResult(text: "Next thirty seconds"))
+        let mockLLMService = MockLLMService()
+        let refiner = NumberLLMRefiner(llmService: mockLLMService)
+
+        let service = TranscriptionService(
+            audioProcessor: mockAudio,
+            sttTranscriber: mockSTT,
+            transcriptionRepo: transcriptionRepo,
+            processingMode: { .clean },
+            llmService: mockLLMService,
+            llmRunRepo: llmRunRepo,
+            numberRefinementMode: { .deterministic },
+            numberLLMRefiner: refiner
+        )
+
+        let result = try await service.transcribe(fileURL: URL(fileURLWithPath: "/tmp/det.mp3"))
+
+        XCTAssertEqual(result.cleanTranscript, "Next 30 seconds")
+        // Deterministic mode must not call the LLM at all.
+        XCTAssertEqual(mockLLMService.transformCallCount, 0)
+    }
+
+    func testOffModeLeavesNumbersUntouched() async throws {
+        await mockSTT.configure(result: STTResult(text: "Next thirty seconds"))
+
+        let service = TranscriptionService(
+            audioProcessor: mockAudio,
+            sttTranscriber: mockSTT,
+            transcriptionRepo: transcriptionRepo,
+            processingMode: { .clean },
+            numberRefinementMode: { .off }
+        )
+
+        let result = try await service.transcribe(fileURL: URL(fileURLWithPath: "/tmp/off.mp3"))
+
+        // "thirty" stays spelled because normalization is off.
+        XCTAssertEqual(result.cleanTranscript, "Next thirty seconds")
+    }
+
     func testTranscribeFileDurationUsesMaximumWordEnd() async throws {
         await mockSTT.configure(result: STTResult(
             text: "out of order",
