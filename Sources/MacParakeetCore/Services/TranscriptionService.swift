@@ -1349,12 +1349,20 @@ public actor TranscriptionService: SpeechEngineOverrideTranscriptionService {
             normalizeNumbers: numberRefinementMode() != .off
         )
         let baseText = refinement.text ?? rawText
-        let formatterOutcome = try await formatTranscriptIfNeeded(
+        let smartOutcome = try await applyNumberLLMRefinementIfNeeded(
             baseText,
             runSource: persistResult ? LLMRunSource(transcriptionId: transcription.id) : nil
         )
+        let smartText = smartOutcome.text
+        let formatterOutcome = try await formatTranscriptIfNeeded(
+            smartText,
+            runSource: persistResult ? LLMRunSource(transcriptionId: transcription.id) : nil
+        )
         let formattedTranscript = formatterOutcome.text
-        transcription.cleanTranscript = formattedTranscript ?? refinement.text
+        // Final cleanTranscript: formatter wins if it ran, else the smart-refined
+        // text (which equals the deterministic text when Smart wasn't used).
+        transcription.cleanTranscript = formattedTranscript
+            ?? (smartOutcome.usedLLM ? smartText : refinement.text)
 
         if persistResult, !refinement.expandedSnippetIDs.isEmpty {
             try? snippetRepo?.incrementUseCount(ids: refinement.expandedSnippetIDs)
@@ -1371,6 +1379,7 @@ public actor TranscriptionService: SpeechEngineOverrideTranscriptionService {
         transcription.updatedAt = Date()
         if persistResult {
             try transcriptionRepo.save(transcription)
+            await llmRunRecorder.record(smartOutcome.run)
             await llmRunRecorder.record(formatterOutcome.run)
         }
 
@@ -1406,6 +1415,58 @@ public actor TranscriptionService: SpeechEngineOverrideTranscriptionService {
         )
 
         return transcription
+    }
+
+    private struct NumberRefinementHelperOutcome {
+        let text: String
+        let usedLLM: Bool
+        let run: LLMRun?
+    }
+
+    /// Applies the optional Smart-mode LLM number refinement step between
+    /// deterministic cleanup and the AI Formatter. Returns the deterministic
+    /// input unchanged when the mode isn't Smart, when no refiner was
+    /// injected, or when the refiner fell back. Telemetry events fire per
+    /// the spec's outcome→events mapping:
+    ///
+    /// - `.numberRefinerUsed` fires only when the LLM call reached the safety
+    ///   gate (gate passed or rejected).
+    /// - `.numberRefinerFallback` fires for every Smart run that did not use
+    ///   the LLM reply (covers not-configured, call-failed, parse-failed,
+    ///   safety-gate-rejected).
+    private func applyNumberLLMRefinementIfNeeded(
+        _ text: String,
+        runSource: LLMRunSource?
+    ) async throws -> NumberRefinementHelperOutcome {
+        guard numberRefinementMode() == .smart, let refiner = numberLLMRefiner else {
+            return NumberRefinementHelperOutcome(text: text, usedLLM: false, run: nil)
+        }
+
+        let outcome = try await refiner.refine(text: text, runSource: runSource)
+
+        let reachedSafetyGate = outcome.usedLLM || outcome.fallbackReason == .safetyGateRejected
+        if reachedSafetyGate {
+            Telemetry.send(.numberRefinerUsed(
+                provider: outcome.provider ?? "unknown",
+                inputChars: text.count,
+                outputChars: outcome.text.count,
+                latencyMs: outcome.latencyMs,
+                safetyGatePassed: outcome.safetyGatePassed
+            ))
+        }
+        if let reason = outcome.fallbackReason {
+            Telemetry.send(.numberRefinerFallback(
+                reason: reason.rawValue,
+                provider: outcome.provider,
+                errorType: nil
+            ))
+        }
+
+        return NumberRefinementHelperOutcome(
+            text: outcome.text,
+            usedLLM: outcome.usedLLM,
+            run: outcome.run
+        )
     }
 
     private func formatTranscriptIfNeeded(
