@@ -414,6 +414,41 @@ swift run macparakeet-cli vocab snippets edit <ID> --trigger "my signature" --ex
 swift run macparakeet-cli vocab snippets delete <ID>
 ```
 
+### Smart Number Refinement (Settings → AI → Number Formatting)
+
+The three-state Number Formatting preference is stored under the
+`numberRefinementMode` defaults key (values: `off`, `deterministic`,
+`smart`). File and meeting transcripts run the deterministic
+`NumberNormalizer` whenever the mode is `deterministic` or `smart`;
+in `smart` mode, the deterministic output is then handed to the
+configured LLM via `NumberLLMRefiner` for a single-call polish pass
+(years, decimals, large cardinals, clock times).
+
+Smart silently falls back to Deterministic when no LLM provider is
+configured, the LLM call fails, or the safety gate rejects the reply
+— no error, no special CLI flag, just the deterministic output.
+Telemetry (`number_refiner_used` / `number_refiner_fallback`) records
+the path taken.
+
+```bash
+# Inspect the current preference (default is "off" on a fresh install).
+defaults read com.macparakeet.MacParakeet numberRefinementMode
+
+# Flip to Smart for the next CLI run.
+defaults write com.macparakeet.MacParakeet numberRefinementMode smart
+
+# Transcribe a file — number polish runs end-to-end if an LLM provider
+# is configured (see `LLM Commands` below).
+swift run macparakeet-cli transcribe fixtures/some-audio.mp3 --output text
+
+# Reset to Deterministic when done experimenting.
+defaults write com.macparakeet.MacParakeet numberRefinementMode deterministic
+```
+
+Dictation always behaves as if the mode were `deterministic` at most —
+Smart never runs there because the LLM round-trip would add visible
+paste latency.
+
 ## LLM Commands
 
 All LLM commands require `--provider`; `--api-key` is required only for providers

@@ -589,9 +589,14 @@ final class MockLLMService: LLMServiceProtocol, @unchecked Sendable {
     var streamTokenBatches: [[String]] = []
     var streamDelayNs: UInt64 = 0
     var errorToThrow: Error?
+    var transformResult: String?       // when set, transform() returns this verbatim
+    var transformErrorToThrow: Error?  // when set, transform() throws this
     var summarizeCallCount = 0
     var chatCallCount = 0
     var formatTranscriptCallCount = 0
+    var transformCallCount = 0
+    var lastTransformText: String?
+    var lastTransformPrompt: String?
     var lastChatQuestion: String?
     var lastChatHistory: [ChatMessage]?
     var lastChatUserNotes: String?
@@ -618,8 +623,12 @@ final class MockLLMService: LLMServiceProtocol, @unchecked Sendable {
     }
 
     func transform(text: String, prompt: String) async throws -> String {
+        transformCallCount += 1
+        lastTransformText = text
+        lastTransformPrompt = prompt
+        if let error = transformErrorToThrow { throw error }
         if let error = errorToThrow { throw error }
-        return "Mock transform"
+        return transformResult ?? "Mock transform"
     }
 
     func generatePromptResultDetailed(transcript: String, systemPrompt: String?) async throws -> LLMResult {

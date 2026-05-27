@@ -11,6 +11,7 @@ public protocol AppRuntimePreferencesProtocol: Sendable {
     var aiFormatterEnabled: Bool { get }
     var aiFormatterPrompt: String { get }
     var numberNormalizationEnabled: Bool { get }
+    var numberRefinementMode: NumberRefinementMode { get }
     var selectedMicrophoneDeviceUID: String? { get }
     var meetingAudioSourceMode: MeetingAudioSourceMode { get }
     var pauseMediaDuringDictation: Bool { get }
@@ -98,6 +99,52 @@ public enum MeetingAudioSourceMode: String, CaseIterable, Hashable, Sendable, Eq
     }
 }
 
+/// User-selectable number-formatting tier (Vocabulary > Numbers card, now in AI tab).
+///
+/// - `off`: leave numbers as the speech engine wrote them.
+/// - `deterministic`: run `NumberNormalizer` (rules-based, fast, on-device).
+/// - `smart`: run `NumberNormalizer` first, then ask the configured LLM to
+///   polish years, decimals, large cardinals, and clock times that the rules
+///   miss. Falls back silently to `deterministic` behavior when no LLM
+///   provider is configured or the call fails. See
+///   `Sources/MacParakeetCore/Services/NumberLLMRefiner.swift`.
+///
+/// Smart only runs in file/meeting transcription paths. `DictationService`
+/// reads this preference but collapses `smart` to `deterministic` because
+/// the LLM round-trip would add visible paste latency to dictation.
+public enum NumberRefinementMode: String, CaseIterable, Hashable, Sendable, Equatable {
+    case off
+    case deterministic
+    case smart
+
+    public var displayTitle: String {
+        switch self {
+        case .off: return "Off"
+        case .deterministic: return "Deterministic"
+        case .smart: return "Smart"
+        }
+    }
+
+    public var detail: String {
+        switch self {
+        case .off:
+            return "Numbers stay exactly as the speech engine wrote them."
+        case .deterministic:
+            return "Fast on-device rules convert spelled numbers to digits (\"twenty-five\" → \"25\"). No AI needed."
+        case .smart:
+            return "Runs the rules, then your AI provider polishes harder cases (years, decimals, large numbers). Falls back to Deterministic if your AI provider isn't set up."
+        }
+    }
+
+    public static func current(defaults: UserDefaults = .standard) -> NumberRefinementMode {
+        guard let raw = defaults.string(forKey: UserDefaultsAppRuntimePreferences.numberRefinementModeKey),
+              let mode = NumberRefinementMode(rawValue: raw) else {
+            return .off
+        }
+        return mode
+    }
+}
+
 public final class UserDefaultsAppRuntimePreferences: AppRuntimePreferencesProtocol, @unchecked Sendable {
     public static let showIdlePillKey = "showIdlePill"
     public static let silenceAutoStopKey = "silenceAutoStop"
@@ -113,6 +160,7 @@ public final class UserDefaultsAppRuntimePreferences: AppRuntimePreferencesProto
     public static let aiFormatterEnabledKey = "aiFormatterEnabled"
     public static let aiFormatterPromptKey = "aiFormatterPrompt"
     public static let numberNormalizationEnabledKey = "numberNormalizationEnabled"
+    public static let numberRefinementModeKey = "numberRefinementMode"
     public static let selectedMicrophoneDeviceUIDKey = "selectedMicrophoneDeviceUID"
     public static let meetingAudioSourceModeKey = "meetingAudioSourceMode"
     public static let pauseMediaDuringDictationKey = "pauseMediaDuringDictation"
@@ -167,6 +215,23 @@ public final class UserDefaultsAppRuntimePreferences: AppRuntimePreferencesProto
 
     public var numberNormalizationEnabled: Bool {
         defaults.object(forKey: Self.numberNormalizationEnabledKey) as? Bool ?? false
+    }
+
+    /// Three-state number formatting preference. The first read after upgrading
+    /// from a build that used the legacy `numberNormalizationEnabled` bool
+    /// migrates it (`true → .deterministic`, `false → .off`) and removes the
+    /// old key. Subsequent reads take the fast path.
+    public var numberRefinementMode: NumberRefinementMode {
+        if let raw = defaults.string(forKey: Self.numberRefinementModeKey),
+           let mode = NumberRefinementMode(rawValue: raw) {
+            return mode
+        }
+        // One-shot migration from the legacy bool key.
+        let legacy = defaults.object(forKey: Self.numberNormalizationEnabledKey) as? Bool
+        let migrated: NumberRefinementMode = (legacy == true) ? .deterministic : .off
+        defaults.set(migrated.rawValue, forKey: Self.numberRefinementModeKey)
+        defaults.removeObject(forKey: Self.numberNormalizationEnabledKey)
+        return migrated
     }
 
     public var selectedMicrophoneDeviceUID: String? {

@@ -228,10 +228,14 @@ public final class SettingsViewModel {
     }
     public var customWordCount: Int = 0
     public var snippetCount: Int = 0
-    public var numberNormalizationEnabled: Bool {
+    /// Three-state number-formatting preference (off / deterministic / smart).
+    /// Stored as the enum's String rawValue so SwiftUI bindings (Picker/Button
+    /// tags) round-trip cleanly. Read back via
+    /// `NumberRefinementMode(rawValue:) ?? .off`.
+    public var numberRefinementMode: String {
         didSet {
-            defaults.set(numberNormalizationEnabled, forKey: UserDefaultsAppRuntimePreferences.numberNormalizationEnabledKey)
-            Telemetry.send(.settingChanged(setting: .numberNormalization))
+            defaults.set(numberRefinementMode, forKey: UserDefaultsAppRuntimePreferences.numberRefinementModeKey)
+            Telemetry.send(.settingChanged(setting: .numberRefinementMode))
         }
     }
 
@@ -574,7 +578,12 @@ public final class SettingsViewModel {
         voiceReturnEnabled = defaults.bool(forKey: UserDefaultsAppRuntimePreferences.voiceReturnEnabledKey)
         voiceReturnTrigger = defaults.string(forKey: UserDefaultsAppRuntimePreferences.voiceReturnTriggerKey) ?? "press return"
         processingMode = Self.normalizedProcessingMode(defaults.string(forKey: UserDefaultsAppRuntimePreferences.processingModeKey))
-        numberNormalizationEnabled = defaults.object(forKey: UserDefaultsAppRuntimePreferences.numberNormalizationEnabledKey) as? Bool ?? false
+        // Read the new key; falling back to .off if absent. The migration in
+        // UserDefaultsAppRuntimePreferences.numberRefinementMode handles the
+        // one-time legacy translation — by the time we get here, the new key
+        // is set (or has never been set, in which case .off is the right default).
+        numberRefinementMode = defaults.string(forKey: UserDefaultsAppRuntimePreferences.numberRefinementModeKey)
+            ?? NumberRefinementMode.off.rawValue
         saveDictationHistory = defaults.object(forKey: UserDefaultsAppRuntimePreferences.saveDictationHistoryKey) as? Bool ?? true
         saveAudioRecordings = defaults.object(forKey: UserDefaultsAppRuntimePreferences.saveAudioRecordingsKey) as? Bool ?? true
         saveTranscriptionAudio = defaults.object(forKey: UserDefaultsAppRuntimePreferences.saveTranscriptionAudioKey) as? Bool ?? true

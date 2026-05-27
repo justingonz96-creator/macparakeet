@@ -30,6 +30,7 @@ public struct LLMRun: Codable, Identifiable, Sendable, Equatable {
         case promptResult = "prompt_result"
         case chat
         case transform
+        case numberRefinement = "number_refinement"
     }
 
     public enum Status: String, Codable, Sendable {

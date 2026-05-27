@@ -391,8 +391,20 @@ struct SettingsView: View {
     private var aiTabContent: some View {
         scrollableTabBody {
             aiProviderCard.id("ai.provider")
+            numberFormattingCard.id("ai.number-formatting")
             subtitleRefinementCard.id("ai.subtitle-refinement")
         }
+    }
+
+    /// Number Formatting card — three-state Off/Deterministic/Smart picker.
+    /// Sits between AI Provider (which embeds AI Formatter) and AI Subtitle
+    /// Refinement so all LLM-driven transcript polish lives in one cluster.
+    private var numberFormattingCard: some View {
+        NumberFormattingCard(
+            settingsViewModel: viewModel,
+            llmSettingsViewModel: llmSettingsViewModel,
+            onRequestProviderScroll: { pendingScrollTarget = "ai.provider" }
+        )
     }
 
     /// System tab — everything that isn't daily-ops, ordered by frequency of
