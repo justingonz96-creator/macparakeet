@@ -253,7 +253,19 @@ struct OnboardingFlowView: View {
                 }
                 .padding(.horizontal, 28)
                 .padding(.vertical, 22)
+                // Let the inner VStack grow to fill the ScrollView's width
+                // so per-step rows align properly when the window resizes.
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // Critical: without this, ScrollView returns its content's
+            // intrinsic height to its parent VStack, which propagates up
+            // through HStack → NSHostingView → NSWindow as an *effective*
+            // minimum window size. That prevents the user from shrinking
+            // the window AND stops the ScrollView from ever engaging its
+            // internal scroll (it has all the space it wanted). Forcing
+            // maxHeight: .infinity makes the ScrollView take whatever
+            // height the VStack offers; overflow then scrolls internally.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .id(viewModel.step)
             .transition(.asymmetric(
                 insertion: .move(edge: .trailing).combined(with: .opacity),
