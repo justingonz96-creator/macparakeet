@@ -55,14 +55,21 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
         let hosting = NSHostingView(rootView: view)
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: 500),
-                         styleMask: [.titled, .closable, .miniaturizable],
+                         styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered,
                          defer: false)
         w.title = "Welcome to Echo"
         w.isReleasedWhenClosed = false
         w.center()
         w.contentView = hosting
-        w.standardWindowButton(.zoomButton)?.isHidden = true
+        // Floor below which onboarding content stops being usable (chip rows
+        // wrap awkwardly and the hotkey rehearsal area collapses). The
+        // default frame sits at 740×500; minSize lets the user shrink a bit
+        // for smaller displays without breaking layout.
+        w.minSize = NSSize(width: 640, height: 460)
+        // Persist whatever size the user lands on so reopening onboarding
+        // (rare — only after a reset) doesn't fight them.
+        w.setFrameAutosaveName("OnboardingWindow")
         w.delegate = self
 
         self.window = w
