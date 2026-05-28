@@ -382,6 +382,34 @@ struct OnboardingFlowView: View {
                 Button("Open System Settings") {
                     openPrivacySettings(anchor: "Privacy_Accessibility")
                 }
+
+                // macOS caches AXIsProcessTrusted per-process. After
+                // toggling Accessibility in System Settings, the running
+                // Echo can't see the change until restart — especially
+                // painful right after reinstalling (each ad-hoc-signed
+                // build is a different code requirement to macOS's TCC,
+                // so prior grants don't apply automatically).
+                //
+                // Mirror the screen-recording step's relaunch-hint pattern.
+                if !viewModel.accessibilityGranted {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("If the status doesn't flip to \u{201C}Granted\u{201D} after enabling Accessibility for Echo in System Settings, quit Echo and reopen it. macOS sometimes needs a fresh launch for this permission to take effect — especially right after installing a new build.")
+                            .font(DesignSystem.Typography.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Button("Quit Echo") {
+                            NSApp.terminate(nil)
+                        }
+                        .parakeetAction(.secondary)
+                    }
+                    .padding(DesignSystem.Spacing.sm)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
+                            .fill(DesignSystem.Colors.warningAmber.opacity(0.08))
+                    )
+                }
             }
         case .meetingRecording:
             meetingRecordingStep
