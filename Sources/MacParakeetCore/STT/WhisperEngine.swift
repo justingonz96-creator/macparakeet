@@ -538,11 +538,23 @@ public actor WhisperEngine: STTTranscribing {
         onProgress: (@Sendable (String) -> Void)?
     ) -> Task<Void, Never> {
         Task.detached(priority: .background) {
+            // Core ML caches an optimized-for-this-device-and-app version
+            // of the model keyed by bundle ID + binary signature. Every
+            // ad-hoc install changes the signature, which invalidates the
+            // cache and forces a full rebuild. We've measured 9-minute
+            // rebuilds for the large-v3 turbo variant on M-series.
+            //
+            // The milestones below explicitly call this out so users don't
+            // think the app froze — and extend through 10 minutes so even
+            // the worst rebuild stays reassured. The first message lands
+            // at 15s to confirm activity early.
             let milestones: [(elapsedSeconds: Int, message: String)] = [
-                (15, "Optimizing Whisper for this Mac..."),
-                (60, "Still optimizing Whisper with Core ML. The first load can take a few minutes..."),
-                (180, "Still preparing Whisper. This one-time optimization should be faster next time..."),
-                (300, "Whisper is still optimizing. Leave MacParakeet open until Core ML finishes...")
+                (15,  "Optimizing Whisper for this Mac…"),
+                (60,  "Still optimizing Whisper with Core ML. The first load after a new install can take several minutes — subsequent loads will be seconds."),
+                (180, "Core ML is still compiling Whisper for your Apple Silicon. This is a one-time per-install step. Leave Echo open."),
+                (300, "Whisper is still optimizing. Large model first-load on M-series Macs typically finishes within 5–10 minutes."),
+                (480, "Almost there — Core ML usually wraps up by the 8-minute mark for the turbo variant."),
+                (600, "Still working. If you've waited over 10 minutes with no progress, the Core ML compile may be stuck — try Activity Monitor for an unresponsive `mlcompilerd` or `aned`, or restart Echo and retry."),
             ]
 
             var previousElapsedSeconds = 0

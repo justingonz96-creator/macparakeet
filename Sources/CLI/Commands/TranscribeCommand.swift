@@ -289,6 +289,8 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
                     case .transcribing(let pct): printProgressLine("Transcribing... \(pct)%")
                     case .identifyingSpeakers: printProgressLine("Identifying speakers...")
                     case .finalizing: printProgressLine("Finalizing...")
+                    case .preparingSpeechModel(let message):
+                        printProgressLine(message ?? "Preparing speech model...")
                     }
                 }
                 if self.noHistory {

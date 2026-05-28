@@ -1110,6 +1110,26 @@ public actor TranscriptionService: SpeechEngineOverrideTranscriptionService {
                 throw AudioProcessorError.conversionFailed("Failed to produce WAV output")
             }
 
+            // Warm up the speech engine first so the UI gets the watchdog's
+            // progress messages during long first-load Core ML compiles.
+            // Without this, transcribeSpeech goes straight to the engine and
+            // the user sees "Transcribing… 0%" frozen for 5–10 minutes on
+            // the first Whisper run after a fresh install (the CoreML cache
+            // is keyed by code signature; each ad-hoc install invalidates
+            // it). warmUp is a no-op if the engine is already warm.
+            if let runtimeManaging = sttTranscriber as? STTRuntimeManaging {
+                do {
+                    try await runtimeManaging.warmUp { message in
+                        onProgress?(.preparingSpeechModel(message: message))
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    // Engine prep failure isn't necessarily fatal — let the
+                    // real transcribe attempt surface a clearer error.
+                }
+            }
+
             onProgress?(.transcribing(percent: 0))
             lifecycleStage = .stt
             let sttProgress: (@Sendable (Int, Int) -> Void)? = onProgress.map { callback in

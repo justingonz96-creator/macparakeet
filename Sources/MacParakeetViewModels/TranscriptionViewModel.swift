@@ -649,6 +649,7 @@ public final class TranscriptionViewModel {
         case .transcribing: return .transcribing
         case .identifyingSpeakers: return .identifyingSpeakers
         case .finalizing: return .finalizing
+        case .preparingSpeechModel: return .preparing
         }
     }
 
@@ -664,6 +665,11 @@ public final class TranscriptionViewModel {
             return "Identifying speakers..."
         case .finalizing:
             return "Finalizing..."
+        case .preparingSpeechModel(let message):
+            // Fall through to the engine's watchdog message when present —
+            // those are detailed and stage-aware. Generic fallback only when
+            // the engine hasn't emitted anything yet.
+            return message ?? "Preparing speech model..."
         }
     }
 
