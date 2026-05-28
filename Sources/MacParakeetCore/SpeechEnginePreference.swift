@@ -3,6 +3,7 @@ import Foundation
 public enum SpeechEnginePreference: String, CaseIterable, Codable, Sendable {
     case parakeet
     case whisper
+    case vibevoice
 
     public static let defaultsKey = "speechRecognitionEngine"
     public static let whisperDefaultLanguageKey = "whisperDefaultLanguage"
@@ -24,15 +25,20 @@ public enum SpeechEnginePreference: String, CaseIterable, Codable, Sendable {
             "Parakeet"
         case .whisper:
             "Whisper"
+        case .vibevoice:
+            "VibeVoice"
         }
     }
 
+    /// Deprecated: only meaningful with two engines. Returns Parakeet for any
+    /// non-Parakeet input. Phase 2.2+ callers should use `SpeechEnginePreferences`
+    /// per-feature resolution instead.
+    @available(*, deprecated, message: "Use SpeechEnginePreferences per-feature resolution")
     public var alternative: SpeechEnginePreference {
         switch self {
-        case .parakeet:
-            .whisper
-        case .whisper:
-            .parakeet
+        case .parakeet: return .whisper
+        case .whisper: return .parakeet
+        case .vibevoice: return .parakeet
         }
     }
 
@@ -194,6 +200,29 @@ public struct SpeechEngineSelection: Codable, Equatable, Sendable {
         return SpeechEngineSelection(
             engine: engine,
             language: engine == .whisper ? SpeechEnginePreference.whisperDefaultLanguage(defaults: defaults) : nil
+        )
+    }
+}
+
+extension SpeechEngineSelection {
+    /// Resolves the engine selection for a specific job kind, honoring any
+    /// per-feature override stored in `SpeechEnginePreferences`. Falls back
+    /// to the global default when no per-feature override is set.
+    ///
+    /// Phase 2.2 introduced per-feature overrides; consumers that
+    /// transcribe a specific kind of work should prefer this over the
+    /// global `current(defaults:)`.
+    public static func current(
+        for jobKind: STTJobKind,
+        defaults: UserDefaults = .standard
+    ) -> SpeechEngineSelection {
+        let prefs = SpeechEnginePreferences.current(defaults: defaults)
+        let engine = prefs.engine(for: jobKind)
+        return SpeechEngineSelection(
+            engine: engine,
+            language: engine == .whisper
+                ? SpeechEnginePreference.whisperDefaultLanguage(defaults: defaults)
+                : nil
         )
     }
 }

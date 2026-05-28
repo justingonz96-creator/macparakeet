@@ -169,7 +169,8 @@ final class ModelLifecycleCommandTests: XCTestCase {
             diarizationService: diarization,
             isSpeechModelCached: { true },
             whisperModelVariant: "large-v3-v20240930_turbo_632MB",
-            isWhisperModelDownloaded: { $0 == "large-v3-v20240930_turbo_632MB" }
+            isWhisperModelDownloaded: { $0 == "large-v3-v20240930_turbo_632MB" },
+            isVibeVoiceModelInstalled: { false }
         )
 
         XCTAssertEqual(
@@ -180,7 +181,8 @@ final class ModelLifecycleCommandTests: XCTestCase {
                 speakerModelsCached: false,
                 speakerModelsPrepared: false,
                 whisperModelVariant: "large-v3-v20240930_turbo_632MB",
-                whisperModelDownloaded: true
+                whisperModelDownloaded: true,
+                vibevoiceModelInstalled: false
             )
         )
         XCTAssertEqual(status.summary, "Speech model present, speaker models missing")
@@ -309,6 +311,23 @@ final class ModelLifecycleCommandTests: XCTestCase {
                 "    - MacBook Pro Microphone [built-in]",
             ]
         )
+    }
+
+    // MARK: - Phase 2.2 — VibeVoice download
+
+    func testDownloadParsesVibeVoiceIdentifier() throws {
+        let cmd = try ModelsCommand.Download.parse(["vibevoice-asr-q4-k"])
+        XCTAssertEqual(cmd.variant, "vibevoice-asr-q4-k")
+    }
+
+    func testDownloadParsesVibeVoiceShortIdentifier() throws {
+        let cmd = try ModelsCommand.Download.parse(["vibevoice"])
+        XCTAssertEqual(cmd.variant, "vibevoice")
+    }
+
+    func testDownloadParsesWhisperVariantUnchanged() throws {
+        let cmd = try ModelsCommand.Download.parse(["whisper-large-v3-v20240930-turbo-632MB"])
+        XCTAssertEqual(cmd.variant, "whisper-large-v3-v20240930-turbo-632MB")
     }
 
     func testLoadAudioInputDiagnosticsUsesInjectedDefaultsAndProviders() {

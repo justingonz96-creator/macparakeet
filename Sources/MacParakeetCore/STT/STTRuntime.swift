@@ -57,6 +57,14 @@ public actor STTRuntime: STTRuntimeProtocol {
     private let modelVersion: AsrModelVersion
     private var speechEngine: SpeechEnginePreference
     private var whisperEngine: WhisperEngine?
+    private var vibevoiceEngine: VibeVoiceEngine?
+    private var vibevoiceChunkedTranscriber: VibeVoiceChunkedTranscriber?
+
+    /// Audio longer than this is routed through the chunker instead of
+    /// the single-shot engine. 450 s = 7.5 min = 1.5 × chunk length, so
+    /// we never produce a tiny final chunk. See spec
+    /// 2026-05-26-vibevoice-chunked-transcription-design.md.
+    private static let vibevoiceChunkThresholdSec: Double = 450.0
     private let whisperModelVariant: String
     private var activeTranscriptionCount = 0
 
@@ -105,6 +113,8 @@ public actor STTRuntime: STTRuntimeProtocol {
             return try await transcribeWithParakeet(audioPath: audioPath, job: job, onProgress: onProgress)
         case .whisper:
             return try await transcribeWithWhisper(audioPath: audioPath, language: selection.language, onProgress: onProgress)
+        case .vibevoice:
+            return try await transcribeWithVibeVoice(audioPath: audioPath, job: job, onProgress: onProgress)
         }
     }
 
@@ -122,6 +132,32 @@ public actor STTRuntime: STTRuntimeProtocol {
             tuning: tuning,
             onProgress: onProgress
         )
+    }
+
+    private func transcribeWithVibeVoice(
+        audioPath: String,
+        job: STTJobKind,
+        onProgress: (@Sendable (Int, Int) -> Void)?
+    ) async throws -> STTResult {
+        let engine = vibevoiceEngine ?? VibeVoiceEngine()
+        if vibevoiceEngine == nil { vibevoiceEngine = engine }
+
+        let audioSec = (try? AudioFileConverter.audioDuration(
+            at: URL(fileURLWithPath: audioPath))) ?? 0
+        if audioSec > Self.vibevoiceChunkThresholdSec {
+            let chunker = vibevoiceChunkedTranscriber
+                ?? VibeVoiceChunkedTranscriber(engine: engine)
+            if vibevoiceChunkedTranscriber == nil {
+                vibevoiceChunkedTranscriber = chunker
+            }
+            return try await chunker.transcribe(
+                audioPath: audioPath, job: job, onProgress: onProgress
+            )
+        } else {
+            return try await engine.transcribe(
+                audioPath: audioPath, job: job, onProgress: onProgress
+            )
+        }
     }
 
     private func transcribeWithParakeet(
@@ -211,6 +247,8 @@ public actor STTRuntime: STTRuntimeProtocol {
                 let engine = whisperEngine ?? WhisperEngine(model: whisperModelVariant)
                 whisperEngine = engine
                 try await engine.prepare(onProgress: onProgress)
+            case .vibevoice:
+                try await ensureVibeVoiceLoaded()
             }
             let elapsed = start.duration(to: .now)
             let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
@@ -332,6 +370,10 @@ public actor STTRuntime: STTRuntimeProtocol {
             return await whisperEngine?.isReady() ?? false
         }
 
+        if speechEngine == .vibevoice {
+            return hasLoadedVibeVoiceEngine
+        }
+
         guard let interactiveManager, let backgroundManager else { return false }
         let interactiveReady = await interactiveManager.isAvailable
         let backgroundReady = await backgroundManager.isAvailable
@@ -341,6 +383,7 @@ public actor STTRuntime: STTRuntimeProtocol {
     public func shutdown() async {
         invalidateBackgroundWarmUp()
         await unloadWhisper()
+        await unloadVibeVoiceEngine()
         await unloadParakeet()
         warmUpProgressHandler = nil
         setBackgroundWarmUpState(.idle)
@@ -353,6 +396,10 @@ public actor STTRuntime: STTRuntimeProtocol {
         await shutdown()
         DownloadUtils.clearAllModelCaches()
         try? FileManager.default.removeItem(atPath: AppPaths.whisperModelsDir)
+        // Phase 2.2: clear VibeVoice models too — shutdown() above already
+        // unloads the engine; this removes the ~10 GB model files from disk.
+        let vibevoiceDir = VibeVoiceEngine.defaultModelDirectory()
+        try? FileManager.default.removeItem(at: vibevoiceDir)
         setBackgroundWarmUpState(.idle)
         Telemetry.send(.modelOperation(
             operationID: operationContext.operationID,
@@ -435,6 +482,10 @@ public actor STTRuntime: STTRuntimeProtocol {
             )
             try await engine.prepare(onProgress: onProgress)
             preparedWhisper = engine
+        case .vibevoice:
+            // VibeVoice doesn't expose per-engine load progress strings via its
+            // C ABI. UI progress is surfaced via observeWarmUpProgress() instead.
+            try await ensureVibeVoiceLoaded()
         }
 
         if let preparedWhisper {
@@ -450,6 +501,8 @@ public actor STTRuntime: STTRuntimeProtocol {
         case .whisper where preference != .whisper:
             onProgress?("Releasing Whisper model...")
             await unloadWhisper()
+        case .vibevoice where preference != .vibevoice:
+            await unloadVibeVoiceEngine()
         default:
             break
         }
@@ -489,6 +542,44 @@ public actor STTRuntime: STTRuntimeProtocol {
         let engine = whisperEngine
         whisperEngine = nil
         await engine?.unload()
+    }
+
+    /// Whether the VibeVoice engine has been warmed up and is ready to transcribe.
+    /// Used by the scheduler to decide whether to warm up before dispatching a
+    /// VibeVoice job.
+    public var hasLoadedVibeVoiceEngine: Bool {
+        vibevoiceEngine != nil
+    }
+
+    /// Lazily constructs and warms the VibeVoice engine. Idempotent — calling
+    /// twice on a loaded engine is a no-op. Throws if model files are missing
+    /// or `vv_capi_load` fails.
+    public func ensureVibeVoiceLoaded() async throws {
+        if let existing = vibevoiceEngine {
+            // already loaded — VibeVoiceEngine.warmUp is a no-op when isLoaded
+            try await existing.warmUp()
+            return
+        }
+        let engine = VibeVoiceEngine()
+        try await engine.warmUp()
+        vibevoiceEngine = engine
+    }
+
+    /// Returns the loaded VibeVoice engine, throwing if it hasn't been warmed
+    /// up yet. The scheduler should call `ensureVibeVoiceLoaded()` first when
+    /// dispatching a VibeVoice job.
+    public func vibevoice() throws -> VibeVoiceEngine {
+        guard let engine = vibevoiceEngine else {
+            throw STTError.modelNotLoaded
+        }
+        return engine
+    }
+
+    /// Tears down the VibeVoice engine. Called on shutdown. Mirrors whisper teardown.
+    public func unloadVibeVoiceEngine() async {
+        await vibevoiceEngine?.unload()
+        vibevoiceEngine = nil
+        vibevoiceChunkedTranscriber = nil   // invalidate the cached chunker that holds the unloaded engine
     }
 
     private func beginBackgroundWarmUp() -> UInt64 {
@@ -692,9 +783,11 @@ public actor STTRuntime: STTRuntimeProtocol {
     private func telemetryModelKind(for engine: SpeechEnginePreference) -> TelemetryModelKind {
         switch engine {
         case .parakeet:
-            .parakeetSTT
+            return .parakeetSTT
         case .whisper:
-            .whisperSTT
+            return .whisperSTT
+        case .vibevoice:
+            return .vibevoiceSTT
         }
     }
 
@@ -704,6 +797,8 @@ public actor STTRuntime: STTRuntimeProtocol {
             nil
         case .whisper:
             whisperModelVariant
+        case .vibevoice:
+            "vibevoice-asr-q4_k"
         }
     }
 

@@ -25,6 +25,12 @@ enum SettingsStatusRules {
         switch activeEngine {
         case .parakeet: activeStatus = parakeet
         case .whisper: activeStatus = whisper
+        case .vibevoice:
+            // VibeVoice readiness is tracked via isVibeVoiceModelInstalled /
+            // vibevoiceDownloadProgress rather than LocalModelStatus. Treat it
+            // as notLoaded (not an error) so the card doesn't show "Action needed"
+            // when VibeVoice is the active engine.
+            activeStatus = .notLoaded
         }
 
         if activeStatus == .notDownloaded {

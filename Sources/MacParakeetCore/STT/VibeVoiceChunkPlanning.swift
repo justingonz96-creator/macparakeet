@@ -1,0 +1,139 @@
+import Foundation
+
+/// Pure functions used by `VibeVoiceChunkedTranscriber`. No I/O, no FFmpeg,
+/// no model dependencies — all are deterministic given their inputs so they
+/// can be exhaustively unit-tested without fixtures or external processes.
+internal enum VibeVoiceChunkPlanning {
+
+    /// Parses FFmpeg's `silencedetect` filter stderr output into closed
+    /// intervals of source-audio time (seconds).
+    ///
+    /// Expected line shapes:
+    ///   `[silencedetect @ 0x...] silence_start: 4.5`
+    ///   `[silencedetect @ 0x...] silence_end: 5.2 | silence_duration: 0.7`
+    ///
+    /// Orphan `silence_start` lines (no matching `silence_end`) are
+    /// dropped — FFmpeg emits one if audio ends during silence. Malformed
+    /// numeric values are also skipped.
+    static func parseSilenceIntervals(_ stderr: String) -> [ClosedRange<Double>] {
+        var pendingStart: Double? = nil
+        var result: [ClosedRange<Double>] = []
+        // Swift treats `\r\n` as a single Character (grapheme cluster), which
+        // means `split(separator: "\n")` would not split CRLF-terminated lines
+        // at all. Normalize line endings first so FFmpeg stderr piped through
+        // tools that re-emit CRLF still parses correctly.
+        let normalized = stderr.replacingOccurrences(of: "\r\n", with: "\n")
+        for line in normalized.split(separator: "\n") {
+            if let startStr = line.split(separator: "silence_start:").last.map(String.init),
+               line.contains("silence_start:") {
+                let trimmed = startStr.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let value = Double(trimmed.split(separator: " ").first.map(String.init) ?? trimmed) {
+                    pendingStart = value
+                } else {
+                    pendingStart = nil
+                }
+            } else if line.contains("silence_end:") {
+                let afterTag = line.split(separator: "silence_end:").last.map(String.init) ?? ""
+                let firstToken = afterTag.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .split(separator: " ").first.map(String.init) ?? ""
+                if let endValue = Double(firstToken), let startValue = pendingStart, endValue >= startValue {
+                    result.append(startValue...endValue)
+                }
+                pendingStart = nil
+            }
+        }
+        return result
+    }
+
+    /// Computes the intermediate chunk boundary times for an audio file.
+    ///
+    /// Returns a list of `Double` seconds where chunks split. The boundaries
+    /// don't include 0 or `audioSec` — only the cuts between chunks. So for
+    /// a 30-min file at 5-min chunks the return is `[300, 600, 900, 1200, 1500]`
+    /// which produces 6 chunks.
+    ///
+    /// If the final chunk would be shorter than `minTailSec`, the last
+    /// boundary is dropped so the tail is absorbed into the prior chunk.
+    /// Avoids paying chunk-overhead for a tiny final chunk.
+    static func computeChunkPlan(
+        audioSec: Double,
+        chunkLengthSec: Double,
+        minTailSec: Double
+    ) -> [Double] {
+        guard audioSec > chunkLengthSec else { return [] }
+        var boundaries: [Double] = []
+        var t = chunkLengthSec
+        while t < audioSec {
+            boundaries.append(t)
+            t += chunkLengthSec
+        }
+        // If the final chunk (from last boundary to audioSec) is too small,
+        // drop the last boundary so the tail folds into the prior chunk.
+        if let last = boundaries.last, audioSec - last < minTailSec {
+            boundaries.removeLast()
+        }
+        return boundaries
+    }
+
+    /// Refines target chunk boundaries by snapping each to the midpoint of
+    /// the longest silence interval within `±windowSec` of the target.
+    /// Falls back to the original target when no silence overlaps the window.
+    static func refineBoundaries(
+        targets: [Double],
+        silences: [ClosedRange<Double>],
+        windowSec: Double
+    ) -> [Double] {
+        targets.map { target in
+            let lower = target - windowSec
+            let upper = target + windowSec
+            // Find silences that overlap [lower, upper]
+            let inWindow = silences.filter { $0.upperBound >= lower && $0.lowerBound <= upper }
+            guard let longest = inWindow.max(by: { ($0.upperBound - $0.lowerBound) < ($1.upperBound - $1.lowerBound) }) else {
+                return target
+            }
+            return (longest.lowerBound + longest.upperBound) / 2.0
+        }
+    }
+
+    /// Merges per-chunk segment arrays into a single chronological list by
+    /// offsetting each chunk's segment timestamps by the chunk's start time
+    /// in the source audio. Empty chunks contribute nothing.
+    ///
+    /// - Parameters:
+    ///   - chunkOffsetsSec: Start time (seconds) of each chunk in source audio.
+    ///                     Must be parallel to `perChunkSegments`.
+    ///   - perChunkSegments: Segments returned by each chunk's transcription.
+    ///                       Timestamps are local to the chunk (0..chunkLength).
+    static func mergeSegments(
+        chunkOffsetsSec: [Double],
+        perChunkSegments: [[STTSegment]]
+    ) -> [STTSegment] {
+        precondition(chunkOffsetsSec.count == perChunkSegments.count,
+                     "chunkOffsetsSec and perChunkSegments must be parallel arrays")
+        var result: [STTSegment] = []
+        for (offset, segments) in zip(chunkOffsetsSec, perChunkSegments) {
+            let offsetMs = Int(offset * 1000)
+            for seg in segments {
+                result.append(STTSegment(
+                    startMs: seg.startMs + offsetMs,
+                    endMs:   seg.endMs   + offsetMs,
+                    text:    seg.text,
+                    speakerId: seg.speakerId
+                ))
+            }
+        }
+        return result
+    }
+
+    /// Maps a chunk-local percentage (0..100) to overall job percentage
+    /// (0..100) across `totalChunks` chunks.
+    ///
+    /// Formula: `(chunkIndex * 100 + localPct) / totalChunks`.
+    /// Chunk N's completion (localPct=100) equals chunk N+1's start
+    /// (localPct=0), so the bar moves continuously across chunk transitions.
+    static func overallProgress(chunkIndex: Int, localPct: Int, totalChunks: Int) -> Int {
+        precondition(totalChunks > 0, "totalChunks must be positive")
+        precondition(chunkIndex >= 0 && chunkIndex < totalChunks, "chunkIndex out of range")
+        return (chunkIndex * 100 + localPct) / totalChunks
+    }
+}

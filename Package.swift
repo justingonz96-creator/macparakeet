@@ -40,7 +40,8 @@ let package = Package(
         .executable(name: "MacParakeet", targets: ["MacParakeet"]),
         .executable(name: "macparakeet-cli", targets: ["CLI"]),
         .library(name: "MacParakeetCore", targets: ["MacParakeetCore"]),
-        .library(name: "MacParakeetViewModels", targets: ["MacParakeetViewModels"])
+        .library(name: "MacParakeetViewModels", targets: ["MacParakeetViewModels"]),
+        .library(name: "VibeVoiceCore", targets: ["VibeVoiceCore"]),
     ],
     dependencies: packageDependencies,
     targets: [
@@ -76,10 +77,64 @@ let package = Package(
             path: "Sources/MacParakeetObjCShims",
             publicHeadersPath: "include"
         ),
+        // CVibeVoice — exposes the vendored vibevoice_capi.h to Swift via a
+        // module map. Contains only the module map + a stub .c; the real
+        // library is built externally from vibevoice-spike/vibevoice.cpp/
+        // (see docs/superpowers/plans/2026-05-25-vibevoice-swift-wrapper.md
+        // for the integration plan and spike findings). The Swift sibling
+        // target below links against the prebuilt static library via
+        // linkerSettings.
+        .target(
+            name: "CVibeVoice",
+            path: "Sources/VibeVoiceCore",
+            exclude: [
+                "DiarizedSegment.swift",
+                "VibeVoiceASRError.swift",
+                "VibeVoiceASR.swift",
+            ],
+            publicHeadersPath: "include"
+        ),
+
+        // VibeVoiceCore — Swift wrapper around the vibevoice.cpp C ABI.
+        // Depends on CVibeVoice for the FFI surface; links against the
+        // prebuilt libvibevoice.a + libggml*.dylib from the spike build.
+        .target(
+            name: "VibeVoiceCore",
+            dependencies: ["CVibeVoice"],
+            path: "Sources/VibeVoiceCore",
+            exclude: [
+                "include",
+                "CVibeVoiceShim.c",
+            ],
+            // TEMPORARY (Phase 2.1): hard-coded paths to the spike build
+            // output on the developer's local machine. These will be replaced
+            // in Phase 2.5 with a build script (scripts/dev/build_vibevoice.sh)
+            // and a sensible default install location. Do not assume these
+            // paths exist on other machines.
+            linkerSettings: [
+                .unsafeFlags([
+                    "-L", "/Users/Justin/Documents/Codex/2026-05-14/id-like-to-make-a-copy/vibevoice-spike/vibevoice.cpp/build",
+                    "-L", "/Users/Justin/Documents/Codex/2026-05-14/id-like-to-make-a-copy/vibevoice-spike/vibevoice.cpp/build/third_party/ggml/src",
+                    // Embed the same paths as rpath so the dynamic linker can resolve
+                    // libggml*.dylib at xctest / app runtime without needing symlinks
+                    // in .build/. Mirrors the -L pair above.
+                    // SPM passes unsafeFlags to the Swift compiler driver, which
+                    // requires -Xlinker per-token rather than the -Wl,... comma form.
+                    "-Xlinker", "-rpath", "-Xlinker", "/Users/Justin/Documents/Codex/2026-05-14/id-like-to-make-a-copy/vibevoice-spike/vibevoice.cpp/build",
+                    "-Xlinker", "-rpath", "-Xlinker", "/Users/Justin/Documents/Codex/2026-05-14/id-like-to-make-a-copy/vibevoice-spike/vibevoice.cpp/build/third_party/ggml/src",
+                    "-lvibevoice",
+                    "-lggml", "-lggml-base", "-lggml-cpu",
+                    "-framework", "Metal",
+                    "-framework", "MetalKit",
+                    "-framework", "Foundation",
+                    "-framework", "Accelerate",
+                ]),
+            ]
+        ),
         // Shared core library (no UI dependencies)
         .target(
             name: "MacParakeetCore",
-            dependencies: coreDependencies,
+            dependencies: coreDependencies + ["VibeVoiceCore"],
             path: "Sources/MacParakeetCore",
             exclude: [
                 "Audio/README.md",
@@ -106,6 +161,12 @@ let package = Package(
             name: "CLITests",
             dependencies: ["CLI", "MacParakeetCore"],
             path: "Tests/CLITests"
-        )
+        ),
+        .testTarget(
+            name: "VibeVoiceCoreTests",
+            dependencies: ["VibeVoiceCore"],
+            path: "Tests/VibeVoiceCoreTests",
+            resources: [.copy("Resources")]
+        ),
     ]
 )

@@ -747,13 +747,15 @@ struct TranscriptResultView: View {
                     selectRetranscribeEngine(option.primaryEngine, in: option)
                 }
 
-                EngineOptionCard(
-                    selection: option.alternativeEngine,
-                    isPrimary: false,
-                    isAvailable: option.isAlternativeAvailable,
-                    unavailableReason: option.unavailableReason
-                ) {
-                    selectRetranscribeEngine(option.alternativeEngine, in: option)
+                ForEach(option.alternativeEngines, id: \.engine) { alternative in
+                    EngineOptionCard(
+                        selection: alternative,
+                        isPrimary: false,
+                        isAvailable: option.isAvailable(alternative.engine),
+                        unavailableReason: option.unavailableReason(alternative.engine)
+                    ) {
+                        selectRetranscribeEngine(alternative, in: option)
+                    }
                 }
             }
 
@@ -829,6 +831,8 @@ struct TranscriptResultView: View {
                 return "Whisper"
             }
             return "Whisper \(SpeechEnginePreference.friendlyVariantName(variant))"
+        case .vibevoice:
+            return "VibeVoice"
         }
     }
 
@@ -2973,6 +2977,8 @@ private struct EngineOptionCard: View {
         switch selection.engine {
         case .parakeet: "bolt.fill"
         case .whisper: "globe"
+        case .vibevoice:
+            "waveform"
         }
     }
 
@@ -2982,6 +2988,8 @@ private struct EngineOptionCard: View {
             "Fast • 25 European languages, including English"
         case .whisper:
             "Broader languages • Korean, Chinese, Japanese, and more"
+        case .vibevoice:
+            "VibeVoice • Metal-accelerated"
         }
     }
 
