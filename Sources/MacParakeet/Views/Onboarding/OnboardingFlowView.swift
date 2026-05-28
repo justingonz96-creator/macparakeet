@@ -46,8 +46,10 @@ struct OnboardingFlowView: View {
         usesSharedDictationGesture ? "double-tap" : "tap"
     }
 
-    private let windowWidth: CGFloat = 740
-    private let windowHeight: CGFloat = 500
+    // Window dimensions are owned by OnboardingWindowController (which sets
+    // the initial frame + minSize on the NSWindow). The SwiftUI view fills
+    // whatever space the window gives it via the root frame's
+    // `.maxWidth: .infinity, .maxHeight: .infinity` modifier below.
 
     @State private var hoveredStep: OnboardingViewModel.Step?
     @State private var backButtonHovered = false
@@ -67,7 +69,12 @@ struct OnboardingFlowView: View {
             Divider()
             content
         }
-        .frame(width: windowWidth, height: windowHeight)
+        // Fill whatever the window provides — the NSWindow owns size
+        // constraints (initial frame + minSize live in OnboardingWindowController).
+        // The sidebar's own maxWidth: 260 keeps the rail compact; the content
+        // pane absorbs any extra width and the inner ScrollView handles
+        // vertical overflow.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(DesignSystem.Colors.background)
         .onAppear {
             viewModel.startPermissionPolling()
