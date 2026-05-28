@@ -65,13 +65,51 @@ echo "Signature OK."
 pkill -x MacParakeet 2>/dev/null || true
 sleep 1
 
-# 4. Back up existing install (rename, don't delete — easy rollback).
+# 4. Back up existing install — keep the immediately previous one for
+#    rollback, but PURGE older backups. Accumulating backups (every
+#    install left a timestamped folder behind) means macOS sees many
+#    bundles with the same bundle ID com.echelonfit.echo but different
+#    code signatures. macOS's TCC database then tracks each signature
+#    separately, and toggling "Echo" in System Settings → Privacy can
+#    target a stale backup's entry instead of the running app's.
+#    Symptom: enabling Accessibility for Echo doesn't actually grant it
+#    to the currently-running build.
 if [[ -d "$APP_DEST" ]]; then
-    ts="$(date +%Y%m%d-%H%M%S)"
-    backup="/Applications/Echo-backup-$ts.app"
-    echo "Moving existing $APP_DEST → $backup"
-    mv "$APP_DEST" "$backup"
+    # Roll the previous backup forward (delete it, then back up the
+    # current install in its place). End result: exactly ONE backup
+    # at /Applications/Echo-previous.app, never more.
+    prev_backup="/Applications/Echo-previous.app"
+    if [[ -d "$prev_backup" ]]; then
+        echo "Removing older backup at $prev_backup"
+        rm -rf "$prev_backup"
+    fi
+    echo "Moving existing $APP_DEST → $prev_backup"
+    mv "$APP_DEST" "$prev_backup"
 fi
+
+# Sweep any historical timestamped backups left over from earlier
+# installs (Echo-backup-YYYYMMDD-HHMMSS.app + MacParakeet-backup-*).
+# These caused TCC-database pollution before the single-rollback
+# policy above was in place. Quietly clean them up on each install.
+shopt -s nullglob
+for stale in /Applications/Echo-backup-*.app /Applications/MacParakeet-backup-*.app; do
+    echo "Removing stale backup at $stale"
+    rm -rf "$stale"
+done
+shopt -u nullglob
+
+# Reset TCC entries tied to our bundle ID. Each ad-hoc-signed build has
+# a different CDHash; macOS's TCC database treats each as a distinct
+# entity and accumulates an entry per install. Without this reset, the
+# "Echo" toggle in System Settings → Privacy can target a stale
+# install's entry instead of the running build, so granting Accessibility
+# doesn't actually grant it to the live Echo. The reset only touches
+# OUR bundle ID — other apps' permissions are untouched. The user re-
+# grants Accessibility once after each install (already expected by
+# the existing post-install reminder below).
+tccutil reset Accessibility com.echelonfit.echo >/dev/null 2>&1 || true
+tccutil reset ListenEvent com.echelonfit.echo >/dev/null 2>&1 || true
+tccutil reset PostEvent com.echelonfit.echo >/dev/null 2>&1 || true
 
 # 5. Install fresh build, clear quarantine, launch.
 cp -R "$SRC_APP" "$APP_DEST"
