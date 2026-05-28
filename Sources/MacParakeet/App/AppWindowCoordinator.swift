@@ -123,7 +123,7 @@ final class AppWindowCoordinator: NSObject, NSWindowDelegate {
         let menu = NSMenu()
 
         let openItem = NSMenuItem(
-            title: "Open MacParakeet",
+            title: "Open Echo",
             action: #selector(dockOpenMainWindow),
             keyEquivalent: ""
         )
@@ -141,7 +141,7 @@ final class AppWindowCoordinator: NSObject, NSWindowDelegate {
         menu.addItem(NSMenuItem.separator())
 
         let quitItem = NSMenuItem(
-            title: "Quit MacParakeet",
+            title: "Quit Echo",
             action: #selector(dockQuit),
             keyEquivalent: ""
         )

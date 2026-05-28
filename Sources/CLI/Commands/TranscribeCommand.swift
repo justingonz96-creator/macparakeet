@@ -88,7 +88,7 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
     @Flag(help: "Run retained entitlement checks before transcribing. Current free builds remain unlocked.")
     var enforceEntitlements: Bool = false
 
-    @Flag(name: .long, help: "Do not save the completed transcription to MacParakeet history. YouTube audio is temporary.")
+    @Flag(name: .long, help: "Do not save the completed transcription to Echo history. YouTube audio is temporary.")
     var noHistory: Bool = false
 
     var cliTelemetryMetadata: CLITelemetry.OperationMetadata {

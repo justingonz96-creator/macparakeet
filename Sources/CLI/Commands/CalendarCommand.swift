@@ -16,7 +16,7 @@ struct CalendarCommand: AsyncParsableCommand {
     struct UpcomingCommand: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "upcoming",
-            abstract: "List upcoming calendar events visible to MacParakeet."
+            abstract: "List upcoming calendar events visible to Echo."
         )
 
         @Option(name: .long, help: "Number of days to look ahead. Default: 1.")
@@ -111,9 +111,9 @@ private enum CalendarCLIError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .calendarPermissionDenied:
-            return "Calendar access denied. Open System Settings → Privacy & Security → Calendars to grant MacParakeet access."
+            return "Calendar access denied. Open System Settings → Privacy & Security → Calendars to grant Echo access."
         case .calendarPermissionNotDetermined:
-            return "Calendar access not yet requested. Launch MacParakeet, run onboarding (or visit Settings → Calendar), then retry."
+            return "Calendar access not yet requested. Launch Echo, run onboarding (or visit Settings → Calendar), then retry."
         }
     }
 }

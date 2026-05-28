@@ -110,7 +110,7 @@ struct SettingsToggleRow: View {
 
         SettingsToggleRow(
             title: "Launch at login",
-            detail: "Start MacParakeet automatically when you sign in.",
+            detail: "Start Echo automatically when you sign in.",
             isOn: $toggleOff
         )
 
@@ -145,7 +145,7 @@ struct SettingsToggleRow: View {
 
         SettingsToggleRow(
             title: "Launch at login",
-            detail: "Start MacParakeet automatically when you sign in.",
+            detail: "Start Echo automatically when you sign in.",
             isOn: $toggleOff
         )
     }

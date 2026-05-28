@@ -259,7 +259,7 @@ struct VocabularyBackupSection: View {
     private func presentImportPanel() {
         let panel = NSOpenPanel()
         panel.title = "Import Vocabulary"
-        panel.message = "Choose a MacParakeet vocabulary backup (.json)."
+        panel.message = "Choose an Echo vocabulary backup (.json)."
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         if let json = UTType(filenameExtension: "json") {

@@ -203,7 +203,7 @@ final class VocabCommandTests: XCTestCase {
         let output = try await capturingStdout {
             try await cmd.run()
         }
-        XCTAssertTrue(output.contains("MacParakeet Vocabulary Bundle"))
+        XCTAssertTrue(output.contains("Echo Vocabulary Bundle"))
         XCTAssertTrue(output.contains("customWords"))
         XCTAssertTrue(output.contains("textSnippets"))
         XCTAssertTrue(output.contains(VocabularyBundle.schemaIdentifier))

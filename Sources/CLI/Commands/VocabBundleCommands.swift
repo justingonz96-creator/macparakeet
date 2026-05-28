@@ -158,7 +158,7 @@ struct VocabImportCommand: AsyncParsableCommand {
         print("  Custom words:   \(preview.wordsTotal)")
         print("  Text snippets:  \(preview.snippetsTotal)")
         if let appVersion = preview.bundle.appVersion {
-            print("  Exported by:    MacParakeet \(appVersion)")
+            print("  Exported by:    Echo \(appVersion)")
         }
         print("  Exported at:    \(preview.bundle.exportedAt)")
 
@@ -271,7 +271,7 @@ struct VocabularyBundleSpec: Encodable {
             schema: VocabularyBundle.schemaIdentifier,
             version: VocabularyBundle.currentVersion,
             description: """
-            Portable backup of a MacParakeet user's vocabulary. Includes \
+            Portable backup of an Echo user's vocabulary. Includes \
             custom-word corrections (used by the Clean text-processing \
             pipeline) and text snippets (trigger phrase → expansion text). \
             UUIDs are intentionally omitted: they are generated at import \
@@ -286,7 +286,7 @@ struct VocabularyBundleSpec: Encodable {
                 .init(path: "exportedAt", type: "ISO-8601 date-time", required: true,
                       description: "When the bundle was generated. Shown in the import preview."),
                 .init(path: "appVersion", type: "string", required: false,
-                      description: "MacParakeet version that produced the bundle. Optional but recommended."),
+                      description: "Echo version that produced the bundle. Optional but recommended."),
                 .init(path: "customWords", type: "array of CustomWord", required: true,
                       description: "Word-correction rules applied during the Clean pipeline. Match is case-insensitive."),
                 .init(path: "customWords[].word", type: "string", required: true,
@@ -322,7 +322,7 @@ struct VocabularyBundleSpec: Encodable {
             customWords: [
                 .init(word: "kubernetes", replacement: "Kubernetes",
                       isEnabled: true, createdAt: now),
-                .init(word: "MacParakeet", replacement: nil,
+                .init(word: "Echo", replacement: nil,
                       isEnabled: true, createdAt: now),
                 .init(word: "centre", replacement: "centre",
                       isEnabled: true, createdAt: now),
@@ -343,7 +343,7 @@ struct VocabularyBundleSpec: Encodable {
         let exampleJSON = String(data: exampleData, encoding: .utf8) ?? "{}"
 
         return """
-        MacParakeet Vocabulary Bundle — JSON Schema (v\(VocabularyBundle.currentVersion))
+        Echo Vocabulary Bundle — JSON Schema (v\(VocabularyBundle.currentVersion))
         =====================================================================
 
         File identity
@@ -354,7 +354,7 @@ struct VocabularyBundleSpec: Encodable {
           schema        string         required   format identifier
           version       integer        required   bundle format version
           exportedAt    ISO-8601       required   when this file was generated
-          appVersion    string         optional   MacParakeet version that wrote it
+          appVersion    string         optional   Echo version that wrote it
           customWords   CustomWord[]   required   word correction rules
           textSnippets  TextSnippet[]  required   trigger → expansion shortcuts
 

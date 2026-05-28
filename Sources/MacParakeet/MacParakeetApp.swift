@@ -22,7 +22,7 @@ struct MacParakeetApp {
             let alert = NSAlert()
             alert.alertStyle = .critical
             alert.messageText = "macOS 14.2+ Required"
-            alert.informativeText = "MacParakeet requires macOS 14.2 (Sonoma) or later."
+            alert.informativeText = "Echo requires macOS 14.2 (Sonoma) or later."
             alert.addButton(withTitle: "Quit")
             alert.runModal()
             return

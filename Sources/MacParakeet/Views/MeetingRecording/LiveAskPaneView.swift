@@ -277,7 +277,7 @@ struct LiveAskPaneView: View {
                 .font(DesignSystem.Typography.body.weight(.medium))
                 .foregroundStyle(DesignSystem.Colors.textSecondary)
 
-            Text("MacParakeet can use a local AI app, your API key, or a command-line AI tool. Recording works without this.")
+            Text("Echo can use a local AI app, your API key, or a command-line AI tool. Recording works without this.")
                 .font(DesignSystem.Typography.caption)
                 .foregroundStyle(DesignSystem.Colors.textTertiary)
                 .multilineTextAlignment(.center)

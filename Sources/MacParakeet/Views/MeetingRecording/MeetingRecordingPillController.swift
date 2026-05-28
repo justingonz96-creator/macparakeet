@@ -209,7 +209,7 @@ final class MeetingRecordingPillController {
         }
         menu.addItem(stopItem)
 
-        let openItem = NSMenuItem(title: "Open MacParakeet", action: #selector(PillMenuDelegate.menuAction(_:)), keyEquivalent: "")
+        let openItem = NSMenuItem(title: "Open Echo", action: #selector(PillMenuDelegate.menuAction(_:)), keyEquivalent: "")
         openItem.representedObject = "open"
         openItem.target = delegate
         if let openImage = NSImage(systemSymbolName: "bird", accessibilityDescription: nil) {

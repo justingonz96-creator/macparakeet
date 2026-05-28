@@ -928,7 +928,7 @@ final class DictationFlowCoordinator {
 
         let alert = NSAlert()
         alert.messageText = Self.microphoneAccessRequiredMessage
-        alert.informativeText = "MacParakeet needs microphone access to record dictation. Open System Settings → Privacy & Security → Microphone to enable it, then try again."
+        alert.informativeText = "Echo needs microphone access to record dictation. Open System Settings → Privacy & Security → Microphone to enable it, then try again."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Cancel")

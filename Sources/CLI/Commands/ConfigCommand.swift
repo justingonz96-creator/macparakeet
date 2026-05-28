@@ -15,8 +15,9 @@ struct ConfigCommand: ParsableCommand {
         commandName: "config",
         abstract: "Read or write CLI/app configuration values.",
         discussion: """
-        Configuration is stored in the shared MacParakeet UserDefaults suite \
-        (com.macparakeet.MacParakeet). The GUI and CLI read the same suite, so \
+        Configuration is stored in the shared Echo UserDefaults suite \
+        (suite ID com.macparakeet.MacParakeet, preserved from the upstream for \
+        existing-settings compatibility). The GUI and CLI read the same suite, so \
         values set here apply to later app-default reads. A running GUI may \
         cache some settings until relaunch or an in-app change.
 

@@ -62,7 +62,7 @@ struct TransformEditorSheet: View {
                 .font(DesignSystem.Typography.heroTitle)
                 .foregroundStyle(DesignSystem.Colors.textPrimary)
 
-            Text("Set up a keyboard shortcut and a prompt. MacParakeet runs the prompt against your selected text every time you press the shortcut.")
+            Text("Set up a keyboard shortcut and a prompt. Echo runs the prompt against your selected text every time you press the shortcut.")
                 .font(DesignSystem.Typography.body)
                 .foregroundStyle(DesignSystem.Colors.textSecondary)
 

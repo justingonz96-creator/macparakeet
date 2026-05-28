@@ -2243,7 +2243,7 @@ struct TranscriptResultView: View {
                 Text("Turn on AI for summaries and chat")
                     .font(DesignSystem.Typography.body.weight(.semibold))
                     .foregroundStyle(DesignSystem.Colors.textPrimary)
-                Text("MacParakeet can use a local AI app, your API key, or a command-line AI tool. Transcription still works without this.")
+                Text("Echo can use a local AI app, your API key, or a command-line AI tool. Transcription still works without this.")
                     .font(DesignSystem.Typography.bodySmall)
                     .foregroundStyle(DesignSystem.Colors.textSecondary)
             }

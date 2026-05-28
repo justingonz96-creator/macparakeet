@@ -62,7 +62,7 @@ struct CalendarSettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Notifications are off")
                     .font(DesignSystem.Typography.body)
-                Text("Calendar reminders won't appear until you allow MacParakeet notifications in System Settings.")
+                Text("Calendar reminders won't appear until you allow Echo notifications in System Settings.")
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(.secondary)
             }
@@ -98,7 +98,7 @@ struct CalendarSettingsView: View {
     private var permissionDetail: String {
         switch viewModel.calendarPermissionStatus {
         case .granted:
-            return "Granted. Events stay on your Mac — MacParakeet never uploads them."
+            return "Granted. Events stay on your Mac — Echo never uploads them."
         case .denied:
             // macOS only shows the EventKit prompt once. Once denied, the
             // only path back is System Settings — telling the user to
@@ -106,7 +106,7 @@ struct CalendarSettingsView: View {
             // would mystify them.
             return "Calendar access is blocked. Re-enable it in System Settings → Privacy & Security → Calendars to use reminders."
         case .notDetermined:
-            return "Reads your macOS calendar so MacParakeet can remind you before a meeting starts. Events stay on your Mac."
+            return "Reads your macOS calendar so Echo can remind you before a meeting starts. Events stay on your Mac."
         }
     }
 
@@ -160,7 +160,7 @@ struct CalendarSettingsView: View {
     private var modeDetail: String {
         switch viewModel.calendarAutoStartMode {
         case .off:
-            return "MacParakeet ignores your calendar."
+            return "Echo ignores your calendar."
         case .notify:
             return "Quietly notifies you before each meeting starts."
         case .autoStart:

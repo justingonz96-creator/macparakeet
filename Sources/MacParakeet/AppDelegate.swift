@@ -515,7 +515,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let alert = NSAlert()
         alert.alertStyle = .critical
-        alert.messageText = "MacParakeet Failed to Start"
+        alert.messageText = "Echo Failed to Start"
         alert.informativeText = error.localizedDescription
         alert.addButton(withTitle: "Quit")
         _ = alert.runModal()
@@ -542,9 +542,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showMoveToApplicationsAlert() {
         let alert = NSAlert()
         alert.messageText = "Move to Applications"
-        alert.informativeText = "MacParakeet must be in your Applications folder to work correctly. " +
+        alert.informativeText = "Echo must be in your Applications folder to work correctly. " +
             "Running from a disk image prevents macOS from granting microphone and accessibility permissions.\n\n" +
-            "Drag MacParakeet to the Applications folder in the DMG window, then launch it from there."
+            "Drag Echo to the Applications folder in the DMG window, then launch it from there."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Quit")
         alert.runModal()
@@ -702,7 +702,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch quitState {
         case .starting:
             alert.messageText = "Meeting Recording Is Starting"
-            alert.informativeText = "Cancel the pending recording before quitting, or keep MacParakeet open."
+            alert.informativeText = "Cancel the pending recording before quitting, or keep Echo open."
             alert.addButton(withTitle: "Cancel Recording & Quit")
             alert.addButton(withTitle: "Cancel Quit")
             if alert.buttons.indices.contains(0) {
@@ -714,7 +714,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         case .recording:
             alert.messageText = "Meeting Recording in Progress"
-            alert.informativeText = "End and transcribe the meeting before quitting, discard the recording, or keep MacParakeet open."
+            alert.informativeText = "End and transcribe the meeting before quitting, discard the recording, or keep Echo open."
             alert.addButton(withTitle: "End & Transcribe")
             alert.addButton(withTitle: "Discard Recording")
             alert.addButton(withTitle: "Cancel Quit")
@@ -732,7 +732,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         case .finishing:
             alert.messageText = "Meeting Transcription in Progress"
-            alert.informativeText = "MacParakeet is saving the meeting. Finish transcription before quitting, or keep the app open."
+            alert.informativeText = "Echo is saving the meeting. Finish transcription before quitting, or keep the app open."
             alert.addButton(withTitle: "Finish & Quit")
             alert.addButton(withTitle: "Cancel Quit")
             if alert.runModal() == .alertFirstButtonReturn {
@@ -789,7 +789,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.alertStyle = .warning
         alert.messageText = "Global Hotkey Unavailable"
         alert.informativeText =
-            "MacParakeet couldn’t enable the system-wide hotkey because Accessibility access is missing. " +
+            "Echo couldn’t enable the system-wide hotkey because Accessibility access is missing. " +
             "You can still open the app manually, but dictation shortcuts won’t work until this is enabled."
         alert.addButton(withTitle: "Open Settings")
         alert.addButton(withTitle: "Not Now")

@@ -73,7 +73,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = "Setup is not finished"
-            alert.informativeText = "MacParakeet needs permissions and speech model setup (Parakeet) before core features are reliable."
+            alert.informativeText = "Echo needs permissions and speech model setup (Parakeet) before core features are reliable."
             alert.addButton(withTitle: "Continue Setup")
             alert.addButton(withTitle: "Exit Setup")
 

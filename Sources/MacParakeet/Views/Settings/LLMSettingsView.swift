@@ -275,11 +275,11 @@ struct LLMSettingsView: View {
     private func setupStatusCopy(for status: LLMSettingsViewModel.AISetupStatus) -> String {
         switch status {
         case .setUpNeeded:
-            return "Choose how MacParakeet should run AI features. Transcription, dictation, and meeting recording still work without this."
+            return "Choose how Echo should run AI features. Transcription, dictation, and meeting recording still work without this."
         case .ready(let displayName):
             return "Ready: using \(displayName)."
         case .cannotConnect(let displayName, let message):
-            return "MacParakeet could not reach \(displayName): \(message)"
+            return "Echo could not reach \(displayName): \(message)"
         }
     }
 

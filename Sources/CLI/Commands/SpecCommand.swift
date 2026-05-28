@@ -140,7 +140,7 @@ private extension CLISpecCommand {
     static let databaseOption = CLISpecParameter.option(
         "--database",
         valueName: "PATH",
-        summary: "Use a specific MacParakeet SQLite database instead of the app default."
+        summary: "Use a specific Echo SQLite database instead of the app default."
     )
 
     static let catalog: [CLISpecCommand] = [

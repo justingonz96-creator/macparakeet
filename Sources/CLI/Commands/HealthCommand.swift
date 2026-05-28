@@ -39,7 +39,7 @@ struct HealthCommand: AsyncParsableCommand {
         var report = HealthReport()
 
         if !json {
-            print("MacParakeet Health Check")
+            print("Echo Health Check")
             print("========================")
             print()
         }

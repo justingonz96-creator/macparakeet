@@ -16,7 +16,7 @@ struct CustomWordsView: View {
 
             VocabSheetHeader(
                 title: "Custom Words",
-                subtitle: "Teach MacParakeet how you say things.",
+                subtitle: "Teach Echo how you say things.",
                 onDone: { dismiss() }
             )
 

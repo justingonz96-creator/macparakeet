@@ -599,13 +599,13 @@ struct SettingsView: View {
     private var startupCard: some View {
         settingsCard(
             title: "Startup",
-            subtitle: "How MacParakeet shows up on your Mac at sign-in.",
+            subtitle: "How Echo shows up on your Mac at sign-in.",
             icon: "power"
         ) {
             VStack(spacing: DesignSystem.Spacing.md) {
                 settingsToggleRow(
                     title: "Launch at login",
-                    detail: "Start MacParakeet automatically when you sign in.",
+                    detail: "Start Echo automatically when you sign in.",
                     isOn: $viewModel.launchAtLogin
                 )
 
@@ -2275,7 +2275,7 @@ struct SettingsView: View {
                     HStack {
                         rowText(
                             title: "Screen & System Audio Recording",
-                            detail: "Required for meeting audio capture. MacParakeet never records your screen."
+                            detail: "Required for meeting audio capture. Echo never records your screen."
                         )
                         Spacer()
                         permissionPill(granted: viewModel.screenRecordingGranted)
@@ -2320,7 +2320,7 @@ struct SettingsView: View {
         ) {
             VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
                 settingsToggleRow(
-                    title: "Help improve MacParakeet",
+                    title: "Help improve Echo",
                     detail: "Send non-identifying usage statistics like feature popularity and performance metrics. No personal data is collected.",
                     isOn: $viewModel.telemetryEnabled
                 )
@@ -2348,7 +2348,7 @@ struct SettingsView: View {
     private var updatesCard: some View {
         settingsCard(
             title: "Updates",
-            subtitle: "Keep MacParakeet up to date.",
+            subtitle: "Keep Echo up to date.",
             icon: "arrow.triangle.2.circlepath"
         ) {
             VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
@@ -2424,7 +2424,7 @@ struct SettingsView: View {
                         .opacity(0.6)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("MacParakeet \(identity.version) (\(identity.buildNumber))")
+                        Text("Echo \(identity.version) (\(identity.buildNumber))")
                             .font(DesignSystem.Typography.body)
                         Text("Fast, private voice for Mac")
                             .font(DesignSystem.Typography.caption)
@@ -2790,7 +2790,7 @@ struct SettingsView: View {
 
     private func buildIdentityReport(_ identity: BuildIdentity) -> String {
         [
-            "MacParakeet Build Identity",
+            "Echo Build Identity",
             "Version: \(identity.version)",
             "Build: \(identity.buildNumber)",
             "Source: \(identity.buildSource)",

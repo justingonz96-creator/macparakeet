@@ -154,7 +154,7 @@ struct FeedbackView: View {
         HStack(spacing: DesignSystem.Spacing.sm) {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 16))
-            Text("Sent! Thanks for helping make MacParakeet better.")
+            Text("Sent! Thanks for helping make Echo better.")
                 .font(DesignSystem.Typography.body)
         }
         .foregroundStyle(DesignSystem.Colors.successGreen)
@@ -464,7 +464,7 @@ struct FeedbackView: View {
             }
         }
         .accessibilityLabel("Join the conversation on GitHub")
-        .accessibilityHint("Opens the MacParakeet issues page on GitHub in your browser")
+        .accessibilityHint("Opens the Echo issues page on GitHub in your browser")
     }
 
     // MARK: - Category metadata
@@ -490,7 +490,7 @@ struct FeedbackView: View {
     private var placeholderText: String {
         switch viewModel.category {
         case .bug: return "What happened, and what did you expect instead?"
-        case .featureRequest: return "What would make MacParakeet better for you?"
+        case .featureRequest: return "What would make Echo better for you?"
         case .other: return "What's on your mind?"
         }
     }
