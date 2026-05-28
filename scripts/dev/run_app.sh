@@ -5,9 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DERIVED_DATA_DIR="$ROOT_DIR/.build/xcode-dev"
 PRODUCT_DIR="$DERIVED_DATA_DIR/Build/Products/Debug"
 APP_BIN="$PRODUCT_DIR/MacParakeet"
-APP_BUNDLE="$PRODUCT_DIR/MacParakeet-Dev.app"
-LOG_FILE="${TMPDIR:-/tmp}/macparakeet-dev.log"
-BUILD_LOG_FILE="${TMPDIR:-/tmp}/macparakeet-dev-build.log"
+APP_BUNDLE="$PRODUCT_DIR/Echo-Dev.app"
+LOG_FILE="${TMPDIR:-/tmp}/echo-dev.log"
+BUILD_LOG_FILE="${TMPDIR:-/tmp}/echo-dev-build.log"
 APP_MACOS_BIN="$APP_BUNDLE/Contents/MacOS/MacParakeet"
 
 pick_codesign_identity() {
@@ -147,9 +147,11 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.macparakeet.dev</string>
+    <string>com.echelonfit.echo.dev</string>
     <key>CFBundleName</key>
-    <string>MacParakeet Dev</string>
+    <string>Echo Dev</string>
+    <key>CFBundleDisplayName</key>
+    <string>Echo Dev</string>
     <key>CFBundleExecutable</key>
     <string>MacParakeet</string>
     <key>CFBundlePackageType</key>
@@ -159,11 +161,11 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'PLIST'
     <key>CFBundleShortVersionString</key>
     <string>0.0.0</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>MacParakeet needs microphone access for voice dictation.</string>
+    <string>Echo needs microphone access for voice dictation.</string>
     <key>NSAudioCaptureUsageDescription</key>
-    <string>MacParakeet needs system audio recording access for meeting recording.</string>
+    <string>Echo needs system audio recording access for meeting recording.</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>MacParakeet reads your calendar so it can remind you before a meeting starts and (optionally) begin recording for you. Events stay on your Mac.</string>
+    <string>Echo reads your calendar so it can remind you before a meeting starts and (optionally) begin recording for you. Events stay on your Mac.</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
 </dict>
@@ -173,9 +175,13 @@ PLIST
 # Re-sign the bundle so TCC can identify the dev build consistently.
 codesign --force --sign "$CODESIGN_IDENTITY" --deep "$APP_BUNDLE"
 
-echo "[3/5] Stopping existing MacParakeet processes…"
+echo "[3/5] Stopping existing Echo processes…"
+# Old MacParakeet paths still listed so an install pre-rename gets stopped cleanly.
+pkill -f "/Applications/Echo.app/Contents/MacOS/MacParakeet" || true
 pkill -f "/Applications/MacParakeet.app/Contents/MacOS/MacParakeet" || true
+pkill -f "$ROOT_DIR/dist/Echo.app/Contents/MacOS/MacParakeet" || true
 pkill -f "$ROOT_DIR/dist/MacParakeet.app/Contents/MacOS/MacParakeet" || true
+pkill -f "Echo-Dev.app/Contents/MacOS/MacParakeet" || true
 pkill -f "MacParakeet-Dev.app/Contents/MacOS/MacParakeet" || true
 pkill -f "$DERIVED_DATA_DIR/Build/Products/Debug/MacParakeet" || true
 pkill -f "$ROOT_DIR/.build/debug/MacParakeet" || true
@@ -195,8 +201,8 @@ nohup open "$APP_BUNDLE" --env MACPARAKEET_GIT_COMMIT="$GIT_COMMIT" \
   --env MACPARAKEET_BUILD_SOURCE="$BUILD_SOURCE" >"$LOG_FILE" 2>&1 &
 
 sleep 2
-PID="$(pgrep -f "MacParakeet-Dev.app/Contents/MacOS/MacParakeet" | head -n 1 || true)"
-INSTALLED_PID="$(pgrep -f "/Applications/MacParakeet.app/Contents/MacOS/MacParakeet" | head -n 1 || true)"
+PID="$(pgrep -f "Echo-Dev.app/Contents/MacOS/MacParakeet" | head -n 1 || true)"
+INSTALLED_PID="$(pgrep -f "/Applications/Echo.app/Contents/MacOS/MacParakeet" | head -n 1 || true)"
 
 echo "[5/5] Running"
 echo "  pid: ${PID:-unknown}"

@@ -41,8 +41,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 
-APP_NAME="${APP_NAME:-MacParakeet}"
-BUNDLE_ID="${BUNDLE_ID:-com.macparakeet.MacParakeet}"
+APP_NAME="${APP_NAME:-Echo}"
+BUNDLE_ID="${BUNDLE_ID:-com.echelonfit.echo}"
 VERSION="${VERSION:-0.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(date -u +%Y%m%d%H%M%S)}"
 BUILD_GIT_COMMIT="${BUILD_GIT_COMMIT:-$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)}"
@@ -584,11 +584,11 @@ cat >"$INFO_PLIST" <<EOF
   <key>LSUIElement</key>
   <true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>MacParakeet needs microphone access for dictation.</string>
+  <string>Echo needs microphone access for dictation.</string>
   <key>NSAudioCaptureUsageDescription</key>
-  <string>MacParakeet needs system audio recording access for meeting recording.</string>
+  <string>Echo needs system audio recording access for meeting recording.</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
-  <string>MacParakeet reads your calendar so it can remind you before a meeting starts and (optionally) begin recording for you. Events stay on your Mac.</string>
+  <string>Echo reads your calendar so it can remind you before a meeting starts and (optionally) begin recording for you. Events stay on your Mac.</string>
   <key>SUFeedURL</key>
   <string>https://macparakeet.com/appcast.xml</string>
   <key>SUEnableAutomaticChecks</key>

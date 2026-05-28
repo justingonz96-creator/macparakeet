@@ -62,7 +62,7 @@ enum BreathWaveIcon {
         }
 
         // Last resort: return a system symbol
-        let fallback = NSImage(systemSymbolName: "waveform", accessibilityDescription: "MacParakeet")
+        let fallback = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Echo")
             ?? NSImage()
         fallback.size = NSSize(width: pointSize, height: pointSize)
         fallback.isTemplate = true

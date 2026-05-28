@@ -1,34 +1,35 @@
 import SwiftUI
 
 /// Centralized design tokens for consistent styling across the app.
-/// "Warm Magical" design system — coral-orange accent, generous spacing, rounded headlines.
+/// Echelon-themed: navy + cyan accents, clean off-whites, modern athletic feel.
+/// Internal rebrand from the upstream "Warm Magical" coral palette.
 enum DesignSystem {
     // MARK: - Colors
 
     enum Colors {
-        // Accent — warm coral-orange (parakeet plumage)
-        static let accent = Color(light: .init(red: 0.91, green: 0.42, blue: 0.23),
-                                  dark: .init(red: 1.0, green: 0.54, blue: 0.36))
-        static let accentLight = Color(light: .init(red: 1.0, green: 0.94, blue: 0.92),
-                                       dark: .init(red: 1.0, green: 0.54, blue: 0.36).opacity(0.12))
-        static let accentDark = Color(light: .init(red: 0.77, green: 0.33, blue: 0.16),
-                                      dark: .init(red: 0.91, green: 0.42, blue: 0.23))
+        // Accent — Echelon cyan (matches the "e" inside the company mark)
+        static let accent = Color(light: .init(red: 0.0, green: 0.71, blue: 0.85),
+                                  dark: .init(red: 0.18, green: 0.81, blue: 0.94))
+        static let accentLight = Color(light: .init(red: 0.86, green: 0.95, blue: 0.98),
+                                       dark: .init(red: 0.18, green: 0.81, blue: 0.94).opacity(0.14))
+        static let accentDark = Color(light: .init(red: 0.0, green: 0.58, blue: 0.71),
+                                      dark: .init(red: 0.0, green: 0.71, blue: 0.85))
 
-        // Backgrounds — warm off-whites, not pure white
-        static let background = Color(light: .init(red: 0.98, green: 0.98, blue: 0.97),
-                                      dark: .init(red: 0.11, green: 0.11, blue: 0.12))
+        // Backgrounds — cool off-whites, leaning toward the Echelon navy in dark mode
+        static let background = Color(light: .init(red: 0.96, green: 0.97, blue: 0.98),
+                                      dark: .init(red: 0.06, green: 0.10, blue: 0.13))
         static let surface = Color(light: .white,
-                                   dark: .init(red: 0.17, green: 0.17, blue: 0.18))
-        static let surfaceElevated = Color(light: .init(red: 0.96, green: 0.96, blue: 0.94),
-                                           dark: .init(red: 0.23, green: 0.23, blue: 0.24))
+                                   dark: .init(red: 0.10, green: 0.14, blue: 0.18))
+        static let surfaceElevated = Color(light: .init(red: 0.94, green: 0.95, blue: 0.96),
+                                           dark: .init(red: 0.13, green: 0.18, blue: 0.22))
 
-        // Text — high contrast primaries
-        static let textPrimary = Color(light: .init(red: 0.10, green: 0.10, blue: 0.10),
+        // Text — Echelon navy for primary on light, white on dark
+        static let textPrimary = Color(light: .init(red: 0.0, green: 0.165, blue: 0.239),
                                        dark: .white)
-        static let textSecondary = Color(light: .init(red: 0.42, green: 0.42, blue: 0.42),
-                                         dark: .init(red: 0.63, green: 0.63, blue: 0.65))
-        static let textTertiary = Color(light: .init(red: 0.61, green: 0.61, blue: 0.61),
-                                        dark: .init(red: 0.39, green: 0.39, blue: 0.40))
+        static let textSecondary = Color(light: .init(red: 0.36, green: 0.42, blue: 0.48),
+                                         dark: .init(red: 0.63, green: 0.65, blue: 0.69))
+        static let textTertiary = Color(light: .init(red: 0.55, green: 0.59, blue: 0.63),
+                                        dark: .init(red: 0.42, green: 0.45, blue: 0.48))
 
         /// Neutral label tint — for `.bordered` buttons that should NOT carry
         /// brand color. Resolves to the system label color (white in dark mode,
@@ -44,17 +45,17 @@ enum DesignSystem {
                                     dark: .init(red: 0.97, green: 0.44, blue: 0.44))
         static let onAccent = Color.white
 
-        // Borders & dividers
-        static let border = Color(light: .init(red: 0.91, green: 0.91, blue: 0.88),
-                                  dark: .init(red: 0.30, green: 0.30, blue: 0.32))
-        static let divider = Color(light: .init(red: 0.94, green: 0.94, blue: 0.91),
-                                   dark: .init(red: 0.25, green: 0.25, blue: 0.27))
+        // Borders & dividers — cool grays that complement the navy/cyan palette
+        static let border = Color(light: .init(red: 0.89, green: 0.91, blue: 0.93),
+                                  dark: .init(red: 0.22, green: 0.27, blue: 0.32))
+        static let divider = Color(light: .init(red: 0.92, green: 0.94, blue: 0.96),
+                                   dark: .init(red: 0.17, green: 0.22, blue: 0.26))
 
         // Interactive
-        static let rowHoverBackground = Color(light: .init(red: 0.96, green: 0.96, blue: 0.94),
+        static let rowHoverBackground = Color(light: .init(red: 0.94, green: 0.95, blue: 0.96),
                                               dark: .primary.opacity(0.06))
         static let cardBackground = Color(light: .white,
-                                          dark: .init(red: 0.17, green: 0.17, blue: 0.18))
+                                          dark: .init(red: 0.10, green: 0.14, blue: 0.18))
 
         // Playback
         static let playbackTrack = Color.primary.opacity(0.08)

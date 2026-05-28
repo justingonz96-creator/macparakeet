@@ -198,7 +198,7 @@ final class AppWindowCoordinator: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "MacParakeet"
+        window.title = "Echo"
         window.center()
         window.setFrameAutosaveName("MainWindow")
         window.minSize = NSSize(

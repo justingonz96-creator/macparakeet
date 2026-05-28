@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build a release-quality MacParakeet.app, ad-hoc sign it correctly, and
-# install it to /Applications/MacParakeet.app — replacing the current
-# install (which is backed up to a timestamped folder for rollback).
+# Build a release-quality Echo.app, ad-hoc sign it correctly, and install
+# it to /Applications/Echo.app — replacing the current install (which is
+# backed up to a timestamped folder for rollback).
 #
 # Use this when you want the latest code from `main` to be the version
 # that opens from Spotlight / Finder / "Open With" dialogs on your Mac.
@@ -12,22 +12,27 @@ set -euo pipefail
 # `build_app_bundle.sh` + `sign_notarize.sh` flow with a Developer ID cert.
 #
 # Why ad-hoc signing matters: an app with only the linker's default
-# signature has an unstable identifier ("MacParakeet" instead of
-# "com.macparakeet.MacParakeet") and no sealed resources. macOS TCC
-# refuses to persistently grant Accessibility permission to such bundles,
-# and Keychain rejects API key writes because the ACL can't bind to a
-# stable signature. Proper inside-out ad-hoc signing fixes both.
+# signature has an unstable identifier ("MacParakeet" — the executable
+# name — instead of "com.echelonfit.echo") and no sealed resources.
+# macOS TCC refuses to persistently grant Accessibility permission to
+# such bundles, and Keychain rejects API key writes because the ACL
+# can't bind to a stable signature. Proper inside-out ad-hoc signing
+# fixes both. The executable inside the bundle stays named MacParakeet
+# (that's the Swift target name); only the bundle identity / display
+# name change to Echo.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-APP_DEST="/Applications/MacParakeet.app"
+APP_DEST="/Applications/Echo.app"
 ENTITLEMENTS="$ROOT_DIR/scripts/dist/MacParakeet.entitlements"
 
 # 1. Build the release bundle (downloads helpers on first run, fast after).
+#    APP_NAME and BUNDLE_ID default to Echo / com.echelonfit.echo in
+#    build_app_bundle.sh — overridable via env if you ever need a one-off.
 VERSION="${VERSION:-0.6.7-dev}" \
 BUILD_SOURCE="${BUILD_SOURCE:-dist-local-installed}" \
     "$ROOT_DIR/scripts/dist/build_app_bundle.sh"
 
-SRC_APP="$ROOT_DIR/dist/MacParakeet.app"
+SRC_APP="$ROOT_DIR/dist/Echo.app"
 if [[ ! -d "$SRC_APP" ]]; then
     echo "build produced no $SRC_APP — aborting" >&2
     exit 1
@@ -49,7 +54,7 @@ fi
 
 echo "Signing main app..."
 codesign --force --sign - \
-    --identifier com.macparakeet.MacParakeet \
+    --identifier com.echelonfit.echo \
     --entitlements "$ENTITLEMENTS" \
     "$SRC_APP"
 
@@ -63,7 +68,7 @@ sleep 1
 # 4. Back up existing install (rename, don't delete — easy rollback).
 if [[ -d "$APP_DEST" ]]; then
     ts="$(date +%Y%m%d-%H%M%S)"
-    backup="/Applications/MacParakeet-backup-$ts.app"
+    backup="/Applications/Echo-backup-$ts.app"
     echo "Moving existing $APP_DEST → $backup"
     mv "$APP_DEST" "$backup"
 fi

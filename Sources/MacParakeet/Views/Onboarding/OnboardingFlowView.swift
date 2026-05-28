@@ -90,7 +90,7 @@ struct OnboardingFlowView: View {
                     MeditativeMerkabaView(size: 28, revolutionDuration: 6.0, tintColor: DesignSystem.Colors.accent)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("MacParakeet")
+                        Text("Echo")
                             .font(DesignSystem.Typography.sectionTitle)
                         Text("First-time setup")
                             .font(DesignSystem.Typography.caption)
@@ -1050,7 +1050,7 @@ struct OnboardingFlowView: View {
 
     private func titleForStep(_ step: OnboardingViewModel.Step) -> String {
         switch step {
-        case .welcome: return "Welcome to MacParakeet"
+        case .welcome: return "Welcome to Echo"
         case .microphone: return "Enable Microphone Access"
         case .accessibility: return "Enable Accessibility"
         case .meetingRecording: return "Meeting Recording (Optional)"

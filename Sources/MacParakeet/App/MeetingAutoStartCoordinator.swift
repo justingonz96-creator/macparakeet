@@ -518,7 +518,7 @@ private extension MeetingAutoStartCoordinator {
             }
             return "\(event.title) is starting"
         }()
-        let notificationBody = event.meetUrl.flatMap(MeetingLinkParser.shared.identifyService) ?? "MacParakeet"
+        let notificationBody = event.meetUrl.flatMap(MeetingLinkParser.shared.identifyService) ?? "Echo"
 
         let content = UNMutableNotificationContent()
         content.title = notificationTitle

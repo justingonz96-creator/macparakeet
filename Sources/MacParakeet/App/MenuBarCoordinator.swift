@@ -84,7 +84,7 @@ final class MenuBarCoordinator: NSObject, NSMenuDelegate {
     private static var appDisplayName: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
             ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
-            ?? "MacParakeet"
+            ?? "Echo"
     }
 
     private func makeMenuItem(title: String, action: Selector, key: String) -> NSMenuItem {
