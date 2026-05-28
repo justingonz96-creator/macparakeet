@@ -54,6 +54,19 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         )
 
         let hosting = NSHostingView(rootView: view)
+        // Decouple SwiftUI content size from the window's size negotiation.
+        // The default sizing options can push SwiftUI's preferred/intrinsic
+        // content size back to AppKit, which then resizes the window
+        // whenever the SwiftUI content changes — e.g. each onboarding step
+        // has different content, so navigating between steps was causing
+        // the window to grow/shrink. Empty sizingOptions = "the window
+        // owns the size; SwiftUI lays out within the bounds it's given."
+        hosting.sizingOptions = []
+        // Autoresize with the window so dragging window edges actually
+        // changes the hosting view's bounds (and therefore SwiftUI's
+        // available space). Without this, resizing the window can leave
+        // the hosting view at its initial 740×500.
+        hosting.autoresizingMask = [.width, .height]
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: 500),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered,
