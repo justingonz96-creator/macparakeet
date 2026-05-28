@@ -4,27 +4,30 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-// Echo app icon generator.
+// Echo app icon — v3.
 //
-// Renders a 1024×1024 PNG of the Echo app icon (navy gradient circle,
-// custom-drawn geometric cyan "e") and writes it to the path you pass.
-// Run via the wrapper script `generate_echo_icon.sh` (same dir) which
-// also produces the full .iconset and packs it into Assets/AppIcon.icns.
+// Modern macOS icon principles applied:
+//   1. FILL THE CANVAS. macOS auto-masks the 1024×1024 master to a
+//      squircle. Designing a smaller circle inside a square (v1/v2)
+//      under-uses the visual area. Apple's own icons (Music, Calendar,
+//      App Store) all fill the full square; macOS does the rounding.
+//   2. GRADIENT BACKGROUND. ~40% of top-chart app icons in 2026 use
+//      multi-tone gradients. Diagonal navy → cyan (analogous, on-brand)
+//      reads as depth + dynamism, not flat-2014.
+//   3. SINGLE WHITE SYMBOL. The canonical modern macOS composition
+//      (Music's note, App Store's A, Calendar's date) is one clean
+//      white glyph on a gradient. Maximum contrast, instant recognition
+//      at any size.
+//   4. SUBTLE DEPTH. A soft top-left highlight (light source) + faint
+//      bottom-right vignette imply dimensionality without heaviness.
+//      No skeuomorphic gloss.
+//   5. GEOMETRIC LETTERFORM. The "e" stays — Echelon brand + the
+//      "Echo" name make it the right mark. Stroked construction,
+//      bar slightly above optical center, opening on the lower-right.
 //
 // Compile + run standalone:
 //   swiftc generate_echo_icon.swift -o /tmp/gen -framework AppKit
 //   /tmp/gen /tmp/echo-1024.png
-//
-// Design notes:
-//   - Background: navy circle with subtle vertical gradient (lighter
-//     navy at top → deeper navy at bottom) plus a faint glassy
-//     highlight crescent at the top.
-//   - Mark: lowercase "e" stroked rather than typed — geometry is
-//     tuned (bar slightly above optical center, opening on the lower
-//     right, bar fuses into the ring on both sides). Heavy stroke so
-//     it stays legible at 16 px.
-//   - Padding: ~8% inset so macOS's automatic squircle mask doesn't
-//     bite into the circle.
 
 guard CommandLine.arguments.count >= 2 else {
     print("usage: generate_echo_icon <output.png>")
@@ -35,12 +38,15 @@ let outputPath = CommandLine.arguments[1]
 let size: CGFloat = 1024
 let center = CGPoint(x: size / 2, y: size / 2)
 
-// MARK: - Brand colors (calibrated from Echelon's mark)
+// MARK: - Brand colors
 
-let navyTop    = NSColor(srgbRed:   0/255.0, green: 64/255.0, blue:  94/255.0, alpha: 1.0)
-let navyBottom = NSColor(srgbRed:   0/255.0, green: 26/255.0, blue:  44/255.0, alpha: 1.0)
-let cyan       = NSColor(srgbRed:   0/255.0, green: 181/255.0, blue: 216/255.0, alpha: 1.0)
-let highlight  = NSColor(white: 1.0, alpha: 0.10)
+// Cyan and navy are calibrated from the Echelon mark. White is full
+// opacity for the foreground glyph — maximum contrast on the gradient.
+let cyanBright = NSColor(srgbRed:   0/255.0, green: 181/255.0, blue: 216/255.0, alpha: 1.0)
+let navyDeep   = NSColor(srgbRed:   0/255.0, green:  26/255.0, blue:  44/255.0, alpha: 1.0)
+let white      = NSColor.white
+let topLight   = NSColor(white: 1.0, alpha: 0.12)  // top-left light source
+let cornerShadow = NSColor(srgbRed: 0/255.0, green: 10/255.0, blue: 20/255.0, alpha: 0.25)
 
 // MARK: - Context
 
@@ -56,60 +62,75 @@ let nsCtx = NSGraphicsContext(cgContext: ctx, flipped: false)
 NSGraphicsContext.saveGraphicsState()
 NSGraphicsContext.current = nsCtx
 
-ctx.clear(CGRect(x: 0, y: 0, width: size, height: size))
+// MARK: - Background: full-canvas diagonal gradient
 
-// MARK: - Background circle with vertical gradient
-
-let circleInset: CGFloat = 80
-let circleRect = CGRect(
-    x: circleInset, y: circleInset,
-    width: size - 2 * circleInset, height: size - 2 * circleInset
-)
-ctx.saveGState()
-let circlePath = CGPath(ellipseIn: circleRect, transform: nil)
-ctx.addPath(circlePath)
-ctx.clip()
-guard let gradient = CGGradient(
+// Diagonal from top-left (bright cyan, the "light source") to bottom-
+// right (deep navy, the "shadow"). Analogous color pair = smooth, on-
+// brand depth. This fills the entire 1024×1024 canvas — macOS applies
+// its squircle mask on top automatically.
+guard let backgroundGradient = CGGradient(
     colorsSpace: colorSpace,
-    colors: [navyTop.cgColor, navyBottom.cgColor] as CFArray,
+    colors: [cyanBright.cgColor, navyDeep.cgColor] as CFArray,
     locations: [0.0, 1.0]
-) else { print("Gradient failed"); exit(1) }
+) else { print("background gradient failed"); exit(1) }
+
 ctx.drawLinearGradient(
-    gradient,
-    start: CGPoint(x: 0, y: circleRect.maxY),
-    end:   CGPoint(x: 0, y: circleRect.minY),
+    backgroundGradient,
+    start: CGPoint(x: 0, y: size),          // top-left
+    end:   CGPoint(x: size, y: 0),          // bottom-right
     options: []
 )
-ctx.restoreGState()
 
-// MARK: - Top inner highlight
+// MARK: - Top-left highlight (light source)
 
-ctx.saveGState()
-ctx.addPath(circlePath); ctx.clip()
-let highlightRect = CGRect(
-    x: circleInset - 60,
-    y: circleRect.maxY - circleRect.height * 0.55,
-    width: circleRect.width + 120,
-    height: circleRect.height * 0.62
+// A soft radial pool of light in the top-left to reinforce the gradient's
+// implied light direction. Sits at low opacity so it reads as "lit
+// surface" rather than "white blob."
+guard let highlightGradient = CGGradient(
+    colorsSpace: colorSpace,
+    colors: [topLight.cgColor, NSColor(white: 1.0, alpha: 0).cgColor] as CFArray,
+    locations: [0.0, 1.0]
+) else { print("highlight gradient failed"); exit(1) }
+
+ctx.drawRadialGradient(
+    highlightGradient,
+    startCenter: CGPoint(x: size * 0.25, y: size * 0.78),
+    startRadius: 0,
+    endCenter:   CGPoint(x: size * 0.25, y: size * 0.78),
+    endRadius:   size * 0.7,
+    options: []
 )
-ctx.setFillColor(highlight.cgColor)
-ctx.fillEllipse(in: highlightRect)
-ctx.restoreGState()
 
-// MARK: - Custom geometric "e"
-//
-// Design rules that make it actually read as a letter:
-//   * Bar sits slightly above the geometric center (typographic
-//     "optical centering" — geometric center looks too low).
-//   * Bar's left and right ends BOTH overlap the ring stroke, so the
-//     rounded line caps are hidden inside the arc and the bar fuses
-//     into the ring instead of floating with visible tips.
-//   * Opening lives BELOW the bar on the right (~28°). Symmetric or
-//     side-only openings read as "c", not "e".
-//   * Heavy stroke (108 px on 1024) keeps legibility at 16 px.
+// MARK: - Bottom-right corner shadow (depth)
 
-let eRadius: CGFloat = (size / 2) - 240
-let eStrokeWidth: CGFloat = 108
+// Mirror of the highlight — soft pool of darker color in the opposite
+// corner. Subtle, mostly subliminal, but the eye reads it as
+// "something dimensional" rather than "flat sticker."
+guard let shadowGradient = CGGradient(
+    colorsSpace: colorSpace,
+    colors: [cornerShadow.cgColor, NSColor(white: 0, alpha: 0).cgColor] as CFArray,
+    locations: [0.0, 1.0]
+) else { print("shadow gradient failed"); exit(1) }
+
+ctx.drawRadialGradient(
+    shadowGradient,
+    startCenter: CGPoint(x: size * 0.85, y: size * 0.15),
+    startRadius: 0,
+    endCenter:   CGPoint(x: size * 0.85, y: size * 0.15),
+    endRadius:   size * 0.55,
+    options: []
+)
+
+// MARK: - Geometric "e" glyph (white, centered)
+
+// Same construction as v2 (the geometry was already correct — bar
+// optically lifted, opening on lower-right, line caps hidden inside
+// the ring). Now in WHITE for max contrast on the gradient.
+
+// Slightly larger now that the icon isn't constrained by an inset
+// circle — the e can claim more visual real estate.
+let eRadius: CGFloat = (size / 2) - 220
+let eStrokeWidth: CGFloat = 116
 let barYOffset: CGFloat = eRadius * 0.10
 let barY: CGFloat = center.y + barYOffset
 
@@ -117,6 +138,14 @@ let barAngle = asin(barYOffset / eRadius) * 180 / .pi
 let openingBelowBar: CGFloat = 28
 let arcStartAngle = barAngle
 let arcEndAngle = 360 - openingBelowBar
+
+// Soft drop shadow under the glyph — gives the e weight on the
+// gradient, the way Apple's white symbols sit on their gradients.
+ctx.setShadow(
+    offset: CGSize(width: 0, height: -8),
+    blur: 24,
+    color: NSColor(white: 0, alpha: 0.18).cgColor
+)
 
 let arcPath = NSBezierPath()
 arcPath.appendArc(
@@ -133,7 +162,7 @@ let bar = NSBezierPath()
 bar.move(to: CGPoint(x: barLeftX,  y: barY))
 bar.line(to: CGPoint(x: barRightX, y: barY))
 
-cyan.setStroke()
+white.setStroke()
 arcPath.lineWidth = eStrokeWidth
 arcPath.lineCapStyle = .round
 arcPath.lineJoinStyle = .round
