@@ -266,6 +266,151 @@ final class NumberLLMRefinerTests: XCTestCase {
         XCTAssertEqual(chunks.first, "para one\n\npara two\n\npara three")
     }
 
+    // MARK: - Sentence splitter
+
+    func testSplitIntoSentencesSimpleCase() {
+        let sentences = NumberLLMRefiner.splitIntoSentences(
+            "Hello world. How are you? I am fine!"
+        )
+        XCTAssertEqual(sentences, [
+            "Hello world. ",
+            "How are you? ",
+            "I am fine!",
+        ])
+    }
+
+    func testSplitIntoSentencesTreatsNewlinesAsSentenceWhitespace() {
+        let sentences = NumberLLMRefiner.splitIntoSentences(
+            "First.\n\nSecond."
+        )
+        XCTAssertEqual(sentences, [
+            "First.\n\n",
+            "Second.",
+        ])
+    }
+
+    func testSplitIntoSentencesDoesNotBreakOnDecimalsOrAbbreviations() {
+        // "2.5" has no whitespace after the period → no split.
+        // "Mr.Smith" same.
+        let sentences = NumberLLMRefiner.splitIntoSentences(
+            "We waited 2.5 seconds. Then Mr.Smith arrived."
+        )
+        XCTAssertEqual(sentences, [
+            "We waited 2.5 seconds. ",
+            "Then Mr.Smith arrived.",
+        ])
+    }
+
+    func testSplitIntoSentencesPreservesUnterminatedTail() {
+        let sentences = NumberLLMRefiner.splitIntoSentences(
+            "Hello world. and then"
+        )
+        XCTAssertEqual(sentences, [
+            "Hello world. ",
+            "and then",
+        ])
+    }
+
+    func testSplitIntoSentencesEmptyInput() {
+        XCTAssertEqual(NumberLLMRefiner.splitIntoSentences(""), [])
+    }
+
+    // MARK: - Sentence-aware chunker
+
+    func testSplitIntoChunksPacksMultipleSentencesPerChunk() {
+        let chunks = NumberLLMRefiner.splitIntoChunks(
+            text: "First. Second. Third. Fourth.",
+            maxChars: 100
+        )
+        XCTAssertEqual(chunks.count, 1)
+        XCTAssertEqual(chunks[0], "First. Second. Third. Fourth.")
+    }
+
+    func testSplitIntoChunksBreaksWhenBudgetExceeded() {
+        // Each "Sentence X1. " is 13 chars including trailing space; "Sentence
+        // C3." is 12 chars (last sentence, no trailing space). Budget 25 means
+        // chunks 1 and 2 can each hold one sentence (adding a second 13-char
+        // sentence would push past 25), but chunk 3 fits with chunk 2's
+        // shorter remainder.
+        let chunks = NumberLLMRefiner.splitIntoChunks(
+            text: "Sentence A1. Sentence B2. Sentence C3.",
+            maxChars: 25
+        )
+        XCTAssertEqual(chunks.count, 2)
+        XCTAssertEqual(chunks[0], "Sentence A1. ")
+        XCTAssertEqual(chunks[1], "Sentence B2. Sentence C3.")
+        XCTAssertEqual(chunks.joined(), "Sentence A1. Sentence B2. Sentence C3.",
+                       "Concatenation must reconstruct the input")
+    }
+
+    func testSplitIntoChunksAllowsOversizedSingleSentence() {
+        // A single sentence bigger than the budget still becomes one chunk —
+        // there's no smaller unit to split on.
+        let chunks = NumberLLMRefiner.splitIntoChunks(
+            text: "This is a single long sentence that exceeds the tiny budget.",
+            maxChars: 20
+        )
+        XCTAssertEqual(chunks.count, 1)
+    }
+
+    func testSplitIntoChunksConcatenationReconstructsInput() {
+        let input = "Run for thirty seconds. Then jog. Finally rest for two minutes."
+        let chunks = NumberLLMRefiner.splitIntoChunks(text: input, maxChars: 20)
+        XCTAssertEqual(chunks.joined(), input)
+    }
+
+    // MARK: - Context-wrapped prompt
+
+    func testBuildContextPromptIncludesAllThreeBlocksWhenContextProvided() {
+        let prompt = NumberLLMRefiner.buildContextPrompt(
+            chunk: "thirty seconds",
+            contextBefore: "before text",
+            contextAfter: "after text"
+        )
+        XCTAssertTrue(prompt.contains("=== BEFORE"))
+        XCTAssertTrue(prompt.contains("before text"))
+        XCTAssertTrue(prompt.contains("=== CURRENT"))
+        XCTAssertTrue(prompt.contains("thirty seconds"))
+        XCTAssertTrue(prompt.contains("=== AFTER"))
+        XCTAssertTrue(prompt.contains("after text"))
+    }
+
+    func testBuildContextPromptOmitsBeforeBlockForFirstChunk() {
+        let prompt = NumberLLMRefiner.buildContextPrompt(
+            chunk: "thirty seconds",
+            contextBefore: nil,
+            contextAfter: "after text"
+        )
+        XCTAssertFalse(prompt.contains("=== BEFORE"))
+        XCTAssertTrue(prompt.contains("=== CURRENT"))
+        XCTAssertTrue(prompt.contains("=== AFTER"))
+    }
+
+    func testBuildContextPromptOmitsAfterBlockForLastChunk() {
+        let prompt = NumberLLMRefiner.buildContextPrompt(
+            chunk: "thirty seconds",
+            contextBefore: "before text",
+            contextAfter: nil
+        )
+        XCTAssertTrue(prompt.contains("=== BEFORE"))
+        XCTAssertTrue(prompt.contains("=== CURRENT"))
+        XCTAssertFalse(prompt.contains("=== AFTER"))
+    }
+
+    func testBuildContextPromptOmitsBothBlocksForSoleChunk() {
+        let prompt = NumberLLMRefiner.buildContextPrompt(
+            chunk: "thirty seconds",
+            contextBefore: nil,
+            contextAfter: nil
+        )
+        XCTAssertFalse(prompt.contains("=== BEFORE"))
+        XCTAssertTrue(prompt.contains("=== CURRENT"))
+        XCTAssertFalse(prompt.contains("=== AFTER"))
+        XCTAssertTrue(prompt.contains("thirty seconds"))
+    }
+
+    // MARK: - Legacy paragraph splitter (kept for callers that need it)
+
     func testSplitAtParagraphsHardSplitsOversizedParagraph() {
         // First paragraph (10 chars) fits in budget. Second (20 chars) exceeds
         // the 15-char budget AND can't fit anywhere, so it gets hard-split
@@ -339,22 +484,35 @@ final class NumberLLMRefinerTests: XCTestCase {
     }
 
     func testRefineByChunksFallsBackPerChunkWithoutPoisoningNeighbors() async throws {
-        // FailOnNthCallLLM throws on the second LLM call, succeeds on the others.
-        // The middle chunk falls back to its input; chunks 1 and 3 get refined.
+        // Long input with three distinctive number phrases. Sequential execution
+        // (maxConcurrency=1) so the failing-call counter is deterministic. The
+        // exact sentence-to-chunk mapping isn't load-bearing — we just need at
+        // least one chunk to fail and at least one to succeed, then assert the
+        // result shows both refined and spelled forms (proving per-chunk
+        // isolation: a failure doesn't poison the neighbors).
         let llm = FailOnNthCallLLM(failingCall: 2)
-        let refiner = NumberLLMRefiner(llmService: llm, maxCharsPerCall: 1000)
-        let input = threeParagraphInput()
+        let refiner = NumberLLMRefiner(llmService: llm, maxCharsPerCall: 200, maxConcurrency: 1)
+        let s1 = String(repeating: "Run for thirty seconds and feel the burn carefully. ", count: 4)
+        let s2 = String(repeating: "Do forty-five reps with controlled breathing now. ", count: 4)
+        let s3 = String(repeating: "Born in nineteen ninety-five we moved to the city. ", count: 4)
+        let input = s1 + s2 + s3
 
         let outcome = try await refiner.refine(text: input)
 
-        // Some chunks succeeded → usedLLM is true overall.
-        XCTAssertTrue(outcome.usedLLM)
-        XCTAssertNil(outcome.fallbackReason)
-        // Refined paragraphs 1 and 3 have no spelled "thirty"/"nineteen ninety-five".
-        XCTAssertFalse(outcome.text.contains("thirty seconds"))
-        XCTAssertFalse(outcome.text.contains("nineteen ninety-five"))
-        // Middle paragraph fell back to its input — "forty-five" is still present.
-        XCTAssertTrue(outcome.text.contains("forty-five reps"))
+        XCTAssertGreaterThanOrEqual(llm.callCount, 3, "Long input + 200-char budget should produce 3+ chunks")
+        XCTAssertTrue(outcome.usedLLM, "Some chunks succeeded → overall usedLLM is true")
+
+        // At least one digit form appears (some chunk was refined).
+        let hasRefined = outcome.text.contains("30 seconds")
+            || outcome.text.contains("45 reps")
+            || outcome.text.contains("1995")
+        XCTAssertTrue(hasRefined, "At least one chunk should have been refined to digit form")
+
+        // At least one spelled form survives (some chunk failed → spelled stayed).
+        let hasSpelled = outcome.text.contains("thirty seconds")
+            || outcome.text.contains("forty-five reps")
+            || outcome.text.contains("nineteen ninety-five")
+        XCTAssertTrue(hasSpelled, "The failed chunk should keep its spelled numbers")
     }
 
     func testRefineByChunksMarksFallbackWhenEveryChunkFails() async throws {
@@ -441,20 +599,37 @@ private final class ThrowingLLM: LLMServiceProtocol, @unchecked Sendable {
     func formatTranscriptDetailed(transcript: String, promptTemplate: String, source: TelemetryFormatterSource, defaultPromptUsed: Bool) async throws -> LLMFormatterResult { throw error }
 }
 
-/// Returns the input text with the spelled-number words `thirty`,
-/// `forty-five`, and `nineteen ninety-five` rewritten as `30`, `45`, `1995`.
-/// Lets batched-path tests assert per-chunk refinement worked.
+/// Parses the CURRENT block out of the actor's context-wrapped prompt and
+/// returns it with `thirty`, `forty-five`, and `nineteen ninety-five`
+/// rewritten as `30`, `45`, `1995`. Mimics an LLM that follows the prompt
+/// structure correctly — returns only the rewritten CURRENT section.
 private final class DigitSubstitutingLLM: LLMServiceProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var callCount = 0
 
     func transformDetailed(text: String, prompt: String) async throws -> LLMResult {
         lock.lock(); callCount += 1; lock.unlock()
-        let replaced = text
+        let current = Self.extractCurrentBlock(from: text)
+        let replaced = current
             .replacingOccurrences(of: "thirty seconds", with: "30 seconds")
             .replacingOccurrences(of: "forty-five reps", with: "45 reps")
             .replacingOccurrences(of: "nineteen ninety-five", with: "1995")
         return LLMResult(output: replaced, provider: "test", model: "test", latencyMs: 1)
+    }
+
+    /// Pulls the text between `=== CURRENT (rewrite this) ===` and the next
+    /// `=== ` block marker (or end of string). Falls back to the whole prompt
+    /// for tests that don't use the context-wrapped path.
+    static func extractCurrentBlock(from prompt: String) -> String {
+        guard let startRange = prompt.range(of: "=== CURRENT (rewrite this) ===") else {
+            return prompt
+        }
+        let bodyStart = prompt.index(after: startRange.upperBound)  // skip newline
+        let remainder = prompt[bodyStart...]
+        if let afterMarker = remainder.range(of: "\n\n=== ") {
+            return String(remainder[..<afterMarker.lowerBound])
+        }
+        return String(remainder)
     }
 
     func transform(text: String, prompt: String) async throws -> String { try await transformDetailed(text: text, prompt: prompt).output }
@@ -492,7 +667,8 @@ private final class FailOnNthCallLLM: LLMServiceProtocol, @unchecked Sendable {
     func transformDetailed(text: String, prompt: String) async throws -> LLMResult {
         lock.lock(); callCount += 1; let n = callCount; lock.unlock()
         if n == failingCall { throw URLError(.notConnectedToInternet) }
-        let replaced = text
+        let current = DigitSubstitutingLLM.extractCurrentBlock(from: text)
+        let replaced = current
             .replacingOccurrences(of: "thirty seconds", with: "30 seconds")
             .replacingOccurrences(of: "forty-five reps", with: "45 reps")
             .replacingOccurrences(of: "nineteen ninety-five", with: "1995")

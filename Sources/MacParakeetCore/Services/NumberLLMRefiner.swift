@@ -59,14 +59,35 @@ public actor NumberLLMRefiner {
 
     private let llmService: LLMServiceProtocol
     private let maxCharsPerCall: Int
+    private let maxConcurrency: Int
 
-    public init(llmService: LLMServiceProtocol, maxCharsPerCall: Int = 80_000) {
+    /// - Parameters:
+    ///   - llmService: provider used for refinement calls.
+    ///   - maxCharsPerCall: target chunk size (sentences are greedy-packed up to
+    ///     this character count). Default 1500 chars — sized so each LLM call
+    ///     has a focused, short task (small local models do much better at
+    ///     "rewrite this short passage" than "rewrite this whole transcript and
+    ///     don't change anything else"). Set higher to reduce LLM call count
+    ///     when using a large cloud model.
+    ///   - maxConcurrency: how many chunk calls run in flight at once. Matters
+    ///     mainly for cloud providers (parallel API calls). Local providers
+    ///     usually serialize at the model level anyway, so even 4 concurrent
+    ///     calls don't actually run in parallel.
+    public init(
+        llmService: LLMServiceProtocol,
+        maxCharsPerCall: Int = 1_500,
+        maxConcurrency: Int = 4
+    ) {
         self.llmService = llmService
-        self.maxCharsPerCall = max(1_000, maxCharsPerCall)
+        self.maxCharsPerCall = max(200, maxCharsPerCall)
+        self.maxConcurrency = max(1, maxConcurrency)
     }
 
-    /// Refine the input transcript. Returns the deterministic input untouched
-    /// when anything fails. Re-throws `CancellationError` so structured
+    /// Refine the input transcript. Always chunks into small, context-wrapped
+    /// pieces so each LLM call has a focused task — small models in particular
+    /// do much better on short, well-bounded inputs than on whole transcripts.
+    /// Per-chunk safety gates catch local misbehavior without poisoning the
+    /// rest of the transcript. Re-throws `CancellationError` so structured
     /// concurrency cancellation propagates up to the caller.
     public func refine(
         text: String,
@@ -76,73 +97,67 @@ public actor NumberLLMRefiner {
         guard !text.isEmpty else {
             return RefinementOutcome(text: text, usedLLM: false, fallbackReason: nil, run: nil)
         }
-
-        // Escape hatch for very long transcripts: split at paragraph boundaries
-        // and refine chunk-by-chunk. Per-chunk failures fall back to that
-        // chunk's input, not the whole transcript. Sequential to keep the
-        // ordering deterministic and the implementation simple — the typical
-        // case (transcripts well under 80K chars) takes the single-call path.
-        if text.count > maxCharsPerCall {
-            return try await refineByChunks(text: text, runSource: runSource, onProgress: onProgress)
-        }
-
-        return try await refineSingleCall(text: text, runSource: runSource)
+        return try await refineByChunks(text: text, runSource: runSource, onProgress: onProgress)
     }
 
-    // MARK: - Single-call path
+    // MARK: - Per-chunk LLM call
 
-    private func refineSingleCall(
-        text: String,
+    /// Refines one chunk. Builds a context-wrapped prompt (BEFORE/CURRENT/AFTER)
+    /// so the model can disambiguate boundary phrases (e.g. "nineteen ninety"
+    /// + cue break + "five" → 1995) while only modifying the CURRENT block.
+    /// The safety gate compares ONLY the CURRENT chunk's input against the
+    /// model's output, so misbehavior on context boundaries gets caught.
+    ///
+    /// Returns an outcome describing what happened to this chunk. `usedLLM`
+    /// is true only when the gate passed; on any other path the chunk's
+    /// original text is returned with a populated fallback reason.
+    private func refineChunk(
+        chunk: String,
+        contextBefore: String?,
+        contextAfter: String?,
         runSource: LLMRunSource?
     ) async throws -> RefinementOutcome {
         let startedAt = Date()
+        let prompt = Self.buildContextPrompt(
+            chunk: chunk, contextBefore: contextBefore, contextAfter: contextAfter
+        )
         let result: LLMResult
         do {
             result = try await llmService.transformDetailed(
-                text: text,
+                text: prompt,
                 prompt: Self.systemPrompt
             )
         } catch is CancellationError {
             throw CancellationError()
         } catch let llmError as LLMError where Self.isNotConfigured(llmError) {
             return RefinementOutcome(
-                text: text,
-                usedLLM: false,
-                fallbackReason: .notConfigured,
-                run: nil,
-                latencyMs: Self.latencyMs(since: startedAt)
+                text: chunk, usedLLM: false, fallbackReason: .notConfigured,
+                run: nil, latencyMs: Self.latencyMs(since: startedAt)
             )
         } catch {
             return RefinementOutcome(
-                text: text,
-                usedLLM: false,
-                fallbackReason: .callFailed,
-                run: nil,
-                latencyMs: Self.latencyMs(since: startedAt)
+                text: chunk, usedLLM: false, fallbackReason: .callFailed,
+                run: nil, latencyMs: Self.latencyMs(since: startedAt)
             )
         }
 
         let cleaned = Self.cleanReply(result.output)
         guard !cleaned.isEmpty else {
             return RefinementOutcome(
-                text: text,
-                usedLLM: false,
-                fallbackReason: .parseFailed,
-                run: nil,
-                latencyMs: Self.latencyMs(since: startedAt),
+                text: chunk, usedLLM: false, fallbackReason: .parseFailed,
+                run: nil, latencyMs: Self.latencyMs(since: startedAt),
                 provider: result.provider
             )
         }
 
-        guard Self.safetyGatePasses(input: text, output: cleaned) else {
+        // Safety gate compares model output to CURRENT chunk only. If the
+        // model echoed back BEFORE/CURRENT/AFTER, the word multiset will
+        // differ wildly from CURRENT alone → reject.
+        guard Self.safetyGatePasses(input: chunk, output: cleaned) else {
             return RefinementOutcome(
-                text: text,
-                usedLLM: false,
-                fallbackReason: .safetyGateRejected,
-                run: nil,
-                latencyMs: Self.latencyMs(since: startedAt),
-                provider: result.provider,
-                safetyGatePassed: false
+                text: chunk, usedLLM: false, fallbackReason: .safetyGateRejected,
+                run: nil, latencyMs: Self.latencyMs(since: startedAt),
+                provider: result.provider, safetyGatePassed: false
             )
         }
 
@@ -157,7 +172,7 @@ public actor NumberLLMRefiner {
             completionTokens: result.usage?.completionTokens,
             totalTokens: result.usage?.totalTokens,
             latencyMs: result.latencyMs,
-            inputChars: text.count,
+            inputChars: chunk.count,
             outputChars: cleaned.count,
             stopReason: result.stopReason,
             inputTruncated: false,
@@ -166,47 +181,117 @@ public actor NumberLLMRefiner {
         )
 
         return RefinementOutcome(
-            text: cleaned,
-            usedLLM: true,
-            fallbackReason: nil,
-            run: run,
+            text: cleaned, usedLLM: true, fallbackReason: nil, run: run,
             latencyMs: result.latencyMs ?? Self.latencyMs(since: startedAt),
-            provider: result.provider,
-            safetyGatePassed: true
+            provider: result.provider, safetyGatePassed: true
         )
     }
 
-    // MARK: - Batched (escape-hatch) path
+    // MARK: - Chunked driver
 
+    /// Splits the input into sentence-packed chunks, refines each in a small
+    /// task group (bounded by `maxConcurrency`), and stitches the results
+    /// back. Per-chunk failures isolate — a misbehaving chunk falls back to
+    /// its input without affecting neighbors. The stitching uses single
+    /// spaces because sentences split with `splitIntoChunks` already carry
+    /// their trailing space when needed.
     private func refineByChunks(
         text: String,
         runSource: LLMRunSource?,
         onProgress: ProgressHandler?
     ) async throws -> RefinementOutcome {
-        let chunks = Self.splitAtParagraphs(text: text, maxChars: maxCharsPerCall)
-        var refinedChunks: [String] = []
-        refinedChunks.reserveCapacity(chunks.count)
+        let chunks = Self.splitIntoChunks(text: text, maxChars: maxCharsPerCall)
         let total = chunks.count
+
+        // Single-chunk fast path: skip the task group's overhead. No context
+        // blocks because there's nothing before or after.
+        if total == 1 {
+            let outcome = try await refineChunk(
+                chunk: chunks[0],
+                contextBefore: nil, contextAfter: nil,
+                runSource: runSource
+            )
+            onProgress?(1, 1)
+            return outcome
+        }
+
+        // Concurrent per-chunk execution, bounded to `maxConcurrency` in flight.
+        // Each chunk gets its immediate neighbors as BEFORE/AFTER context so
+        // the model can disambiguate boundary phrases without needing global view.
+        var refinedByIndex: [Int: String] = [:]
         var anySucceeded = false
         var firstRun: LLMRun?
         var lastProvider: String?
         var anyGatePassed = false
+        var completed = 0
 
-        for (i, chunk) in chunks.enumerated() {
-            try Task.checkCancellation()
-            let outcome = try await refineSingleCall(text: chunk, runSource: runSource)
-            refinedChunks.append(outcome.text)
-            if outcome.usedLLM {
-                anySucceeded = true
-                if firstRun == nil { firstRun = outcome.run }
-                lastProvider = outcome.provider
-                anyGatePassed = anyGatePassed || outcome.safetyGatePassed
+        try await withThrowingTaskGroup(of: (Int, RefinementOutcome).self) { group in
+            var nextIndex = 0
+            let seedCount = min(maxConcurrency, total)
+
+            while nextIndex < seedCount {
+                let i = nextIndex
+                group.addTask { [weak self] in
+                    guard let self else {
+                        return (i, RefinementOutcome(
+                            text: chunks[i], usedLLM: false,
+                            fallbackReason: .cancelled, run: nil
+                        ))
+                    }
+                    let outcome = try await self.refineChunk(
+                        chunk: chunks[i],
+                        contextBefore: i > 0 ? chunks[i - 1] : nil,
+                        contextAfter: i + 1 < total ? chunks[i + 1] : nil,
+                        runSource: runSource
+                    )
+                    return (i, outcome)
+                }
+                nextIndex += 1
             }
-            onProgress?(i + 1, total)
+
+            while let (i, outcome) = try await group.next() {
+                refinedByIndex[i] = outcome.text
+                if outcome.usedLLM {
+                    anySucceeded = true
+                    if firstRun == nil { firstRun = outcome.run }
+                    lastProvider = outcome.provider
+                    anyGatePassed = anyGatePassed || outcome.safetyGatePassed
+                }
+                completed += 1
+                onProgress?(completed, total)
+
+                if nextIndex < total {
+                    let j = nextIndex
+                    group.addTask { [weak self] in
+                        guard let self else {
+                            return (j, RefinementOutcome(
+                                text: chunks[j], usedLLM: false,
+                                fallbackReason: .cancelled, run: nil
+                            ))
+                        }
+                        let outcome = try await self.refineChunk(
+                            chunk: chunks[j],
+                            contextBefore: j > 0 ? chunks[j - 1] : nil,
+                            contextAfter: j + 1 < total ? chunks[j + 1] : nil,
+                            runSource: runSource
+                        )
+                        return (j, outcome)
+                    }
+                    nextIndex += 1
+                }
+            }
         }
 
-        // Use paragraph delimiter that matches the splitter's contract.
-        let stitched = refinedChunks.joined(separator: "\n\n")
+        // Stitch in order. splitIntoChunks preserved trailing whitespace on
+        // each chunk where the source had it, so simple concatenation
+        // reconstructs the original spacing.
+        var refinedChunks: [String] = []
+        refinedChunks.reserveCapacity(total)
+        for i in 0..<total {
+            refinedChunks.append(refinedByIndex[i] ?? chunks[i])
+        }
+        let stitched = refinedChunks.joined()
+
         return RefinementOutcome(
             text: stitched,
             usedLLM: anySucceeded,
@@ -218,10 +303,42 @@ public actor NumberLLMRefiner {
         )
     }
 
+    // MARK: - Context-wrapped prompt
+
+    /// Builds a structured user-message prompt with optional BEFORE / AFTER
+    /// context blocks around the CURRENT chunk to refine. Sections use plain
+    /// `===` markers — clearer for small models than nested XML or JSON.
+    static func buildContextPrompt(
+        chunk: String,
+        contextBefore: String?,
+        contextAfter: String?
+    ) -> String {
+        var lines: [String] = []
+        lines.append("Below is a transcript split into parts. Rewrite ONLY the CURRENT part — change spelled-out numbers to digits per the system instructions. Use BEFORE and AFTER as context to disambiguate (e.g. years, times) but do not include them in your reply. Return only the rewritten CURRENT text, nothing else.")
+        lines.append("")
+        if let before = contextBefore, !before.isEmpty {
+            lines.append("=== BEFORE (context only — do not include in reply) ===")
+            lines.append(before)
+            lines.append("")
+        }
+        lines.append("=== CURRENT (rewrite this) ===")
+        lines.append(chunk)
+        lines.append("")
+        if let after = contextAfter, !after.isEmpty {
+            lines.append("=== AFTER (context only — do not include in reply) ===")
+            lines.append(after)
+        }
+        return lines.joined(separator: "\n")
+    }
+
     /// Splits `text` at paragraph boundaries (`\n\n`), greedy-packing into
     /// chunks of up to `maxChars`. A single oversized paragraph is
     /// hard-split by character count as a last resort. Always returns at
     /// least one chunk.
+    ///
+    /// Kept for reference / coarse splitting needs. The chunked refiner uses
+    /// `splitIntoChunks` (sentence-aware) instead, which produces smaller
+    /// natural-language-boundary chunks suited to per-chunk LLM refinement.
     static func splitAtParagraphs(text: String, maxChars: Int) -> [String] {
         let paragraphs = text.components(separatedBy: "\n\n")
         var chunks: [String] = []
@@ -248,6 +365,88 @@ public actor NumberLLMRefiner {
         }
         if !current.isEmpty { chunks.append(current) }
         return chunks.isEmpty ? [text] : chunks
+    }
+
+    /// Splits `text` into chunks of at most `maxChars` characters, breaking
+    /// at sentence boundaries (`.`, `!`, `?` followed by whitespace).
+    /// Sentences are greedy-packed: small adjacent sentences ride in the
+    /// same chunk until they'd exceed the budget.
+    ///
+    /// Each returned chunk preserves the original trailing whitespace from
+    /// the source — so simple concatenation of chunks reconstructs the
+    /// original spacing without inserting extra separators.
+    ///
+    /// A single sentence longer than `maxChars` becomes its own chunk
+    /// (last-resort path; the safety gate still operates on it normally).
+    /// Always returns at least one chunk.
+    static func splitIntoChunks(text: String, maxChars: Int) -> [String] {
+        guard !text.isEmpty else { return [""] }
+        let sentences = splitIntoSentences(text)
+        guard !sentences.isEmpty else { return [text] }
+
+        var chunks: [String] = []
+        var current = ""
+
+        for sentence in sentences {
+            // Always allow at least one sentence per chunk, even if it's longer
+            // than maxChars on its own — there's no smaller unit to split on.
+            if current.isEmpty {
+                current = sentence
+                continue
+            }
+            if current.count + sentence.count <= maxChars {
+                current += sentence
+            } else {
+                chunks.append(current)
+                current = sentence
+            }
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
+    }
+
+    /// Walks `text` and returns the longest prefixes that end at a sentence
+    /// boundary. Sentence-end is one of `.`, `!`, `?` followed by whitespace
+    /// or end of string. Decimal points inside numbers (e.g. `2.5`) are not
+    /// boundaries because they aren't followed by whitespace.
+    ///
+    /// Each returned sentence keeps its original trailing whitespace, so
+    /// joining them reconstructs the input. The final sentence may have no
+    /// terminator (mid-thought transcripts).
+    static func splitIntoSentences(_ text: String) -> [String] {
+        guard !text.isEmpty else { return [] }
+        var sentences: [String] = []
+        var start = text.startIndex
+        var i = text.startIndex
+
+        while i < text.endIndex {
+            let ch = text[i]
+            if ch == "." || ch == "!" || ch == "?" {
+                // Look ahead: is the next character whitespace or end of string?
+                let next = text.index(after: i)
+                if next == text.endIndex {
+                    sentences.append(String(text[start..<text.endIndex]))
+                    return sentences
+                }
+                if text[next].isWhitespace {
+                    // Include the terminator AND the trailing whitespace run
+                    // in this sentence, so concatenation reconstructs the input.
+                    var afterWs = next
+                    while afterWs < text.endIndex, text[afterWs].isWhitespace {
+                        afterWs = text.index(after: afterWs)
+                    }
+                    sentences.append(String(text[start..<afterWs]))
+                    start = afterWs
+                    i = afterWs
+                    continue
+                }
+            }
+            i = text.index(after: i)
+        }
+        if start < text.endIndex {
+            sentences.append(String(text[start..<text.endIndex]))
+        }
+        return sentences
     }
 
     // MARK: - Reply cleaning
