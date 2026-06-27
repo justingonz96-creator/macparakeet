@@ -27,6 +27,10 @@ final class CommandModeCoordinator {
     private struct ActiveHold {
         let runID: UUID
         var captured: SelectionCaptureResult?
+        /// True once `audioProcessor.startCapture()` has succeeded for this hold.
+        /// A re-press teardown only needs to stop the mic when a capture is
+        /// actually live, so this gates the `stopCapture()` call (Bug 3).
+        var recording = false
     }
 
     private let monitor = CommandModeHotkeyMonitor()
@@ -74,8 +78,14 @@ final class CommandModeCoordinator {
         self.isDictationOrMeetingActive = isDictationOrMeetingActive
         self.onLLMProviderRequired = onLLMProviderRequired
         self.suspendOtherHotkeys = suspendOtherHotkeys
-        monitor.onPressStart = { [weak self] in self?.handlePressStart() }
-        monitor.onPressEnd = { [weak self] in self?.handlePressEnd() }
+        // The monitor's tap callback runs on the main run loop and calls these
+        // closures synchronously. `handlePressStart` / `handlePressEnd` do heavy
+        // work (arbiter acquire, suspending 4+ other taps, NSPanel construction),
+        // which would overrun macOS's tap deadline and disable the tap. Defer the
+        // work onto a fresh main-actor task so the callback returns immediately —
+        // the same pattern `TransformsCoordinator` uses for `registry.onTrigger`.
+        monitor.onPressStart = { [weak self] in Task { @MainActor in await self?.handlePressStart() } }
+        monitor.onPressEnd = { [weak self] in Task { @MainActor in self?.handlePressEnd() } }
         refreshShortcut(currentShortcut())
     }
 
@@ -94,11 +104,12 @@ final class CommandModeCoordinator {
 
     // MARK: - Hold lifecycle
 
-    private func handlePressStart() {
+    private func handlePressStart() async {
         // A new press while a prior hold is still active (rapid re-press): tear
         // the prior hold down first so its arbiter lease + hotkey suspension are
-        // released exactly once before we acquire fresh ones below.
-        if let prior = activeHold { teardown(prior) }
+        // released exactly once, and its live mic capture (if any) is fully
+        // stopped, before we acquire fresh ones below.
+        if let prior = activeHold { await teardown(prior) }
 
         // Forward read-only mic exclusion: if dictation or meeting capture is
         // live, Command Mode refuses (those flows never acquire the arbiter, so
@@ -158,6 +169,11 @@ final class CommandModeCoordinator {
 
         do {
             try await audioProcessor.startCapture()
+            // Mark the hold as recording so a re-press teardown knows to stop the
+            // mic (Bug 3). Re-check the runID: an interleaved re-press could have
+            // replaced the hold while `startCapture` was awaiting.
+            guard activeHold?.runID == runID else { return }
+            activeHold?.recording = true
             panel.showWorking(message: "Listening…")
         } catch {
             logger.error("command-mode: mic start failed: \(error.localizedDescription, privacy: .public)")
@@ -319,10 +335,26 @@ final class CommandModeCoordinator {
     }
 
     /// Tear down a prior hold being abandoned by a re-press. Same release
-    /// semantics as `finishHold` (each exactly once), plus it dismisses the pill
-    /// so the new hold starts clean.
-    private func teardown(_ hold: ActiveHold) {
+    /// semantics as `finishHold` (each exactly once), plus it stops any live mic
+    /// capture and dismisses the pill so the new hold starts clean.
+    ///
+    /// Ordering matters: if the prior hold was recording we must fully stop its
+    /// capture *before* releasing the arbiter, so the new hold cannot acquire the
+    /// mic while the old session is still open. We re-check the runID after the
+    /// `stopCapture` await — a second re-press during the await would replace the
+    /// hold, and only the owner of the live `activeHold` may release the arbiter
+    /// (preserving the exactly-once release invariant).
+    private func teardown(_ hold: ActiveHold) async {
         guard activeHold?.runID == hold.runID else { return }
+
+        if hold.recording {
+            let url = try? await audioProcessor.stopCapture()
+            if let url { try? FileManager.default.removeItem(at: url) }
+            // A re-press during the await above may have already torn this hold
+            // down and started a new one. Bail rather than double-release.
+            guard activeHold?.runID == hold.runID else { return }
+        }
+
         arbiter.release(.commandMode)
         suspendOtherHotkeys(false)
         activeHold = nil

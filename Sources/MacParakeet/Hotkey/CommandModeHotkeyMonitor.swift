@@ -115,7 +115,15 @@ public final class CommandModeHotkeyMonitor {
 
     func handleEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            // macOS disabled our tap (slow callback or user input). If a press was
+            // in flight, the matching physical keyUp will be dropped/ignored, so
+            // synthesize the press-end here to tear the hold down cleanly — the
+            // same recovery the dictation tap does via `recoverFromDisabledTap`.
+            // Mirror that ordering: fire the release, then clear `isDown` and
+            // re-enable the tap.
+            let wasDown = isDown
             isDown = false
+            if wasDown { onPressEnd?() }
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
             return Unmanaged.passUnretained(event)
         }
