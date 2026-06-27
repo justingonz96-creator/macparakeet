@@ -127,6 +127,19 @@ public final class SettingsViewModel {
             Telemetry.send(youtubeTranscriptionHotkeyTrigger.customizedEvent(surface: .youtubeTranscription))
         }
     }
+    public static let commandModeShortcutDefaultsKey = "commandModeShortcut"
+    /// The keyboard shortcut that activates Command Mode (ADR-023).
+    /// `nil` means unbound (the default) — the feature is opt-in.
+    public var commandModeShortcut: KeyboardShortcut? {
+        didSet {
+            if let encoded = commandModeShortcut?.encodedString() {
+                defaults.set(encoded, forKey: Self.commandModeShortcutDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: Self.commandModeShortcutDefaultsKey)
+            }
+            NotificationCenter.default.post(name: .macParakeetCommandModeShortcutDidChange, object: nil)
+        }
+    }
     public var silenceAutoStop: Bool {
         didSet {
             defaults.set(silenceAutoStop, forKey: UserDefaultsAppRuntimePreferences.silenceAutoStopKey)
@@ -565,6 +578,7 @@ public final class SettingsViewModel {
             defaults: defaults,
             defaultsKey: HotkeyTrigger.youtubeTranscriptionDefaultsKey
         )
+        commandModeShortcut = KeyboardShortcut.decoded(from: defaults.string(forKey: Self.commandModeShortcutDefaultsKey))
         silenceAutoStop = defaults.bool(forKey: UserDefaultsAppRuntimePreferences.silenceAutoStopKey)
         let delay = defaults.double(forKey: UserDefaultsAppRuntimePreferences.silenceDelayKey)
         silenceDelay = delay == 0 ? 2.0 : delay

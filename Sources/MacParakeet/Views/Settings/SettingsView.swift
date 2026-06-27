@@ -362,6 +362,9 @@ struct SettingsView: View {
             if AppFeatures.meetingRecordingEnabled {
                 meetingRecordingCard.id("meeting")
             }
+            if AppFeatures.commandModeEnabled {
+                commandModeCard.id("command-mode")
+            }
         }
     }
 
@@ -2884,5 +2887,104 @@ struct SettingsView: View {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    // MARK: - Command Mode
+
+    @State private var isRecordingCommandModeShortcut = false
+    @State private var commandModeShortcutCollision: String?
+    private let commandModeCollisionChecker = TransformsHotkeyCollisionChecker()
+
+    /// Settings card for Command Mode (ADR-023).
+    /// Uses `ShortcutRecorderField` (the same recorder used by `TransformEditorSheet`)
+    /// since Command Mode binds a `KeyboardShortcut?` rather than a `HotkeyTrigger`.
+    /// Collision checks run against the existing Transform prompt bindings and
+    /// the reserved dictation / meeting / transcription hotkeys passed in via
+    /// `transformHotkeys` and `viewModel`.
+    private var commandModeCard: some View {
+        settingsCard(
+            title: "Command Mode",
+            subtitle: "Optional. Invoke a system-wide command palette with a keyboard shortcut.",
+            icon: "terminal"
+        ) {
+            VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                HStack(alignment: .center) {
+                    rowText(
+                        title: "Command Mode shortcut",
+                        detail: "Leave empty to keep Command Mode dormant."
+                    )
+                    Spacer(minLength: DesignSystem.Spacing.md)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        ShortcutRecorderField(
+                            shortcut: $viewModel.commandModeShortcut,
+                            isRecording: $isRecordingCommandModeShortcut,
+                            onRecordingStateChanged: { recording in
+                                onHotkeyRecordingStateChanged(recording)
+                                if !recording {
+                                    commandModeShortcutCollision = validateCommandModeShortcut(
+                                        viewModel.commandModeShortcut
+                                    )
+                                }
+                            }
+                        )
+                        .onChange(of: viewModel.commandModeShortcut) { _, newShortcut in
+                            commandModeShortcutCollision = validateCommandModeShortcut(newShortcut)
+                        }
+
+                        if let collision = commandModeShortcutCollision {
+                            HStack(spacing: 4) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 10))
+                                Text(collision)
+                                    .font(DesignSystem.Typography.micro)
+                            }
+                            .foregroundStyle(DesignSystem.Colors.errorRed)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Validate a candidate Command Mode shortcut against reserved hotkeys
+    /// and the current Transform prompt bindings. Returns an inline error
+    /// string on collision, or nil if the shortcut is acceptable.
+    private func validateCommandModeShortcut(_ candidate: TransformShortcut?) -> String? {
+        guard let candidate else { return nil }
+
+        // Build the reserved-hotkey set from the dictation / transcription /
+        // meeting triggers stored on the view model — the same sources that
+        // `transformReservedHotkeysForTransforms()` in AppDelegate uses.
+        let candidateTrigger = candidate.hotkeyTrigger
+        let reservedChecks: [(name: String, trigger: HotkeyTrigger)] = [
+            ("hands-free dictation", viewModel.hotkeyTrigger),
+            ("push-to-talk dictation", viewModel.pushToTalkHotkeyTrigger),
+            ("file transcription", viewModel.fileTranscriptionHotkeyTrigger),
+            ("YouTube transcription", viewModel.youtubeTranscriptionHotkeyTrigger),
+            ("meeting recording", viewModel.meetingHotkeyTrigger),
+        ]
+        for (name, trigger) in reservedChecks where !trigger.isDisabled {
+            if candidateTrigger.conflicts(with: trigger) {
+                return "Conflicts with \(name) (\(trigger.formattedLabel))."
+            }
+        }
+
+        // Check against current Transform prompt bindings.
+        let existingTransformShortcuts: [UUID: TransformShortcut] = Dictionary(
+            uniqueKeysWithValues: transformHotkeys.compactMap { prompt in
+                guard let shortcut = prompt.shortcut else { return nil }
+                return (prompt.id, shortcut)
+            }
+        )
+        if let collision = commandModeCollisionChecker.check(
+            candidate: candidate,
+            existing: existingTransformShortcuts,
+            excludingPromptID: nil,
+            reservedHotkeys: []
+        ) {
+            return collision.message
+        }
+
+        return nil
     }
 }
