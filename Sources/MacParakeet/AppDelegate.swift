@@ -492,10 +492,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func scheduleDeferredSpeechPreWarm(environment env: AppEnvironment) {
         guard speechPreWarmTask == nil else { return }
         let sttRuntime = env.sttRuntime
+        let vadEngine = env.dictationVadEngine
         let deferralMs = preWarmDeferralMs
         let onboardingCompletedKey = OnboardingViewModel.onboardingCompletedKey
 
-        speechPreWarmTask = Task(priority: .utility) { @MainActor [weak self, sttRuntime] in
+        speechPreWarmTask = Task(priority: .utility) { @MainActor [weak self, sttRuntime, vadEngine] in
             defer {
                 self?.speechPreWarmTask = nil
             }
@@ -505,6 +506,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let onboardingDone = UserDefaults.standard.string(forKey: onboardingCompletedKey) != nil
             guard onboardingDone else { return }
             await sttRuntime.backgroundWarmUp()
+            guard !Task.isCancelled else { return }
+            // Warm Silero VAD only when the user has opted into auto-stop — the
+            // ~1.3 MB asset is fetched on first VadManager init. No-op (and no
+            // download) when auto-stop is off. Read the persisted key directly
+            // (same resolution as AppEnvironment Task 10).
+            let autoStopOn = UserDefaults.standard.bool(
+                forKey: UserDefaultsAppRuntimePreferences.silenceAutoStopKey
+            )
+            if autoStopOn {
+                await vadEngine.warmUpIfNeeded()
+            }
         }
     }
 
