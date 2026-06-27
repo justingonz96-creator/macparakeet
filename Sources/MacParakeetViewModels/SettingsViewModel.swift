@@ -1632,6 +1632,8 @@ public final class SettingsViewModel {
             "Loading Parakeet model on Neural Engine..."
         case .whisper:
             "Optimizing Whisper for this Mac..."
+        case .nemotron:
+            "Preparing Nemotron..."
         }
     }
 

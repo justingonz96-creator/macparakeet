@@ -57,6 +57,7 @@ public actor STTRuntime: STTRuntimeProtocol {
     private let modelVersion: AsrModelVersion
     private var speechEngine: SpeechEnginePreference
     private var whisperEngine: WhisperEngine?
+    private var nemotronEngine: NemotronEngine?
     private let whisperModelVariant: String
     private var activeTranscriptionCount = 0
 
@@ -83,10 +84,7 @@ public actor STTRuntime: STTRuntimeProtocol {
         try await transcribe(
             audioPath: audioPath,
             job: job,
-            speechEngine: SpeechEngineSelection(
-                engine: speechEngine,
-                language: speechEngine == .whisper ? SpeechEnginePreference.whisperDefaultLanguage() : nil
-            ),
+            speechEngine: await currentSpeechEngineSelection(),
             onProgress: onProgress
         )
     }
@@ -105,7 +103,23 @@ public actor STTRuntime: STTRuntimeProtocol {
             return try await transcribeWithParakeet(audioPath: audioPath, job: job, onProgress: onProgress)
         case .whisper:
             return try await transcribeWithWhisper(audioPath: audioPath, language: selection.language, onProgress: onProgress)
+        case .nemotron:
+            return try await transcribeWithNemotron(
+                audioPath: audioPath, language: selection.language, onProgress: onProgress)
         }
+    }
+
+    private func transcribeWithNemotron(
+        audioPath: String,
+        language: String?,
+        onProgress: (@Sendable (Int, Int) -> Void)?
+    ) async throws -> STTResult {
+        let engine = nemotronEngine ?? NemotronEngine(language: language)
+        nemotronEngine = engine
+        // Pass the per-call language so a cached engine honors an override (not just
+        // its construction-time default), matching transcribeWithWhisper.
+        return try await engine.transcribe(
+            audioPath: audioPath, job: .fileTranscription, language: language, onProgress: onProgress)
     }
 
     private func transcribeWithWhisper(
@@ -210,6 +224,10 @@ public actor STTRuntime: STTRuntimeProtocol {
             case .whisper:
                 let engine = whisperEngine ?? WhisperEngine(model: whisperModelVariant)
                 whisperEngine = engine
+                try await engine.prepare(onProgress: onProgress)
+            case .nemotron:
+                let engine = nemotronEngine ?? NemotronEngine()
+                nemotronEngine = engine
                 try await engine.prepare(onProgress: onProgress)
             }
             let elapsed = start.duration(to: .now)
@@ -331,6 +349,9 @@ public actor STTRuntime: STTRuntimeProtocol {
         if speechEngine == .whisper {
             return await whisperEngine?.isReady() ?? false
         }
+        if speechEngine == .nemotron {
+            return await nemotronEngine?.isReady() ?? false
+        }
 
         guard let interactiveManager, let backgroundManager else { return false }
         let interactiveReady = await interactiveManager.isAvailable
@@ -341,6 +362,7 @@ public actor STTRuntime: STTRuntimeProtocol {
     public func shutdown() async {
         invalidateBackgroundWarmUp()
         await unloadWhisper()
+        await unloadNemotron()
         await unloadParakeet()
         warmUpProgressHandler = nil
         setBackgroundWarmUpState(.idle)
@@ -353,6 +375,7 @@ public actor STTRuntime: STTRuntimeProtocol {
         await shutdown()
         DownloadUtils.clearAllModelCaches()
         try? FileManager.default.removeItem(atPath: AppPaths.whisperModelsDir)
+        try? FileManager.default.removeItem(atPath: AppPaths.nemotronModelsDir)
         setBackgroundWarmUpState(.idle)
         Telemetry.send(.modelOperation(
             operationID: operationContext.operationID,
@@ -423,6 +446,7 @@ public actor STTRuntime: STTRuntimeProtocol {
         onProgress: (@Sendable (String) -> Void)?
     ) async throws {
         var preparedWhisper: WhisperEngine?
+        var preparedNemotron: NemotronEngine?
 
         switch preference {
         case .parakeet:
@@ -435,10 +459,18 @@ public actor STTRuntime: STTRuntimeProtocol {
             )
             try await engine.prepare(onProgress: onProgress)
             preparedWhisper = engine
+        case .nemotron:
+            let engine = nemotronEngine ?? NemotronEngine(
+                language: SpeechEnginePreference.nemotronDefaultLanguage())
+            try await engine.prepare(onProgress: onProgress)
+            preparedNemotron = engine
         }
 
         if let preparedWhisper {
             whisperEngine = preparedWhisper
+        }
+        if let preparedNemotron {
+            nemotronEngine = preparedNemotron
         }
         speechEngine = preference
         preference.save()
@@ -450,6 +482,9 @@ public actor STTRuntime: STTRuntimeProtocol {
         case .whisper where preference != .whisper:
             onProgress?("Releasing Whisper model...")
             await unloadWhisper()
+        case .nemotron where preference != .nemotron:
+            onProgress?("Releasing Nemotron model...")
+            await unloadNemotron()
         default:
             break
         }
@@ -457,10 +492,16 @@ public actor STTRuntime: STTRuntimeProtocol {
     }
 
     public func currentSpeechEngineSelection() async -> SpeechEngineSelection {
-        SpeechEngineSelection(
-            engine: speechEngine,
-            language: speechEngine == .whisper ? SpeechEnginePreference.whisperDefaultLanguage() : nil
-        )
+        let language: String?
+        switch speechEngine {
+        case .whisper:
+            language = SpeechEnginePreference.whisperDefaultLanguage()
+        case .nemotron:
+            language = SpeechEnginePreference.nemotronDefaultLanguage()
+        case .parakeet:
+            language = nil
+        }
+        return SpeechEngineSelection(engine: speechEngine, language: language)
     }
 
     public nonisolated static func isModelCached(version: AsrModelVersion = .v3) -> Bool {
@@ -488,6 +529,12 @@ public actor STTRuntime: STTRuntimeProtocol {
     private func unloadWhisper() async {
         let engine = whisperEngine
         whisperEngine = nil
+        await engine?.unload()
+    }
+
+    private func unloadNemotron() async {
+        let engine = nemotronEngine
+        nemotronEngine = nil
         await engine?.unload()
     }
 
@@ -695,6 +742,8 @@ public actor STTRuntime: STTRuntimeProtocol {
             .parakeetSTT
         case .whisper:
             .whisperSTT
+        case .nemotron:
+            .nemotronSTT
         }
     }
 
@@ -704,6 +753,8 @@ public actor STTRuntime: STTRuntimeProtocol {
             nil
         case .whisper:
             whisperModelVariant
+        case .nemotron:
+            NemotronEngine.variantLabel
         }
     }
 

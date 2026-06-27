@@ -92,4 +92,38 @@ final class SpeechEnginePreferenceTests: XCTestCase {
 
         XCTAssertFalse(SpeechEnginePreference.isColdSwitch(to: .whisper, defaults: defaults))
     }
+
+    // MARK: - Nemotron (ADR-023)
+
+    func testNemotronDisplayNameAndRawValue() {
+        XCTAssertEqual(SpeechEnginePreference.nemotron.rawValue, "nemotron")
+        XCTAssertEqual(SpeechEnginePreference.nemotron.displayName, "Nemotron")
+        XCTAssertTrue(SpeechEnginePreference.allCases.contains(.nemotron))
+    }
+
+    func testAlternativeStaysBinaryWithNemotronMappingToParakeet() {
+        XCTAssertEqual(SpeechEnginePreference.parakeet.alternative, .whisper)
+        XCTAssertEqual(SpeechEnginePreference.whisper.alternative, .parakeet)
+        // New: nemotron's "other engine" is the default, so existing
+        // parakeet<->whisper retranscribe behavior is unchanged.
+        XCTAssertEqual(SpeechEnginePreference.nemotron.alternative, .parakeet)
+    }
+
+    func testNemotronSelectionCarriesEuropeanLanguageOnly() {
+        XCTAssertEqual(
+            SpeechEngineSelection(engine: .nemotron, language: "fr-FR").language, "fr")
+        // Non-European pins are dropped (cannot be honored by the pruned model).
+        XCTAssertNil(SpeechEngineSelection(engine: .nemotron, language: "ko").language)
+        // Parakeet still never carries a language.
+        XCTAssertNil(SpeechEngineSelection(engine: .parakeet, language: "en").language)
+    }
+
+    func testNemotronDefaultLanguageRoundTrips() {
+        let defaults = UserDefaults(suiteName: "nemotron-lang-test")!
+        defaults.removePersistentDomain(forName: "nemotron-lang-test")
+        SpeechEnginePreference.saveNemotronDefaultLanguage("de-DE", defaults: defaults)
+        XCTAssertEqual(SpeechEnginePreference.nemotronDefaultLanguage(defaults: defaults), "de")
+        SpeechEnginePreference.saveNemotronDefaultLanguage("ko", defaults: defaults) // rejected
+        XCTAssertNil(SpeechEnginePreference.nemotronDefaultLanguage(defaults: defaults))
+    }
 }

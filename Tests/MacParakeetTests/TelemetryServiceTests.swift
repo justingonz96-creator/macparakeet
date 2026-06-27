@@ -114,6 +114,10 @@ final class TelemetryServiceTests: XCTestCase {
 
     // MARK: - Event Queuing
 
+    func testNemotronModelKindRawValue() {
+        XCTAssertEqual(TelemetryModelKind.nemotronSTT.rawValue, "nemotron_stt")
+    }
+
     func testSendQueuesEvent() {
         let service = makeService()
         service.send(.appLaunched)

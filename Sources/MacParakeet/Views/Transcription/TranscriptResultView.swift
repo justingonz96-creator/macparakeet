@@ -829,6 +829,8 @@ struct TranscriptResultView: View {
                 return "Whisper"
             }
             return "Whisper \(SpeechEnginePreference.friendlyVariantName(variant))"
+        case .nemotron:
+            return "Nemotron"
         }
     }
 
@@ -2973,6 +2975,7 @@ private struct EngineOptionCard: View {
         switch selection.engine {
         case .parakeet: "bolt.fill"
         case .whisper: "globe"
+        case .nemotron: "waveform"
         }
     }
 
@@ -2982,11 +2985,13 @@ private struct EngineOptionCard: View {
             "Fast • 25 European languages, including English"
         case .whisper:
             "Broader languages • Korean, Chinese, Japanese, and more"
+        case .nemotron:
+            "European languages"
         }
     }
 
     private var languageDetail: String? {
-        guard selection.engine == .whisper else { return nil }
+        guard selection.engine == .whisper || selection.engine == .nemotron else { return nil }
         let language = selection.language ?? "auto-detect"
         return "Language: \(language)"
     }

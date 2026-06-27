@@ -236,6 +236,13 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
                 let createdWhisperEngine = WhisperEngine(language: speechEngine.language)
                 whisperEngine = createdWhisperEngine
                 sttTranscriber = createdWhisperEngine
+            case .nemotron:
+                // The CLI's own --engine enum has no `nemotron` value, so the
+                // resolver cannot produce this case; this arm only satisfies the
+                // exhaustive switch over the Core `SpeechEnginePreference`. The
+                // Nemotron CLI surface is a separate task and stays gated off.
+                printErr("The Nemotron engine is not available in this build.")
+                throw ExitCode.failure
             }
             let audioProcessor = AudioProcessor()
             let youtubeDownloader = YouTubeDownloader(audioQuality: {

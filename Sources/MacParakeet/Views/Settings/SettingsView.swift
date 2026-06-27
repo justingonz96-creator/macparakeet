@@ -1989,6 +1989,10 @@ struct SettingsView: View {
         SettingsStatusRules.localModelsCardStatus(
             parakeet: displayedParakeetModelStatus,
             whisper: displayedWhisperModelStatus,
+            // Nemotron status plumbing is gated by AppFeatures.nemotronEnabled
+            // (separate task); while off, the active engine is never .nemotron,
+            // so a static notDownloaded placeholder never affects the card.
+            nemotron: .notDownloaded,
             activeEngine: viewModel.speechEnginePreference
         )
     }

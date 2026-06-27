@@ -708,6 +708,8 @@ public final class TranscriptionViewModel {
             case .whisper:
                 let friendly = SpeechEnginePreference.friendlyVariantName(whisperVariant)
                 return "Whisper \(friendly) \u{00B7} Neural Engine"
+            case .nemotron:
+                return "Nemotron \u{00B7} Neural Engine"
             }
         case .identifyingSpeakers:
             return "May take several minutes per hour of audio. Speaker labels are approximate \u{2014} click to rename."

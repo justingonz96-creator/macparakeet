@@ -8,6 +8,7 @@ final class SettingsStatusRulesTests: XCTestCase {
         let status = SettingsStatusRules.localModelsCardStatus(
             parakeet: .ready,
             whisper: .notDownloaded,
+            nemotron: .ready,
             activeEngine: .parakeet
         )
 
@@ -18,6 +19,7 @@ final class SettingsStatusRulesTests: XCTestCase {
         let status = SettingsStatusRules.localModelsCardStatus(
             parakeet: .notLoaded,
             whisper: .notLoaded,
+            nemotron: .ready,
             activeEngine: .parakeet
         )
 
@@ -28,6 +30,7 @@ final class SettingsStatusRulesTests: XCTestCase {
         let status = SettingsStatusRules.localModelsCardStatus(
             parakeet: .notLoaded,
             whisper: .notDownloaded,
+            nemotron: .ready,
             activeEngine: .whisper
         )
 
@@ -38,6 +41,7 @@ final class SettingsStatusRulesTests: XCTestCase {
         let status = SettingsStatusRules.localModelsCardStatus(
             parakeet: .notLoaded,
             whisper: .preparing,
+            nemotron: .ready,
             activeEngine: .whisper
         )
 
@@ -48,10 +52,22 @@ final class SettingsStatusRulesTests: XCTestCase {
         let status = SettingsStatusRules.localModelsCardStatus(
             parakeet: .ready,
             whisper: .failed,
+            nemotron: .ready,
             activeEngine: .parakeet
         )
 
         XCTAssertEqual(status, SettingsCardStatus(.required, label: "Action needed"))
+    }
+
+    func testLocalModelsRecommendsDownloadWhenActiveNemotronIsMissing() {
+        let status = SettingsStatusRules.localModelsCardStatus(
+            parakeet: .ready,
+            whisper: .ready,
+            nemotron: .notDownloaded,
+            activeEngine: .nemotron
+        )
+
+        XCTAssertEqual(status, SettingsCardStatus(.recommended, label: "Download recommended"))
     }
 
     func testMeetingRecordingRequiresScreenRecordingPermission() {
