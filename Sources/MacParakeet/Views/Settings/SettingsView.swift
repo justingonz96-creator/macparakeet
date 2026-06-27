@@ -726,7 +726,7 @@ struct SettingsView: View {
 
                 settingsToggleRow(
                     title: "Auto-stop after silence",
-                    detail: "Stops recording when speech pauses for the selected delay.",
+                    detail: "Stops recording after the selected delay of VAD-judged silence. Falls back to audio-level detection when voice activity data is unavailable.",
                     isOn: $viewModel.silenceAutoStop
                 )
 
@@ -735,7 +735,7 @@ struct SettingsView: View {
                     HStack(alignment: .center) {
                         rowText(
                             title: "Silence delay",
-                            detail: "How long silence must persist before dictation stops."
+                            detail: "How long VAD-judged silence must persist before dictation stops."
                         )
                         Spacer(minLength: DesignSystem.Spacing.md)
                         Picker("Silence delay", selection: $viewModel.silenceDelay) {
