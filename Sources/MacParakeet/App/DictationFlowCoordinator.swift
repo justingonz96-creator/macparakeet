@@ -869,7 +869,7 @@ final class DictationFlowCoordinator {
                 }
                 guard !Task.isCancelled else { return }
                 self.sendEvent(.recordingStarted(generation: generation))
-                await self.runRecordingLevelLoop()
+                await self.runRecordingLevelLoop(mode: mode)
             } catch is CancellationError {
                 await self.mediaPauseCoordinator.resumeAfterDictationCapture()
                 return
@@ -1019,10 +1019,17 @@ final class DictationFlowCoordinator {
         }
     }
 
-    private func runRecordingLevelLoop() async {
-        let (autoStopEnabled, silenceDelay) = (settingsViewModel.silenceAutoStop, settingsViewModel.silenceDelay)
-        var lastNonSilenceAt = Date()
-        var didAutoStop = false
+    private func runRecordingLevelLoop(mode: FnKeyStateMachine.RecordingMode) async {
+        // Auto-stop is opt-in (default OFF) and hard-gated to persistent
+        // (hands-free) mode so silence can never cut off a physical hold.
+        let startedAt = Date()
+        var endpointer = DictationEndpointer(
+            config: .init(
+                enabled: settingsViewModel.silenceAutoStop && mode == .persistent,
+                silenceDuration: settingsViewModel.silenceDelay,
+                rmsThreshold: Self.silenceAutoStopThreshold
+            )
+        )
 
         while !Task.isCancelled {
             let snapshot = await serviceSession.recordingSnapshot()
@@ -1031,15 +1038,23 @@ final class DictationFlowCoordinator {
             let level = snapshot.audioLevel
             overlayViewModel?.audioLevel = level
 
-            if autoStopEnabled {
-                let now = Date()
-                if level >= Self.silenceAutoStopThreshold {
-                    lastNonSilenceAt = now
-                } else if !didAutoStop, now.timeIntervalSince(lastNonSilenceAt) >= silenceDelay {
-                    didAutoStop = true
-                    stopDictation()
-                    break
-                }
+            // PR 1: VAD is not wired yet, so `vadAvailable` is always false and
+            // the endpointer reproduces today's exact RMS energy gate. PR 2
+            // replaces these two literals with the published `VadSnapshot`.
+            let now = Date()
+            let decision = endpointer.evaluate(
+                .init(
+                    now: now,
+                    elapsed: now.timeIntervalSince(startedAt),
+                    audioLevel: level,
+                    vadAvailable: false,
+                    speechActive: false,
+                    vadSilenceElapsed: nil
+                )
+            )
+            if case .stop = decision {
+                stopDictation()
+                break
             }
 
             try? await Task.sleep(for: .milliseconds(50))
