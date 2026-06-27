@@ -1030,6 +1030,9 @@ final class DictationFlowCoordinator {
                 rmsThreshold: Self.silenceAutoStopThreshold
             )
         )
+        // Tracks the reason the endpointer chose to stop — reserved for Phase-2
+        // telemetry and not emitted yet.
+        var lastEndpointReason: DictationEndpointer.StopReason?
 
         while !Task.isCancelled {
             let snapshot = await serviceSession.recordingSnapshot()
@@ -1038,21 +1041,24 @@ final class DictationFlowCoordinator {
             let level = snapshot.audioLevel
             overlayViewModel?.audioLevel = level
 
-            // PR 1: VAD is not wired yet, so `vadAvailable` is always false and
-            // the endpointer reproduces today's exact RMS energy gate. PR 2
-            // replaces these two literals with the published `VadSnapshot`.
+            // PR 2: feed the live Silero VAD verdict into the endpointer.
+            // When VAD is unavailable (vad.available == false) the endpointer
+            // falls back to the RMS energy gate, preserving existing behaviour.
+            let vad = snapshot.vad
             let now = Date()
+            let vadSilenceElapsed: TimeInterval? = vad.lastSpeechAt.map { now.timeIntervalSince($0) }
             let decision = endpointer.evaluate(
                 .init(
                     now: now,
                     elapsed: now.timeIntervalSince(startedAt),
                     audioLevel: level,
-                    vadAvailable: false,
-                    speechActive: false,
-                    vadSilenceElapsed: nil
+                    vadAvailable: vad.available,
+                    speechActive: vad.speechActive,
+                    vadSilenceElapsed: vadSilenceElapsed
                 )
             )
-            if case .stop = decision {
+            if case .stop(let reason) = decision {
+                lastEndpointReason = reason
                 stopDictation()
                 break
             }
