@@ -997,6 +997,58 @@ final class TelemetryServiceTests: XCTestCase {
         XCTAssertNil(withoutCategory.props?["app_category"])
     }
 
+    func testDictationCompletedIncludesEndpointReasonAndVadAvailable() {
+        let props = TelemetryEventSpec.dictationCompleted(
+            durationSeconds: 3.0,
+            wordCount: 5,
+            mode: .persistent,
+            endpointReason: "vad_silence",
+            vadAvailable: true
+        ).props
+        XCTAssertEqual(props?["endpoint_reason"], "vad_silence")
+        XCTAssertEqual(props?["vad_available"], "true")
+    }
+
+    func testDictationCompletedOmitsEndpointReasonWhenNil() {
+        let props = TelemetryEventSpec.dictationCompleted(
+            durationSeconds: 3.0,
+            wordCount: 5,
+            mode: .persistent
+        ).props
+        XCTAssertNil(props?["endpoint_reason"])
+        XCTAssertNil(props?["vad_available"])
+    }
+
+    func testDictationOperationIncludesEndpointReasonAndVadAvailable() {
+        let props = TelemetryEventSpec.dictationOperation(
+            operationID: "op-1",
+            outcome: .success,
+            trigger: .hotkey,
+            mode: .persistent,
+            durationSeconds: 3.0,
+            wordCount: 5,
+            errorType: nil,
+            endpointReason: "rms_silence",
+            vadAvailable: false
+        ).props
+        XCTAssertEqual(props?["endpoint_reason"], "rms_silence")
+        XCTAssertEqual(props?["vad_available"], "false")
+    }
+
+    func testDictationOperationOmitsEndpointReasonWhenNil() {
+        let props = TelemetryEventSpec.dictationOperation(
+            operationID: "op-2",
+            outcome: .success,
+            trigger: .hotkey,
+            mode: .persistent,
+            durationSeconds: 3.0,
+            wordCount: 5,
+            errorType: nil
+        ).props
+        XCTAssertNil(props?["endpoint_reason"])
+        XCTAssertNil(props?["vad_available"])
+    }
+
     func testTransformExecutedSerializesAppCategoryButOmitsWhenNil() {
         let withCategory = TelemetryEventSpec.transformExecuted(
             transformName: .polish,

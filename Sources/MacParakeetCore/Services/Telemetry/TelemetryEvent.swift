@@ -414,7 +414,9 @@ public enum TelemetryEventSpec: Sendable {
         engineVariant: String? = nil,
         language: String? = nil,
         appCategory: TelemetryAppCategory? = nil,
-        device: RecordingDeviceInfo? = nil
+        device: RecordingDeviceInfo? = nil,
+        endpointReason: String? = nil,
+        vadAvailable: Bool? = nil
     )
     /// First-ever completed dictation for this install (see
     /// `TelemetryEventName.firstDictationCompleted`). `activationWindow` is the
@@ -437,7 +439,9 @@ public enum TelemetryEventSpec: Sendable {
         engineVariant: String? = nil,
         language: String? = nil,
         appCategory: TelemetryAppCategory? = nil,
-        device: RecordingDeviceInfo? = nil
+        device: RecordingDeviceInfo? = nil,
+        endpointReason: String? = nil,
+        vadAvailable: Bool? = nil
     )
     case dictationFirstLoadCaptionShown(firstInstall: Bool)
     case dictationFirstLoadCaptionDuration(durationMs: Int, outcome: String)
@@ -931,7 +935,9 @@ extension TelemetryEventSpec {
             let engineVariant,
             let language,
             let appCategory,
-            let device
+            let device,
+            let endpointReason,
+            let vadAvailable
         ):
             return Self.mergeDevice(Self.compactProps(
                 ("duration_seconds", Self.format(durationSeconds)),
@@ -940,7 +946,9 @@ extension TelemetryEventSpec {
                 ("speech_engine", speechEngine),
                 ("engine_variant", Self.safeEngineVariant(engineVariant)),
                 ("language", Self.safeLanguageCode(language)),
-                ("app_category", appCategory?.rawValue)
+                ("app_category", appCategory?.rawValue),
+                ("endpoint_reason", endpointReason),
+                ("vad_available", vadAvailable.map(Self.boolString))
             ), device)
         case .firstDictationCompleted(let activationWindow):
             return ["activation_window": activationWindow.rawValue]
@@ -971,7 +979,9 @@ extension TelemetryEventSpec {
             let engineVariant,
             let language,
             let appCategory,
-            let device
+            let device,
+            let endpointReason,
+            let vadAvailable
         ):
             return Self.mergeDevice(Self.compactProps(
                 ("operation_id", operationID),
@@ -987,7 +997,9 @@ extension TelemetryEventSpec {
                 ("language", Self.safeLanguageCode(language)),
                 ("app_category", appCategory?.rawValue),
                 ("error_type", errorType),
-                ("cancel_reason", cancelReason?.rawValue)
+                ("cancel_reason", cancelReason?.rawValue),
+                ("endpoint_reason", endpointReason),
+                ("vad_available", vadAvailable.map(Self.boolString))
             ), device)
         case .dictationFirstLoadCaptionShown(let firstInstall):
             return ["first_install": Self.boolString(firstInstall)]
