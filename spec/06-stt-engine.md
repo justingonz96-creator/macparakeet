@@ -36,6 +36,21 @@ MacParakeet's default speech engine is Parakeet TDT 0.6B-v3 via FluidAudio CoreM
 
 Parakeet remains the default because it is faster, lower-latency, and lower-memory for supported languages. WhisperKit solves language coverage while preserving the local-first speech boundary.
 
+### Nemotron Optional Engine (European)
+
+> Status: **Built but disabled.** Wired into the codebase behind `AppFeatures.nemotronEnabled = false`; no user-facing surface appears and no model artifact is fetched while the flag is off. The flag stays off until the ADR-023 §8 license gate clears (the downloaded CoreML artifact is currently eval-licensed, ships no `LICENSE` file, and is access-gated). See [ADR-023](adr/023-nemotron-european-stt.md).
+
+| Property | Value |
+|----------|-------|
+| Model | Nemotron 3.5 ASR Streaming Multilingual 0.6B, Latin-script-pruned build (via FluidAudio 0.15.4, CoreML on ANE) |
+| Runtime | FluidAudio SDK (`StreamingNemotronMultilingualAsrManager`), driven in a feed-the-whole-file-then-finish batch pattern |
+| Model cache | `~/Library/Application Support/MacParakeet/models/stt/nemotron/` (`AppPaths.nemotronModelsDir`) |
+| Output | Text plus word-level timing derived from per-token timings; timing is coarse (encoder-frame-quantized) and confidence is a synthetic `1.0` placeholder; `STTResult.segments` is nil |
+| Languages | European / Latin-script only: English, Spanish, French, Italian, Portuguese, German |
+| Selection | Explicit, opt-in (a third engine alongside Parakeet + Whisper); never auto-selected, no automatic fallback. Settings or CLI (`--engine nemotron --language <eu>`) — both rejected/gated while the flag is off |
+
+Nemotron is a lighter, precompiled local alternative for European/Latin-script audio than the ~632 MB Whisper download. It does **not** displace Parakeet (the accuracy/latency default) or Whisper (which keeps breadth and CJK coverage). Finished-audio (batch) transcription only this round — live, as-you-speak streaming is out of scope. The model download always routes to the `latin/` subtree by construction, so a language pin never widens the fetch to the heavy full-multilingual build.
+
 ### Three-Chip Architecture
 
 Each ML workload runs on the chip it was designed for:

@@ -1521,6 +1521,8 @@ The v0.6 scope includes system audio + mic capture (ADR-014, ADR-015), the centr
 
 Meeting transcription uses the current speech engine captured at recording start. Parakeet remains the default; WhisperKit can be selected before starting a meeting for languages outside Parakeet coverage.
 
+A third optional engine, **Nemotron** (ADR-023), is implemented but shipped off behind `AppFeatures.nemotronEnabled = false`. It adds the Latin-script-pruned Nemotron 3.5 ASR build (via FluidAudio 0.15.4) as a lighter, precompiled local alternative for European/Latin-script audio — English, Spanish, French, Italian, Portuguese, German — for finished-audio (batch) transcription only. Like WhisperKit it is opt-in and explicitly selected (Settings or CLI `--engine nemotron --language <eu>`), never auto-selected; Parakeet stays the default and WhisperKit keeps breadth/CJK. Its word-level timing is derived from per-token timings and is coarse, with a synthetic confidence placeholder. No user-facing surface appears and no model is fetched while the flag is off; the flag stays off until the ADR-023 §8 license gate clears.
+
 ### F36: Live Meeting Notepad
 
 > Status: **IMPLEMENTED**

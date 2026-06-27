@@ -56,6 +56,9 @@ minor historical wart, not a design statement.
   is the implementation.
 - ADR-021 — WhisperKit as optional multilingual engine; engine
   routing and meeting engine leases live in `STTScheduler`.
+- ADR-023 — Nemotron as an optional European-language engine
+  (built but disabled behind `AppFeatures.nemotronEnabled`);
+  dispatched by `STTRuntime` like Whisper, scheduler unchanged.
 - ADR-009 — custom hotkey support (relevant to the hotkey files
   above).
 - `spec/06-stt-engine.md` — narrative spec.
@@ -82,6 +85,12 @@ shared slot drops the lowest-priority pending work.
 can request WhisperKit globally (Settings) or per call (CLI
 `--engine whisper --language ko`). When set globally, dictation
 also routes there; when set per-job, only that job uses Whisper.
+The optional `.nemotron` engine (ADR-023, European-only,
+finished-audio batch) is dispatched by `STTRuntime` exactly like
+`.whisper` — the `STTScheduler` is structurally unchanged. It is
+built but flag-gated off (`AppFeatures.nemotronEnabled = false`),
+so no routing reaches it and no model is fetched while the flag is
+off.
 
 **Active meetings hold an engine lease.** Once a meeting recording
 starts, its engine selection is captured for the session's duration.

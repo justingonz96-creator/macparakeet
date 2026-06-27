@@ -76,6 +76,7 @@ All ADRs live in `spec/adr/`. These are locked -- they record decisions already 
 | [ADR-020](adr/020-live-meeting-notepad-and-memo-summaries.md) | Live meeting notepad + memo-steered summaries (implemented 2026-04-25) |
 | [ADR-021](adr/021-whisperkit-multilingual-stt.md) | WhisperKit as optional multilingual STT engine |
 | [ADR-022](adr/022-transforms-system-wide-rewrite.md) | Transforms — system-wide LLM rewrites on selected text (implemented 2026-05-13) |
+| [ADR-023](adr/023-nemotron-european-stt.md) | Nemotron as an optional European-language STT engine (built but disabled behind `AppFeatures.nemotronEnabled = false` pending the license gate) |
 
 ## Version Roadmap
 
@@ -234,6 +235,10 @@ Calendar-related code is present but **not shipped in v0.6**. `AppFeatures.calen
 - [x] Engine switching blocked while jobs are queued/running or a meeting speech-engine lease is active
 - [x] CLI `transcribe --engine parakeet|whisper --language <code>` and `models download whisper-large-v3-v20240930-turbo-632MB`
 - [x] Meeting recordings capture the active engine/language at start and preserve it through metadata, lock files, crash recovery, and final transcription
+
+### Optional Nemotron European STT (built, disabled)
+
+- [x] Optional third STT engine implemented behind `AppFeatures.nemotronEnabled = false` (ADR-023): Nemotron 3.5 ASR Latin-script-pruned build via FluidAudio 0.15.4, finished-audio (batch) only, English/Spanish/French/Italian/Portuguese/German, model cache at `~/Library/Application Support/MacParakeet/models/stt/nemotron/`, CLI `transcribe --engine nemotron` and `models download nemotron-european` (both gated while the flag is off). Parakeet stays default; Whisper keeps breadth. The flag stays off until the ADR-023 §8 license gate clears.
 
 ### v0.6 Productized Transforms
 
