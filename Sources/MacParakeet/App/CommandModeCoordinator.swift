@@ -42,6 +42,10 @@ final class CommandModeCoordinator {
     private let panel = TransformSpikeProgressPanelController()
     private let onLLMProviderRequired: () -> Void
     private let suspendOtherHotkeys: (Bool) -> Void
+    /// Read-only check for live dictation/meeting capture. Command Mode refuses
+    /// to start a hold while either is active (forward half of the read-only mic
+    /// mutual exclusion). It must never mutate dictation/meeting state.
+    private let isDictationOrMeetingActive: () -> Bool
     private let logger = Logger(subsystem: "com.macparakeet", category: "CommandModeCoordinator")
 
     private var activeHold: ActiveHold?
@@ -56,6 +60,7 @@ final class CommandModeCoordinator {
         audioProcessor: AudioProcessorProtocol,
         sttScheduler: STTScheduler,
         currentShortcut: @escaping () -> KeyboardShortcut?,
+        isDictationOrMeetingActive: @escaping () -> Bool,
         onLLMProviderRequired: @escaping () -> Void,
         suspendOtherHotkeys: @escaping (Bool) -> Void
     ) {
@@ -66,6 +71,7 @@ final class CommandModeCoordinator {
         self.arbiter = arbiter
         self.audioProcessor = audioProcessor
         self.sttScheduler = sttScheduler
+        self.isDictationOrMeetingActive = isDictationOrMeetingActive
         self.onLLMProviderRequired = onLLMProviderRequired
         self.suspendOtherHotkeys = suspendOtherHotkeys
         monitor.onPressStart = { [weak self] in self?.handlePressStart() }
@@ -93,6 +99,14 @@ final class CommandModeCoordinator {
         // the prior hold down first so its arbiter lease + hotkey suspension are
         // released exactly once before we acquire fresh ones below.
         if let prior = activeHold { teardown(prior) }
+
+        // Forward read-only mic exclusion: if dictation or meeting capture is
+        // live, Command Mode refuses (those flows never acquire the arbiter, so
+        // this read-only check is what excludes them — see ADR-015 concurrency).
+        guard !isDictationOrMeetingActive() else {
+            showToast("Finish dictating first.")
+            return
+        }
 
         // Mutual exclusion with dictation/meeting capture (ADR-023 §4 / the
         // MicrophoneArbiter rule). If the mic is busy, tell the user and bail.

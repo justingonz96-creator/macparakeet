@@ -253,6 +253,9 @@ final class AppEnvironmentConfigurer {
             // onboarding is up: the model isn't downloaded until a later step,
             // and the "Learn the Hotkey" step runs its own no-STT rehearsal.
             isStartSuppressed: { callbacks.isOnboardingVisible() },
+            // Reverse read-only mic exclusion (ADR-023): refuse dictation starts
+            // while Command Mode holds the arbiter. Read-only — never acquires.
+            isCommandModeMicHeld: { env.microphoneArbiter.currentOwner == .commandMode },
             onMenuBarIconUpdate: { _ in callbacks.onMenuBarIconUpdate() },
             onHistoryReload: { [weak self] in self?.historyViewModel.loadDictations() },
             onPresentEntitlementsAlert: callbacks.onPresentEntitlementsAlert

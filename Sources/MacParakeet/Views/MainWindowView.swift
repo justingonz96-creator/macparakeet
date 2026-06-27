@@ -283,6 +283,9 @@ struct MainWindowView: View {
         if AppFeatures.meetingRecordingEnabled {
             reserved.append(TransformShortcutReservedHotkey(name: "meeting recording", trigger: settingsViewModel.meetingHotkeyTrigger))
         }
+        if AppFeatures.commandModeEnabled, let cm = settingsViewModel.commandModeShortcut {
+            reserved.append(TransformShortcutReservedHotkey(name: "Command Mode", trigger: cm.hotkeyTrigger))
+        }
         return reserved.filter { !$0.trigger.isDisabled }
     }
 
