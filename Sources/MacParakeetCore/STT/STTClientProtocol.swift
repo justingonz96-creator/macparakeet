@@ -58,10 +58,31 @@ public enum SpeechEngineSwitchAvailability: Sendable, Equatable {
     case transcribing
     case switchInProgress
     case unavailable
+    /// A live streaming dictation session holds the interactive slot (ADR-023).
+    /// Distinct from `.meetingActive` so Settings can name the real reason.
+    case liveDictationActive
 }
 
 public protocol SpeechEngineSwitchAvailabilityProviding: Sendable {
     func engineSwitchAvailability() async -> SpeechEngineSwitchAvailability
+}
+
+/// Broker for opt-in live streaming dictation (ADR-023). Implemented by
+/// `STTScheduler`: the runtime owns the streaming session, while the scheduler
+/// reserves the interactive slot and blocks engine switches for its lifetime —
+/// one control plane (ADR-016).
+public protocol StreamingDictationBrokering: Sendable {
+    /// Download (if needed) and load the streaming model so a session can start
+    /// instantly. Reports human-readable progress.
+    func prepareStreamingDictation(onProgress: (@Sendable (String) -> Void)?) async throws
+    /// Whether the streaming model is loaded and ready right now.
+    func isStreamingDictationReady() async -> Bool
+    /// Begin a live session, reserving the interactive slot. Throws when the
+    /// model is not ready (start-time readiness gate, no silent fallback —
+    /// ADR-021) or when the engine is otherwise busy.
+    func beginStreamingDictation() async throws -> StreamingDictationSession
+    /// Release the interactive-slot reservation. Safe to call more than once.
+    func endStreamingDictation() async
 }
 
 extension SpeechEngineSwitching {

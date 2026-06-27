@@ -76,6 +76,12 @@ public actor AudioRecorder {
         initialState: RecordingRuntimeMetrics()
     )
     nonisolated private let firstBufferLogged = OSAllocatedUnfairLock(initialState: false)
+    /// Optional live streaming dictation sink (ADR-023). When set, every
+    /// converted 16 kHz mono Float32 buffer is also fanned out here (off the
+    /// render thread, on `sharedProcessingQueue`) so the streaming engine sees
+    /// the exact samples written to the WAV. `nil` for normal batch dictation.
+    nonisolated private let streamingSink =
+        OSAllocatedUnfairLock<(@Sendable ([Float]) -> Void)?>(initialState: nil)
     nonisolated private let sharedProcessingQueue = DispatchQueue(
         label: "com.macparakeet.audio-recorder.shared-processing",
         qos: .userInitiated
@@ -141,6 +147,22 @@ public actor AudioRecorder {
 
     public var isRecording: Bool {
         recording
+    }
+
+    /// Install (or clear, with `nil`) the live streaming dictation sink. Called
+    /// per session by the dictation flow; thread-safe so it can be set just
+    /// before `start()` and cleared at stop/cancel. ADR-023.
+    nonisolated public func setStreamingSink(_ sink: (@Sendable ([Float]) -> Void)?) {
+        streamingSink.withLock { $0 = sink }
+    }
+
+    /// Extract channel-0 Float32 samples for the buffer's frame length. Used to
+    /// fan converted dictation audio to the streaming sink. Empty when the
+    /// buffer has no frames or no float channel data.
+    nonisolated static func monoFloatSamples(from buffer: AVAudioPCMBuffer) -> [Float] {
+        let frameCount = Int(buffer.frameLength)
+        guard frameCount > 0, let channel = buffer.floatChannelData else { return [] }
+        return Array(UnsafeBufferPointer(start: channel[0], count: frameCount))
     }
 
     /// Device info from the most recent recording. Always `nil` today —
@@ -336,6 +358,12 @@ public actor AudioRecorder {
                     try fileBox.file.write(from: convertedBuffer)
                     self.sampleCounter.withLock { $0 += convertedFrameLength }
                     self.runtimeMetrics.withLock { $0.outputBufferCount += 1 }
+                    // ADR-023: fan the same converted 16 kHz mono Float32 samples
+                    // to the live streaming sink, off the render thread.
+                    if let sink = self.streamingSink.withLock({ $0 }) {
+                        let samples = Self.monoFloatSamples(from: convertedBuffer)
+                        if !samples.isEmpty { sink(samples) }
+                    }
                 } catch {
                     let alreadyLogged = self.tapErrorLogged.withLock { logged in
                         let was = logged; logged = true; return was

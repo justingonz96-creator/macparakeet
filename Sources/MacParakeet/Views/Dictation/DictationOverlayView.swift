@@ -355,10 +355,18 @@ struct DictationOverlayView: View {
                 Group {
                     if viewModel.sessionKind == .command {
                         commandRecordingContent
-                    } else if viewModel.recordingMode == .holdToTalk {
-                        holdToTalkContent
                     } else {
-                        recordingContent
+                        // The control HStack stays a fixed-width row (preserving
+                        // the hover hit-zones); live partials render as a
+                        // separate low-emphasis row below it (ADR-023 §8).
+                        VStack(spacing: 6) {
+                            if viewModel.recordingMode == .holdToTalk {
+                                holdToTalkContent
+                            } else {
+                                recordingContent
+                            }
+                            partialTranscriptRow
+                        }
                     }
                 }
                     .transition(.opacity.animation(.easeInOut(duration: 0.2)))
@@ -432,6 +440,24 @@ struct DictationOverlayView: View {
 
     private var isStopHovered: Bool {
         viewModel.hoverTooltip?.contains("Stop") == true
+    }
+
+    /// Live streaming partial transcript (ADR-023). Bounded to fit within the
+    /// fixed overlay panel — head-truncated so the most recent words stay
+    /// visible as the text grows. Empty (and absent) when not streaming.
+    @ViewBuilder
+    private var partialTranscriptRow: some View {
+        if !viewModel.partialTranscript.isEmpty {
+            Text(viewModel.partialTranscript)
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.55))
+                .lineLimit(2)
+                .truncationMode(.head)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: 240, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity)
+        }
     }
 
     private var recordingContent: some View {

@@ -78,4 +78,21 @@ public actor MockAudioProcessor: AudioProcessorProtocol {
         if let error = captureError { throw error }
         return captureResult ?? URL(fileURLWithPath: "/tmp/recording.wav")
     }
+
+    // MARK: - Live streaming sink (ADR-023)
+
+    private var streamingSink: (@Sendable ([Float]) -> Void)?
+    public private(set) var setStreamingSinkCallCount = 0
+
+    public var streamingSinkInstalled: Bool { streamingSink != nil }
+
+    public func setStreamingSink(_ sink: (@Sendable ([Float]) -> Void)?) async {
+        setStreamingSinkCallCount += 1
+        streamingSink = sink
+    }
+
+    /// Drive the installed sink as the real recorder would from the audio queue.
+    public func emitStreamingSamples(_ samples: [Float]) {
+        streamingSink?(samples)
+    }
 }

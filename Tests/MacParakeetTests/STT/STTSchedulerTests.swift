@@ -662,6 +662,80 @@ final class STTSchedulerTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
     }
+
+    // MARK: - Live streaming dictation (ADR-023)
+
+    func testBeginStreamingDictationBlocksEngineSwitchWithLiveReason() async throws {
+        let runtime = MockSTTRuntime()
+        await runtime.setStreamingReady(true)
+        let scheduler = STTScheduler(runtimeProvider: runtime)
+
+        _ = try await scheduler.beginStreamingDictation()
+
+        let availability = await scheduler.engineSwitchAvailability()
+        XCTAssertEqual(availability, .liveDictationActive)
+
+        do {
+            try await scheduler.setSpeechEngine(.whisper)
+            XCTFail("Engine switch must be blocked while a live session holds the slot")
+        } catch {
+            // Expected: engineBusy.
+        }
+
+        await scheduler.endStreamingDictation()
+        let after = await scheduler.engineSwitchAvailability()
+        XCTAssertEqual(after, .available)
+    }
+
+    func testBeginStreamingDictationThrowsWhenModelNotReady() async {
+        let runtime = MockSTTRuntime()  // streamingReady == false
+        let scheduler = STTScheduler(runtimeProvider: runtime)
+
+        do {
+            _ = try await scheduler.beginStreamingDictation()
+            XCTFail("Live dictation must not start when the model is missing (ADR-021)")
+        } catch {
+            // Expected: readiness gate throws.
+        }
+
+        // The slot reservation must not stick after a failed start.
+        let availability = await scheduler.engineSwitchAvailability()
+        XCTAssertEqual(availability, .available)
+    }
+
+    func testBeginStreamingDictationAllowedDuringActiveMeetingLease() async throws {
+        let runtime = MockSTTRuntime()
+        await runtime.setStreamingReady(true)
+        let scheduler = STTScheduler(runtimeProvider: runtime)
+
+        // A meeting holds an engine lease — live dictation must still start
+        // (concurrent dictation + meeting, ADR-015).
+        let lease = await scheduler.beginSpeechEngineSession()
+        _ = try await scheduler.beginStreamingDictation()
+
+        let availability = await scheduler.engineSwitchAvailability()
+        XCTAssertEqual(availability, .liveDictationActive)
+
+        await scheduler.endStreamingDictation()
+        await scheduler.endSpeechEngineSession(lease)
+    }
+
+    func testBatchDictationRejectedWhileLiveSessionActive() async throws {
+        let runtime = MockSTTRuntime()
+        await runtime.setStreamingReady(true)
+        let scheduler = STTScheduler(runtimeProvider: runtime)
+
+        _ = try await scheduler.beginStreamingDictation()
+
+        do {
+            _ = try await scheduler.transcribe(audioPath: "/tmp/x.wav", job: .dictation)
+            XCTFail("Batch dictation must be rejected while a live session holds the interactive slot")
+        } catch {
+            // Expected: unavailable.
+        }
+
+        await scheduler.endStreamingDictation()
+    }
 }
 
 private final class STTRuntimeUnhealthySpy: TelemetryServiceProtocol, @unchecked Sendable {
@@ -835,6 +909,22 @@ private actor MockSTTRuntime: STTRuntimeProtocol {
 
     func currentSpeechEngineSelection() async -> SpeechEngineSelection {
         selection
+    }
+
+    private var streamingReady = false
+
+    func setStreamingReady(_ value: Bool) { streamingReady = value }
+
+    func prepareStreamingDictation(onProgress: (@Sendable (String) -> Void)?) async throws {
+        onProgress?("Preparing live dictation…")
+        streamingReady = true
+    }
+
+    func isStreamingDictationReady() async -> Bool { streamingReady }
+
+    func beginStreamingDictationSession() async throws -> StreamingDictationSession {
+        guard streamingReady else { throw STTError.modelNotLoaded }
+        return StreamingDictationSession(engine: StreamingDictationEngineMock())
     }
 
     func setCurrentSelection(_ selection: SpeechEngineSelection) {

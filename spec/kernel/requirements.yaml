@@ -308,3 +308,10 @@ REQ-CLI-001:
   description: CLI transcription telemetry emits a privacy-safe cli_operation event, honors explicit env/CI/UserDefaults opt-out controls, and exposes config get/set/list for the persisted telemetry preference
   version: cli-1.3.0
   status: implemented
+
+# --- main / Beta — Live Streaming Dictation (ADR-023) ---
+
+REQ-LIVEDICT-001:
+  description: Opt-in, English-only live streaming dictation shows partial transcript text in the dictation overlay as the user speaks, driven by FluidAudio's Parakeet Unified 0.6B streaming backend. The STTRuntime owns the streaming session; the single STTScheduler reserves the interactive slot and blocks engine switches (new SpeechEngineSwitchAvailability.liveDictationActive) for its lifetime (ADR-016). A start-time readiness gate fails before capture with no silent fallback to the batch engine (ADR-021); the final pasted text is the streaming finish() result run through the existing clean/format/save pipeline (engine=parakeet, variant=unified, language=en). Mic audio reaches the engine via an AudioRecorder 16 kHz mono Float32 sink, while the WAV is still written for history/undo. Gated behind AppFeatures.liveDictationEnabled (Beta/main); a Settings toggle downloads the model on first enable and only persists on success. The real CoreML model is excluded from CI behind the StreamingDictationEngine protocol seam.
+  version: main
+  status: implemented

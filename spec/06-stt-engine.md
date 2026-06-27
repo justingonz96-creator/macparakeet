@@ -36,6 +36,19 @@ MacParakeet's default speech engine is Parakeet TDT 0.6B-v3 via FluidAudio CoreM
 
 Parakeet remains the default because it is faster, lower-latency, and lower-memory for supported languages. WhisperKit solves language coverage while preserving the local-first speech boundary.
 
+### Live Streaming Dictation Engine (opt-in, Beta — ADR-023)
+
+| Property | Value |
+|----------|-------|
+| Model | Parakeet Unified 0.6B, English-only (`FluidInference/parakeet-unified-en-0.6b-coreml`) |
+| Backend | FluidAudio `StreamingUnifiedAsrManager` (chunked-attention streaming + offline batch) |
+| Latency | ~2.08 s default window (70/13/13 frames); partials refine ~once/second |
+| Use | Dictation only — shows partial text in the overlay as the user speaks |
+| Selection | Opt-in Settings toggle, gated behind `AppFeatures.liveDictationEnabled`; no auto-fallback |
+| Output | Final transcript (offline-quality) + per-token timings; runs through the normal clean/format/save pipeline |
+
+A third local speech engine alongside batch Parakeet TDT v3 and optional WhisperKit. It is a **stateful session**, not the file-path batch contract: the `STTRuntime` owns the `StreamingDictationEngine` session, and the single `STTScheduler` reserves the interactive slot + an engine lease for its lifetime (ADR-016 — one control plane). A start-time readiness gate fails before capture if the model is missing, never silently running the batch engine (ADR-021). Classic batch dictation is unchanged when the feature is off. See ADR-023.
+
 ### Three-Chip Architecture
 
 Each ML workload runs on the chip it was designed for:

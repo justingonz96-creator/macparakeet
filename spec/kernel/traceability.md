@@ -111,3 +111,9 @@ This matrix traces each requirement ID from `requirements.yaml` to its implement
 | Requirement | Source Files | Test Files |
 |------------|-------------|------------|
 | REQ-CLI-001 | `CLI/MacParakeetCLI.swift`, `CLI/Commands/CLIHelpers.swift`, `CLI/Commands/CLITelemetry.swift`, `CLI/Commands/ConfigCommand.swift`, `CLI/Commands/TranscribeCommand.swift`, `MacParakeetCore/Services/Telemetry/TelemetryEvent.swift`, `MacParakeet/Views/Settings/SettingsView.swift` | `LLMJSONOutputTests.swift`, `CLITelemetryTests.swift`, `ConfigCommandTests.swift`, `CLIOperationPrivacyTests.swift` |
+
+## main / Beta — Live Streaming Dictation (ADR-023)
+
+| Requirement | Source Files | Test Files |
+|------------|-------------|------------|
+| REQ-LIVEDICT-001 | `MacParakeetCore/STT/StreamingDictationEngine.swift`, `MacParakeetCore/STT/StreamingDictationSession.swift`, `MacParakeetCore/STT/FluidStreamingDictationEngine.swift`, `MacParakeetCore/STT/ParakeetTokenTimingMerger.swift`, `MacParakeetCore/STT/STTRuntime.swift`, `MacParakeetCore/STT/STTScheduler.swift`, `MacParakeetCore/STT/STTClientProtocol.swift`, `MacParakeetCore/Audio/AudioRecorder.swift`, `MacParakeetCore/Audio/AudioProcessor.swift`, `MacParakeetCore/Services/Dictation/DictationService.swift`, `MacParakeetCore/Services/Dictation/DictationServiceSession.swift`, `MacParakeetCore/AppFeatures.swift`, `MacParakeetCore/AppRuntimePreferences.swift`, `MacParakeet/App/DictationFlowCoordinator.swift`, `MacParakeet/Views/Dictation/DictationOverlayController.swift`, `MacParakeet/Views/Dictation/DictationOverlayView.swift`, `MacParakeetViewModels/SettingsViewModel.swift`, `MacParakeet/Views/Settings/SettingsView.swift` | `StreamingDictationSessionTests.swift`, `STTRuntimeStreamingSessionTests.swift`, `STTSchedulerTests.swift`, `AudioRecorderStreamingSinkTests.swift`, `LiveDictationFlowTests.swift`, `SettingsViewModelTests.swift`, `AppRuntimePreferencesTests.swift` |

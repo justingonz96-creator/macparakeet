@@ -23,6 +23,12 @@ public final class DictationServiceSession {
         get async { await service.audioLevel }
     }
 
+    /// Latest live streaming partial transcript (ADR-023). Read synchronously
+    /// from the dictation overlay's polling loop. Empty when not streaming.
+    public var streamingPartialTranscript: String {
+        service.streamingPartialTranscript
+    }
+
     public func recordingSnapshot() async -> (state: DictationState, audioLevel: Float) {
         async let state = service.state
         async let audioLevel = service.audioLevel

@@ -27,6 +27,9 @@ protocol STTRuntimeProtocol: Sendable {
         onProgress: (@Sendable (String) -> Void)?
     ) async throws
     func currentSpeechEngineSelection() async -> SpeechEngineSelection
+    func prepareStreamingDictation(onProgress: (@Sendable (String) -> Void)?) async throws
+    func isStreamingDictationReady() async -> Bool
+    func beginStreamingDictationSession() async throws -> StreamingDictationSession
 }
 
 extension STTRuntimeProtocol {
@@ -65,14 +68,53 @@ public actor STTRuntime: STTRuntimeProtocol {
     private var warmUpObservers: [UUID: AsyncStream<STTWarmUpState>.Continuation] = [:]
     private var backgroundWarmUpGeneration: UInt64 = 0
 
+    /// Live streaming dictation engine (ADR-023). Created lazily via the
+    /// injected factory; the default builds the FluidAudio Parakeet Unified
+    /// adapter, while tests inject a mock. Distinct from the batch
+    /// `AsrManager`s — its own model bundle and lifecycle.
+    private let makeStreamingEngine: @Sendable () -> StreamingDictationEngine
+    private var streamingEngine: StreamingDictationEngine?
+
     public init(
         modelVersion: AsrModelVersion = .v3,
         speechEngine: SpeechEnginePreference = .parakeet,
-        whisperModelVariant: String = SpeechEnginePreference.defaultWhisperModelVariant
+        whisperModelVariant: String = SpeechEnginePreference.defaultWhisperModelVariant,
+        makeStreamingEngine: @escaping @Sendable () -> StreamingDictationEngine = { FluidStreamingDictationEngine() }
     ) {
         self.modelVersion = modelVersion
         self.speechEngine = speechEngine
         self.whisperModelVariant = WhisperEngine.normalizeModelVariant(whisperModelVariant)
+        self.makeStreamingEngine = makeStreamingEngine
+    }
+
+    // MARK: - Live streaming dictation (ADR-023)
+
+    private func ensureStreamingEngine() -> StreamingDictationEngine {
+        if let streamingEngine { return streamingEngine }
+        let engine = makeStreamingEngine()
+        streamingEngine = engine
+        return engine
+    }
+
+    /// Download (if needed) and load the streaming model. Call before offering
+    /// live dictation so `beginStreamingDictationSession()` can start instantly.
+    public func prepareStreamingDictation(onProgress: (@Sendable (String) -> Void)?) async throws {
+        try await ensureStreamingEngine().prepare(onProgress: onProgress)
+    }
+
+    public func isStreamingDictationReady() async -> Bool {
+        await streamingEngine?.isReady() ?? false
+    }
+
+    /// Begin a live dictation session. Throws when the streaming model is not
+    /// loaded — the start-time readiness gate that keeps a missing model from
+    /// surfacing only after the user has spoken, with no silent fallback to the
+    /// batch engine (ADR-021).
+    public func beginStreamingDictationSession() async throws -> StreamingDictationSession {
+        let engine = ensureStreamingEngine()
+        guard await engine.isReady() else { throw STTError.modelNotLoaded }
+        try await engine.reset()
+        return StreamingDictationSession(engine: engine)
     }
 
     func transcribe(
@@ -169,7 +211,7 @@ public actor STTRuntime: STTRuntimeProtocol {
             var decoderState = TdtDecoderState.make(decoderLayers: decoderLayers)
             try Task.checkCancellation()
             let result = try await manager.transcribe(audioURL, decoderState: &decoderState)
-            let words = Self.mergeTokenTimingsIntoWords(result.tokenTimings)
+            let words = ParakeetTokenTimingMerger.merge(result.tokenTimings)
             onProgress?(100, 100)
             // MacParakeet exposes Parakeet TDT 0.6B-v3 as an English-only engine
             // — there is no user-facing Parakeet language selector even though
@@ -783,59 +825,6 @@ public actor STTRuntime: STTRuntimeProtocol {
         }
     }
 
-    private nonisolated static func mergeTokenTimingsIntoWords(_ tokenTimings: [TokenTiming]?) -> [TimestampedWord] {
-        guard let tokenTimings, !tokenTimings.isEmpty else { return [] }
-
-        var words: [TimestampedWord] = []
-        var currentWord = ""
-        var currentStartTime: TimeInterval?
-        var currentEndTime: TimeInterval = 0
-        var currentConfidences: [Float] = []
-
-        func flushCurrentWord() {
-            guard !currentWord.isEmpty, let startTime = currentStartTime else { return }
-            let averageConfidence = currentConfidences.isEmpty
-                ? 0.0
-                : (currentConfidences.reduce(0, +) / Float(currentConfidences.count))
-
-            words.append(
-                TimestampedWord(
-                    word: currentWord,
-                    startMs: Int((startTime * 1_000).rounded()),
-                    endMs: Int((currentEndTime * 1_000).rounded()),
-                    confidence: Double(averageConfidence)
-                ))
-
-            currentWord = ""
-            currentStartTime = nil
-            currentEndTime = 0
-            currentConfidences.removeAll(keepingCapacity: true)
-        }
-
-        for timing in tokenTimings {
-            let normalizedToken = timing.token.replacingOccurrences(of: "▁", with: " ")
-            let trimmedToken = normalizedToken.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmedToken.isEmpty else { continue }
-
-            if normalizedToken.hasPrefix(" ") || normalizedToken.hasPrefix("\n") || normalizedToken.hasPrefix("\t") {
-                flushCurrentWord()
-                currentWord = trimmedToken
-                currentStartTime = timing.startTime
-                currentEndTime = timing.endTime
-                currentConfidences = [timing.confidence]
-            } else {
-                if currentStartTime == nil {
-                    currentStartTime = timing.startTime
-                }
-                currentWord += trimmedToken
-                currentEndTime = timing.endTime
-                currentConfidences.append(timing.confidence)
-            }
-        }
-
-        flushCurrentWord()
-        return words
-    }
 }
 
 private enum STTRuntimeLane: Sendable {

@@ -172,6 +172,18 @@ public final class SettingsViewModel {
             Telemetry.send(.settingChanged(setting: .pauseMediaDuringDictation))
         }
     }
+
+    /// Live streaming dictation opt-in (ADR-023). Not a plain `didSet` toggle:
+    /// enabling first downloads/loads the English streaming model, and the flag
+    /// only persists `true` on success (no silent fallback). Gated in the UI
+    /// behind `AppFeatures.liveDictationEnabled`.
+    public private(set) var liveDictationEnabled: Bool = false
+    public enum LiveDictationStatus: Equatable {
+        case idle
+        case preparing(String)
+        case failed(String)
+    }
+    public var liveDictationStatus: LiveDictationStatus = .idle
     public var microphoneDeviceOptions: [MicrophoneDeviceOption] = []
     public var microphoneTestState: MicrophoneTestState = .idle
     public var microphoneTestLevel: Float = 0
@@ -502,6 +514,7 @@ public final class SettingsViewModel {
     private var sttClient: STTClientProtocol?
     private var speechEngineSwitcher: SpeechEngineSwitching?
     private var speechEngineSwitchAvailabilityProvider: SpeechEngineSwitchAvailabilityProviding?
+    private var streamingDictationBroker: StreamingDictationBrokering?
     private var meetingRecoveryService: MeetingRecordingRecoveryServicing?
     private var sharedMicStream: SharedMicrophoneStream?
     private let defaults: UserDefaults
@@ -547,6 +560,7 @@ public final class SettingsViewModel {
         menuBarOnlyMode = AppPreferences.isMenuBarOnlyModeEnabled(defaults: defaults)
         showIdlePill = defaults.object(forKey: UserDefaultsAppRuntimePreferences.showIdlePillKey) as? Bool ?? true
         telemetryEnabled = AppPreferences.isTelemetryEnabled(defaults: defaults)
+        liveDictationEnabled = defaults.bool(forKey: UserDefaultsAppRuntimePreferences.liveDictationEnabledKey)
         let resolvedDictationHotkeys = Self.resolveDictationHotkeyTriggers(defaults: defaults)
         hotkeyTrigger = resolvedDictationHotkeys.handsFree
         pushToTalkHotkeyTrigger = resolvedDictationHotkeys.pushToTalk
@@ -867,6 +881,7 @@ public final class SettingsViewModel {
         sttClient: STTClientProtocol? = nil,
         speechEngineSwitcher: SpeechEngineSwitching? = nil,
         speechEngineSwitchAvailabilityProvider: SpeechEngineSwitchAvailabilityProviding? = nil,
+        streamingDictationBroker: StreamingDictationBrokering? = nil,
         meetingRecoveryService: MeetingRecordingRecoveryServicing? = nil,
         sharedMicStream: SharedMicrophoneStream? = nil
     ) {
@@ -884,6 +899,7 @@ public final class SettingsViewModel {
         self.speechEngineSwitchAvailabilityProvider = speechEngineSwitchAvailabilityProvider
             ?? (speechEngineSwitcher as? SpeechEngineSwitchAvailabilityProviding)
             ?? (sttClient as? SpeechEngineSwitchAvailabilityProviding)
+        self.streamingDictationBroker = streamingDictationBroker
         self.meetingRecoveryService = meetingRecoveryService
         self.sharedMicStream = sharedMicStream
         refreshLaunchAtLoginStatus()
@@ -914,6 +930,45 @@ public final class SettingsViewModel {
 
     public func requestPendingMeetingRecovery() {
         onRecoverPendingMeetingRecordings?()
+    }
+
+    /// Toggle live streaming dictation (ADR-023). Disabling persists immediately.
+    /// Enabling first prepares (downloads/loads) the English streaming model and
+    /// only persists `true` on success — a failed prepare leaves the toggle off
+    /// with an error, never silently falling back to the batch engine.
+    public func setLiveDictationEnabled(_ enabled: Bool) {
+        if !enabled {
+            liveDictationEnabled = false
+            liveDictationStatus = .idle
+            defaults.set(false, forKey: UserDefaultsAppRuntimePreferences.liveDictationEnabledKey)
+            return
+        }
+
+        guard let broker = streamingDictationBroker else {
+            liveDictationStatus = .failed("Live dictation is unavailable.")
+            return
+        }
+        guard case .preparing = liveDictationStatus else {
+            liveDictationStatus = .preparing("Preparing live dictation…")
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await broker.prepareStreamingDictation(onProgress: { message in
+                        Task { @MainActor [weak self] in
+                            self?.liveDictationStatus = .preparing(message)
+                        }
+                    })
+                    self.liveDictationEnabled = true
+                    self.liveDictationStatus = .idle
+                    self.defaults.set(true, forKey: UserDefaultsAppRuntimePreferences.liveDictationEnabledKey)
+                } catch {
+                    self.liveDictationEnabled = false
+                    self.liveDictationStatus = .failed(error.localizedDescription)
+                    self.defaults.set(false, forKey: UserDefaultsAppRuntimePreferences.liveDictationEnabledKey)
+                }
+            }
+            return
+        }
     }
 
     public func refreshLaunchAtLoginStatus() {
@@ -1156,6 +1211,8 @@ public final class SettingsViewModel {
             return "Finishing engine switch — try again in a moment"
         case .unavailable:
             return "Speech engine is temporarily unavailable"
+        case .liveDictationActive:
+            return "Stop live dictation to switch engines"
         }
     }
 
@@ -1621,6 +1678,11 @@ public final class SettingsViewModel {
             return .switchInProgress
         case .unavailable:
             return .unavailable
+        case .liveDictationActive:
+            // A live dictation session is active speech work; reuse the
+            // `.transcribing` reason rather than expanding the telemetry
+            // contract (ADR-023 defers a dedicated reason).
+            return .transcribing
         }
     }
 

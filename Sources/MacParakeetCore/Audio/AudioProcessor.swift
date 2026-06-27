@@ -44,4 +44,8 @@ public actor AudioProcessor: AudioProcessorProtocol {
     public func stopCapture() async throws -> URL {
         try await recorder.stop()
     }
+
+    public func setStreamingSink(_ sink: (@Sendable ([Float]) -> Void)?) async {
+        recorder.setStreamingSink(sink)
+    }
 }

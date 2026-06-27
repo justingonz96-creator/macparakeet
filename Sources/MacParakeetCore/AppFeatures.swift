@@ -42,4 +42,16 @@ public enum AppFeatures {
     /// Enabled once the website telemetry allowlist accepts
     /// `transform_executed` / `transform_failed` (ADR-022 §9).
     public static let transformsEnabled: Bool = true
+
+    /// Live Streaming Dictation (ADR-023). When `true`, the Settings toggle
+    /// "Live dictation (Beta) — English only" is exposed and all live-dictation
+    /// entry points are visible; the per-user opt-in still defaults off
+    /// (`AppRuntimePreferences.liveDictationEnabled`). When `false`, the toggle
+    /// is hidden and dictation always uses the batch path — the streaming
+    /// engine, runtime session, and tests remain compiled in either state.
+    ///
+    /// `true` on `main`/Beta. Stable DMG exposure is additionally gated on
+    /// confirming the `parakeet-unified-en-0.6b-coreml` license tag and adding
+    /// attribution (ADR-023 §10); flip to `false` for a Stable build until then.
+    public static let liveDictationEnabled: Bool = true
 }
