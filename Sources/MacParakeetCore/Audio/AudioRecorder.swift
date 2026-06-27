@@ -255,6 +255,14 @@ public actor AudioRecorder {
         let outputFormatBox = UncheckedSendableAudioFormat(outputFormat)
         let fileBox = UncheckedSendableAudioFile(file)
 
+        // Lazily warm VAD if auto-stop is on but the engine isn't ready yet
+        // (e.g. the user enabled auto-stop after launch). Fire-and-forget:
+        // single-flight + no-op once warm. The first dictation after enabling
+        // may still use the RMS fallback; subsequent ones are VAD-driven.
+        if self.enableVad(), let vadEngine {
+            Task { await vadEngine.warmUpIfNeeded() }
+        }
+
         // VAD pipeline (decision-only). Active only when auto-stop is on AND the
         // engine warmed; otherwise the snapshot stays `.unavailable` (RMS gate)
         // and no stream/consumer/accumulator is created.
@@ -285,8 +293,13 @@ public actor AudioRecorder {
                     guard self.sessionGeneration.withLock({ $0 }) == tapGeneration else { break }
                     switch event {
                     case .none:
-                        // Unavailable/error mid-session -> fall back to RMS.
-                        self.atomicVadSnapshot.withLock { $0 = .unavailable }
+                        // Transient VAD error/unavailability: drop to the RMS
+                        // fallback for these chunks WITHOUT discarding the speech
+                        // history. Slamming `.unavailable` (which nils lastSpeechAt)
+                        // would, on recovery mid-speech, look like a never-spoke
+                        // session and stop the user mid-sentence. Preserve
+                        // speechActive/lastSpeechAt so recovery resumes correctly.
+                        self.atomicVadSnapshot.withLock { $0.available = false }
                     case .some(let inner):
                         self.atomicVadSnapshot.withLock { snapshot in
                             snapshot.available = true
