@@ -2893,6 +2893,13 @@ struct SettingsView: View {
 
     @State private var isRecordingCommandModeShortcut = false
     @State private var commandModeShortcutCollision: String?
+    /// Local draft of the recorded shortcut. The `ShortcutRecorderField`
+    /// writes here, NOT directly to `viewModel.commandModeShortcut`. We only
+    /// commit the draft into the view model (which persists to UserDefaults)
+    /// once it passes collision validation — so a colliding capture surfaces
+    /// an inline error but is never persisted. Mirrors the draft-and-commit
+    /// pattern in `TransformEditorSheet`.
+    @State private var commandModeShortcutDraft: TransformShortcut?
     private let commandModeCollisionChecker = TransformsHotkeyCollisionChecker()
 
     /// Settings card for Command Mode (ADR-023).
@@ -2916,19 +2923,14 @@ struct SettingsView: View {
                     Spacer(minLength: DesignSystem.Spacing.md)
                     VStack(alignment: .trailing, spacing: 4) {
                         ShortcutRecorderField(
-                            shortcut: $viewModel.commandModeShortcut,
+                            shortcut: $commandModeShortcutDraft,
                             isRecording: $isRecordingCommandModeShortcut,
                             onRecordingStateChanged: { recording in
                                 onHotkeyRecordingStateChanged(recording)
-                                if !recording {
-                                    commandModeShortcutCollision = validateCommandModeShortcut(
-                                        viewModel.commandModeShortcut
-                                    )
-                                }
                             }
                         )
-                        .onChange(of: viewModel.commandModeShortcut) { _, newShortcut in
-                            commandModeShortcutCollision = validateCommandModeShortcut(newShortcut)
+                        .onChange(of: commandModeShortcutDraft) { _, newDraft in
+                            commitCommandModeShortcutDraft(newDraft)
                         }
 
                         if let collision = commandModeShortcutCollision {
@@ -2943,6 +2945,54 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+        .onAppear {
+            // Seed the draft from the persisted value so the recorder shows
+            // the currently-bound shortcut.
+            commandModeShortcutDraft = viewModel.commandModeShortcut
+            commandModeShortcutCollision = nil
+        }
+        .onChange(of: viewModel.commandModeShortcut) { _, newValue in
+            // Keep the draft in sync if the VM value changes externally
+            // (e.g. another Settings surface or a reset), but only when the
+            // draft isn't mid-edit with a different candidate.
+            if commandModeShortcutDraft != newValue, commandModeShortcutCollision == nil {
+                commandModeShortcutDraft = newValue
+            }
+        }
+    }
+
+    /// Commit a freshly-recorded draft into the view model — but only if it
+    /// passes collision validation. A clear (`nil`) always commits (it removes
+    /// the binding). A colliding non-nil draft shows the inline error and is
+    /// reverted to the last-good persisted value, so UserDefaults is never
+    /// written with a conflicting shortcut.
+    private func commitCommandModeShortcutDraft(_ draft: TransformShortcut?) {
+        // Explicit clear: propagate nil to the VM (persists removal).
+        guard let draft else {
+            commandModeShortcutCollision = nil
+            if viewModel.commandModeShortcut != nil {
+                viewModel.commandModeShortcut = nil
+            }
+            return
+        }
+
+        // No-op if the draft already equals the persisted value (e.g. the
+        // .onAppear seed or an external-sync echo) — nothing to validate.
+        if draft == viewModel.commandModeShortcut {
+            commandModeShortcutCollision = nil
+            return
+        }
+
+        if let collision = validateCommandModeShortcut(draft) {
+            // Colliding: surface the error, do NOT persist, and revert the
+            // field to the last-good binding.
+            commandModeShortcutCollision = collision
+            commandModeShortcutDraft = viewModel.commandModeShortcut
+        } else {
+            // Valid: commit (this persists to UserDefaults).
+            commandModeShortcutCollision = nil
+            viewModel.commandModeShortcut = draft
         }
     }
 
