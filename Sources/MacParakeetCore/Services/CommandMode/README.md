@@ -15,15 +15,17 @@ exit path. App code does not interact with the executor or router directly.
 
 ## What's here
 
-- `CommandModeRouter.swift` — pure `CommandModeRouter` enum. Classifies a
-  transcribed instruction into `.deterministic(DeterministicCommand)` or
-  `.rewrite(systemPrompt:userPrompt:)`. The deterministic branch is a closed
+- `CommandModeRouter.swift` — pure `CommandModeRouter` struct. Classifies a
+  transcribed instruction into `.deterministic(DeterministicCommand)`,
+  `.rewrite(prompt: String)`, or `.empty`. The deterministic branch is a closed
   phrase table (lowercase-normalized match); everything outside it is a rewrite.
   No I/O, no LLM, exhaustively testable.
-- `DeterministicTextEdit.swift` — executes the offline commands:
-  - `deleteSelection` — see **Deletion-not-empty-paste** below.
-  - `applyCase(_:to:)` — uppercases, lowercases, or title-cases the selection.
-  - `applyTrim(to:)` — strips leading/trailing whitespace.
+- `DeterministicTextEdit.swift` — executes the offline case/trim commands.
+  Single entry point: `static func apply(_ command: DeterministicCommand, to text: String) -> String`.
+  Handles `.uppercase`, `.lowercase`, `.titleCase`, and `.trim`; returns `""`
+  for `.clearSelection` (the executor routes that to deletion instead of a paste).
+  Deletion for "scratch that" and its variants lives on
+  `SelectionReplacementService.deleteSelection(in:)` — see **Deletion-not-empty-paste** below.
 - `CommandModeExecutor.swift` — `actor`. Owns the full per-invocation
   lifecycle: capture → optional LLM stream → replacement. Receives an
   `onProgress` closure (`@Sendable`) for pill updates; the coordinator bridges

@@ -2911,14 +2911,14 @@ struct SettingsView: View {
     private var commandModeCard: some View {
         settingsCard(
             title: "Command Mode",
-            subtitle: "Optional. Invoke a system-wide command palette with a keyboard shortcut.",
+            subtitle: "Optional. Hold a key, speak an instruction, release — selected text is rewritten in place. Simple commands like \"scratch that\" and \"uppercase that\" work offline; others use your AI provider.",
             icon: "terminal"
         ) {
             VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
                 HStack(alignment: .center) {
                     rowText(
                         title: "Command Mode shortcut",
-                        detail: "Leave empty to keep Command Mode dormant."
+                        detail: "Hold this key while you speak. Leave empty to keep Command Mode dormant."
                     )
                     Spacer(minLength: DesignSystem.Spacing.md)
                     VStack(alignment: .trailing, spacing: 4) {
