@@ -18,7 +18,10 @@ public struct CompletenessVeto: Sendable, Equatable {
 ///
 /// Phase 1 (this cycle) implements two paths:
 ///   1. VAD path (when `Input.vadAvailable`): stop after `silenceDuration`
-///      of VAD-judged silence.
+///      of VAD-judged silence, measured from `lastSpeechAt` once the user has
+///      spoken. If the user never speaks this session (`vadSilenceElapsed ==
+///      nil`), silence is measured from recording start (`Input.elapsed`) so a
+///      fully silent hands-free session still auto-stops, matching the RMS path.
 ///   2. RMS fallback path (when VAD is unavailable): reproduce today's exact
 ///      energy-gate arithmetic — `audioLevel >= rmsThreshold` resets the
 ///      silence timer; otherwise stop once `silenceDuration` has elapsed.
@@ -131,11 +134,19 @@ public struct DictationEndpointer: Sendable {
         if input.vadAvailable {
             // VAD path: stop after `silenceDuration` of VAD-judged silence.
             // The caller owns `lastSpeechAt`; we read the derived elapsed.
-            if !input.speechActive,
-               let silenceElapsed = input.vadSilenceElapsed,
-               silenceElapsed >= config.silenceDuration {
-                didStop = true
-                return .stop(reason: .vadSilence)
+            if !input.speechActive {
+                if let silenceElapsed = input.vadSilenceElapsed {
+                    if silenceElapsed >= config.silenceDuration {
+                        didStop = true
+                        return .stop(reason: .vadSilence)
+                    }
+                } else if input.elapsed >= config.silenceDuration {
+                    // No speech ever detected this session: measure silence from
+                    // recording start, matching the RMS path's "silent session
+                    // still auto-stops" behavior.
+                    didStop = true
+                    return .stop(reason: .vadSilence)
+                }
             }
             return .keepListening
         }

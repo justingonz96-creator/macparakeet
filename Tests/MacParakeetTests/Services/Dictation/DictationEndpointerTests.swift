@@ -121,6 +121,29 @@ final class DictationEndpointerTests: XCTestCase {
         )
     }
 
+    /// User never speaks: `vadSilenceElapsed` stays nil, so silence is measured
+    /// from recording start (`elapsed`). A fully silent hands-free session must
+    /// still auto-stop after `silenceDuration`, matching the RMS path.
+    func testVAD_silentSessionNeverSpoke_stopsAfterSilenceDuration() {
+        var endpointer = DictationEndpointer(
+            config: .init(enabled: true, silenceDuration: 2.0)
+        )
+        // Just shy of the duration: keep listening.
+        XCTAssertEqual(
+            endpointer.evaluate(
+                vad(at: 2.0 - 0.001, speechActive: false, silenceElapsed: nil)
+            ),
+            .keepListening
+        )
+        // At the duration: stop.
+        XCTAssertEqual(
+            endpointer.evaluate(
+                vad(at: 2.0, speechActive: false, silenceElapsed: nil)
+            ),
+            .stop(reason: .vadSilence)
+        )
+    }
+
     /// VAD says speech is active → never stop even past silenceDuration.
     func testVAD_activeSpeechNeverStops() {
         var endpointer = DictationEndpointer(

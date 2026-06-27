@@ -1030,9 +1030,6 @@ final class DictationFlowCoordinator {
                 rmsThreshold: Self.silenceAutoStopThreshold
             )
         )
-        // Tracks the reason the endpointer chose to stop — reserved for Phase-2
-        // telemetry and not emitted yet.
-        var lastEndpointReason: DictationEndpointer.StopReason?
 
         while !Task.isCancelled {
             let snapshot = await serviceSession.recordingSnapshot()
@@ -1057,8 +1054,7 @@ final class DictationFlowCoordinator {
                     vadSilenceElapsed: vadSilenceElapsed
                 )
             )
-            if case .stop(let reason) = decision {
-                lastEndpointReason = reason
+            if case .stop = decision {
                 stopDictation()
                 break
             }
