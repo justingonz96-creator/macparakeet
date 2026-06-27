@@ -190,6 +190,13 @@ struct ConfigCommand: ParsableCommand {
             return mode.rawValue
         case "speech-engine":
             let engine = try parseSpeechEngine(value)
+            // Gate: never persist .nemotron as the shared default while the
+            // engine is hidden (ADR-023). The GUI can't reach or recover from a
+            // Nemotron selection with the flag off, so reject before writing —
+            // consistent with `transcribe --engine nemotron` / `models download`.
+            if engine == .nemotron && !AppFeatures.nemotronEnabled {
+                throw ValidationError("The Nemotron engine is not available in this build.")
+            }
             engine.save(to: store)
             return engine.rawValue
         case "whisper-language":

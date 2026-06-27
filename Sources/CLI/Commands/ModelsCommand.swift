@@ -57,17 +57,7 @@ extension ModelsCommand {
             try emitJSONOrRethrow(json: json) {
                 let defaults = macParakeetAppDefaults()
                 let selection = try resolveSelectableSpeechModel(id, defaults: defaults)
-                if let whisperVariant = selection.whisperVariant,
-                   !WhisperEngine.isModelDownloaded(model: whisperVariant) {
-                    throw ValidationError(
-                        "Whisper model is not downloaded. Run `macparakeet-cli models download \(whisperModelID(for: whisperVariant))` first."
-                    )
-                }
-
-                selection.engine.save(to: defaults)
-                if let whisperVariant = selection.whisperVariant {
-                    SpeechEnginePreference.saveWhisperModelVariant(whisperVariant, defaults: defaults)
-                }
+                try persistSelectableSpeechModelSelection(selection, defaults: defaults)
 
                 let selected = loadSelectableSpeechModels(defaults: defaults).first { $0.selected }
                     ?? SelectableSpeechModel(
@@ -493,6 +483,35 @@ func resolveSelectableSpeechModel(
         engine: .whisper,
         whisperVariant: WhisperEngine.normalizeModelVariant(variantInput)
     )
+}
+
+/// Persists a resolved `models select` choice to the shared app/CLI defaults,
+/// after the two pre-write checks `models select` must pass:
+///   1. A Whisper variant must already be downloaded.
+///   2. .nemotron may not be persisted while `AppFeatures.nemotronEnabled` is
+///      off (ADR-023) — the GUI can't reach or recover from that selection, so
+///      reject before writing, consistent with `transcribe`/`models download`.
+/// Resolution stays flag-independent (see `resolveSelectableSpeechModel`); the
+/// gate lives here, immediately before persistence.
+func persistSelectableSpeechModelSelection(
+    _ selection: SelectableSpeechModelSelection,
+    defaults: UserDefaults = macParakeetAppDefaults()
+) throws {
+    if let whisperVariant = selection.whisperVariant,
+       !WhisperEngine.isModelDownloaded(model: whisperVariant) {
+        throw ValidationError(
+            "Whisper model is not downloaded. Run `macparakeet-cli models download \(whisperModelID(for: whisperVariant))` first."
+        )
+    }
+
+    if selection.engine == .nemotron && !AppFeatures.nemotronEnabled {
+        throw ValidationError("The Nemotron engine is not available in this build.")
+    }
+
+    selection.engine.save(to: defaults)
+    if let whisperVariant = selection.whisperVariant {
+        SpeechEnginePreference.saveWhisperModelVariant(whisperVariant, defaults: defaults)
+    }
 }
 
 func whisperModelID(for variant: String) -> String {
