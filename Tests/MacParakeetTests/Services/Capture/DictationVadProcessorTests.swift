@@ -76,4 +76,35 @@ extension DictationVadProcessorTests {
         XCTAssertEqual(processor.diagnostics.chunksEmitted, 0)
         XCTAssertEqual(processor.diagnostics.samplesAccumulated, 2096)
     }
+
+    /// Exact-multiple input: 8192 = 2 * 4096 drains the accumulator to empty.
+    /// A following partial buffer (< 4096) must NOT immediately complete a
+    /// chunk — this pins the `>=` boundary (no leftover from the exact split).
+    func testStreamingExactMultipleDrainsAccumulator() {
+        let processor = StreamingDictationVadProcessor()
+        var emitted: [[Float]] = []
+        processor.accept(samples: (0..<8192).map { Float($0) }) { emitted.append($0) }
+        XCTAssertEqual(emitted.count, 2, "8192 = 2 * 4096 -> exactly 2 chunks")
+        XCTAssertEqual(emitted[0].count, 4096)
+        XCTAssertEqual(emitted[1].count, 4096)
+        XCTAssertEqual(processor.diagnostics.chunksEmitted, 2)
+        XCTAssertEqual(processor.diagnostics.samplesAccumulated, 8192)
+
+        // Accumulator is empty after the exact split: a 100-sample partial
+        // does NOT complete a chunk (it would if a stray sample lingered).
+        processor.accept(samples: (0..<100).map { Float($0) }) { emitted.append($0) }
+        XCTAssertEqual(emitted.count, 2, "partial buffer after exact split emits nothing")
+        XCTAssertEqual(processor.diagnostics.chunksEmitted, 2)
+        XCTAssertEqual(processor.diagnostics.samplesAccumulated, 8292)
+    }
+
+    /// Empty input is a no-op: nothing emitted, diagnostics untouched.
+    func testStreamingEmptyInputIsNoOp() {
+        let processor = StreamingDictationVadProcessor()
+        var emitted: [[Float]] = []
+        processor.accept(samples: []) { emitted.append($0) }
+        XCTAssertTrue(emitted.isEmpty)
+        XCTAssertEqual(processor.diagnostics.chunksEmitted, 0)
+        XCTAssertEqual(processor.diagnostics.samplesAccumulated, 0)
+    }
 }

@@ -9,8 +9,6 @@ struct VadProcessingDiagnostics: Sendable, Equatable {
     var loaded: Bool
     var samplesAccumulated: Int
     var chunksEmitted: Int
-    var oversizedChunksDropped: Int
-    var processingFailures: Int
 
     static func passthrough(
         processorName: String = "passthrough",
@@ -20,9 +18,7 @@ struct VadProcessingDiagnostics: Sendable, Equatable {
             processorName: processorName,
             loaded: loaded,
             samplesAccumulated: 0,
-            chunksEmitted: 0,
-            oversizedChunksDropped: 0,
-            processingFailures: 0
+            chunksEmitted: 0
         )
     }
 }
@@ -71,9 +67,7 @@ final class StreamingDictationVadProcessor: DictationVadProcessing, @unchecked S
         processorName: "silero-vad-v6",
         loaded: true,
         samplesAccumulated: 0,
-        chunksEmitted: 0,
-        oversizedChunksDropped: 0,
-        processingFailures: 0
+        chunksEmitted: 0
     )
 
     var diagnostics: VadProcessingDiagnostics {
@@ -84,20 +78,23 @@ final class StreamingDictationVadProcessor: DictationVadProcessing, @unchecked S
     func accept(samples: [Float], emit: (_ chunk: [Float]) -> Void) {
         guard !samples.isEmpty else { return }
         accumulator.append(contentsOf: samples)
-        lock.lock()
-        diagnosticsStorage.samplesAccumulated += samples.count
-        lock.unlock()
 
+        var chunksThisCall = 0
         while accumulator.count >= Self.chunkSize {
             // `Array(prefix)` copies; never pass more than chunkSize (Silero
             // silently truncates oversized chunks, which would desync timing).
             let chunk = Array(accumulator.prefix(Self.chunkSize))
             accumulator.removeFirst(Self.chunkSize)
-            lock.lock()
-            diagnosticsStorage.chunksEmitted += 1
-            lock.unlock()
+            chunksThisCall += 1
             emit(chunk)
         }
+
+        // Single lock per call (never held across `emit`): bump both counters
+        // once, mirroring how the meeting suppressor batches its diagnostics.
+        lock.lock()
+        diagnosticsStorage.samplesAccumulated += samples.count
+        diagnosticsStorage.chunksEmitted += chunksThisCall
+        lock.unlock()
     }
 
     func reset() {
@@ -107,9 +104,7 @@ final class StreamingDictationVadProcessor: DictationVadProcessing, @unchecked S
             processorName: "silero-vad-v6",
             loaded: true,
             samplesAccumulated: 0,
-            chunksEmitted: 0,
-            oversizedChunksDropped: 0,
-            processingFailures: 0
+            chunksEmitted: 0
         )
     }
 }
