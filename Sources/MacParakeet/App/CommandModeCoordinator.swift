@@ -122,10 +122,12 @@ final class CommandModeCoordinator {
         switch captured {
         case .empty:
             showToast("Select text first — highlight what you want to change, then hold the key and speak.")
+            Telemetry.send(.commandModeFailed(reason: .emptySelection))
             finishHold(runID)
             return
         case .failed:
             showToast("Couldn't read the selection.")
+            Telemetry.send(.commandModeFailed(reason: .captureFailed))
             finishHold(runID)
             return
         case .ax, .clipboard:
@@ -165,6 +167,11 @@ final class CommandModeCoordinator {
             guard let self else { return }
             do {
                 let wav = try await self.audioProcessor.stopCapture()
+                // Always clean the temp WAV on scope exit, even when a stale-runID
+                // guard below returns early on a re-press race. This runs at
+                // function-scope exit — after `transcribe` has read the file — so
+                // it is safe and never a double-remove.
+                defer { try? FileManager.default.removeItem(at: wav) }
                 guard self.activeHold?.runID == runID else { return }
 
                 // "Transcribing…" — honor the user's persisted engine/language
@@ -177,7 +184,6 @@ final class CommandModeCoordinator {
                     job: .dictation,
                     speechEngine: engine
                 )
-                try? FileManager.default.removeItem(at: wav)
                 guard self.activeHold?.runID == runID else { return }
 
                 // "Rewriting…" — run the executor; it routes to a deterministic
@@ -195,8 +201,10 @@ final class CommandModeCoordinator {
             } catch let error as CommandModeExecutorError {
                 self.handleExecutorError(error)
             } catch {
+                // Non-executor failures (mic stop / STT) before the executor ran.
                 self.logger.error("command-mode: run failed: \(error.localizedDescription, privacy: .public)")
                 self.panel.fail(message: "Command Mode failed.")
+                Telemetry.send(.commandModeFailed(reason: .captureFailed))
             }
             self.finishHold(runID)
         }
@@ -239,6 +247,12 @@ final class CommandModeCoordinator {
         case .llmNotConfigured:
             onLLMProviderRequired()
             panel.fail(message: "Add an LLM provider in Settings to use Command Mode.")
+        case .cancelled:
+            // Silent close, no failure pill — matches TransformsCoordinator's
+            // cancellation handling. Effectively dead today (this coordinator
+            // never cancels the executor Task), but prevents a failure-pill
+            // flash if cancellation is wired in later.
+            panel.close()
         default:
             panel.fail(message: error.localizedDescription)
         }
