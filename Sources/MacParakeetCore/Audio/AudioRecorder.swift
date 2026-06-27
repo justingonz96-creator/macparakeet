@@ -100,6 +100,11 @@ public actor AudioRecorder {
     )
     private let enableVad: @Sendable () -> Bool
     private let vadEngine: DictationVadEngine?
+    /// Per-session VAD pipeline teardown handles. Non-nil only while a VAD-active
+    /// session is recording. The consumer Task owns its VadStreamState locally,
+    /// so there is no shared mutable streaming state (the prior box was a race).
+    private var vadChunkContinuation: AsyncStream<[Float]>.Continuation?
+    private var vadConsumerTask: Task<Void, Never>?
     nonisolated private let runtimeMetrics = OSAllocatedUnfairLock(
         initialState: RecordingRuntimeMetrics()
     )
@@ -250,6 +255,63 @@ public actor AudioRecorder {
         let outputFormatBox = UncheckedSendableAudioFormat(outputFormat)
         let fileBox = UncheckedSendableAudioFile(file)
 
+        // VAD pipeline (decision-only). Active only when auto-stop is on AND the
+        // engine warmed; otherwise the snapshot stays `.unavailable` (RMS gate)
+        // and no stream/consumer/accumulator is created.
+        let vadProcessor: DictationVadProcessing
+        let vadContinuation: AsyncStream<[Float]>.Continuation?
+        if self.enableVad(), let vadEngine, await vadEngine.isAvailable,
+           let initialVadState = await vadEngine.makeStreamState() {
+            vadProcessor = StreamingDictationVadProcessor()
+            // Bound memory under any engine stall: drop oldest chunks rather than
+            // grow unbounded. ~16 chunks ≈ 4 s of 256 ms frames. Under normal
+            // load (ANE inference ≪ 256 ms) the buffer never fills.
+            let (stream, continuation) = AsyncStream<[Float]>.makeStream(
+                bufferingPolicy: .bufferingNewest(16)
+            )
+            vadContinuation = continuation
+            self.atomicVadSnapshot.withLock {
+                $0 = VadSnapshot(available: true, speechActive: false, lastSpeechAt: nil)
+            }
+            // ONE consumer drains the stream in order, owning `state` locally.
+            let consumer = Task<Void, Never>.detached(priority: .utility) { [weak self] in
+                guard let self else { return }
+                var state = initialVadState
+                for await chunk in stream {
+                    guard self.sessionGeneration.withLock({ $0 }) == tapGeneration else { continue }
+                    let event = await vadEngine.process(chunk: chunk, state: &state)
+                    guard self.sessionGeneration.withLock({ $0 }) == tapGeneration else { continue }
+                    switch event {
+                    case .none:
+                        // Unavailable/error mid-session -> fall back to RMS.
+                        self.atomicVadSnapshot.withLock { $0 = .unavailable }
+                    case .some(let inner):
+                        self.atomicVadSnapshot.withLock { snapshot in
+                            snapshot.available = true
+                            if let inner {
+                                switch inner.kind {
+                                case .speechStart:
+                                    snapshot.speechActive = true
+                                    snapshot.lastSpeechAt = Date()
+                                case .speechEnd:
+                                    snapshot.speechActive = false
+                                }
+                            } else if snapshot.speechActive {
+                                // Still in a speech run with no boundary event:
+                                // refresh lastSpeechAt so the endpointer measures
+                                // silence from the last speech frame.
+                                snapshot.lastSpeechAt = Date()
+                            }
+                        }
+                    }
+                }
+            }
+            self.vadConsumerTask = consumer
+        } else {
+            vadProcessor = PassthroughDictationVadProcessor()
+            vadContinuation = nil
+        }
+
         let processCopiedBuffer: @Sendable (UncheckedSendableAudioPCMBuffer, AVAudioChannelCount) -> Void = { [weak self] copiedBufferBox, originalChannelCount in
             guard let self else { return }
             guard self.sessionGeneration.withLock({ $0 }) == tapGeneration else { return }
@@ -373,6 +435,19 @@ public actor AudioRecorder {
                     try fileBox.file.write(from: convertedBuffer)
                     self.sampleCounter.withLock { $0 += convertedFrameLength }
                     self.runtimeMetrics.withLock { $0.outputBufferCount += 1 }
+
+                    // ── VAD fork (decision-only). Runs AFTER the WAV write,
+                    //    inside the generation guard. Reads a COPY of the
+                    //    converted frames and only `yield`s to the AsyncStream —
+                    //    no lock the writer path uses, no inference on this queue.
+                    if let vadContinuation,
+                       let data = convertedBuffer.floatChannelData?[0],
+                       convertedFrameLength > 0 {
+                        let frames = Array(UnsafeBufferPointer(start: data, count: convertedFrameLength))
+                        vadProcessor.accept(samples: frames) { chunk in
+                            vadContinuation.yield(chunk)   // ordered, non-blocking
+                        }
+                    }
                 } catch {
                     let alreadyLogged = self.tapErrorLogged.withLock { logged in
                         let was = logged; logged = true; return was
@@ -452,6 +527,9 @@ public actor AudioRecorder {
             let stream = sharedStream
             Task { await stream.unsubscribe(token) }
             try? FileManager.default.removeItem(at: url)
+            vadContinuation?.finish()
+            self.vadConsumerTask?.cancel()
+            self.vadConsumerTask = nil
             AudioCaptureDiagnostics.append(
                 "dictation_capture_start_aborted reason=\"interrupted_during_subscribe\""
             )
@@ -462,6 +540,7 @@ public actor AudioRecorder {
         self.outputURL = url
         self.recording = true
         self.sharedSubscriberToken = token
+        self.vadChunkContinuation = vadContinuation
 
         let liveFormat = sharedStream.inputFormat
         let liveSampleRate = liveFormat?.sampleRate ?? 0
@@ -519,6 +598,9 @@ public actor AudioRecorder {
         recording = false
         atomicAudioLevel.withLock { $0 = 0.0 }
         atomicVadSnapshot.withLock { $0 = .unavailable }
+        vadChunkContinuation?.finish()
+        vadChunkContinuation = nil
+        vadConsumerTask = nil
 
         let url = outputURL
         outputURL = nil
