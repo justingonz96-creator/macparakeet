@@ -76,6 +76,9 @@ protocol SelectionReplacementBackend: Sendable {
     @MainActor
     func postCmdV() throws
 
+    @MainActor
+    func postDeleteKey() throws
+
     /// Current `NSPasteboard.changeCount`. Used by the restore guard to
     /// detect whether the user copied something else during the
     /// paste-and-restore window — if so, we preserve their newer content
@@ -167,6 +170,30 @@ public actor SelectionReplacementService {
         case .empty, .failed:
             throw SelectionReplacementError.allPathsFailed
         }
+    }
+
+    /// Delete the captured selection deterministically (for the "scratch that" family).
+    /// Never pastes an empty string: AX captures set the selected text to "" directly;
+    /// clipboard-fallback captures post a Delete keystroke to the focused field.
+    @discardableResult
+    public func deleteSelection(in context: SelectionCaptureResult) async throws -> SelectionReplacementPath {
+        switch context {
+        case .ax(_, let focused, _):
+            if backend.writeSelectionViaAX("", element: focused.element) {
+                return .ax
+            }
+            try await postDeleteKeyOnMain()
+            return .clipboardPaste
+        case .clipboard:
+            try await postDeleteKeyOnMain()
+            return .clipboardPaste
+        case .empty, .failed:
+            throw SelectionReplacementError.allPathsFailed
+        }
+    }
+
+    private func postDeleteKeyOnMain() async throws {
+        try await MainActor.run { try backend.postDeleteKey() }
     }
 
     private func pasteIntoCurrentFocus(
@@ -411,6 +438,25 @@ struct SystemSelectionReplacementBackend: SelectionReplacementBackend, @unchecke
         }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+    }
+
+    @MainActor
+    func postDeleteKey() throws {
+        guard AXIsProcessTrusted() else {
+            throw SelectionReplacementError.accessibilityNotAuthorized
+        }
+        guard let source = CGEventSource(stateID: .hidSystemState) else {
+            throw SelectionReplacementError.eventSourceUnavailable
+        }
+        let deleteKeyCode: CGKeyCode = 0x33 // Delete (Backspace) — removes the selection
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: deleteKeyCode, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: deleteKeyCode, keyDown: false) else {
+            throw SelectionReplacementError.eventPostingFailed
+        }
+        keyDown.flags = []
+        keyUp.flags = []
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
     }
