@@ -1056,6 +1056,57 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertEqual(settings, [.whisperDefaultLanguage, .whisperDefaultLanguage])
     }
 
+    // MARK: - Nemotron (flag-off behavior, ADR-023)
+    //
+    // `AppFeatures.nemotronEnabled` is a compile-time `false`, so these assert
+    // only the shipping (flag-off) state: Nemotron is never offered and can
+    // never become the active engine. No flag-on tests — the flag is constant.
+
+    func testSelectableEnginesExcludesNemotronWhileFlagOff() {
+        // Guard rail: if the flag is ever flipped on, this test stops being a
+        // valid flag-off assertion, so make the precondition explicit.
+        XCTAssertFalse(AppFeatures.nemotronEnabled)
+        XCTAssertEqual(viewModel.selectableEngines, [.parakeet, .whisper])
+        XCTAssertFalse(viewModel.selectableEngines.contains(.nemotron))
+    }
+
+    func testSpeechEnginePreferenceNeverResolvesToNemotronWhileFlagOff() async throws {
+        XCTAssertFalse(AppFeatures.nemotronEnabled)
+        let switcher = MockSpeechEngineSwitcher()
+        // Pretend the model is downloaded so the only thing that could block a
+        // switch is the flag gate, not a missing model.
+        viewModel.nemotronModelStatus = .notLoaded
+        viewModel.configure(
+            permissionService: mockPermissions,
+            dictationRepo: mockRepo,
+            entitlementsService: entitlements,
+            checkoutURL: nil,
+            speechEngineSwitcher: switcher
+        )
+
+        // Attempt to force the engine to Nemotron through the public setter.
+        viewModel.speechEnginePreference = .nemotron
+        try await waitForSpeechEngineSwitchingToFinish()
+
+        // The flag-gated guard reverts to Parakeet and never persists Nemotron
+        // or asks the switcher to load it.
+        XCTAssertEqual(viewModel.speechEnginePreference, .parakeet)
+        XCTAssertNotEqual(SpeechEnginePreference.current(defaults: testDefaults), .nemotron)
+        let preferences = await switcher.preferences
+        XCTAssertFalse(preferences.contains(.nemotron))
+    }
+
+    func testNemotronDefaultLanguagePersistsEuropeanCodesOnly() {
+        // The picker is hidden while the flag is off, but the persistence helper
+        // still enforces the closed European set — a stray write of a
+        // non-European code must be dropped, never stored.
+        viewModel.nemotronDefaultLanguage = "de-DE"
+        XCTAssertEqual(SpeechEnginePreference.nemotronDefaultLanguage(defaults: testDefaults), "de")
+
+        viewModel.nemotronDefaultLanguage = "ko" // not a European code
+        XCTAssertNil(SpeechEnginePreference.nemotronDefaultLanguage(defaults: testDefaults))
+    }
+
     func testSpeechEngineChangeCallsSwitcherAndPersistsOnSuccess() async throws {
         let switcher = MockSpeechEngineSwitcher()
         viewModel.whisperModelStatus = .notLoaded
