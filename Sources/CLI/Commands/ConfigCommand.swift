@@ -24,7 +24,7 @@ struct ConfigCommand: ParsableCommand {
         Supported keys:
           telemetry                 on|off                         default: on
           processing-mode           raw|clean                       default: raw
-          speech-engine             parakeet|whisper                default: parakeet
+          speech-engine             parakeet|whisper|nemotron       default: parakeet
           whisper-language          auto|<Whisper language code>    default: auto
           speaker-detection         on|off                          default: off
           save-transcription-audio  on|off                          default: on
@@ -190,6 +190,13 @@ struct ConfigCommand: ParsableCommand {
             return mode.rawValue
         case "speech-engine":
             let engine = try parseSpeechEngine(value)
+            // Gate: never persist .nemotron as the shared default while the
+            // engine is hidden (ADR-023). The GUI can't reach or recover from a
+            // Nemotron selection with the flag off, so reject before writing —
+            // consistent with `transcribe --engine nemotron` / `models download`.
+            if engine == .nemotron && !AppFeatures.nemotronEnabled {
+                throw ValidationError("The Nemotron engine is not available in this build.")
+            }
             engine.save(to: store)
             return engine.rawValue
         case "whisper-language":
@@ -246,7 +253,7 @@ struct ConfigCommand: ParsableCommand {
     static func parseSpeechEngine(_ value: String) throws -> SpeechEnginePreference {
         let raw = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard let engine = SpeechEnginePreference(rawValue: raw) else {
-            throw ValidationError("Invalid value for speech-engine: '\(value)'. Use parakeet or whisper.")
+            throw ValidationError("Invalid value for speech-engine: '\(value)'. Use parakeet, whisper, or nemotron.")
         }
         return engine
     }

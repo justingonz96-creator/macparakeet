@@ -52,6 +52,11 @@ public enum AppPaths {
         "\(appSupportDir)/models/stt/whisper"
     }
 
+    /// Nemotron CoreML model cache base.
+    public static var nemotronModelsDir: String {
+        "\(appSupportDir)/models/stt/nemotron"
+    }
+
     /// Managed yt-dlp binary path.
     public static var ytDlpBinaryPath: String {
         "\(binDir)/yt-dlp"
@@ -83,7 +88,7 @@ public enum AppPaths {
     /// Ensure all required directories exist
     public static func ensureDirectories() throws {
         let fm = FileManager.default
-        for dir in [appSupportDir, dictationsDir, youtubeDownloadsDir, meetingRecordingsDir, binDir, whisperModelsDir, thumbnailsDir, logsDir, tempDir] {
+        for dir in [appSupportDir, dictationsDir, youtubeDownloadsDir, meetingRecordingsDir, binDir, whisperModelsDir, nemotronModelsDir, thumbnailsDir, logsDir, tempDir] {
             if !fm.fileExists(atPath: dir) {
                 try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
             }

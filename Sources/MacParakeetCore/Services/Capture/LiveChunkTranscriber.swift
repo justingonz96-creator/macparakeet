@@ -135,6 +135,11 @@ actor LiveChunkTranscriber {
         try writeChunkAudio(samples: chunk.samples, to: chunkURL)
         defer { try? FileManager.default.removeItem(at: chunkURL) }
         if let routedTranscriber = sttTranscriber as? any SpeechEngineRoutedTranscribing {
+            // The scheduler path always reaches here: STTRuntime is routed, so a
+            // meeting pinned to any non-default engine (Whisper or Nemotron) is
+            // honored by passing `context.speechEngine` straight through. The
+            // parakeet-only fallback below is unreachable for the scheduler and
+            // exists only for a non-routed test/standalone transcriber.
             return try await routedTranscriber.transcribe(
                 audioPath: chunkURL.path,
                 job: .meetingLiveChunk,

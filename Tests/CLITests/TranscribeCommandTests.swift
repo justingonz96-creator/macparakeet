@@ -125,6 +125,37 @@ final class TranscribeCommandTests: XCTestCase {
         XCTAssertNil(selection.language)
     }
 
+    func testResolveNemotronEngineCarriesEuropeanLanguage() {
+        let sel = TranscribeCommand.resolveSpeechEngine(
+            .nemotron, storedEngine: nil, storedLanguage: nil, explicitLanguage: "fr-FR")
+        XCTAssertEqual(sel.engine, .nemotron)
+        XCTAssertEqual(sel.language, "fr")
+    }
+
+    func testResolveNemotronDropsNonEuropeanLanguage() {
+        let sel = TranscribeCommand.resolveSpeechEngine(
+            .nemotron, storedEngine: nil, storedLanguage: nil, explicitLanguage: "ko")
+        XCTAssertEqual(sel.engine, .nemotron)
+        XCTAssertNil(sel.language)
+    }
+
+    func testNemotronEngineRejectedAtRuntimeWhileFlagOff() {
+        // Shipping state: AppFeatures.nemotronEnabled == false, so the CLI must
+        // refuse `--engine nemotron` before constructing the engine (and before
+        // any model fetch). This asserts the exact predicate the run() gate uses.
+        XCTAssertFalse(AppFeatures.nemotronEnabled, "Flag must stay off in shipping builds.")
+        XCTAssertTrue(
+            TranscribeCommand.shouldRejectSpeechEngineAtRuntime(
+                SpeechEngineSelection(engine: .nemotron, language: nil)))
+        // Parakeet/Whisper are never gated by this flag.
+        XCTAssertFalse(
+            TranscribeCommand.shouldRejectSpeechEngineAtRuntime(
+                SpeechEngineSelection(engine: .parakeet)))
+        XCTAssertFalse(
+            TranscribeCommand.shouldRejectSpeechEngineAtRuntime(
+                SpeechEngineSelection(engine: .whisper, language: "ko")))
+    }
+
     func testResolveSpeakerDetectionUsesStoredDefaultWhenRequested() {
         XCTAssertTrue(TranscribeCommand.resolveSpeakerDetection(.appDefault, storedEnabled: true, noDiarize: false))
         XCTAssertFalse(TranscribeCommand.resolveSpeakerDetection(.appDefault, storedEnabled: nil, noDiarize: false))

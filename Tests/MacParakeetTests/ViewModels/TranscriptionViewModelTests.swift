@@ -1414,6 +1414,13 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(option.alternativeEngine, SpeechEngineSelection(engine: .parakeet))
     }
 
+    func testNemotronAlternativeEngineIsParakeet() {
+        // The retranscribe "alternative" is derived from `engine.alternative`,
+        // which stays binary: a Nemotron-primary option offers Parakeet, so the
+        // existing parakeet<->whisper retranscribe behavior is unchanged.
+        XCTAssertEqual(SpeechEnginePreference.nemotron.alternative, .parakeet)
+    }
+
     func testRetranscriptionEngineOptionDisablesMissingWhisperModel() throws {
         let archivedMeeting = try makeArchivedMeetingRecording(
             speechEngine: SpeechEngineSelection(engine: .parakeet)

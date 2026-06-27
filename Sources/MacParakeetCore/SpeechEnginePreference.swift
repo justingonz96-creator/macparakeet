@@ -3,10 +3,12 @@ import Foundation
 public enum SpeechEnginePreference: String, CaseIterable, Codable, Sendable {
     case parakeet
     case whisper
+    case nemotron
 
     public static let defaultsKey = "speechRecognitionEngine"
     public static let whisperDefaultLanguageKey = "whisperDefaultLanguage"
     public static let whisperModelVariantKey = "whisperModelVariant"
+    public static let nemotronDefaultLanguageKey = "nemotronDefaultLanguage"
 
     /// Variants whose one-time CoreML compile/ANE specialization has already
     /// completed on this Mac. The first load of a Whisper variant pays a
@@ -24,6 +26,8 @@ public enum SpeechEnginePreference: String, CaseIterable, Codable, Sendable {
             "Parakeet"
         case .whisper:
             "Whisper"
+        case .nemotron:
+            "Nemotron"
         }
     }
 
@@ -32,6 +36,8 @@ public enum SpeechEnginePreference: String, CaseIterable, Codable, Sendable {
         case .parakeet:
             .whisper
         case .whisper:
+            .parakeet
+        case .nemotron:
             .parakeet
         }
     }
@@ -58,6 +64,25 @@ public enum SpeechEnginePreference: String, CaseIterable, Codable, Sendable {
             return
         }
         defaults.set(normalized, forKey: whisperDefaultLanguageKey)
+    }
+
+    public static func nemotronDefaultLanguage(defaults: UserDefaults = .standard) -> String? {
+        normalizeNemotronLanguage(defaults.string(forKey: nemotronDefaultLanguageKey))
+    }
+
+    public static func saveNemotronDefaultLanguage(_ language: String?, defaults: UserDefaults = .standard) {
+        guard let normalized = normalizeNemotronLanguage(language) else {
+            defaults.removeObject(forKey: nemotronDefaultLanguageKey)
+            return
+        }
+        defaults.set(normalized, forKey: nemotronDefaultLanguageKey)
+    }
+
+    /// Nemotron honors only the six European codes (NemotronLanguageCatalog).
+    /// Distinct from `normalizeLanguage`, which delegates to the ~99-language
+    /// Whisper catalog and would wrongly accept e.g. "ko".
+    public static func normalizeNemotronLanguage(_ language: String?) -> String? {
+        NemotronLanguageCatalog.canonicalCode(for: language)
     }
 
     public static func whisperModelVariant(defaults: UserDefaults = .standard) -> String {
@@ -186,15 +211,28 @@ public struct SpeechEngineSelection: Codable, Equatable, Sendable {
 
     public init(engine: SpeechEnginePreference, language: String? = nil) {
         self.engine = engine
-        self.language = engine == .whisper ? SpeechEnginePreference.normalizeLanguage(language) : nil
+        switch engine {
+        case .whisper:
+            self.language = SpeechEnginePreference.normalizeLanguage(language)
+        case .nemotron:
+            self.language = SpeechEnginePreference.normalizeNemotronLanguage(language)
+        case .parakeet:
+            self.language = nil
+        }
     }
 
     public static func current(defaults: UserDefaults = .standard) -> SpeechEngineSelection {
         let engine = SpeechEnginePreference.current(defaults: defaults)
-        return SpeechEngineSelection(
-            engine: engine,
-            language: engine == .whisper ? SpeechEnginePreference.whisperDefaultLanguage(defaults: defaults) : nil
-        )
+        let language: String?
+        switch engine {
+        case .whisper:
+            language = SpeechEnginePreference.whisperDefaultLanguage(defaults: defaults)
+        case .nemotron:
+            language = SpeechEnginePreference.nemotronDefaultLanguage(defaults: defaults)
+        case .parakeet:
+            language = nil
+        }
+        return SpeechEngineSelection(engine: engine, language: language)
     }
 }
 

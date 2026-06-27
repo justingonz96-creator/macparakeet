@@ -82,6 +82,16 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ### Added
 
+- `transcribe --engine nemotron --language <eu-code>` and
+  `models download nemotron-european` add the optional Nemotron European STT
+  engine (ADR-023). Nemotron is gated off by default
+  (`AppFeatures.nemotronEnabled == false`): `--engine nemotron` is rejected at
+  runtime and `models download nemotron-european` refuses to fetch the model
+  while disabled. Consistently, `config set speech-engine nemotron` and
+  `models select nemotron-european` are also rejected (and persist nothing)
+  while the flag is off, so a CLI user can't pin an engine the GUI can't reach.
+  All four surfaces accept Nemotron only when the flag is enabled. Languages are
+  European only (en/es/fr/it/pt/de); other hints (e.g. `ko`) are dropped.
 - LLM-backed commands now expose `--allow-insecure-http` for intentional
   non-loopback `http://` endpoints on non-local providers.
 - `spec --json` prints a machine-readable CLI contract for agents and scripts,

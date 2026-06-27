@@ -284,6 +284,20 @@ public final class SettingsViewModel {
             Telemetry.send(.settingChanged(setting: .whisperDefaultLanguage))
         }
     }
+    /// Nemotron default language pin (ADR-023). Mirrors `whisperDefaultLanguage`
+    /// but is limited to the six European codes (NemotronLanguageCatalog). Inert
+    /// while `AppFeatures.nemotronEnabled == false`: nothing writes it because the
+    /// Nemotron language card is hidden, and the persist helper drops any value
+    /// outside the European set (so a stray write can never store e.g. "ko").
+    public var nemotronDefaultLanguage: String {
+        didSet {
+            SpeechEnginePreference.saveNemotronDefaultLanguage(nemotronDefaultLanguage, defaults: defaults)
+            // No telemetry: there is no Nemotron-specific `TelemetrySettingName`
+            // (adding one would touch Core, out of scope here), and reusing the
+            // Whisper name would mislabel the event. The property is inert while
+            // the flag is off, so this path is unreachable in shipped builds.
+        }
+    }
 
     // MARK: - Whisper Engine Tuning
     public var whisperTuning: WhisperEngineTuning {
@@ -343,6 +357,16 @@ public final class SettingsViewModel {
     public var whisperDownloading = false
     public var isWhisperModelDownloaded: Bool {
         whisperModelStatus == .ready || whisperModelStatus == .notLoaded
+    }
+    /// Disk-derived Nemotron model status (ADR-023). Mirrors
+    /// `whisperModelStatus` but is only ever refreshed when
+    /// `AppFeatures.nemotronEnabled` is on (see `refreshModelStatus()`); while
+    /// the flag is off it stays at its `.unknown` default and the gated UI that
+    /// would read it is never rendered.
+    public var nemotronModelStatus: LocalModelStatus = .unknown
+    public var nemotronModelStatusDetail: String = "Not checked yet."
+    public var isNemotronModelDownloaded: Bool {
+        nemotronModelStatus == .ready || nemotronModelStatus == .notLoaded
     }
     /// True once the active Whisper variant has paid its one-time on-device
     /// optimize, so the next load is fast. Drives cold ("Setup needed",
@@ -591,6 +615,11 @@ public final class SettingsViewModel {
         speakerDiarization = defaults.object(forKey: UserDefaultsAppRuntimePreferences.speakerDiarizationKey) as? Bool ?? false
         speechEnginePreference = SpeechEnginePreference.current(defaults: defaults)
         whisperDefaultLanguage = SpeechEnginePreference.whisperDefaultLanguage(defaults: defaults) ?? "auto"
+        // Nemotron has no "auto" sentinel — nil means auto-detect within the
+        // Latin set — so default the picker to English (the first European code)
+        // when no pin is stored.
+        nemotronDefaultLanguage = SpeechEnginePreference.nemotronDefaultLanguage(defaults: defaults)
+            ?? NemotronLanguageCatalog.supportedCodes.first ?? "en"
         whisperTuning = SpeechEnginePreference.whisperTuning(defaults: defaults)
         // Resolve the preset from either the persisted picker
         // selection or — if there is none — by reverse-lookup from
@@ -1175,6 +1204,13 @@ public final class SettingsViewModel {
         let refreshGeneration = modelStatusRefreshGeneration
         let whisperModelVariant = SpeechEnginePreference.whisperModelVariant(defaults: defaults)
 
+        // Nemotron status is disk-derived and only meaningful while the engine
+        // is reachable. Gated so it stays `.unknown` (its default) in shipped
+        // builds and never touches the FluidInference artifact path.
+        if AppFeatures.nemotronEnabled {
+            refreshNemotronModelStatus()
+        }
+
         guard let sttClient else {
             parakeetStatus = .unknown
             parakeetStatusDetail = "Unavailable in this runtime."
@@ -1272,6 +1308,37 @@ public final class SettingsViewModel {
         SpeechEnginePreference.friendlyVariantName(
             SpeechEnginePreference.whisperModelVariant(defaults: defaults)
         )
+    }
+
+    /// Disk-derived Nemotron status (ADR-023). Mirrors
+    /// `refreshWhisperModelStatus`. Only ever called under
+    /// `AppFeatures.nemotronEnabled`, so the disk probe never runs in shipped
+    /// builds. Nemotron pays no per-Mac "optimize" the way Whisper does, so the
+    /// downloaded state maps straight to `.notLoaded` ("loads when selected").
+    public func refreshNemotronModelStatus() {
+        applyNemotronDownloadedStatus(NemotronEngine.isModelDownloaded())
+    }
+
+    private func applyNemotronDownloadedStatus(_ isDownloaded: Bool) {
+        if isDownloaded {
+            nemotronModelStatus = .notLoaded
+            nemotronModelStatusDetail = "Nemotron (European) · Installed locally, loads when selected."
+        } else {
+            nemotronModelStatus = .notDownloaded
+            nemotronModelStatusDetail = "Nemotron (European) · Needs download before use."
+        }
+    }
+
+    /// Engines the picker may offer (ADR-023). Always includes Parakeet and
+    /// Whisper; includes Nemotron only when `AppFeatures.nemotronEnabled`. The
+    /// Settings tiles and any future engine list read from this so the flag is
+    /// the single gate — with it off, Nemotron is unreachable from the UI.
+    public var selectableEngines: [SpeechEnginePreference] {
+        var engines: [SpeechEnginePreference] = [.parakeet, .whisper]
+        if AppFeatures.nemotronEnabled {
+            engines.append(.nemotron)
+        }
+        return engines
     }
 
     public func downloadWhisperModel() {
@@ -1380,12 +1447,48 @@ public final class SettingsViewModel {
 
     private func applySpeechEngineChange(_ preference: SpeechEnginePreference) {
         speechEngineError = nil
+
+        // Hard gate: Nemotron is unreachable while the flag is off (ADR-023).
+        // The UI never offers it (see `selectableEngines`), but defend the
+        // setter too so a direct assignment can't persist or load Nemotron in a
+        // shipped build. Silently revert to Parakeet without telemetry — this is
+        // a "can't happen" path, not a user-visible blocked switch.
+        if preference == .nemotron && !AppFeatures.nemotronEnabled {
+            isApplyingSpeechEngineState = true
+            speechEnginePreference = .parakeet
+            isApplyingSpeechEngineState = false
+            return
+        }
+
         let previousPreference = SpeechEnginePreference.current(defaults: defaults)
         let operationContext = Observability.childOperationContext()
         let switchWasCold = SpeechEnginePreference.isColdSwitch(to: preference, defaults: defaults)
 
         if preference == .whisper && !isWhisperModelDownloaded {
             speechEngineError = "Download the Whisper model before switching engines."
+            Telemetry.send(.speechEngineSwitchOperation(
+                operationID: operationContext.operationID,
+                operationContext: operationContext,
+                fromEngine: previousPreference,
+                toEngine: preference,
+                outcome: .unavailable,
+                durationSeconds: Observability.durationSeconds(since: operationContext.startedAt),
+                blockedReason: .modelNotDownloaded,
+                errorType: "model_not_downloaded",
+                wasCold: switchWasCold
+            ))
+            isApplyingSpeechEngineState = true
+            speechEnginePreference = .parakeet
+            isApplyingSpeechEngineState = false
+            return
+        }
+
+        // Same "model must be present before switching" guard as Whisper, gated
+        // by the flag (ADR-023). Inert in shipped builds — `selectEngine` can
+        // never set `.nemotron` while the flag is off, so `preference` is never
+        // `.nemotron` here.
+        if AppFeatures.nemotronEnabled && preference == .nemotron && !isNemotronModelDownloaded {
+            speechEngineError = "Download the Nemotron model before switching engines."
             Telemetry.send(.speechEngineSwitchOperation(
                 operationID: operationContext.operationID,
                 operationContext: operationContext,
@@ -1632,6 +1735,8 @@ public final class SettingsViewModel {
             "Loading Parakeet model on Neural Engine..."
         case .whisper:
             "Optimizing Whisper for this Mac..."
+        case .nemotron:
+            "Preparing Nemotron..."
         }
     }
 

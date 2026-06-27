@@ -379,6 +379,7 @@ struct SettingsView: View {
         scrollableTabBody {
             engineSelectorCard.id("engine.selector")
             engineLanguageCard.id("engine.language")
+            engineNemotronLanguageCard.id("engine.nemotron-language")
             engineTuningCard.id("engine.tuning")
             enginesModelsCard.id("engine.models")
         }
@@ -1663,7 +1664,13 @@ struct SettingsView: View {
                     speechEngineSwitchBanner(title: banner.title, detail: banner.detail)
                 }
 
-                HStack(alignment: .top, spacing: DesignSystem.Spacing.md) {
+                // Equal-width columns whose count tracks `selectableEngines`
+                // (2 normally, 3 when `AppFeatures.nemotronEnabled`). A grid
+                // (vs. the old two-tile HStack) keeps the third tile from
+                // cramping the row — each tile always gets a fair share of the
+                // card width. With the flag off this renders identically to the
+                // previous two-tile layout.
+                LazyVGrid(columns: engineTileColumns, alignment: .leading, spacing: DesignSystem.Spacing.md) {
                     EngineOptionTile(
                         icon: "bolt.fill",
                         name: "Parakeet",
@@ -1699,6 +1706,25 @@ struct SettingsView: View {
                             && !viewModel.whisperHasBeenOptimized,
                         onSelect: { handleWhisperTileTap() }
                     )
+
+                    if AppFeatures.nemotronEnabled {
+                        EngineOptionTile(
+                            icon: "waveform",
+                            name: "Nemotron",
+                            tagline: "Lighter European engine",
+                            strengths: [
+                                "English, Spanish, French, Italian, Portuguese, German",
+                                "Smaller download than Whisper",
+                                "Runs on the Neural Engine"
+                            ],
+                            helpText: "A lighter local engine for European languages. Smaller than the Whisper download; English, Spanish, French, Italian, Portuguese, and German.",
+                            modelStatus: displayedNemotronModelStatus,
+                            isSelected: viewModel.speechEnginePreference == .nemotron,
+                            isBusy: viewModel.speechEngineSwitching,
+                            unavailableReason: engineSwitchUnavailableReason(for: .nemotron),
+                            onSelect: { selectEngine(.nemotron) }
+                        )
+                    }
                 }
 
                 if let banner = whisperDownloadBannerState {
@@ -1709,6 +1735,11 @@ struct SettingsView: View {
                         action: { viewModel.downloadWhisperModel() }
                     )
                 }
+                // No Nemotron download banner: the model-download path is gated
+                // separately (ADR-023, Core/CLI) and there is no in-scope VM
+                // download action to wire a CTA to. The tile footer already
+                // surfaces the "Not downloaded" status. Wire a banner here once a
+                // `downloadNemotronModel()` VM action ships behind the flag.
 
                 if let error = viewModel.speechEngineError {
                     Text(error)
@@ -1735,6 +1766,40 @@ struct SettingsView: View {
                         selection: $viewModel.whisperDefaultLanguage,
                         isDisabled: false
                     )
+                }
+            }
+            .transition(.opacity)
+        }
+    }
+
+    /// Nemotron language card (ADR-023). Mirrors `engineLanguageCard` but is
+    /// limited to the six European codes — `LanguagePickerButton` exposes the
+    /// full ~99-language Whisper catalog, so a Nemotron picker would offer
+    /// languages the pruned model can't produce. A plain menu `Picker` over
+    /// `NemotronLanguageCatalog.supportedCodes` keeps the choice closed. There
+    /// is no tuning card — Nemotron has no tuning knobs. Gated, so it never
+    /// appears in shipped builds.
+    @ViewBuilder
+    private var engineNemotronLanguageCard: some View {
+        if AppFeatures.nemotronEnabled && viewModel.speechEnginePreference == .nemotron {
+            SettingsCard(
+                title: "Nemotron Language",
+                subtitle: "Nemotron covers six European languages. Pin one for faster startup, or leave it on auto-detect.",
+                icon: "character.bubble"
+            ) {
+                HStack(alignment: .center) {
+                    Text("Default language")
+                        .font(DesignSystem.Typography.body)
+                    Spacer(minLength: DesignSystem.Spacing.md)
+                    Picker("Default language", selection: $viewModel.nemotronDefaultLanguage) {
+                        ForEach(NemotronLanguageCatalog.supportedCodes, id: \.self) { code in
+                            Text(NemotronLanguageCatalog.displayLabel(forCode: code) ?? code)
+                                .tag(code)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize()
                 }
             }
             .transition(.opacity)
@@ -1989,6 +2054,10 @@ struct SettingsView: View {
         SettingsStatusRules.localModelsCardStatus(
             parakeet: displayedParakeetModelStatus,
             whisper: displayedWhisperModelStatus,
+            // Nemotron status plumbing is gated by AppFeatures.nemotronEnabled
+            // (separate task); while off, the active engine is never .nemotron,
+            // so a static notDownloaded placeholder never affects the card.
+            nemotron: .notDownloaded,
             activeEngine: viewModel.speechEnginePreference
         )
     }
@@ -2032,6 +2101,27 @@ struct SettingsView: View {
             return viewModel.whisperModelStatusDetail
         }
         return viewModel.speechEngineSwitchDetail ?? "Optimizing Whisper for this Mac..."
+    }
+
+    /// Nemotron tile status (ADR-023). Mirrors `displayedWhisperModelStatus`:
+    /// shows `.preparing` while a switch *to* Nemotron is in flight, otherwise
+    /// the VM's disk-derived status. Only read from the flag-gated tile, so it
+    /// is inert in shipped builds.
+    private var displayedNemotronModelStatus: SettingsViewModel.LocalModelStatus {
+        guard viewModel.speechEngineSwitching,
+              currentSpeechEngineSwitchTarget == .nemotron else {
+            return viewModel.nemotronModelStatus
+        }
+        return .preparing
+    }
+
+    /// Equal-width column template for the engine tiles, sized to the number of
+    /// selectable engines (2 normally, 3 when `AppFeatures.nemotronEnabled`).
+    private var engineTileColumns: [GridItem] {
+        Array(
+            repeating: GridItem(.flexible(), spacing: DesignSystem.Spacing.md, alignment: .top),
+            count: viewModel.selectableEngines.count
+        )
     }
 
     private func speechEngineSwitchBanner(title: String, detail: String) -> some View {

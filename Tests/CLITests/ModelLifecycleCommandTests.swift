@@ -34,6 +34,33 @@ final class ModelLifecycleCommandTests: XCTestCase {
         }
     }
 
+    func testResolveNemotronDownloadModelAcceptsNemotronIDs() throws {
+        // `nemotron-european` and any `nemotron-*` id resolve to the single
+        // European variant the CLI knows how to fetch.
+        XCTAssertEqual(try resolveNemotronDownloadModel("nemotron-european"), NemotronEngine.variantLabel)
+        XCTAssertEqual(try resolveNemotronDownloadModel("Nemotron-European"), NemotronEngine.variantLabel)
+        XCTAssertEqual(try resolveNemotronDownloadModel("nemotron"), NemotronEngine.variantLabel)
+
+        XCTAssertThrowsError(try resolveNemotronDownloadModel("whisper-large")) { error in
+            XCTAssertTrue(error is ValidationError)
+        }
+    }
+
+    func testResolveSelectableSpeechModelMapsNemotronIDs() throws {
+        XCTAssertEqual(
+            try resolveSelectableSpeechModel("nemotron"),
+            SelectableSpeechModelSelection(engine: .nemotron, whisperVariant: nil)
+        )
+        XCTAssertEqual(
+            try resolveSelectableSpeechModel("nemotron-european"),
+            SelectableSpeechModelSelection(engine: .nemotron, whisperVariant: nil)
+        )
+        XCTAssertEqual(
+            try resolveSelectableSpeechModel("Nemotron-European"),
+            SelectableSpeechModelSelection(engine: .nemotron, whisperVariant: nil)
+        )
+    }
+
     func testLoadSelectableSpeechModelsReflectsSharedDefaults() throws {
         let suiteName = "com.macparakeet.tests.cli.models.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -118,6 +145,28 @@ final class ModelLifecycleCommandTests: XCTestCase {
                 whisperVariant: "large-v3-v20240930_turbo_632MB"
             )
         )
+    }
+
+    func testPersistSelectableSpeechModelRejectsNemotronWhileFlagOff() throws {
+        // `models select <nemotron id>` resolves fine (the resolver is
+        // flag-independent), but persisting .nemotron while
+        // AppFeatures.nemotronEnabled is off must be rejected as a
+        // ValidationError and must NOT write the engine to the shared defaults —
+        // otherwise a CLI user could pin an engine the GUI can't reach.
+        try XCTSkipIf(AppFeatures.nemotronEnabled, "Gate test only meaningful while Nemotron is disabled.")
+
+        let suiteName = "com.macparakeet.tests.cli.model-select-nemotron.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let selection = try resolveSelectableSpeechModel("nemotron", defaults: defaults)
+
+        XCTAssertThrowsError(try persistSelectableSpeechModelSelection(selection, defaults: defaults)) { error in
+            XCTAssertTrue(error is ValidationError, "Expected ValidationError, got \(type(of: error))")
+        }
+        // Nothing was persisted.
+        XCTAssertNil(defaults.string(forKey: SpeechEnginePreference.defaultsKey))
     }
 
     func testResolveSelectableSpeechModelRejectsUnknownID() {

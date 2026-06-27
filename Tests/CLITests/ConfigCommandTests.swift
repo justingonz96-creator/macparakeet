@@ -174,6 +174,29 @@ final class ConfigCommandTests: XCTestCase {
         }
     }
 
+    // MARK: - parseSpeechEngine
+
+    func testParseSpeechEngineAcceptsNemotron() throws {
+        XCTAssertEqual(try ConfigCommand.parseSpeechEngine("nemotron"), .nemotron)
+    }
+
+    // MARK: - write speech-engine nemotron gate
+
+    func testWriteSpeechEngineNemotronRejectedWhileFlagOff() throws {
+        // Nemotron is gated behind AppFeatures.nemotronEnabled (ADR-023). While
+        // the flag is off (the shipping state), `config set speech-engine
+        // nemotron` must be rejected as a ValidationError and must NOT persist
+        // .nemotron — otherwise a CLI user could pin an engine the GUI can't
+        // reach or recover from.
+        try XCTSkipIf(AppFeatures.nemotronEnabled, "Gate test only meaningful while Nemotron is disabled.")
+
+        XCTAssertThrowsError(try ConfigCommand.write(key: "speech-engine", value: "nemotron", defaults: defaults)) { error in
+            XCTAssertTrue(error is ValidationError, "Expected ValidationError, got \(type(of: error))")
+        }
+        // Nothing was persisted.
+        XCTAssertNil(defaults.string(forKey: SpeechEnginePreference.defaultsKey))
+    }
+
     // MARK: - parseBool
 
     func testParseBoolRejectsEmpty() {

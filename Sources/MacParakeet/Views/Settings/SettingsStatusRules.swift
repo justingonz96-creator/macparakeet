@@ -15,9 +15,10 @@ enum SettingsStatusRules {
     static func localModelsCardStatus(
         parakeet: SettingsViewModel.LocalModelStatus,
         whisper: SettingsViewModel.LocalModelStatus,
+        nemotron: SettingsViewModel.LocalModelStatus,
         activeEngine: SpeechEnginePreference
     ) -> SettingsCardStatus? {
-        if parakeet == .failed || whisper == .failed {
+        if parakeet == .failed || whisper == .failed || nemotron == .failed {
             return SettingsCardStatus(.required, label: "Action needed")
         }
 
@@ -25,6 +26,7 @@ enum SettingsStatusRules {
         switch activeEngine {
         case .parakeet: activeStatus = parakeet
         case .whisper: activeStatus = whisper
+        case .nemotron: activeStatus = nemotron
         }
 
         if activeStatus == .notDownloaded {
