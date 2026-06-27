@@ -18,6 +18,17 @@ public protocol AudioProcessorProtocol: Sendable {
 
     /// Device info from the most recent recording (name, transport, format, fallback status).
     var recordingDeviceInfo: RecordingDeviceInfo? { get async }
+
+    /// Install (or clear, with `nil`) a live streaming dictation sink that
+    /// receives converted 16 kHz mono Float32 samples during capture (ADR-023).
+    /// Set just before `startCapture()`; clear at stop/cancel.
+    func setStreamingSink(_ sink: (@Sendable ([Float]) -> Void)?) async
+}
+
+extension AudioProcessorProtocol {
+    /// Default no-op so non-streaming processors (CLI, file-only mocks) need not
+    /// implement live dictation.
+    public func setStreamingSink(_ sink: (@Sendable ([Float]) -> Void)?) async {}
 }
 
 public enum AudioProcessorError: Error, LocalizedError {

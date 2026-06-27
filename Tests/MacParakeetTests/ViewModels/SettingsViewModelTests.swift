@@ -405,6 +405,67 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertTrue(testDefaults.bool(forKey: "launchAtLogin"))
     }
 
+    // MARK: - Live streaming dictation toggle (ADR-023)
+
+    private func configureWithStreamingBroker(_ broker: MockStreamingDictationBroker) {
+        viewModel.configure(
+            permissionService: mockPermissions,
+            dictationRepo: mockRepo,
+            entitlementsService: entitlements,
+            checkoutURL: nil,
+            streamingDictationBroker: broker
+        )
+    }
+
+    func testEnableLiveDictationPreparesModelAndPersistsOnSuccess() async {
+        let broker = MockStreamingDictationBroker()
+        configureWithStreamingBroker(broker)
+
+        viewModel.setLiveDictationEnabled(true)
+
+        for _ in 0..<300 {
+            if viewModel.liveDictationEnabled, viewModel.liveDictationStatus == .idle { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertTrue(viewModel.liveDictationEnabled)
+        XCTAssertEqual(viewModel.liveDictationStatus, .idle)
+        XCTAssertTrue(testDefaults.bool(forKey: UserDefaultsAppRuntimePreferences.liveDictationEnabledKey))
+        let prepareCount = await broker.prepareCount
+        XCTAssertEqual(prepareCount, 1)
+    }
+
+    func testEnableLiveDictationFailsClosedWhenPrepareThrows() async {
+        let broker = MockStreamingDictationBroker()
+        await broker.setPrepareError(STTError.modelDownloadFailed)
+        configureWithStreamingBroker(broker)
+
+        viewModel.setLiveDictationEnabled(true)
+
+        for _ in 0..<300 {
+            if case .failed = viewModel.liveDictationStatus { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertFalse(viewModel.liveDictationEnabled, "A failed prepare must leave the toggle off — no silent fallback")
+        if case .failed = viewModel.liveDictationStatus {} else {
+            XCTFail("Expected .failed status, got \(viewModel.liveDictationStatus)")
+        }
+        XCTAssertFalse(testDefaults.bool(forKey: UserDefaultsAppRuntimePreferences.liveDictationEnabledKey))
+    }
+
+    func testDisableLiveDictationPersistsImmediately() {
+        testDefaults.set(true, forKey: UserDefaultsAppRuntimePreferences.liveDictationEnabledKey)
+        let broker = MockStreamingDictationBroker()
+        configureWithStreamingBroker(broker)
+
+        viewModel.setLiveDictationEnabled(false)
+
+        XCTAssertFalse(viewModel.liveDictationEnabled)
+        XCTAssertEqual(viewModel.liveDictationStatus, .idle)
+        XCTAssertFalse(testDefaults.bool(forKey: UserDefaultsAppRuntimePreferences.liveDictationEnabledKey))
+    }
+
     func testConfigureSyncsLaunchAtLoginFromServiceStatus() {
         testDefaults.set(false, forKey: "launchAtLogin")
         mockLaunchAtLogin.status = .enabled

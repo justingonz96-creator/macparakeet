@@ -179,6 +179,10 @@ final class AppEnvironment {
             runtimePreferences.numberRefinementMode
         }
 
+        let liveDictationEnabledClosure: @Sendable () -> Bool = { [runtimePreferences] in
+            runtimePreferences.liveDictationEnabled
+        }
+
         llmClient = RoutingLLMClient()
         llmConfigStore = LLMConfigStore()
         llmService = LLMService(
@@ -218,7 +222,9 @@ final class AppEnvironment {
                 Telemetry.send(.firstDictationCompleted(
                     activationWindow: TelemetryActivationWindow(secondsSinceOnboarding: secondsSinceOnboarding)
                 ))
-            }
+            },
+            liveDictationEnabled: liveDictationEnabledClosure,
+            streamingBroker: sttScheduler
         )
 
         let telemetry = TelemetryService()

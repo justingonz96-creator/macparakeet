@@ -1,4 +1,5 @@
 import Foundation
+import os
 import OSLog
 
 public enum DictationState: Sendable {
@@ -82,8 +83,20 @@ public actor DictationService: DictationServiceProtocol {
     private let numberRefinementMode: @Sendable () -> NumberRefinementMode
     private let markFirstDictationCompleted: (@Sendable () -> Void)?
     private let cancelWindow: Duration
+    /// Opt-in live streaming dictation (ADR-023). When the closure returns true,
+    /// the feature flag is on, and a broker is wired, dictation runs through the
+    /// streaming engine. Default off.
+    private let liveDictationEnabled: @Sendable () -> Bool
+    private let streamingBroker: StreamingDictationBrokering?
 
     private var _state: DictationState = .idle
+    /// The live streaming session for the current dictation, or `nil` for the
+    /// batch path. Owned for the dictation's duration (ADR-023).
+    private var streamingSession: StreamingDictationSession?
+    /// Latest partial transcript, written from the engine's `@Sendable` callback
+    /// and read by the overlay via `streamingPartialTranscript`. Lock-guarded so
+    /// the off-actor callback and the actor never race.
+    nonisolated private let streamingPartialBox = OSAllocatedUnfairLock<String>(initialState: "")
     private var cancelResetTask: Task<Void, Never>?
     private var cancelGeneration: Int = 0
     private var pendingCancelledAudioURL: URL?
@@ -121,7 +134,9 @@ public actor DictationService: DictationServiceProtocol {
         aiFormatterPromptTemplate: (@Sendable () -> String)? = nil,
         numberRefinementMode: (@Sendable () -> NumberRefinementMode)? = nil,
         markFirstDictationCompleted: (@Sendable () -> Void)? = nil,
-        cancelWindow: Duration = .seconds(5)
+        cancelWindow: Duration = .seconds(5),
+        liveDictationEnabled: (@Sendable () -> Bool)? = nil,
+        streamingBroker: StreamingDictationBrokering? = nil
     ) {
         self.audioProcessor = audioProcessor
         self.sttTranscriber = sttTranscriber
@@ -141,6 +156,76 @@ public actor DictationService: DictationServiceProtocol {
         self.numberRefinementMode = numberRefinementMode ?? { .off }
         self.markFirstDictationCompleted = markFirstDictationCompleted
         self.cancelWindow = cancelWindow
+        self.liveDictationEnabled = liveDictationEnabled ?? { false }
+        self.streamingBroker = streamingBroker
+    }
+
+    /// Latest live partial transcript (ADR-023). Empty when not streaming or
+    /// between sessions. Read by the dictation overlay.
+    nonisolated public var streamingPartialTranscript: String {
+        streamingPartialBox.withLock { $0 }
+    }
+
+    // MARK: - Live streaming dictation (ADR-023)
+
+    private func shouldStreamDictation() -> Bool {
+        AppFeatures.liveDictationEnabled && liveDictationEnabled() && streamingBroker != nil
+    }
+
+    /// Open the live session and install the mic sink BEFORE capture starts, so
+    /// the first buffers are not clipped. Throws when the model is not ready
+    /// (start-time readiness gate, no silent fallback — ADR-021). Defensively
+    /// tears down any session left open by a prior aborted start.
+    private func openStreamingSessionIfNeeded() async throws {
+        guard shouldStreamDictation(), let streamingBroker else { return }
+        await cancelStreamingSessionIfNeeded()
+        let session = try await streamingBroker.beginStreamingDictation()
+        streamingSession = session
+        streamingPartialBox.withLock { $0 = "" }
+        await session.start { [weak self] partial in
+            self?.streamingPartialBox.withLock { $0 = partial }
+        }
+        await audioProcessor.setStreamingSink { [weak self] samples in
+            guard let self else { return }
+            Task { await self.appendStreamingSamples(samples) }
+        }
+    }
+
+    private func appendStreamingSamples(_ samples: [Float]) async {
+        guard let streamingSession else { return }
+        try? await streamingSession.append(samples: samples)
+    }
+
+    /// Finish the live session and return its final result. Returns `nil` ONLY
+    /// when there was no streaming session (the batch path). Clears the sink and
+    /// releases the lease. A `finish()` failure is **propagated, not swallowed**:
+    /// returning `nil` there would let `processCapturedAudio` silently run the
+    /// batch engine on the WAV — exactly the fallback ADR-021 / ADR-023 §7 forbid.
+    private func finishStreamingSessionIfNeeded() async throws -> StreamingDictationResult? {
+        await audioProcessor.setStreamingSink(nil)
+        guard let session = streamingSession else { return nil }
+        streamingSession = nil
+        streamingPartialBox.withLock { $0 = "" }
+        do {
+            let result = try await session.finish()
+            await streamingBroker?.endStreamingDictation()
+            return result
+        } catch {
+            // Release the lease even on failure, then surface the error.
+            await streamingBroker?.endStreamingDictation()
+            throw error
+        }
+    }
+
+    /// Discard the live session (cancel/undo path). Clears the sink, resets the
+    /// engine, releases the lease. Partials are never the source of truth.
+    private func cancelStreamingSessionIfNeeded() async {
+        await audioProcessor.setStreamingSink(nil)
+        guard let session = streamingSession else { return }
+        streamingSession = nil
+        streamingPartialBox.withLock { $0 = "" }
+        await session.cancel()
+        await streamingBroker?.endStreamingDictation()
     }
 
     public func startRecording(context: DictationTelemetryContext = DictationTelemetryContext()) async throws {
@@ -220,6 +305,20 @@ public actor DictationService: DictationServiceProtocol {
         currentOperationID = operationContext.operationID
         currentOperationTelemetryContext = context
         currentObservabilityOperationContext = operationContext
+        // ADR-023: open the live session (and install the mic sink) BEFORE
+        // entering .recording so a missing/unready model fails here — before any
+        // audio is captured — with no silent fallback to the batch engine.
+        do {
+            try await openStreamingSessionIfNeeded()
+        } catch {
+            _state = .idle
+            recordingStartedAt = nil
+            clearCurrentOperation()
+            logger.error(
+                "live_dictation_start_gate_failed session=\(requestedSessionID, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            throw error
+        }
         _state = .recording
         do {
             try await audioProcessor.startCapture()
@@ -327,12 +426,23 @@ public actor DictationService: DictationServiceProtocol {
 
         do {
             let audioURL = try await audioProcessor.stopCapture()
+            // ADR-023: flush the live session for the final, offline-quality
+            // transcript; `nil` on the batch path. A failed flush surfaces as a
+            // dictation error (no silent batch fallback) — clean up the WAV since
+            // we won't reach processCapturedAudio's consume/cleanup.
+            let streamingResult: StreamingDictationResult?
+            do {
+                streamingResult = try await finishStreamingSessionIfNeeded()
+            } catch {
+                try? FileManager.default.removeItem(at: audioURL)
+                throw error
+            }
             let device = await audioProcessor.recordingDeviceInfo
             logger.debug(
                 "dictation_capture_stopped session=\(currentSession, privacy: .public) path=\(audioURL.path, privacy: .private)"
             )
             let result = try await withCurrentObservabilityContextIfAny {
-                try await processCapturedAudio(audioURL: audioURL)
+                try await processCapturedAudio(audioURL: audioURL, streamingResult: streamingResult)
             }
             // Guard against reentrancy: a new session may have started during
             // transcription, replacing this session. Don't overwrite its state.
@@ -430,6 +540,9 @@ public actor DictationService: DictationServiceProtocol {
         pendingCancelReason = reason
         cancellationRequestedDuringStartSessionID = activeSessionID
         let audioURL = try? await audioProcessor.stopCapture()
+        // ADR-023: discard the live session; undo re-transcribes the retained
+        // WAV through the batch path, so live partials are never relied on.
+        await cancelStreamingSessionIfNeeded()
         let device = await audioProcessor.recordingDeviceInfo
         pendingCancelledAudioURL = audioURL
         _state = .cancelled
@@ -467,6 +580,7 @@ public actor DictationService: DictationServiceProtocol {
             if let url = try? await audioProcessor.stopCapture() {
                 try? FileManager.default.removeItem(at: url)
             }
+            await cancelStreamingSessionIfNeeded()
         }
 
         let device = await audioProcessor.recordingDeviceInfo
@@ -587,7 +701,10 @@ public actor DictationService: DictationServiceProtocol {
         }
     }
 
-    private func processCapturedAudio(audioURL: URL) async throws -> DictationResult {
+    private func processCapturedAudio(
+        audioURL: URL,
+        streamingResult: StreamingDictationResult? = nil
+    ) async throws -> DictationResult {
         // Track whether the audio file is consumed (moved or explicitly deleted).
         // If an error occurs before that point, clean up the temp file.
         var audioConsumed = false
@@ -600,11 +717,28 @@ public actor DictationService: DictationServiceProtocol {
         AudioCaptureDiagnostics.append(
             "dictation_transcribe_begin file_bytes=\(Self.fileSizeBytes(at: audioURL).map(String.init) ?? "unknown")"
         )
-        let result = try await sttTranscriber.transcribe(audioPath: audioURL.path, job: .dictation)
-        logger.debug("dictation_transcription_complete chars=\(result.text.count, privacy: .public)")
-        AudioCaptureDiagnostics.append(
-            "dictation_transcribe_complete chars=\(result.text.count) words=\(result.words.count) engine=\(result.engine.rawValue) variant=\(result.engineVariant ?? "none")"
-        )
+        // ADR-023: live dictation supplies the final transcript from the
+        // streaming engine (offline-quality) instead of a batch transcribe.
+        // English-only, Parakeet Unified variant. No silent fallback to batch.
+        let result: STTResult
+        if let streamingResult {
+            result = STTResult(
+                text: streamingResult.text,
+                words: streamingResult.words,
+                language: "en",
+                engine: .parakeet,
+                engineVariant: "unified"
+            )
+            AudioCaptureDiagnostics.append(
+                "dictation_streaming_finish chars=\(result.text.count) words=\(result.words.count)"
+            )
+        } else {
+            result = try await sttTranscriber.transcribe(audioPath: audioURL.path, job: .dictation)
+            logger.debug("dictation_transcription_complete chars=\(result.text.count, privacy: .public)")
+            AudioCaptureDiagnostics.append(
+                "dictation_transcribe_complete chars=\(result.text.count) words=\(result.words.count) engine=\(result.engine.rawValue) variant=\(result.engineVariant ?? "none")"
+            )
+        }
 
         let trimmed = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {

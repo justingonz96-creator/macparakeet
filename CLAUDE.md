@@ -159,6 +159,7 @@ All ADRs are in `spec/adr/`. These are locked decisions -- don't second-guess th
 | ADR-020 | Live meeting notepad + memo-steered summaries (implemented) | `spec/adr/020-live-meeting-notepad-and-memo-summaries.md` |
 | ADR-021 | WhisperKit as optional multilingual STT engine (implemented) | `spec/adr/021-whisperkit-multilingual-stt.md` |
 | ADR-022 | Transforms — system-wide LLM rewrites on selected text (Phase 2 productized; enabled on `main`) | `spec/adr/022-transforms-system-wide-rewrite.md` |
+| ADR-023 | Live streaming dictation via Parakeet Unified 0.6B (opt-in, English-only, Beta; behind `AppFeatures.liveDictationEnabled`) | `spec/adr/023-live-streaming-dictation.md` |
 
 > Historical/dormant ADRs (still in `spec/adr/`, kept for context): ADR-003 (one-time purchase pricing), ADR-006 (trial + license activation), ADR-008 (local LLM runtime). Current public builds are free/GPL-3.0 and unlocked. The old LemonSqueezy/trial entitlement plumbing is intentionally retained as future-option code for GPL-compatible official paid distribution/support; do not remove it as dead code without explicit owner direction and an ADR/spec update.
 

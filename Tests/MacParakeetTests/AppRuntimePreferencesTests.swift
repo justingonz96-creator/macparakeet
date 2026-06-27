@@ -51,6 +51,19 @@ final class AppRuntimePreferencesTests: XCTestCase {
         XCTAssertTrue(UserDefaultsAppRuntimePreferences(defaults: defaults).pauseMediaDuringDictation)
     }
 
+    func testLiveDictationEnabledDefaultsToFalseAndReadsPersistedValue() {
+        let suite = "app-runtime-prefs-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        // Off by default — live streaming dictation is strictly opt-in (ADR-023).
+        XCTAssertFalse(UserDefaultsAppRuntimePreferences(defaults: defaults).liveDictationEnabled)
+
+        defaults.set(true, forKey: UserDefaultsAppRuntimePreferences.liveDictationEnabledKey)
+
+        XCTAssertTrue(UserDefaultsAppRuntimePreferences(defaults: defaults).liveDictationEnabled)
+    }
+
     // MARK: - NumberRefinementMode migration
 
     func testNumberRefinementModeMigratesLegacyTrueToDeterministic() {

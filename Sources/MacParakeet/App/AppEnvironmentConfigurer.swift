@@ -118,6 +118,7 @@ final class AppEnvironmentConfigurer {
             sttClient: env.sttScheduler,
             speechEngineSwitcher: env.sttScheduler,
             speechEngineSwitchAvailabilityProvider: env.sttScheduler,
+            streamingDictationBroker: env.sttScheduler,
             meetingRecoveryService: env.meetingRecordingRecoveryService,
             sharedMicStream: env.sharedMicStream
         )

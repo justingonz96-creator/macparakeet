@@ -1030,6 +1030,9 @@ final class DictationFlowCoordinator {
 
             let level = snapshot.audioLevel
             overlayViewModel?.audioLevel = level
+            // ADR-023: surface live partials on the same MainActor path that
+            // pushes the audio level. Empty for batch dictation, so no effect.
+            overlayViewModel?.partialTranscript = serviceSession.streamingPartialTranscript
 
             if autoStopEnabled {
                 let now = Date()
@@ -1044,6 +1047,9 @@ final class DictationFlowCoordinator {
 
             try? await Task.sleep(for: .milliseconds(50))
         }
+        // Leaving the recording state (stop/cancel/auto-stop): drop the last
+        // partial so it can't linger into the next session (ADR-023 §8).
+        overlayViewModel?.partialTranscript = ""
     }
 
     static func commandFailureBucket(for error: Error) -> String {

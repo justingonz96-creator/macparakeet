@@ -722,6 +722,37 @@ struct SettingsView: View {
                     isOn: $viewModel.pauseMediaDuringDictation
                 )
 
+                // Live streaming dictation (ADR-023). Gated behind the Beta
+                // feature flag; enabling downloads the English streaming model.
+                if AppFeatures.liveDictationEnabled {
+                    Divider()
+
+                    settingsToggleRow(
+                        title: "Live dictation",
+                        detail: "See text appear as you speak. English only. Downloads a separate speech model the first time you turn it on.",
+                        isBeta: true,
+                        isOn: Binding(
+                            get: { viewModel.liveDictationEnabled },
+                            set: { viewModel.setLiveDictationEnabled($0) }
+                        )
+                    )
+
+                    switch viewModel.liveDictationStatus {
+                    case .idle:
+                        EmptyView()
+                    case .preparing(let message):
+                        Label(message, systemImage: "arrow.down.circle")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 2)
+                    case .failed(let message):
+                        Label(message, systemImage: "exclamationmark.triangle")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red)
+                            .padding(.top, 2)
+                    }
+                }
+
                 Divider()
 
                 settingsToggleRow(

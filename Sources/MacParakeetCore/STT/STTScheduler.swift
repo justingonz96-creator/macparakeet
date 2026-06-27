@@ -19,7 +19,7 @@ public enum STTSchedulerError: Error, LocalizedError, Equatable {
 ///
 /// Jobs execute independently per slot so dictation can remain responsive while
 /// meeting and file work share an explicitly prioritized background path.
-public actor STTScheduler: STTManaging, SpeechEngineRoutedTranscribing, SpeechEngineSwitching, SpeechEngineSwitchAvailabilityProviding, SpeechEngineSessionManaging {
+public actor STTScheduler: STTManaging, SpeechEngineRoutedTranscribing, SpeechEngineSwitching, SpeechEngineSwitchAvailabilityProviding, SpeechEngineSessionManaging, StreamingDictationBrokering {
     private struct ScheduledJob: Sendable {
         let id: UUID
         let audioPath: String
@@ -54,6 +54,10 @@ public actor STTScheduler: STTManaging, SpeechEngineRoutedTranscribing, SpeechEn
     private var acceptsNewJobs = true
     private var activeSpeechEngineSessionIDs: Set<UUID> = []
     private var speechEngineSwitchTask: Task<Void, Error>?
+    /// A live streaming dictation session holds the interactive slot (ADR-023).
+    /// While true, engine switches are blocked and batch `.dictation` jobs are
+    /// rejected so the slot has a single interactive consumer.
+    private var activeStreamingDictation = false
 
     /// - Parameter meetingLiveChunkBacklogLimit: Maximum pending live-preview chunks before the
     ///   oldest is dropped. 120 ≈ 4 minutes of dual-source 5-second chunks emitted every ~4
@@ -185,7 +189,8 @@ public actor STTScheduler: STTManaging, SpeechEngineRoutedTranscribing, SpeechEn
         guard acceptsNewJobs,
               activeSpeechEngineSessionIDs.isEmpty,
               !hasQueuedOrRunningJobs,
-              speechEngineSwitchTask == nil else {
+              speechEngineSwitchTask == nil,
+              !activeStreamingDictation else {
             throw STTError.engineBusy
         }
 
@@ -210,6 +215,9 @@ public actor STTScheduler: STTManaging, SpeechEngineRoutedTranscribing, SpeechEn
     public func engineSwitchAvailability() async -> SpeechEngineSwitchAvailability {
         if speechEngineSwitchTask != nil {
             return .switchInProgress
+        }
+        if activeStreamingDictation {
+            return .liveDictationActive
         }
         if !activeSpeechEngineSessionIDs.isEmpty {
             return .meetingActive
@@ -239,6 +247,43 @@ public actor STTScheduler: STTManaging, SpeechEngineRoutedTranscribing, SpeechEn
         activeSpeechEngineSessionIDs.remove(lease.id)
     }
 
+    // MARK: - Live streaming dictation (ADR-023)
+
+    public func prepareStreamingDictation(onProgress: (@Sendable (String) -> Void)?) async throws {
+        try await runtime.prepareStreamingDictation(onProgress: onProgress)
+    }
+
+    public func isStreamingDictationReady() async -> Bool {
+        await runtime.isStreamingDictationReady()
+    }
+
+    public func beginStreamingDictation() async throws -> StreamingDictationSession {
+        // Note: an active meeting engine lease (activeSpeechEngineSessionIDs) does
+        // NOT block live dictation — the streaming engine is independent of the
+        // meeting's engine/slot, so the two run concurrently (ADR-015). Only a
+        // shutdown/quiesce, an in-flight engine switch, or another live session
+        // blocks here.
+        guard acceptsNewJobs,
+              speechEngineSwitchTask == nil,
+              !activeStreamingDictation else {
+            throw STTError.engineBusy
+        }
+        // Set the flag synchronously (no suspension since the guard) so a second
+        // concurrent begin can't race past the guard; clear it if the runtime's
+        // readiness gate throws (no silent fallback — ADR-021).
+        activeStreamingDictation = true
+        do {
+            return try await runtime.beginStreamingDictationSession()
+        } catch {
+            activeStreamingDictation = false
+            throw error
+        }
+    }
+
+    public func endStreamingDictation() async {
+        activeStreamingDictation = false
+    }
+
     private func enqueue(
         _ job: ScheduledJob,
         continuation: CheckedContinuation<STTResult, Error>
@@ -249,6 +294,14 @@ public actor STTScheduler: STTManaging, SpeechEngineRoutedTranscribing, SpeechEn
         }
 
         guard acceptsNewJobs else {
+            continuation.resume(throwing: STTSchedulerError.unavailable)
+            return
+        }
+
+        // A live streaming session reserves the interactive slot — reject a
+        // concurrent batch dictation so the slot has a single interactive
+        // consumer (ADR-016/ADR-023).
+        if job.job == .dictation, activeStreamingDictation {
             continuation.resume(throwing: STTSchedulerError.unavailable)
             return
         }

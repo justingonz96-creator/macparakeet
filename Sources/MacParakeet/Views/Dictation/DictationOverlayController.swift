@@ -222,6 +222,10 @@ final class DictationOverlayViewModel {
     var processingLoadCaption: ProcessingLoadCaption?
     var commandPromptText: String = "Speak your command..."
     var commandSelectedText: String = ""
+    /// Live streaming partial transcript shown while recording (ADR-023).
+    /// Empty when not streaming or between sessions; the coordinator clears it
+    /// on stop/cancel/processing and on session change.
+    var partialTranscript: String = ""
 
     var onCancel: (() -> Void)?
     var onStop: (() -> Void)?
