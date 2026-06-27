@@ -76,6 +76,15 @@ final class CommandModeExecutorTests: XCTestCase {
         XCTAssertEqual(capture.restoreCount, 1)
     }
 
+    func testEmptyStringClipboardCaptureRestoresOnEmptySelection() async {
+        let capture = FakeCommandModeCaptureBackend()
+        let executor = makeExecutor(replacement: FakeCommandModeReplacementBackend(), capture: capture)
+        await assertThrows(executor, instruction: "uppercase that", captured: clipboardCapture("")) {
+            guard case .emptySelection = $0 else { return false }; return true
+        }
+        XCTAssertEqual(capture.restoreCount, 1, "clipboard must be restored when an empty-string clipboard capture is rejected")
+    }
+
     // Helper
     private func assertThrows(
         _ executor: CommandModeExecutor,
