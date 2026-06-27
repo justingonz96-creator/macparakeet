@@ -18,6 +18,18 @@ public protocol AudioProcessorProtocol: Sendable {
 
     /// Device info from the most recent recording (name, transport, format, fallback status).
     var recordingDeviceInfo: RecordingDeviceInfo? { get async }
+
+    /// Latest Silero VAD verdict for the active dictation; `.unavailable` when
+    /// VAD is off, not warmed, or errored (the consumer then uses the RMS gate).
+    var vadState: VadSnapshot { get async }
+}
+
+public extension AudioProcessorProtocol {
+    /// Conformers without a VAD path (CLI, all test doubles) report
+    /// `.unavailable`, so the endpointer falls back to the RMS gate.
+    var vadState: VadSnapshot {
+        get async { .unavailable }
+    }
 }
 
 public enum AudioProcessorError: Error, LocalizedError {

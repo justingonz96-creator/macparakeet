@@ -116,3 +116,13 @@ final class DictationVadEngineTests: XCTestCase {
         XCTAssertNil(outer, "no manager yet -> outer nil -> RMS fallback")
     }
 }
+
+// MARK: - Task 8: AudioProcessor file-only init VAD test
+
+extension DictationVadEngineTests {
+    func testAudioProcessorFileOnlyInitReportsUnavailableVad() async {
+        let processor = AudioProcessor() // CLI/test init: no VAD
+        let snapshot = await processor.vadState
+        XCTAssertEqual(snapshot, .unavailable)
+    }
+}

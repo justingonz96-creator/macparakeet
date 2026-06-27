@@ -104,6 +104,10 @@ public actor DictationService: DictationServiceProtocol {
         get async { await audioProcessor.audioLevel }
     }
 
+    public var vadState: VadSnapshot {
+        get async { await audioProcessor.vadState }
+    }
+
     public init(
         audioProcessor: AudioProcessorProtocol,
         sttTranscriber: STTTranscribing,

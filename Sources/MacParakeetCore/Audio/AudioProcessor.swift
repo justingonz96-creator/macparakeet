@@ -5,14 +5,20 @@ public actor AudioProcessor: AudioProcessorProtocol {
     private let recorder: AudioRecorder
     private let converter: AudioFileConverter
 
-    public init(sharedMicStream: SharedMicrophoneStream) {
-        self.recorder = AudioRecorder(sharedStream: sharedMicStream)
+    public init(
+        sharedMicStream: SharedMicrophoneStream,
+        enableVad: @escaping @Sendable () -> Bool = { false },
+        vadEngine: DictationVadEngine? = nil
+    ) {
+        self.recorder = AudioRecorder(
+            sharedStream: sharedMicStream,
+            enableVad: enableVad,
+            vadEngine: vadEngine
+        )
         self.converter = AudioFileConverter()
     }
 
-    /// File-only init for callers that never need mic capture (CLI, tests).
-    /// Allocates an unstarted shared stream so the recorder API stays valid;
-    /// no Core Audio engine starts until `startCapture()` runs.
+    /// File-only init (CLI, tests). No VAD ever loads.
     public init() {
         let stream = SharedMicrophoneStream(
             platform: AVAudioEngineMicrophonePlatform()
@@ -23,6 +29,10 @@ public actor AudioProcessor: AudioProcessorProtocol {
 
     public var audioLevel: Float {
         get async { await recorder.audioLevel }
+    }
+
+    public var vadState: VadSnapshot {
+        get async { await recorder.vadState }
     }
 
     public var isRecording: Bool {

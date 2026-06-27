@@ -23,10 +23,11 @@ public final class DictationServiceSession {
         get async { await service.audioLevel }
     }
 
-    public func recordingSnapshot() async -> (state: DictationState, audioLevel: Float) {
+    public func recordingSnapshot() async -> (state: DictationState, audioLevel: Float, vad: VadSnapshot) {
         async let state = service.state
         async let audioLevel = service.audioLevel
-        return await (state: state, audioLevel: audioLevel)
+        async let vad = service.vadState
+        return await (state: state, audioLevel: audioLevel, vad: vad)
     }
 
     public func reserveNextSessionID() -> Int {
