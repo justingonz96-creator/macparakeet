@@ -1,5 +1,9 @@
 # Nemotron European-Language STT Engine — Implementation Plan
 
+> Status: **COMPLETED** 2026-06-27 — implemented behind the disabled
+> `AppFeatures.nemotronEnabled` flag on branch `claude/busy-blackwell-91485a`.
+> The feature does not ship until the ADR-023 §8 license gate clears.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add NVIDIA Nemotron 3.5 ASR Streaming Multilingual 0.6B (via FluidAudio 0.15.4, CoreML/ANE) as a third optional, opt-in STT engine for European/Latin-script audio (EN/ES/FR/IT/PT/DE), built behind a disabled feature flag and never shipped until its license clears.
