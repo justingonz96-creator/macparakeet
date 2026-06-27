@@ -31,6 +31,7 @@ enum TranscribeSpeechEngine: String, ExpressibleByArgument, CaseIterable, Sendab
     case appDefault = "app-default"
     case parakeet
     case whisper
+    case nemotron
 }
 
 enum SpeakerDetectionOption: String, ExpressibleByArgument, CaseIterable, Sendable {
@@ -64,10 +65,10 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
     @Option(help: "Processing mode: raw, clean, app-default.")
     var mode: TranscribeMode = .appDefault
 
-    @Option(help: "Speech engine: app-default, parakeet, whisper. Default: parakeet; app-default follows the saved GUI preference.")
+    @Option(help: "Speech engine: app-default, parakeet, whisper, nemotron. Default: parakeet; app-default follows the saved GUI preference.")
     var engine: TranscribeSpeechEngine = .parakeet
 
-    @Option(help: "Language hint for Whisper, as a Whisper code such as ko or en. Parakeet ignores this flag.")
+    @Option(help: "Language hint for Whisper (any Whisper code) or Nemotron (European: en/es/fr/it/pt/de). Parakeet ignores this flag.")
     var language: String?
 
     @Option(help: "Downloaded YouTube audio retention: app-default, keep, delete.")
@@ -153,8 +154,20 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
         case .whisper:
             preference = .whisper
             language = explicitLanguage
+        case .nemotron:
+            preference = .nemotron
+            language = explicitLanguage
         }
         return SpeechEngineSelection(engine: preference, language: language)
+    }
+
+    /// Returns `true` when the resolved engine must be refused before any engine
+    /// construction or model fetch. Nemotron stays gated behind
+    /// `AppFeatures.nemotronEnabled` (ADR-023) until its license clears, so a
+    /// shipped build rejects `--engine nemotron` even though parsing/resolution
+    /// succeed. Parakeet and Whisper are never gated by this flag.
+    static func shouldRejectSpeechEngineAtRuntime(_ selection: SpeechEngineSelection) -> Bool {
+        selection.engine == .nemotron && !AppFeatures.nemotronEnabled
     }
 
     static func resolveSpeakerDetection(
@@ -190,6 +203,7 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
 
         var sttClient: STTClient?
         var whisperEngine: WhisperEngine?
+        var nemotronEngine: NemotronEngine?
         let runResult: Result<Void, Error>
         do {
             try AppPaths.ensureDirectories()
@@ -204,6 +218,10 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
                 storedLanguage: SpeechEnginePreference.whisperDefaultLanguage(defaults: defaults),
                 explicitLanguage: self.language
             )
+            if Self.shouldRejectSpeechEngineAtRuntime(speechEngine) {
+                printErr("The Nemotron engine is not available in this build.")
+                throw ExitCode.failure
+            }
             let speakerDetectionEnabled = Self.resolveSpeakerDetection(
                 self.speakerDetection,
                 storedEnabled: defaults.object(forKey: UserDefaultsAppRuntimePreferences.speakerDiarizationKey) as? Bool,
@@ -237,12 +255,13 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
                 whisperEngine = createdWhisperEngine
                 sttTranscriber = createdWhisperEngine
             case .nemotron:
-                // The CLI's own --engine enum has no `nemotron` value, so the
-                // resolver cannot produce this case; this arm only satisfies the
-                // exhaustive switch over the Core `SpeechEnginePreference`. The
-                // Nemotron CLI surface is a separate task and stays gated off.
-                printErr("The Nemotron engine is not available in this build.")
-                throw ExitCode.failure
+                // Only reachable when AppFeatures.nemotronEnabled is true — the
+                // runtime gate above rejects Nemotron before this point while the
+                // flag is off (the shipping state). Mirrors the Whisper arm: the
+                // engine carries its European language hint from construction.
+                let createdNemotronEngine = NemotronEngine(language: speechEngine.language)
+                nemotronEngine = createdNemotronEngine
+                sttTranscriber = createdNemotronEngine
             }
             let audioProcessor = AudioProcessor()
             let youtubeDownloader = YouTubeDownloader(audioQuality: {
@@ -346,6 +365,7 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
 
         await sttClient?.shutdown()
         await whisperEngine?.unload()
+        await nemotronEngine?.unload()
         try emitJSONOrRethrow(json: format == .json) {
             try runResult.get()
         }
