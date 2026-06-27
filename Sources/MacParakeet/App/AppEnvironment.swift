@@ -40,6 +40,7 @@ final class AppEnvironment {
     let llmService: LLMService
     let runtimePreferences: AppRuntimePreferencesProtocol
     let derivedFieldsBackfill: DerivedFieldsBackfillService
+    let dictationVadEngine: DictationVadEngine
 
     init(databaseManager: DatabaseManager) throws {
         self.databaseManager = databaseManager
@@ -93,7 +94,21 @@ final class AppEnvironment {
         sharedMicStream = SharedMicrophoneStream(
             platform: AVAudioEngineMicrophonePlatform(deviceAttemptsBuilder: attemptsBuilder)
         )
-        audioProcessor = AudioProcessor(sharedMicStream: sharedMicStream)
+        let vadEngine = DictationVadEngine()
+        dictationVadEngine = vadEngine
+        // `silenceAutoStop` is a SettingsViewModel/UserDefaults-backed pref — it
+        // is NOT on AppRuntimePreferencesProtocol (that protocol exposes only the
+        // KEY: `silenceAutoStopKey`). Read the persisted key directly so the
+        // closure is @Sendable with no non-Sendable captures and reflects live
+        // toggles every time the recorder calls it.
+        let silenceAutoStopEnabled: @Sendable () -> Bool = {
+            UserDefaults.standard.bool(forKey: UserDefaultsAppRuntimePreferences.silenceAutoStopKey)
+        }
+        audioProcessor = AudioProcessor(
+            sharedMicStream: sharedMicStream,
+            enableVad: silenceAutoStopEnabled,
+            vadEngine: vadEngine
+        )
         meetingRecordingService = MeetingRecordingService(
             micProcessingMode: meetingMicProcessingMode,
             audioCaptureService: MeetingAudioCaptureService(
