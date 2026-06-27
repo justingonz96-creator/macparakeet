@@ -57,3 +57,59 @@ final class PassthroughDictationVadProcessor: DictationVadProcessing, @unchecked
         diagnosticsStorage = VadProcessingDiagnostics.passthrough()
     }
 }
+
+/// Accumulates 16 kHz mono samples and emits exactly-4096-sample chunks
+/// (256 ms) for Silero VAD. Single-threaded by contract: the recorder calls
+/// `accept` only on the serial `sharedProcessingQueue`, so no internal lock is
+/// needed for the buffer (the diagnostics lock guards cross-thread reads only).
+final class StreamingDictationVadProcessor: DictationVadProcessing, @unchecked Sendable {
+    static let chunkSize = VadManager.chunkSize // 4096
+
+    private var accumulator: [Float] = []
+    private let lock = NSLock()
+    private var diagnosticsStorage = VadProcessingDiagnostics(
+        processorName: "silero-vad-v6",
+        loaded: true,
+        samplesAccumulated: 0,
+        chunksEmitted: 0,
+        oversizedChunksDropped: 0,
+        processingFailures: 0
+    )
+
+    var diagnostics: VadProcessingDiagnostics {
+        lock.lock(); defer { lock.unlock() }
+        return diagnosticsStorage
+    }
+
+    func accept(samples: [Float], emit: (_ chunk: [Float]) -> Void) {
+        guard !samples.isEmpty else { return }
+        accumulator.append(contentsOf: samples)
+        lock.lock()
+        diagnosticsStorage.samplesAccumulated += samples.count
+        lock.unlock()
+
+        while accumulator.count >= Self.chunkSize {
+            // `Array(prefix)` copies; never pass more than chunkSize (Silero
+            // silently truncates oversized chunks, which would desync timing).
+            let chunk = Array(accumulator.prefix(Self.chunkSize))
+            accumulator.removeFirst(Self.chunkSize)
+            lock.lock()
+            diagnosticsStorage.chunksEmitted += 1
+            lock.unlock()
+            emit(chunk)
+        }
+    }
+
+    func reset() {
+        accumulator.removeAll(keepingCapacity: true)
+        lock.lock(); defer { lock.unlock() }
+        diagnosticsStorage = VadProcessingDiagnostics(
+            processorName: "silero-vad-v6",
+            loaded: true,
+            samplesAccumulated: 0,
+            chunksEmitted: 0,
+            oversizedChunksDropped: 0,
+            processingFailures: 0
+        )
+    }
+}
