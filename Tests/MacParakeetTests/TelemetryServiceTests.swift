@@ -1256,6 +1256,9 @@ final class TelemetryServiceTests: XCTestCase {
                 totalMs: 1500
             ),
             .transformFailed(transformName: .custom, reason: .replacementFailed),
+            .commandModeExecuted(path: .deterministic, deterministicCommand: .clearSelection, llmMs: 0, totalMs: 40, appCategory: .notes),
+            .commandModeExecuted(path: .rewrite, deterministicCommand: .none, llmMs: 900, totalMs: 1200, appCategory: nil),
+            .commandModeFailed(reason: .noProvider),
             .transformOperation(
                 operationID: "op-transform",
                 outcome: .success,
