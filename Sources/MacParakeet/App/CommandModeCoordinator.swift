@@ -142,7 +142,7 @@ final class CommandModeCoordinator {
 
         do {
             try await audioProcessor.startCapture()
-            panel.show() // "Listening…" — see beat-label note on applyProgress.
+            panel.showWorking(message: "Listening…")
         } catch {
             logger.error("command-mode: mic start failed: \(error.localizedDescription, privacy: .public)")
             showToast("Couldn't start the microphone.")
@@ -170,6 +170,7 @@ final class CommandModeCoordinator {
                 // "Transcribing…" — honor the user's persisted engine/language
                 // (ADR-021). SpeechEngineSelection.current() reads the persisted
                 // engine + default language from UserDefaults.
+                self.panel.updateWorking(message: "Transcribing…")
                 let engine = SpeechEngineSelection.current()
                 let stt = try await self.sttScheduler.transcribe(
                     audioPath: wav.path,
@@ -203,18 +204,11 @@ final class CommandModeCoordinator {
 
     // MARK: - Progress, errors, telemetry
 
-    /// Map executor progress beats to the pill.
-    ///
-    /// Beat-label limitation (real-API honest): the reused
-    /// `TransformSpikeProgressPanelController` only renders three phases —
-    /// `working` (a spinner with no custom text), `done`, and `failed(message:)`.
-    /// Its `working` phase intentionally returns a nil label, and `done(message:)`
-    /// ignores its argument. So the plan's distinct beat strings
-    /// ("Listening…"/"Transcribing…"/"Rewriting…"/"Done") cannot be shown as text
-    /// without inventing a new pill API. Rather than fake it, we keep the pill in
-    /// its working/spinner state for all in-progress beats and surface terminal
-    /// states via the controller's real capabilities (`done` / `fail`). The beat
-    /// transitions are logged for the manual matrix.
+    /// Map executor progress beats to the pill's working-state label. The pill's
+    /// `updateWorking(message:)` shows the beat beside the spinner; terminal
+    /// success/failure is surfaced by the caller via `panel.done(...)` /
+    /// `panel.fail(...)`. Deterministic edits resolve fast and jump straight to
+    /// done, so they need no intermediate label.
     private func applyProgress(_ progress: CommandModeProgress, runID: UUID) {
         guard activeHold?.runID == runID else { return }
         switch progress {
@@ -222,12 +216,11 @@ final class CommandModeCoordinator {
             logger.debug("command-mode beat: routing")
         case .deterministicApplied(let command):
             logger.debug("command-mode beat: deterministic \(command.rawValue, privacy: .public)")
-        case .llmStarted:
-            logger.debug("command-mode beat: rewriting")
-        case .llmStreaming:
-            // Streamed chunks accumulate inside the executor; the pill has no
-            // text surface to mirror them into, so nothing to do here.
-            break
+        case .llmStarted, .llmStreaming:
+            // The LLM rewrite path: a single steady "Rewriting…" beat. Streamed
+            // chunks accumulate inside the executor; the pill mirrors the stage,
+            // not the partial text.
+            panel.updateWorking(message: "Rewriting…")
         case .pasting:
             logger.debug("command-mode beat: pasting")
         case .done:

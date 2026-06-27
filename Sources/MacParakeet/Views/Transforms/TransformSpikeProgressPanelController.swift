@@ -32,6 +32,13 @@ private enum TransformProgressPanelLayout {
 final class TransformSpikeProgressViewModel {
     var phase: Phase = .working
 
+    /// Optional label shown beside the spinner during the `.working` phase.
+    /// `nil` (the default) keeps the working state icon-only, exactly as
+    /// Transforms renders it. Command Mode sets this to its hold-to-talk beat
+    /// ("Listening…", "Transcribing…", "Rewriting…"). Only consulted while the
+    /// phase is `.working`; `.done` and `.failed` ignore it.
+    var workingMessage: String?
+
     enum Phase: Equatable {
         case working
         case done
@@ -47,18 +54,34 @@ final class TransformSpikeProgressPanelController {
     private var autoDismissTask: Task<Void, Never>?
 
     /// Open (or reuse) the panel showing the in-progress indicator. Idempotent
-    /// — calling `show` while a panel is visible just resets state.
+    /// — calling `show` while a panel is visible just resets state. The working
+    /// state is icon-only (no label); use `showWorking(message:)` when an
+    /// in-flight beat label is wanted.
     func show() {
+        showWorking(message: nil)
+    }
+
+    /// Open (or reuse) the panel in the working state, optionally with a label
+    /// beside the spinner. `message: nil` is identical to `show()` (icon-only
+    /// spinner — what Transforms uses). A non-nil message renders beside the
+    /// spinner and widens the pill, like the failed-state copy does.
+    func showWorking(message: String?) {
         autoDismissTask?.cancel()
         autoDismissTask = nil
 
         if let viewModel {
             viewModel.phase = .working
-            resetPanelToBaseline(animated: false)
+            viewModel.workingMessage = message
+            if message == nil {
+                resetPanelToBaseline(animated: false)
+            } else {
+                scheduleRelayout()
+            }
             return
         }
 
         let vm = TransformSpikeProgressViewModel()
+        vm.workingMessage = message
         self.viewModel = vm
 
         let host = NSHostingView(rootView: TransformSpikeProgressView(viewModel: vm))
@@ -93,6 +116,26 @@ final class TransformSpikeProgressPanelController {
             context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
+        }
+
+        if message != nil {
+            // Re-measure so a multi-line beat label gets the vertical room it
+            // needs; single-line labels keep the baseline height.
+            scheduleRelayout()
+        }
+    }
+
+    /// Update the working-state beat label mid-flight without leaving the
+    /// working phase. No-op if the pill isn't currently shown. Used by Command
+    /// Mode to step "Listening…" → "Transcribing…" → "Rewriting…".
+    func updateWorking(message: String?) {
+        guard let viewModel else { return }
+        viewModel.phase = .working
+        viewModel.workingMessage = message
+        if message == nil {
+            resetPanelToBaseline(animated: true)
+        } else {
+            scheduleRelayout()
         }
     }
 
@@ -294,11 +337,13 @@ private struct TransformSpikeProgressView: View {
         }
     }
 
-    /// Working and done stay icon-only: the loader communicates in-flight
-    /// work, and the green checkmark communicates completion.
+    /// Done stays icon-only (the green checkmark communicates completion).
+    /// Working is icon-only too unless a `workingMessage` is set — Transforms
+    /// leaves it `nil` (unchanged, spinner-only), while Command Mode drives it
+    /// with its hold-to-talk beat label.
     private var currentLabel: String? {
         switch viewModel.phase {
-        case .working: return nil
+        case .working: return viewModel.workingMessage
         case .done: return nil
         case .failed(let message): return message
         }
