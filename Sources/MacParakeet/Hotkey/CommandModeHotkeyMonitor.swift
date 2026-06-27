@@ -44,6 +44,7 @@ public final class CommandModeHotkeyMonitor {
         }
         keyCode = shortcut.keyCode
         modifierBits = UInt64(shortcut.modifiers) & HotkeyTrigger.relevantModifierBits
+        isDown = false
     }
 
     // MARK: - Tap lifecycle
