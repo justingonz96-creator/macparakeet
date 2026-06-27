@@ -108,3 +108,12 @@ extension DictationVadProcessorTests {
         XCTAssertEqual(processor.diagnostics.samplesAccumulated, 0)
     }
 }
+
+extension DictationVadProcessorTests {
+    func testVadSnapshotUnavailableDefault() {
+        let s = VadSnapshot.unavailable
+        XCTAssertFalse(s.available)
+        XCTAssertFalse(s.speechActive)
+        XCTAssertNil(s.lastSpeechAt)
+    }
+}

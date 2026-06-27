@@ -22,6 +22,26 @@ public struct RecordingDeviceInfo: Sendable, Equatable {
     public let requestedDeviceUID: String?
 }
 
+/// Decision-only snapshot of the Silero VAD verdict for the live dictation
+/// session, published from the audio path via an `OSAllocatedUnfairLock` (the
+/// same discipline as `atomicAudioLevel`). Carries no transcript or audio.
+/// `available == false` ⇒ the coordinator's endpointer uses the RMS gate.
+public struct VadSnapshot: Sendable, Equatable {
+    public var available: Bool
+    public var speechActive: Bool
+    public var lastSpeechAt: Date?
+
+    public init(available: Bool, speechActive: Bool, lastSpeechAt: Date?) {
+        self.available = available
+        self.speechActive = speechActive
+        self.lastSpeechAt = lastSpeechAt
+    }
+
+    public static let unavailable = VadSnapshot(
+        available: false, speechActive: false, lastSpeechAt: nil
+    )
+}
+
 private struct RecordingRuntimeMetrics: Sendable {
     var inputBufferCount: Int = 0
     var outputBufferCount: Int = 0
