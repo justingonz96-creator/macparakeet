@@ -92,6 +92,14 @@ public actor AudioRecorder {
     /// Thread-safe audio level written from the real-time audio thread, read by the actor.
     /// Avoids Task allocation on the audio thread which causes priority inversion.
     nonisolated private let atomicAudioLevel = OSAllocatedUnfairLock<Float>(initialState: 0.0)
+    /// VAD verdict published from the audio path. Its own lock — never shared
+    /// with the writer path — so VAD can never backpressure the WAV write
+    /// (§6.10 decision-only invariant).
+    nonisolated private let atomicVadSnapshot = OSAllocatedUnfairLock<VadSnapshot>(
+        initialState: .unavailable
+    )
+    private let enableVad: @Sendable () -> Bool
+    private let vadEngine: DictationVadEngine?
     nonisolated private let runtimeMetrics = OSAllocatedUnfairLock(
         initialState: RecordingRuntimeMetrics()
     )
@@ -148,15 +156,23 @@ public actor AudioRecorder {
         sharedStream: SharedMicrophoneStream,
         permissionProvider: @escaping @Sendable () -> Bool = {
             AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        }
+        },
+        enableVad: @escaping @Sendable () -> Bool = { false },
+        vadEngine: DictationVadEngine? = nil
     ) {
         self.sharedStream = sharedStream
         self.permissionProvider = permissionProvider
+        self.enableVad = enableVad
+        self.vadEngine = vadEngine
     }
 
     public var audioLevel: Float {
         // Read the latest value written by the audio tap thread
         atomicAudioLevel.withLock { $0 }
+    }
+
+    public var vadState: VadSnapshot {
+        atomicVadSnapshot.withLock { $0 }
     }
 
     public var isRecording: Bool {
@@ -226,6 +242,7 @@ public actor AudioRecorder {
         self.firstBufferLogged.withLock { $0 = false }
         self.runtimeMetrics.withLock { $0 = RecordingRuntimeMetrics() }
         self.sampleCounter.withLock { $0 = 0 }
+        self.atomicVadSnapshot.withLock { $0 = .unavailable }
 
         let preSubscribeGeneration = self.sessionGeneration.withLock { $0 }
         let tapGeneration = preSubscribeGeneration
@@ -501,6 +518,7 @@ public actor AudioRecorder {
         audioFile = nil
         recording = false
         atomicAudioLevel.withLock { $0 = 0.0 }
+        atomicVadSnapshot.withLock { $0 = .unavailable }
 
         let url = outputURL
         outputURL = nil
