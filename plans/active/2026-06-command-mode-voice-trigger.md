@@ -1703,17 +1703,35 @@ git commit -m "feat(command-mode): add CommandModeCoordinator (hold -> capture -
     let microphoneArbiter = MicrophoneArbiter()
 ```
 
-- [ ] **Step 2: Gate dictation start on the arbiter** — in the dictation flow start
-path (where `DictationService.startRecording` is invoked from the app layer — grep
-`DictationFlowCoordinator` for the start entry), acquire `.dictation` first:
+- [ ] **Step 2: Read-only bidirectional mic exclusion** (NOT token-acquire by
+dictation/meeting — that would break ADR-015 concurrent dictation+meeting, since the
+single-owner arbiter can hold only one owner).
 
+Only **Command Mode** ever *holds* the arbiter token (the coordinator's existing
+`tryAcquire(.commandMode)`/`release(.commandMode)`). Dictation and meeting are excluded
+via **read-only checks**, so their shipped flows need no release logic:
+
+(a) **Forward (Command Mode refuses while dictation/meeting active).** Add an
+`isDictationOrMeetingActive: () -> Bool` parameter to `CommandModeCoordinator.init` and,
+in `handlePressStart`, guard on it BEFORE acquiring the arbiter:
 ```swift
-guard env.microphoneArbiter.tryAcquire(.dictation) else { return /* Command Mode is active */ }
-// ...on dictation stop/cancel/idle: env.microphoneArbiter.release(.dictation)
+guard !isDictationOrMeetingActive() else { showToast("Finish dictating first."); return }
 ```
+The closure (provided by AppDelegate, Step 4) reads `@MainActor` dictation + meeting
+state — find the live UI-facing flags (e.g. the dictation overlay/flow coordinator's
+"is recording/processing" state and `MeetingRecordingPillViewModel.isRecording`). It is
+read-only; it must NOT mutate dictation/meeting state.
 
-(Mirror for meeting start/stop with `.meeting` if the meeting flow is reachable
-concurrently — minimal v1 wiring; keep it to where the mic is actually claimed.)
+(b) **Reverse (dictation/meeting refuse while Command Mode holds).** In the dictation
+start path AND the meeting start path (grep where `DictationService.startRecording` /
+the meeting recording start is invoked from the app/flow layer), add a one-line
+read-only guard — no release needed (Command Mode releases its own token):
+```swift
+guard env.microphoneArbiter.currentOwner != .commandMode else { return }
+```
+This covers non-hotkey starts (menu bar, idle-pill click); the hotkey path is also
+covered by the `suspend()` in Step 4. Touch ONLY the start guard — do not add
+acquire/release to these shipped flows.
 
 - [ ] **Step 3: Re-declare the shared provider `@Sendable`** in `AppDelegate.swift`
 (the existing binding around the `TransformsCoordinator` construction):
@@ -1735,6 +1753,12 @@ if AppFeatures.commandModeEnabled {
         audioProcessor: env.audioProcessor,
         sttScheduler: env.sttScheduler,
         currentShortcut: { [weak self] in self?.settingsViewModel.commandModeShortcut },
+        isDictationOrMeetingActive: { [weak self] in
+            // Read-only @MainActor check — find the real live flags (dictation flow/overlay
+            // "is recording/processing" + MeetingRecordingPillViewModel.isRecording). Must
+            // not mutate anything.
+            (self?.dictationIsActive ?? false) || (self?.meetingIsRecording ?? false)
+        },
         onLLMProviderRequired: { [weak self] in self?.windowCoordinator.openMainWindowToSettings(tab: .ai) },
         suspendOtherHotkeys: { [weak self] suspend in
             // Real mechanism: refcounted AppHotkeyCoordinator.suspend()/.resume()
