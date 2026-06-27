@@ -42,4 +42,14 @@ public enum AppFeatures {
     /// Enabled once the website telemetry allowlist accepts
     /// `transform_executed` / `transform_failed` (ADR-022 §9).
     public static let transformsEnabled: Bool = true
+
+    /// Command Mode — voice trigger over Transforms (ADR-023). When `true`:
+    /// - the Command Mode hotkey recorder appears in Settings
+    /// - `CommandModeHotkeyMonitor` installs its event tap on launch (dormant until
+    ///   the user binds a key — the binding is the opt-in, this is the release gate)
+    ///
+    /// When `false`, the Settings row is hidden and no event tap is installed.
+    /// Channel convention (mirrors `transformsEnabled`): `false` on the Stable DMG,
+    /// `true` on `main`. Set `true` here for `main`.
+    public static let commandModeEnabled: Bool = true
 }
