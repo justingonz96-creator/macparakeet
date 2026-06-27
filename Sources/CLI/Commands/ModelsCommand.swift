@@ -129,10 +129,14 @@ extension ModelsCommand {
             abstract: "Download a local speech model without starting a transcription."
         )
 
-        @Argument(help: "Model identifier. Use whisper-large-v3-v20240930-turbo-632MB for Whisper.")
+        @Argument(help: "Model identifier. Use whisper-large-v3-v20240930-turbo-632MB for Whisper, or nemotron-european for Nemotron.")
         var variant: String
 
         func run() async throws {
+            if isNemotronDownloadID(variant) {
+                try await downloadNemotron()
+                return
+            }
             let model = try resolveWhisperDownloadModel(variant)
             print("Whisper: downloading \(model)...")
             let lastPercent = OSAllocatedUnfairLock(initialState: -1)
@@ -149,6 +153,32 @@ extension ModelsCommand {
                 }
             }
             print("Whisper: ready at \(modelURL.path)")
+        }
+
+        private func downloadNemotron() async throws {
+            // Resolve (validates the id) before consulting the gate so a bad id
+            // still fails as a validation error rather than the gate message.
+            let model = try resolveNemotronDownloadModel(variant)
+            // Gate: never fetch the eval-licensed artifact in a shipped build
+            // (ADR-023 §8). The flag is a compile-time `false` today.
+            guard AppFeatures.nemotronEnabled else {
+                throw ValidationError("The Nemotron engine is not available in this build.")
+            }
+            print("Nemotron: downloading \(model)...")
+            let lastPercent = OSAllocatedUnfairLock(initialState: -1)
+            let modelURL = try await NemotronEngine.downloadModel { completed, total in
+                let percent = total > 0 ? Int((Double(completed) / Double(total) * 100).rounded()) : 0
+                let clamped = min(max(percent, 0), 100)
+                let shouldPrint = lastPercent.withLock { last in
+                    guard last != clamped else { return false }
+                    last = clamped
+                    return true
+                }
+                if shouldPrint {
+                    print("Nemotron: downloading \(clamped)%")
+                }
+            }
+            print("Nemotron: ready at \(modelURL.path)")
         }
     }
 
@@ -223,6 +253,7 @@ extension ModelsCommand {
             await sttClient.clearModelCache()
             DiarizationService.clearModelCache()
             try? FileManager.default.removeItem(atPath: AppPaths.whisperModelsDir)
+            try? FileManager.default.removeItem(atPath: AppPaths.nemotronModelsDir)
             print("Local speech and speaker model caches cleared")
         }
     }
@@ -237,6 +268,28 @@ func resolveWhisperDownloadModel(_ variant: String) throws -> String {
         throw ValidationError("Only whisper-* model identifiers are supported by models download.")
     }
     return WhisperEngine.normalizeModelVariant(normalizedInput)
+}
+
+/// `true` when a `models download <id>` argument names the Nemotron engine
+/// (`nemotron` or any `nemotron-*` variant id). Used to route the download
+/// before whisper resolution rejects the non-whisper prefix.
+func isNemotronDownloadID(_ id: String) -> Bool {
+    let lowered = id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return lowered == "nemotron" || lowered.hasPrefix("nemotron-")
+}
+
+/// Validates a `nemotron` / `nemotron-*` download id and maps it to the single
+/// European variant label the CLI knows how to fetch (`nemotron-european`).
+/// Mirrors `resolveWhisperDownloadModel`'s validate-then-return shape.
+func resolveNemotronDownloadModel(_ variant: String) throws -> String {
+    let normalizedInput = variant.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalizedInput.isEmpty else {
+        throw ValidationError("Model variant cannot be empty.")
+    }
+    guard isNemotronDownloadID(normalizedInput) else {
+        throw ValidationError("Only nemotron / nemotron-* model identifiers are supported for Nemotron downloads.")
+    }
+    return NemotronEngine.variantLabel
 }
 
 struct SpeechStackPayload: Encodable {
@@ -344,13 +397,14 @@ struct SelectableSpeechModelSelection: Equatable {
 func loadSelectableSpeechModels(
     defaults: UserDefaults = macParakeetAppDefaults(),
     isParakeetModelCached: @escaping () -> Bool = { STTClient.isModelCached() },
-    isWhisperModelDownloaded: @escaping (String) -> Bool = { WhisperEngine.isModelDownloaded(model: $0) }
+    isWhisperModelDownloaded: @escaping (String) -> Bool = { WhisperEngine.isModelDownloaded(model: $0) },
+    isNemotronModelDownloaded: @escaping () -> Bool = { NemotronEngine.isModelDownloaded() }
 ) -> [SelectableSpeechModel] {
     let currentEngine = SpeechEnginePreference.current(defaults: defaults)
     let whisperVariant = SpeechEnginePreference.whisperModelVariant(defaults: defaults)
     let whisperLanguage = SpeechEnginePreference.whisperDefaultLanguage(defaults: defaults)
 
-    return [
+    var models: [SelectableSpeechModel] = [
         SelectableSpeechModel(
             id: SpeechEnginePreference.parakeet.rawValue,
             name: "Parakeet TDT 0.6B v3",
@@ -372,6 +426,26 @@ func loadSelectableSpeechModels(
             language: whisperLanguage ?? WhisperLanguageCatalog.autoCode
         ),
     ]
+
+    // Nemotron is listed only while the engine is enabled (ADR-023). With the
+    // flag off (the shipping state) the list stays the existing two engines.
+    if AppFeatures.nemotronEnabled {
+        let nemotronLanguage = SpeechEnginePreference.nemotronDefaultLanguage(defaults: defaults)
+        models.append(
+            SelectableSpeechModel(
+                id: NemotronEngine.variantLabel,
+                name: "Nemotron European",
+                engine: SpeechEnginePreference.nemotron.rawValue,
+                variant: nil,
+                size: nil,
+                installed: isNemotronModelDownloaded(),
+                selected: currentEngine == .nemotron,
+                language: nemotronLanguage
+            )
+        )
+    }
+
+    return models
 }
 
 func resolveSelectableSpeechModel(
@@ -393,6 +467,12 @@ func resolveSelectableSpeechModel(
             engine: .whisper,
             whisperVariant: SpeechEnginePreference.whisperModelVariant(defaults: defaults)
         )
+    }
+
+    if isNemotronDownloadID(lowered) {
+        // Nemotron has a single European variant, so all nemotron ids resolve
+        // to the same selection (no whisper-style variant string).
+        return SelectableSpeechModelSelection(engine: .nemotron, whisperVariant: nil)
     }
 
     let variantInput: String?

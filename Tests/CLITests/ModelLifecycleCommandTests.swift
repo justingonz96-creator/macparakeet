@@ -34,6 +34,33 @@ final class ModelLifecycleCommandTests: XCTestCase {
         }
     }
 
+    func testResolveNemotronDownloadModelAcceptsNemotronIDs() throws {
+        // `nemotron-european` and any `nemotron-*` id resolve to the single
+        // European variant the CLI knows how to fetch.
+        XCTAssertEqual(try resolveNemotronDownloadModel("nemotron-european"), NemotronEngine.variantLabel)
+        XCTAssertEqual(try resolveNemotronDownloadModel("Nemotron-European"), NemotronEngine.variantLabel)
+        XCTAssertEqual(try resolveNemotronDownloadModel("nemotron"), NemotronEngine.variantLabel)
+
+        XCTAssertThrowsError(try resolveNemotronDownloadModel("whisper-large")) { error in
+            XCTAssertTrue(error is ValidationError)
+        }
+    }
+
+    func testResolveSelectableSpeechModelMapsNemotronIDs() throws {
+        XCTAssertEqual(
+            try resolveSelectableSpeechModel("nemotron"),
+            SelectableSpeechModelSelection(engine: .nemotron, whisperVariant: nil)
+        )
+        XCTAssertEqual(
+            try resolveSelectableSpeechModel("nemotron-european"),
+            SelectableSpeechModelSelection(engine: .nemotron, whisperVariant: nil)
+        )
+        XCTAssertEqual(
+            try resolveSelectableSpeechModel("Nemotron-European"),
+            SelectableSpeechModelSelection(engine: .nemotron, whisperVariant: nil)
+        )
+    }
+
     func testLoadSelectableSpeechModelsReflectsSharedDefaults() throws {
         let suiteName = "com.macparakeet.tests.cli.models.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

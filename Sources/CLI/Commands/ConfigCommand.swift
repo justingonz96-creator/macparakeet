@@ -24,7 +24,7 @@ struct ConfigCommand: ParsableCommand {
         Supported keys:
           telemetry                 on|off                         default: on
           processing-mode           raw|clean                       default: raw
-          speech-engine             parakeet|whisper                default: parakeet
+          speech-engine             parakeet|whisper|nemotron       default: parakeet
           whisper-language          auto|<Whisper language code>    default: auto
           speaker-detection         on|off                          default: off
           save-transcription-audio  on|off                          default: on
@@ -246,7 +246,7 @@ struct ConfigCommand: ParsableCommand {
     static func parseSpeechEngine(_ value: String) throws -> SpeechEnginePreference {
         let raw = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard let engine = SpeechEnginePreference(rawValue: raw) else {
-            throw ValidationError("Invalid value for speech-engine: '\(value)'. Use parakeet or whisper.")
+            throw ValidationError("Invalid value for speech-engine: '\(value)'. Use parakeet, whisper, or nemotron.")
         }
         return engine
     }

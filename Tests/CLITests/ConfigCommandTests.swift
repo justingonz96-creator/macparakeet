@@ -174,6 +174,12 @@ final class ConfigCommandTests: XCTestCase {
         }
     }
 
+    // MARK: - parseSpeechEngine
+
+    func testParseSpeechEngineAcceptsNemotron() throws {
+        XCTAssertEqual(try ConfigCommand.parseSpeechEngine("nemotron"), .nemotron)
+    }
+
     // MARK: - parseBool
 
     func testParseBoolRejectsEmpty() {
