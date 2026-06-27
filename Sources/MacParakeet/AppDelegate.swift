@@ -46,6 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `TransformsHotkeyRegistry` + dispatch from registered hotkeys to the
     /// `TransformExecutor` pipeline. Gated on `AppFeatures.transformsEnabled`.
     private var transformsCoordinator: TransformsCoordinator?
+    /// Command Mode coordinator (ADR-023). Owns the hold-gesture monitor + mic
+    /// arbiter token. Gated on `AppFeatures.commandModeEnabled`.
+    private var commandModeCoordinator: CommandModeCoordinator?
     private var hasPresentedHotkeyUnavailableAlert = false
     private var hasPresentedHotkeyConflictAlert = false
     private var environmentSetupTask: Task<Void, Never>?
@@ -455,7 +458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // flipped after launch.
         let configStore = env.llmConfigStore
         let llmService = env.llmService
-        let llmServiceProvider: () -> LLMServiceProtocol? = { [weak configStore, llmService] in
+        let llmServiceProvider: @Sendable () -> LLMServiceProtocol? = { [weak configStore, llmService] in
             guard let configStore else { return nil }
             return (try? configStore.loadConfig()) != nil ? llmService : nil
         }
@@ -480,6 +483,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         transforms.start()
         transformsCoordinator = transforms
+
+        // Command Mode (ADR-023). Owns its own hold-gesture monitor, the mic
+        // arbiter token, and a floating progress pill. Gated on the feature
+        // flag; `start()` is a no-op when the flag is off or no shortcut is set.
+        if AppFeatures.commandModeEnabled {
+            let commandMode = CommandModeCoordinator(
+                llmServiceProvider: llmServiceProvider,
+                arbiter: env.microphoneArbiter,
+                audioProcessor: env.audioProcessor,
+                sttScheduler: env.sttScheduler,
+                currentShortcut: { [weak self] in self?.settingsViewModel.commandModeShortcut },
+                isDictationOrMeetingActive: { [weak self] in
+                    // Read-only live-state check. `isCapturingAudio` is true while
+                    // dictation is capturing or transcribing; `isMeetingRecordingActive`
+                    // is true for the whole meeting capture/transcribe window. Neither
+                    // accessor mutates anything.
+                    (self?.dictationFlowCoordinator?.isCapturingAudio == true)
+                        || (self?.meetingRecordingFlowCoordinator?.isMeetingRecordingActive == true)
+                },
+                onLLMProviderRequired: { [weak self] in
+                    self?.windowCoordinator.openMainWindowToSettings(tab: .ai)
+                },
+                suspendOtherHotkeys: { [weak self] suspend in
+                    // Refcounted AppHotkeyCoordinator.suspend()/.resume(): each
+                    // suspend(true) is matched by exactly one resume(false) from
+                    // the coordinator's finishHold / teardown paths.
+                    if suspend { self?.hotkeyCoordinator?.suspend() }
+                    else { self?.hotkeyCoordinator?.resume() }
+                }
+            )
+            commandMode.start()
+            commandModeCoordinator = commandMode
+            // Re-push the shortcut to the monitor when the Settings value
+            // changes. The observer runs on `.main`, but Swift 6 still treats
+            // the block as `@Sendable`, so hop onto the MainActor before reading
+            // the main-actor-isolated view model (same pattern as the dictation
+            // formatter observer in DictationFlowCoordinator).
+            NotificationCenter.default.addObserver(
+                forName: .macParakeetCommandModeShortcutDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.commandModeCoordinator?.refreshShortcut(self.settingsViewModel.commandModeShortcut)
+                }
+            }
+        }
 
         menuBarCoordinator.refreshHotkeyTitle()
         menuBarCoordinator.refreshMeetingHotkeyShortcut()
@@ -603,6 +654,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if AppFeatures.meetingRecordingEnabled {
             reserved.append(TransformShortcutReservedHotkey(name: "meeting recording", trigger: settingsViewModel.meetingHotkeyTrigger))
         }
+        if AppFeatures.commandModeEnabled, let cm = settingsViewModel.commandModeShortcut {
+            reserved.append(TransformShortcutReservedHotkey(name: "Command Mode", trigger: cm.hotkeyTrigger))
+        }
         return reserved.filter { !$0.trigger.isDisabled }
     }
 
@@ -671,12 +725,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         originatesFromWindow: Bool,
         trigger: TelemetryMeetingRecordingTrigger = .manual
     ) {
-        guard appEnvironment != nil else { return }
+        guard let env = appEnvironment else { return }
 
         if meetingRecordingFlowCoordinator?.isMeetingRecordingActive == true {
             meetingRecordingFlowCoordinator?.toggleRecording()
             return
         }
+
+        // Reverse read-only mic exclusion: don't start a meeting recording while
+        // Command Mode holds the mic. Read-only — Command Mode releases its own
+        // token (no acquire/release added to the meeting flow).
+        guard env.microphoneArbiter.currentOwner != .commandMode else { return }
 
         if originatesFromWindow {
             // The Transcribe tab hosts the Meeting Recording tile, which

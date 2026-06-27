@@ -934,6 +934,8 @@ Important constraints:
 ### F10: Command Mode (Epic) — REMOVED
 
 > Status: **PARTIALLY REMOVED** — Command Mode (F10a/F10b) was removed with the old local Qwen3-8B path. Transcript Chat (F10c) still exists through the current provider-based LLM architecture.
+>
+> **Superseded by ADR-023 (v0.7)** — The core concept (select text, speak an instruction, edit in place) is revived in F-CMD on a different foundation: the ADR-011 BYO/pluggable provider instead of a bundled model, plus a deterministic-first offline router. See the F-CMD entry below.
 
 **What:** ~~Select text in any app, activate command mode, speak a natural language command, and the text is edited in-place by the local LLM.~~
 
@@ -943,6 +945,8 @@ Important constraints:
 ~~- `F10b` command enhancements (quick commands + saved templates)~~
 
 ### F10a: Command Mode Core (GUI MVP) — REMOVED
+
+> **Superseded by ADR-023 (Command Mode voice trigger, BYO-provider instead of the bundled local LLM) — see the F-CMD entry.**
 
 **Scope:**
 - Default shortcut: Fn+Ctrl (or configurable)
@@ -1647,6 +1651,40 @@ Meeting transcription uses the current speech engine captured at recording start
 - [x] Transforms tab appears in the main sidebar when `AppFeatures.transformsEnabled` is true
 - [x] Triggering a Transform shows the floating progress pill, handles cancellation/error cleanup, and preserves clipboard state on abandon
 - [x] CLI `transforms` and `transforms history` surfaces mirror the saved-prompt and local-history data model for agent workflows
+
+---
+
+## v0.7 — Command Mode
+
+### F-CMD: Command Mode (Voice Trigger)
+
+> Status: **IMPLEMENTED ON MAIN** — ADR-023 surface enabled by `AppFeatures.commandModeEnabled = true` on `main`; ships unbound by default (no hotkey assigned until the user binds one in Settings).
+
+**What:** Hold a dedicated hotkey, speak an instruction, release — the selected text is rewritten in place. Reuses the ADR-022 capture/replace primitive (`SelectionCaptureService` → `SelectionReplacementService`) but routes through a new `CommandModeExecutor` so the shipped Transforms path is untouched. The spoken instruction is transcribed through the user's persisted STT engine/language (ADR-021).
+
+**Two execution paths based on the transcribed instruction:**
+
+1. **Deterministic offline self-correction** — a closed phrase table maps recognized instructions (the "scratch that" family, plus case and trim commands) to in-process edits. No LLM call. Works with no provider configured. "Scratch that" deletes the selection; it does not paste an empty string.
+2. **Provider rewrite** — everything outside the phrase table becomes a freeform prompt sent to the user's configured LLM provider (ADR-011). A local provider keeps Command Mode fully on-device.
+
+**Implementation:**
+- `CommandModeHotkeyMonitor` — one `CGEventTap`, one configurable `KeyboardShortcut`. Exposes hold-start/hold-end; synthetic keystrokes post with `.privateState` event source so held modifiers do not contaminate `Cmd+C`/`Cmd+V`.
+- `CommandModeCoordinator` (`@MainActor`) — wires monitor → arbiter → recorder → STT → router → executor; restores clipboard on all exit paths; performs early clipboard restore after clipboard-fallback capture so the user's clipboard is held only for milliseconds at capture and at paste-back, never for the whole utterance.
+- `CommandModeRouter` — pure offline classifier (no I/O, exhaustively testable).
+- `DeterministicTextEdit` — AX-set or Delete-keystroke deletion; case and trim transforms.
+- `CommandModeExecutor` (actor) — capture → optional LLM stream → replacement.
+- `MicrophoneArbiter` — process-wide exclusive mic token; bidirectional exclusion with dictation and meeting recording.
+- `AppFeatures.commandModeEnabled` — release gate; `false` on Stable DMG, `true` on `main`.
+
+**Acceptance criteria:**
+- [x] Holding the bound hotkey, speaking "scratch that", and releasing deletes the selected text without touching the clipboard
+- [x] Case and trim commands apply offline with no LLM call and no provider required
+- [x] Unrecognized instructions route to the configured LLM provider and replace the selection with the rewritten result
+- [x] Clipboard is fully restored after every exit path (success, failure, cancellation)
+- [x] Command Mode is refused while dictation is recording/finalizing or a meeting is recording; dictation/meeting starts are refused while Command Mode holds the mic token
+- [x] The persisted STT engine/language (Parakeet or Whisper) is honored for transcribing the spoken instruction
+- [x] Command Mode surface is visible in Settings only when `AppFeatures.commandModeEnabled = true`
+- [x] Telemetry events (`command_mode_executed`, `command_mode_failed`) carry no instruction or selection content
 
 ---
 

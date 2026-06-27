@@ -20,6 +20,10 @@ final class AppEnvironment {
     let sttScheduler: STTScheduler
     let sharedMicStream: SharedMicrophoneStream
     let audioProcessor: AudioProcessor
+    /// Process-wide single-owner mic arbiter. Only Command Mode ever *holds* the
+    /// token (dictation + meeting must run concurrently per ADR-015, so they are
+    /// excluded read-only via `currentOwner` checks, never by acquiring it).
+    let microphoneArbiter = MicrophoneArbiter()
     let meetingRecordingService: MeetingRecordingService
     let meetingRecordingRecoveryService: MeetingRecordingRecoveryService
     let dictationService: DictationService

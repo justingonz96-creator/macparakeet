@@ -29,4 +29,5 @@ public extension Notification.Name {
     /// `MeetingAutoStartCoordinator` re-reads its config and re-evaluates on
     /// the next poll tick instead of waiting for the timer.
     static let macParakeetCalendarSettingsDidChange = Notification.Name("macparakeet.calendarSettingsDidChange")
+    static let macParakeetCommandModeShortcutDidChange = Notification.Name("macparakeet.commandModeShortcutDidChange")
 }

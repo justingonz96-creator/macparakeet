@@ -354,6 +354,11 @@ final class FakeSelectionReplacementBackend: SelectionReplacementBackend, @unche
     }
 
     @MainActor
+    func postDeleteKey() throws {
+        // No-op in this fake — SelectionReplacementServiceTests don't exercise deletion
+    }
+
+    @MainActor
     func currentChangeCount() -> Int {
         let simulateBump = simulateUserCopyAfterWrite
         return lock.withLock { state in

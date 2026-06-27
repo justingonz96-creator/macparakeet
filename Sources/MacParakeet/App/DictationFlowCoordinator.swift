@@ -153,6 +153,10 @@ final class DictationFlowCoordinator {
     /// onboarding is visible (the model isn't ready yet and the hotkey step runs
     /// its own no-STT rehearsal). Covers both the hotkey and idle-pill paths.
     private let isStartSuppressed: () -> Bool
+    /// Read-only check: true while Command Mode holds the mic arbiter. Dictation
+    /// refuses to start in that window (reverse half of the read-only mic mutual
+    /// exclusion). It never acquires/releases the arbiter itself.
+    private let isCommandModeMicHeld: () -> Bool
     private let onMenuBarIconUpdate: (BreathWaveIcon.MenuBarState) -> Void
     private let onHistoryReload: () -> Void
     private let onPresentEntitlementsAlert: (Error) -> Void
@@ -212,6 +216,7 @@ final class DictationFlowCoordinator {
         },
         shouldSuppressIdlePill: @escaping () -> Bool = { false },
         isStartSuppressed: @escaping () -> Bool = { false },
+        isCommandModeMicHeld: @escaping () -> Bool = { false },
         onMenuBarIconUpdate: @escaping (BreathWaveIcon.MenuBarState) -> Void,
         onHistoryReload: @escaping () -> Void,
         onPresentEntitlementsAlert: @escaping (Error) -> Void
@@ -229,6 +234,7 @@ final class DictationFlowCoordinator {
         self.overlayControllerFactory = overlayControllerFactory
         self.shouldSuppressIdlePill = shouldSuppressIdlePill
         self.isStartSuppressed = isStartSuppressed
+        self.isCommandModeMicHeld = isCommandModeMicHeld
         self.onMenuBarIconUpdate = onMenuBarIconUpdate
         self.onHistoryReload = onHistoryReload
         self.onPresentEntitlementsAlert = onPresentEntitlementsAlert
@@ -316,6 +322,9 @@ final class DictationFlowCoordinator {
         // Suppressed while onboarding is up — the speech model isn't ready and
         // the hotkey step runs its own no-STT rehearsal. Covers hotkey + pill.
         guard !isStartSuppressed() else { return }
+        // Reverse read-only mic exclusion: don't start dictation while Command
+        // Mode holds the mic. Read-only — Command Mode releases its own token.
+        guard !isCommandModeMicHeld() else { return }
         currentTrigger = trigger
         sendEvent(.startRequested(mode: mode))
     }

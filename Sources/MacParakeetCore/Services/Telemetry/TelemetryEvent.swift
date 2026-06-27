@@ -46,6 +46,8 @@ public enum TelemetryEventName: String, Sendable, CaseIterable {
     /// Transform named after e.g. an employer never leaves the device.
     case transformExecuted = "transform_executed"
     case transformFailed = "transform_failed"
+    case commandModeExecuted = "command_mode_executed"
+    case commandModeFailed = "command_mode_failed"
     case transformOperation = "transform_operation"
     case askMenuOpened = "ask_menu_opened"
     case askPromptFired = "ask_prompt_fired"
@@ -276,6 +278,34 @@ public enum TelemetryTransformFailureReason: String, Sendable, Equatable {
     case emptySelection = "empty_selection"
     case noProvider = "no_provider"
     case captureFailed = "capture_failed"
+    case llmFailed = "llm_failed"
+    case replacementFailed = "replacement_failed"
+    case cancelled
+}
+
+/// Which resolution path the Command Mode pipeline took.
+public enum TelemetryCommandModePath: String, Sendable, Equatable {
+    case deterministic
+    case rewrite
+}
+
+/// Which deterministic command was executed in Command Mode (`.none` when the
+/// path is `rewrite`).
+public enum TelemetryCommandModeDeterministic: String, Sendable, Equatable {
+    case none
+    case clearSelection = "clear_selection"
+    case uppercase
+    case lowercase
+    case titleCase = "title_case"
+    case trim
+}
+
+/// Why a Command Mode run terminated abnormally.
+public enum TelemetryCommandModeFailureReason: String, Sendable, Equatable {
+    case emptySelection = "empty_selection"
+    case emptyInstruction = "empty_instruction"
+    case captureFailed = "capture_failed"
+    case noProvider = "no_provider"
     case llmFailed = "llm_failed"
     case replacementFailed = "replacement_failed"
     case cancelled
@@ -534,6 +564,17 @@ public enum TelemetryEventSpec: Sendable {
         transformName: TelemetryTransformName,
         reason: TelemetryTransformFailureReason
     )
+    /// Command Mode (ADR-022 §Command) feature-level success. NO instruction
+    /// text, NO selected text, NO output — only enum codes + timings + coarse
+    /// app category.
+    case commandModeExecuted(
+        path: TelemetryCommandModePath,
+        deterministicCommand: TelemetryCommandModeDeterministic,
+        llmMs: Int,
+        totalMs: Int,
+        appCategory: TelemetryAppCategory? = nil
+    )
+    case commandModeFailed(reason: TelemetryCommandModeFailureReason)
     case transformOperation(
         operationID: String,
         operationContext: ObservabilityOperationContext? = nil,
@@ -814,6 +855,8 @@ extension TelemetryEventSpec {
         case .numberRefinerFallback: return .numberRefinerFallback
         case .transformExecuted: return .transformExecuted
         case .transformFailed: return .transformFailed
+        case .commandModeExecuted: return .commandModeExecuted
+        case .commandModeFailed: return .commandModeFailed
         case .transformOperation: return .transformOperation
         case .askMenuOpened: return .askMenuOpened
         case .askPromptFired: return .askPromptFired
@@ -1141,6 +1184,16 @@ extension TelemetryEventSpec {
                 "transform_name": name.rawValue,
                 "reason": reason.rawValue,
             ]
+        case .commandModeExecuted(let path, let det, let llmMs, let totalMs, let appCategory):
+            return Self.compactProps(
+                ("path", path.rawValue),
+                ("deterministic_command", det.rawValue),
+                ("llm_ms", "\(llmMs)"),
+                ("total_ms", "\(totalMs)"),
+                ("app_category", appCategory?.rawValue)
+            )
+        case .commandModeFailed(let reason):
+            return ["reason": reason.rawValue]
         case .transformOperation(
             let operationID,
             let operationContext,
@@ -1625,6 +1678,8 @@ public enum TelemetryImplementedContract {
         .numberRefinerFallback: ["reason", "provider", "error_type"],
         .transformExecuted: ["transform_name", "capture_path", "replace_path", "llm_ms", "total_ms"],
         .transformFailed: ["transform_name", "reason"],
+        .commandModeExecuted: ["path", "deterministic_command", "llm_ms", "total_ms"],
+        .commandModeFailed: ["reason"],
         .transformOperation: ["operation_id", "outcome", "transform_name", "duration_seconds"],
         .askMenuOpened: [],
         .askPromptFired: ["source", "group", "label"],

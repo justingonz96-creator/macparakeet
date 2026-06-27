@@ -232,7 +232,7 @@ public actor SelectionCaptureService {
     /// The guard preserves user clipboard writes made while the LLM was running:
     /// we only restore if the pasteboard is still at the Cmd+C change count
     /// created by `clipboardHijack()`.
-    func restoreClipboardCaptureIfCurrent(_ result: SelectionCaptureResult) async {
+    public func restoreClipboardCaptureIfCurrent(_ result: SelectionCaptureResult) async {
         guard case .clipboard(_, let snapshot, _) = result else { return }
 
         guard let temporaryChangeCount = snapshot.temporaryChangeCount else {
@@ -413,7 +413,9 @@ struct SystemSelectionCaptureBackend: SelectionCaptureBackend, @unchecked Sendab
         guard AXIsProcessTrusted() else {
             throw SelectionCaptureError.accessibilityNotAuthorized
         }
-        guard let source = CGEventSource(stateID: .hidSystemState) else {
+        // .privateState does not carry the live hardware modifier state, so a physically
+        // held Command Mode chord is not OR-merged into the synthetic keystroke (ADR-023 §2/§4.9).
+        guard let source = CGEventSource(stateID: .privateState) else {
             throw SelectionCaptureError.eventSourceUnavailable
         }
         let cKeyCode = shortcutKeyResolver.virtualKeyCode(
