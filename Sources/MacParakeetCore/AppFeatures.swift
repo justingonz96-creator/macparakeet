@@ -42,4 +42,17 @@ public enum AppFeatures {
     /// Enabled once the website telemetry allowlist accepts
     /// `transform_executed` / `transform_failed` (ADR-022 §9).
     public static let transformsEnabled: Bool = true
+
+    /// Nemotron European STT engine (ADR-023). When `false`:
+    /// - the Settings Nemotron engine tile + language card + model-download row are hidden
+    /// - no default-engine/meeting-pin resolution may select Nemotron
+    /// - the CLI `transcribe --engine nemotron` value is rejected at runtime
+    /// - NO code path may fetch the FluidInference CoreML artifact
+    /// - no Nemotron telemetry is emitted
+    ///
+    /// The engine, runtime routing, and CLI parsing are built regardless; flipping
+    /// this flag is a no-data operation. MUST stay `false` in release builds until
+    /// the ADR-023 §8 license gate clears (the downloaded artifact is currently
+    /// eval-licensed, has no LICENSE file, and is access-gated).
+    public static let nemotronEnabled: Bool = false
 }
