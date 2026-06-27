@@ -82,4 +82,37 @@ final class DictationVadEngineTests: XCTestCase {
         let n = await counter.get()
         XCTAssertEqual(n, 1, "manager built exactly once across concurrent + repeat warm-ups")
     }
+
+    /// A build that THROWS marks the engine permanently failed (`loadFailed`),
+    /// covering the `catch` block. A second `warmUpIfNeeded()` must NOT re-attempt
+    /// the build — `loadFailed` is sticky, so the attempt count stays at 1.
+    func testBuildThrowsMarksLoadFailedPermanently() async {
+        struct BuildFailure: Error {}
+        actor Counter { var n = 0; func bump() { n += 1 }; func get() -> Int { n } }
+        let counter = Counter()
+        let engine = DictationVadEngine(makeManager: {
+            await counter.bump()
+            throw BuildFailure()
+        })
+
+        await engine.warmUpIfNeeded()
+        let availableAfterFailure = await engine.isAvailable
+        XCTAssertFalse(availableAfterFailure, "a throwing build leaves the engine unavailable")
+
+        // Second warm-up must short-circuit on loadFailed, not re-invoke makeManager.
+        await engine.warmUpIfNeeded()
+        let attempts = await counter.get()
+        XCTAssertEqual(attempts, 1, "loadFailed is permanent — makeManager is not retried")
+    }
+
+    /// `process` on a never-warmed engine takes the `guard let manager` fallback
+    /// and returns outer `nil` so the recorder uses the RMS gate.
+    func testProcessBeforeWarmUpReturnsOuterNil() async {
+        let mock = MockVadManager(.available)
+        let engine = DictationVadEngine(makeManager: { mock })
+        // Deliberately skip warmUpIfNeeded().
+        var s = VadStreamState.initial()
+        let outer = await engine.process(chunk: [Float](repeating: 0, count: 4096), state: &s)
+        XCTAssertNil(outer, "no manager yet -> outer nil -> RMS fallback")
+    }
 }

@@ -88,6 +88,9 @@ public actor DictationVadEngine {
         }
         warmUpTask = task
         await task.value
+        // Safe to clear: `performWarmUp` has already set `manager` (success) or
+        // `loadFailed` (failure), so the fast-path guards above now reflect the
+        // result and no future caller will re-enter the build path.
         warmUpTask = nil
     }
 
@@ -101,13 +104,18 @@ public actor DictationVadEngine {
                 logger.warning("dictation_vad_warmup_unavailable")
                 return
             }
-            manager = built
-            // JIT the ANE execution path; result and errors are intentionally ignored.
+            // JIT the ANE execution path on the LOCAL `built` (result and errors
+            // intentionally ignored) BEFORE publishing. The `await`s below suspend
+            // the actor; if we assigned `manager` first, a concurrent `process`/
+            // `makeStreamState` could observe a non-nil-but-un-JIT'd model and
+            // defeat the warm-up. Publishing last guarantees `manager != nil`
+            // implies the model is both available and JIT-primed.
             let state = await built.makeStreamState()
             _ = try? await built.processStreamingChunk(
                 [Float](repeating: 0, count: VadManager.chunkSize),
                 state: state
             )
+            manager = built
             logger.info("dictation_vad_warmup_ready")
         } catch {
             loadFailed = true
@@ -118,7 +126,9 @@ public actor DictationVadEngine {
     /// Returns a fresh `VadStreamState`, or `nil` if the engine is unavailable
     /// (caller uses RMS fallback instead of starting a VAD session).
     public func makeStreamState() async -> VadStreamState? {
-        guard let manager, await manager.isAvailable else { return nil }
+        // `manager` is published only after warm-up confirms availability, so
+        // non-nil ⇒ available — no redundant `isAvailable` actor hop needed.
+        guard let manager else { return nil }
         return await manager.makeStreamState()
     }
 
