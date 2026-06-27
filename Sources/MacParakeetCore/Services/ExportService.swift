@@ -235,6 +235,25 @@ public struct TranscriptExportOptions: Sendable, Equatable {
     public static let `default` = TranscriptExportOptions()
 }
 
+// MARK: - Equatable (explicit to override RawRepresentable's rawValue-based ==)
+//
+// `TranscriptExportOptions` is BOTH `Equatable` and `RawRepresentable` with a
+// `String` raw value. When a type conforms to both, the standard library's
+// `RawRepresentable` `==` — which compares `rawValue` — takes precedence over
+// the compiler's memberwise synthesis. Because `JSONEncoder` does not guarantee
+// a stable key ordering, two encodings of the SAME value can produce different
+// `rawValue` strings, so the inherited `==` reports equal values as unequal
+// (e.g. a value vs. its own encode→decode roundtrip). Comparing the stored
+// fields restores correct value semantics.
+extension TranscriptExportOptions {
+    public static func == (lhs: TranscriptExportOptions, rhs: TranscriptExportOptions) -> Bool {
+        lhs.includeTimestamps == rhs.includeTimestamps &&
+        lhs.includeSpeakerLabels == rhs.includeSpeakerLabels &&
+        lhs.includeMetadata == rhs.includeMetadata &&
+        lhs.subtitleConfig == rhs.subtitleConfig
+    }
+}
+
 // MARK: - Codable (explicit to prevent RawRepresentable infinite recursion)
 //
 // Swift's auto-synthesized Codable for a type that is also RawRepresentable
@@ -274,7 +293,12 @@ extension TranscriptExportOptions: RawRepresentable {
     }
 
     public var rawValue: String {
-        guard let data = try? JSONEncoder().encode(self),
+        // `.sortedKeys` makes the encoded string deterministic. Without it,
+        // JSONEncoder's key ordering varies between encodes, which would churn
+        // the persisted @AppStorage value even when nothing changed.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        guard let data = try? encoder.encode(self),
               let string = String(data: data, encoding: .utf8) else {
             return ""
         }
