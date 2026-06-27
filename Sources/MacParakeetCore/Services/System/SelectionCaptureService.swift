@@ -413,7 +413,9 @@ struct SystemSelectionCaptureBackend: SelectionCaptureBackend, @unchecked Sendab
         guard AXIsProcessTrusted() else {
             throw SelectionCaptureError.accessibilityNotAuthorized
         }
-        guard let source = CGEventSource(stateID: .hidSystemState) else {
+        // .privateState does not carry the live hardware modifier state, so a physically
+        // held Command Mode chord is not OR-merged into the synthetic keystroke (ADR-023 §2/§4.9).
+        guard let source = CGEventSource(stateID: .privateState) else {
             throw SelectionCaptureError.eventSourceUnavailable
         }
         let cKeyCode = shortcutKeyResolver.virtualKeyCode(

@@ -425,7 +425,9 @@ struct SystemSelectionReplacementBackend: SelectionReplacementBackend, @unchecke
         guard AXIsProcessTrusted() else {
             throw SelectionReplacementError.accessibilityNotAuthorized
         }
-        guard let source = CGEventSource(stateID: .hidSystemState) else {
+        // .privateState does not carry the live hardware modifier state, so a physically
+        // held Command Mode chord is not OR-merged into the synthetic keystroke (ADR-023 §2/§4.9).
+        guard let source = CGEventSource(stateID: .privateState) else {
             throw SelectionReplacementError.eventSourceUnavailable
         }
         let vKeyCode = shortcutKeyResolver.virtualKeyCode(
@@ -447,7 +449,9 @@ struct SystemSelectionReplacementBackend: SelectionReplacementBackend, @unchecke
         guard AXIsProcessTrusted() else {
             throw SelectionReplacementError.accessibilityNotAuthorized
         }
-        guard let source = CGEventSource(stateID: .hidSystemState) else {
+        // .privateState does not carry the live hardware modifier state, so a physically
+        // held Command Mode chord is not OR-merged into the synthetic keystroke (ADR-023 §2/§4.9).
+        guard let source = CGEventSource(stateID: .privateState) else {
             throw SelectionReplacementError.eventSourceUnavailable
         }
         let deleteKeyCode: CGKeyCode = 0x33 // Delete (Backspace) — removes the selection
