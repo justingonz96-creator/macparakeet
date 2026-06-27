@@ -19,6 +19,7 @@
 #   CAL   - Calendar auto-start
 #   CLI   - Public command-line surface
 #   XFORM - System-wide selected-text Transforms
+#   CMD   - Command Mode (voice trigger over Transforms + deterministic self-correction)
 
 # --- v0.1 Core MVP ---
 
@@ -300,6 +301,18 @@ REQ-CAL-001:
 REQ-CAL-002:
   description: Calendar settings and a skippable onboarding step let users grant Calendar access, choose the auto-start mode and lead time, and include specific calendars; calendar rows appear in Settings search only when enabled, and the CLI exposes upcoming calendar events for headless verification
   version: v0.6
+  status: implemented
+
+# --- v0.7 Command Mode ---
+
+REQ-CMD-001:
+  description: Voice Command Mode — hold a dedicated hotkey, speak an instruction, and the selected text is rewritten in place through the configured LLM provider (AX-first capture, clipboard fallback, paste-back), honoring the persisted STT engine/language
+  version: v0.7
+  status: implemented
+
+REQ-CMD-002:
+  description: Deterministic offline self-correction — "scratch that" family (delete selection) and case/trim text ops execute with no LLM, working even when no provider is configured
+  version: v0.7
   status: implemented
 
 # --- CLI Public Surface ---

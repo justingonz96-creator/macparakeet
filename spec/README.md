@@ -76,6 +76,7 @@ All ADRs live in `spec/adr/`. These are locked -- they record decisions already 
 | [ADR-020](adr/020-live-meeting-notepad-and-memo-summaries.md) | Live meeting notepad + memo-steered summaries (implemented 2026-04-25) |
 | [ADR-021](adr/021-whisperkit-multilingual-stt.md) | WhisperKit as optional multilingual STT engine |
 | [ADR-022](adr/022-transforms-system-wide-rewrite.md) | Transforms — system-wide LLM rewrites on selected text (implemented 2026-05-13) |
+| [ADR-023](adr/023-command-mode-voice-trigger.md) | Command Mode — voice trigger over Transforms + deterministic offline self-correction (v0.7) |
 
 ## Version Roadmap
 
@@ -87,7 +88,7 @@ All ADRs live in `spec/adr/`. These are locked -- they record decisions already 
 | v0.4 | Polish & Launch | Diarization, custom hotkey, non-blocking progress, direct distribution | **Implemented** |
 | v0.5 | Data, UI & Prompts | Private dictation, favorites, video player, split-pane detail, library grid, prompt library, multi-summary | **Implemented** |
 | v0.6 | Meeting Recording + Multilingual STT + Transforms | System audio + mic capture, concurrent with dictation, local transcription, library integration, optional WhisperKit engine, system-wide selected-text rewrites | **Implemented** |
-| v0.7 | Post-v0.6 polish | Follow-up scope TBD after v0.6 ships; calendar remains hidden until explicitly enabled | **Planned** |
+| v0.7 | Command Mode | Voice trigger over Transforms (ADR-023): hold-to-talk hotkey, deterministic offline self-correction, BYO-provider rewrites; calendar remains hidden until explicitly enabled | **In Progress** |
 
 ## Version Progress
 

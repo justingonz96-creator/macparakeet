@@ -35,6 +35,7 @@ These PRs contain work that is already shipping in this fork. If they get merged
 - `enforceMinDuration` and `enforceMinGap` post-processing passes
 - Subtitle preset picker in Settings (Modes tab, Transcription card) + `--subtitle-preset` CLI flag
 - `WordNumberSplitter` — fixes fused Parakeet tokens like `next30` → `next 30` in both subtitle and text pipeline paths
+- Command Mode (ADR-023, v0.7) — voice trigger over Transforms: hold-to-talk hotkey, deterministic-first offline self-correction ("scratch that", case, trim), BYO-provider rewrites for everything else
 
 ---
 
