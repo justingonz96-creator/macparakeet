@@ -258,7 +258,7 @@ public actor AudioRecorder {
         // VAD pipeline (decision-only). Active only when auto-stop is on AND the
         // engine warmed; otherwise the snapshot stays `.unavailable` (RMS gate)
         // and no stream/consumer/accumulator is created.
-        let vadProcessor: DictationVadProcessing
+        let vadProcessor: DictationVadProcessing?
         let vadContinuation: AsyncStream<[Float]>.Continuation?
         if self.enableVad(), let vadEngine, await vadEngine.isAvailable,
            let initialVadState = await vadEngine.makeStreamState() {
@@ -278,9 +278,11 @@ public actor AudioRecorder {
                 guard let self else { return }
                 var state = initialVadState
                 for await chunk in stream {
-                    guard self.sessionGeneration.withLock({ $0 }) == tapGeneration else { continue }
+                    // generation is monotonic; a mismatch means our session ended — exit.
+                    guard self.sessionGeneration.withLock({ $0 }) == tapGeneration else { break }
                     let event = await vadEngine.process(chunk: chunk, state: &state)
-                    guard self.sessionGeneration.withLock({ $0 }) == tapGeneration else { continue }
+                    // generation is monotonic; a mismatch means our session ended — exit.
+                    guard self.sessionGeneration.withLock({ $0 }) == tapGeneration else { break }
                     switch event {
                     case .none:
                         // Unavailable/error mid-session -> fall back to RMS.
@@ -308,7 +310,7 @@ public actor AudioRecorder {
             }
             self.vadConsumerTask = consumer
         } else {
-            vadProcessor = PassthroughDictationVadProcessor()
+            vadProcessor = nil
             vadContinuation = nil
         }
 
@@ -441,6 +443,7 @@ public actor AudioRecorder {
                     //    converted frames and only `yield`s to the AsyncStream —
                     //    no lock the writer path uses, no inference on this queue.
                     if let vadContinuation,
+                       let vadProcessor,
                        let data = convertedBuffer.floatChannelData?[0],
                        convertedFrameLength > 0 {
                         let frames = Array(UnsafeBufferPointer(start: data, count: convertedFrameLength))
@@ -505,6 +508,9 @@ public actor AudioRecorder {
             )
         } catch {
             try? FileManager.default.removeItem(at: url)
+            vadContinuation?.finish()
+            self.vadConsumerTask?.cancel()
+            self.vadConsumerTask = nil
             AudioCaptureDiagnostics.append(
                 "dictation_capture_start_failed \(AudioCaptureDiagnostics.errorFields(error))"
             )
