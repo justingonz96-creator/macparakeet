@@ -332,12 +332,11 @@ final class AppEnvironmentConfigurer {
                 self.transcriptionViewModel.presentCompletedTranscription(transcription, autoSave: true)
                 self.libraryViewModel.loadTranscriptions()
                 self.meetingsWorkspaceViewModel.refreshRecentMeetings()
-                if env.runtimePreferences.openAppAfterMeetingEnd {
-                    self.mainWindowState.navigateToTranscription(from: .library)
-                    callbacks.onOpenMainWindow()
-                } else {
-                    Self.signalMeetingReadyQuietly(transcription)
-                }
+                self.presentMeetingTranscriptReady(
+                    transcription,
+                    preferences: env.runtimePreferences,
+                    openMainWindow: callbacks.onOpenMainWindow
+                )
             },
             onQueuedTranscriptionReady: { [weak self] transcription, selectTranscription in
                 guard let self else { return }
@@ -350,12 +349,11 @@ final class AppEnvironmentConfigurer {
                 self.libraryViewModel.loadTranscriptions()
                 self.meetingsWorkspaceViewModel.refreshRecentMeetings()
                 if selectTranscription {
-                    if env.runtimePreferences.openAppAfterMeetingEnd {
-                        self.mainWindowState.navigateToTranscription(from: .library)
-                        callbacks.onOpenMainWindow()
-                    } else {
-                        Self.signalMeetingReadyQuietly(transcription)
-                    }
+                    self.presentMeetingTranscriptReady(
+                        transcription,
+                        preferences: env.runtimePreferences,
+                        openMainWindow: callbacks.onOpenMainWindow
+                    )
                 }
             },
             onQueuedTranscriptionFailed: { [weak self] content in
@@ -501,21 +499,32 @@ final class AppEnvironmentConfigurer {
         )
     }
 
-    /// Quiet-path completion signal for a finished meeting when the user has
-    /// turned off "Open app when meeting ends": a chime plus (while the app is
-    /// backgrounded) a banner, instead of stealing focus. Clicking the banner
-    /// activates the app; the meeting is already at the top of the library.
-    /// Gated by the meetings-scoped `notifyOnMeetingEnd` toggle, not the
-    /// Transcriptions-tab completion-notification setting.
-    private static func signalMeetingReadyQuietly(_ transcription: Transcription) {
+    /// Act on a finished meeting transcript per the meetings-tab settings:
+    /// open the app on the transcript, or — on the quiet path — play a chime
+    /// plus (while the app is backgrounded) a banner instead of stealing
+    /// focus. Clicking the banner activates the app; the meeting is already at
+    /// the top of the library. The decision itself is the unit-tested
+    /// `TranscriptionCompletionNotifier.meetingEndPresentation`.
+    private func presentMeetingTranscriptReady(
+        _ transcription: Transcription,
+        preferences: AppRuntimePreferencesProtocol,
+        openMainWindow: () -> Void
+    ) {
         let text = transcription.cleanTranscript ?? transcription.rawTranscript ?? ""
-        let content = TranscriptionCompletionNotifier.meetingReadyContent(
-            settingEnabled: UserDefaultsAppRuntimePreferences.notifyOnMeetingEnd(),
+        switch TranscriptionCompletionNotifier.meetingEndPresentation(
+            openAppEnabled: preferences.openAppAfterMeetingEnd,
+            notifyEnabled: preferences.notifyOnMeetingEnd,
             meetingTitle: transcription.effectiveDisplayTitle,
             wordCount: text.split(whereSeparator: { $0.isWhitespace }).count
-        )
-        guard let content else { return }
-        TranscriptionCompletionPresenter.present(content)
+        ) {
+        case .openApp:
+            mainWindowState.navigateToTranscription(from: .library)
+            openMainWindow()
+        case .quietSignal(let content):
+            TranscriptionCompletionPresenter.present(content)
+        case .silent:
+            break
+        }
     }
 
     func refreshLLMAvailability(in env: AppEnvironment) {

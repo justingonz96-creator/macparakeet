@@ -74,6 +74,33 @@ public enum TranscriptionCompletionNotifier {
         )
     }
 
+    /// How the app should respond when a meeting's transcript finishes.
+    public enum MeetingEndPresentation: Equatable, Sendable {
+        case openApp
+        case quietSignal(Content)
+        case silent
+    }
+
+    /// Decide the meeting-end behavior from the two meetings-tab settings.
+    /// Auto-open wins: while it is on, the app opens on the transcript and no
+    /// banner is needed, so `notifyEnabled` only matters on the quiet path.
+    public static func meetingEndPresentation(
+        openAppEnabled: Bool,
+        notifyEnabled: Bool,
+        meetingTitle: String,
+        wordCount: Int
+    ) -> MeetingEndPresentation {
+        if openAppEnabled { return .openApp }
+        guard
+            let content = meetingReadyContent(
+                settingEnabled: notifyEnabled,
+                meetingTitle: meetingTitle,
+                wordCount: wordCount
+            )
+        else { return .silent }
+        return .quietSignal(content)
+    }
+
     /// Critical meeting finalization failure content. This is independent of
     /// the completion-notification preference because it tells the user saved
     /// audio needs action, not that background work succeeded.

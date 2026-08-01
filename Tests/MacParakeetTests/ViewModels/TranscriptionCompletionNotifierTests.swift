@@ -101,6 +101,53 @@ final class TranscriptionCompletionNotifierTests: XCTestCase {
         XCTAssertEqual(one?.body, "Meeting transcript ready \u{00B7} 1 word")
     }
 
+    // MARK: - Meeting end presentation
+
+    func testMeetingEndPresentationOpensAppWhenAutoOpenEnabled() {
+        // Auto-open wins regardless of the notify setting.
+        for notifyEnabled in [true, false] {
+            XCTAssertEqual(
+                TranscriptionCompletionNotifier.meetingEndPresentation(
+                    openAppEnabled: true,
+                    notifyEnabled: notifyEnabled,
+                    meetingTitle: "Weekly sync",
+                    wordCount: 500
+                ),
+                .openApp
+            )
+        }
+    }
+
+    func testMeetingEndPresentationQuietSignalWhenAutoOpenOffAndNotifyOn() {
+        let presentation = TranscriptionCompletionNotifier.meetingEndPresentation(
+            openAppEnabled: false,
+            notifyEnabled: true,
+            meetingTitle: "Weekly sync",
+            wordCount: 1432
+        )
+        XCTAssertEqual(
+            presentation,
+            .quietSignal(
+                TranscriptionCompletionNotifier.Content(
+                    title: "Weekly sync",
+                    body: "Meeting transcript ready \u{00B7} 1432 words"
+                )
+            )
+        )
+    }
+
+    func testMeetingEndPresentationSilentWhenBothOff() {
+        XCTAssertEqual(
+            TranscriptionCompletionNotifier.meetingEndPresentation(
+                openAppEnabled: false,
+                notifyEnabled: false,
+                meetingTitle: "Weekly sync",
+                wordCount: 500
+            ),
+            .silent
+        )
+    }
+
     // MARK: - Meeting retry
 
     func testMeetingNeedsRetryContentIsIndependentFailureCopy() {

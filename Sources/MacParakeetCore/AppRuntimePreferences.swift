@@ -23,6 +23,7 @@ public protocol AppRuntimePreferencesProtocol: Sendable {
     var meetingAudioSourceMode: MeetingAudioSourceMode { get }
     var shouldShowMeetingRecordingPill: Bool { get }
     var openAppAfterMeetingEnd: Bool { get }
+    var notifyOnMeetingEnd: Bool { get }
     var pauseMediaDuringDictation: Bool { get }
     var instantDictationEnabled: Bool { get }
     var customVocabularyRecognitionBoostingEnabled: Bool { get }
@@ -689,6 +690,10 @@ public final class UserDefaultsAppRuntimePreferences: AppRuntimePreferencesProto
 
     public var openAppAfterMeetingEnd: Bool {
         Self.openAppAfterMeetingEnd(defaults: defaults)
+    }
+
+    public var notifyOnMeetingEnd: Bool {
+        Self.notifyOnMeetingEnd(defaults: defaults)
     }
 
     public var pauseMediaDuringDictation: Bool {
