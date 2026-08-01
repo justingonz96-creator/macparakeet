@@ -332,8 +332,12 @@ final class AppEnvironmentConfigurer {
                 self.transcriptionViewModel.presentCompletedTranscription(transcription, autoSave: true)
                 self.libraryViewModel.loadTranscriptions()
                 self.meetingsWorkspaceViewModel.refreshRecentMeetings()
-                self.mainWindowState.navigateToTranscription(from: .library)
-                callbacks.onOpenMainWindow()
+                if env.runtimePreferences.openAppAfterMeetingEnd {
+                    self.mainWindowState.navigateToTranscription(from: .library)
+                    callbacks.onOpenMainWindow()
+                } else {
+                    Self.signalMeetingReadyQuietly(transcription)
+                }
             },
             onQueuedTranscriptionReady: { [weak self] transcription, selectTranscription in
                 guard let self else { return }
@@ -346,8 +350,12 @@ final class AppEnvironmentConfigurer {
                 self.libraryViewModel.loadTranscriptions()
                 self.meetingsWorkspaceViewModel.refreshRecentMeetings()
                 if selectTranscription {
-                    self.mainWindowState.navigateToTranscription(from: .library)
-                    callbacks.onOpenMainWindow()
+                    if env.runtimePreferences.openAppAfterMeetingEnd {
+                        self.mainWindowState.navigateToTranscription(from: .library)
+                        callbacks.onOpenMainWindow()
+                    } else {
+                        Self.signalMeetingReadyQuietly(transcription)
+                    }
                 }
             },
             onQueuedTranscriptionFailed: { [weak self] content in
@@ -491,6 +499,23 @@ final class AppEnvironmentConfigurer {
             meetingAutoStartCoordinator: calendarCoordinator,
             meetingAutoStopCoordinator: meetingAutoStopCoordinator
         )
+    }
+
+    /// Quiet-path completion signal for a finished meeting when the user has
+    /// turned off "Open app when meeting ends": a chime plus (while the app is
+    /// backgrounded) a banner, instead of stealing focus. Clicking the banner
+    /// activates the app; the meeting is already at the top of the library.
+    /// Gated by the meetings-scoped `notifyOnMeetingEnd` toggle, not the
+    /// Transcriptions-tab completion-notification setting.
+    private static func signalMeetingReadyQuietly(_ transcription: Transcription) {
+        let text = transcription.cleanTranscript ?? transcription.rawTranscript ?? ""
+        let content = TranscriptionCompletionNotifier.meetingReadyContent(
+            settingEnabled: UserDefaultsAppRuntimePreferences.notifyOnMeetingEnd(),
+            meetingTitle: transcription.effectiveDisplayTitle,
+            wordCount: text.split(whereSeparator: { $0.isWhitespace }).count
+        )
+        guard let content else { return }
+        TranscriptionCompletionPresenter.present(content)
     }
 
     func refreshLLMAvailability(in env: AppEnvironment) {

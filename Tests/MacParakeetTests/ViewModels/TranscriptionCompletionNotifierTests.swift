@@ -70,6 +70,37 @@ final class TranscriptionCompletionNotifierTests: XCTestCase {
         XCTAssertEqual(content?.body, "38 transcribed \u{00B7} 2 failed")
     }
 
+    // MARK: - Meeting ready (quiet path)
+
+    func testMeetingReadyContentNilWhenDisabled() {
+        XCTAssertNil(
+            TranscriptionCompletionNotifier.meetingReadyContent(
+                settingEnabled: false,
+                meetingTitle: "Weekly sync",
+                wordCount: 500
+            )
+        )
+    }
+
+    func testMeetingReadyContentTitleIsMeetingTitle() {
+        let content = TranscriptionCompletionNotifier.meetingReadyContent(
+            settingEnabled: true,
+            meetingTitle: "Weekly sync",
+            wordCount: 1432
+        )
+        XCTAssertEqual(content?.title, "Weekly sync")
+        XCTAssertEqual(content?.body, "Meeting transcript ready \u{00B7} 1432 words")
+    }
+
+    func testMeetingReadyContentWordPluralization() {
+        let one = TranscriptionCompletionNotifier.meetingReadyContent(
+            settingEnabled: true,
+            meetingTitle: "Standup",
+            wordCount: 1
+        )
+        XCTAssertEqual(one?.body, "Meeting transcript ready \u{00B7} 1 word")
+    }
+
     // MARK: - Meeting retry
 
     func testMeetingNeedsRetryContentIsIndependentFailureCopy() {

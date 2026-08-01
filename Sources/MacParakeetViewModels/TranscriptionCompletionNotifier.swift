@@ -53,6 +53,27 @@ public enum TranscriptionCompletionNotifier {
         )
     }
 
+    /// Signal content for a meeting that finished transcribing while the
+    /// "Open app when meeting ends" setting is off — the quiet path's only
+    /// signal that the transcript is ready, or `nil` when the user has also
+    /// turned the meeting-end notification off.
+    ///
+    /// `settingEnabled` is the meetings-scoped `notifyOnMeetingEnd` toggle,
+    /// deliberately independent of `notifyOnTranscriptionComplete`: that
+    /// toggle lives in the Transcriptions settings tab and governs file/URL
+    /// work, while both meeting-end toggles live together in Meetings.
+    public static func meetingReadyContent(
+        settingEnabled: Bool,
+        meetingTitle: String,
+        wordCount: Int
+    ) -> Content? {
+        guard settingEnabled else { return nil }
+        return Content(
+            title: meetingTitle,
+            body: "Meeting transcript ready \u{00B7} \(wordsLabel(wordCount))"
+        )
+    }
+
     /// Critical meeting finalization failure content. This is independent of
     /// the completion-notification preference because it tells the user saved
     /// audio needs action, not that background work succeeded.
