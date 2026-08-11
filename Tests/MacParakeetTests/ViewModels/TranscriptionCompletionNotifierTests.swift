@@ -148,6 +148,20 @@ final class TranscriptionCompletionNotifierTests: XCTestCase {
         )
     }
 
+    func testOnlyAutoOpenPresentationSelectsTheTranscript() {
+        // Selection drives a mounted main window to Library, so anything other
+        // than the auto-open path must leave the user's tab alone.
+        XCTAssertTrue(TranscriptionCompletionNotifier.MeetingEndPresentation.openApp.selectsTranscription)
+        XCTAssertFalse(TranscriptionCompletionNotifier.MeetingEndPresentation.silent.selectsTranscription)
+        XCTAssertFalse(
+            TranscriptionCompletionNotifier.MeetingEndPresentation
+                .quietSignal(
+                    TranscriptionCompletionNotifier.Content(title: "Weekly sync", body: "ready")
+                )
+                .selectsTranscription
+        )
+    }
+
     // MARK: - Meeting retry
 
     func testMeetingNeedsRetryContentIsIndependentFailureCopy() {

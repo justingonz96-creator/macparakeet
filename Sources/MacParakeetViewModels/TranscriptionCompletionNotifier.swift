@@ -5,9 +5,13 @@ import Foundation
 /// UserNotifications so it is fully unit-testable; the app layer turns a
 /// non-`nil` `Content` into a `SoundManager` chime and an optional banner.
 ///
-/// One Settings toggle (`notifyOnTranscriptionComplete`, default on) governs
-/// both surfaces — when it is off these factory methods return `nil` and the
-/// app layer does nothing.
+/// Each factory takes its governing Settings toggle as `settingEnabled` and
+/// returns `nil` when it is off, leaving the app layer nothing to do. Two
+/// independent toggles feed these: `notifyOnTranscriptionComplete` (the
+/// Transcriptions tab, governing file/URL work) drives `singleContent` and
+/// `batchContent`, while `notifyOnMeetingEnd` (the Meetings tab) drives
+/// `meetingReadyContent` and the meeting-end path below. Do not wire a caller
+/// to the other tab's preference.
 public enum TranscriptionCompletionNotifier {
     public struct Content: Equatable, Sendable {
         public let title: String
@@ -79,6 +83,18 @@ public enum TranscriptionCompletionNotifier {
         case openApp
         case quietSignal(Content)
         case silent
+
+        /// Whether the app may select the finished transcript as the current
+        /// one. Only the auto-open path may: selection is what drives a
+        /// mounted main window to Library, so selecting on a quiet path would
+        /// pull a foregrounded user off whatever tab they were working in —
+        /// the exact interruption "Open app when meeting ends = off" exists to
+        /// prevent. Selection cannot be undone after the fact, so callers must
+        /// consult this *before* presenting the completed transcription.
+        public var selectsTranscription: Bool {
+            if case .openApp = self { return true }
+            return false
+        }
     }
 
     /// Decide the meeting-end behavior from the two meetings-tab settings.

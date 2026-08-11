@@ -186,6 +186,22 @@ final class SettingsSearchIndexTests: XCTestCase {
         }
     }
 
+    /// The meeting gate is derived from the card anchor, so this holds for
+    /// rows added later without anyone remembering to update a list.
+    func testMeetingGateCoversEveryRowInTheMeetingCard() {
+        let meetingRows = SettingsSearchIndex.entries.filter { $0.cardAnchor == "meeting" }
+
+        if AppFeatures.meetingRecordingEnabled {
+            XCTAssertFalse(meetingRows.isEmpty, "The meeting card should contribute search rows when enabled")
+        } else {
+            XCTAssertTrue(meetingRows.isEmpty, "No row may survive into search when the meeting card is hidden")
+            XCTAssertFalse(
+                SettingsSearchIndex.entries.contains { $0.id == "system.permissions.screen" },
+                "Screen-recording permission exists for meeting recording and must be gated with it"
+            )
+        }
+    }
+
     func testMeetingSpeakerDetectionQueriesFindMeetingSetting() {
         let queries = ["system audio", "participants", "others", "speaker labels"]
 
