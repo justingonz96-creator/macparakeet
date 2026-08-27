@@ -8,6 +8,15 @@ import OSLog
 public final class SettingsViewModel {
     public typealias LocalModelStatus = EngineSettingsViewModel.LocalModelStatus
 
+    private enum AppAccessMode: Equatable {
+        case dockAndMenuBar
+        case dockOnly
+        case menuBarOnly
+
+        var showsMenuBarIcon: Bool { self != .dockOnly }
+        var isMenuBarOnly: Bool { self == .menuBarOnly }
+    }
+
     public enum MicrophoneTestState: Equatable {
         case idle
         case testing
@@ -46,12 +55,54 @@ public final class SettingsViewModel {
     }
     public var launchAtLoginDetail: String = ""
     public var launchAtLoginError: String?
-    public var menuBarOnlyMode: Bool {
+    private var appAccessMode: AppAccessMode {
         didSet {
+            guard appAccessMode != oldValue else { return }
+
+            defaults.set(showMenuBarIcon, forKey: AppPreferences.showMenuBarIconKey)
             defaults.set(menuBarOnlyMode, forKey: AppPreferences.menuBarOnlyModeKey)
-            NotificationCenter.default.post(name: .macParakeetMenuBarOnlyModeDidChange, object: nil)
-            Telemetry.send(.settingChanged(setting: .menuBarOnly, value: Self.settingValue(menuBarOnlyMode)))
+
+            let iconVisibilityChanged = oldValue.showsMenuBarIcon != showMenuBarIcon
+            let menuBarOnlyChanged = oldValue.isMenuBarOnly != menuBarOnlyMode
+
+            // When moving directly between Dock-only and menu-bar-only, expose
+            // the destination surface before removing the source surface.
+            if appAccessMode == .dockOnly {
+                if menuBarOnlyChanged { publishMenuBarOnlyModeChange() }
+                if iconVisibilityChanged { publishMenuBarIconVisibilityChange() }
+            } else {
+                if iconVisibilityChanged { publishMenuBarIconVisibilityChange() }
+                if menuBarOnlyChanged { publishMenuBarOnlyModeChange() }
+            }
         }
+    }
+    public var showMenuBarIcon: Bool { appAccessMode.showsMenuBarIcon }
+    public var menuBarOnlyMode: Bool { appAccessMode.isMenuBarOnly }
+
+    public func setMenuBarIconHidden(_ hidden: Bool) {
+        if hidden {
+            appAccessMode = .dockOnly
+        } else if appAccessMode == .dockOnly {
+            appAccessMode = .dockAndMenuBar
+        }
+    }
+
+    public func setMenuBarOnlyMode(_ enabled: Bool) {
+        if enabled {
+            appAccessMode = .menuBarOnly
+        } else if appAccessMode == .menuBarOnly {
+            appAccessMode = .dockAndMenuBar
+        }
+    }
+
+    private func publishMenuBarIconVisibilityChange() {
+        NotificationCenter.default.post(name: .macParakeetMenuBarIconVisibilityDidChange, object: nil)
+        Telemetry.send(.settingChanged(setting: .menuBarIcon, value: Self.settingValue(showMenuBarIcon)))
+    }
+
+    private func publishMenuBarOnlyModeChange() {
+        NotificationCenter.default.post(name: .macParakeetMenuBarOnlyModeDidChange, object: nil)
+        Telemetry.send(.settingChanged(setting: .menuBarOnly, value: Self.settingValue(menuBarOnlyMode)))
     }
     public var appAppearanceMode: AppAppearanceMode {
         didSet {
@@ -735,7 +786,16 @@ public final class SettingsViewModel {
             deleteWhisperModelOnDisk: deleteWhisperModelOnDisk
         )
         launchAtLogin = defaults.bool(forKey: "launchAtLogin")
-        menuBarOnlyMode = AppPreferences.isMenuBarOnlyModeEnabled(defaults: defaults)
+        let storedMenuBarOnlyMode = AppPreferences.isMenuBarOnlyModeEnabled(defaults: defaults)
+        let storedMenuBarIconVisibility = AppPreferences.isMenuBarIconVisible(defaults: defaults)
+        if storedMenuBarOnlyMode {
+            appAccessMode = .menuBarOnly
+            if !storedMenuBarIconVisibility {
+                defaults.set(true, forKey: AppPreferences.showMenuBarIconKey)
+            }
+        } else {
+            appAccessMode = storedMenuBarIconVisibility ? .dockAndMenuBar : .dockOnly
+        }
         appAppearanceMode = AppPreferences.appearanceMode(defaults: defaults)
         showIdlePill = defaults.object(forKey: UserDefaultsAppRuntimePreferences.showIdlePillKey) as? Bool ?? true
         telemetryEnabled = AppPreferences.isTelemetryEnabled(defaults: defaults)

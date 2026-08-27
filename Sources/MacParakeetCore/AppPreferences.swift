@@ -3,6 +3,7 @@ import Foundation
 public enum AppPreferences {
     public static let appearanceModeKey = "appearanceMode"
     public static let menuBarOnlyModeKey = "menuBarOnlyMode"
+    public static let showMenuBarIconKey = "showMenuBarIcon"
     public static let telemetryEnabledKey = "telemetryEnabled"
 
     public static func appearanceMode(defaults: UserDefaults = .standard) -> AppAppearanceMode {
@@ -11,6 +12,10 @@ public enum AppPreferences {
 
     public static func isMenuBarOnlyModeEnabled(defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: menuBarOnlyModeKey) as? Bool ?? false
+    }
+
+    public static func isMenuBarIconVisible(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: showMenuBarIconKey) as? Bool ?? true
     }
 
     public static func isTelemetryEnabled(defaults: UserDefaults = .standard) -> Bool {

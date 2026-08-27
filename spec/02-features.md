@@ -530,7 +530,7 @@ reuses the shared `.alert`-only notification authorization.
 
 **Menu bar presence:**
 
-The app lives primarily in the menu bar. Click the icon for quick actions, or open the full window for history and settings.
+The app lives primarily in the menu bar by default. Click the icon for quick actions, or open the full window for history and settings. Users who keep the Dock icon can hide the menu bar icon from Startup settings.
 
 ```
 ┌────────────────────────────┐
@@ -546,11 +546,11 @@ The app lives primarily in the menu bar. Click the icon for quick actions, or op
 └────────────────────────────┘
 ```
 
-- Menu bar icon always visible, shows state: idle, recording (animated), processing
+- Menu bar icon visible by default and optionally hidden in Dock mode; hiding preserves its idle, recording, or processing state so restoring it immediately shows the current state
 - Click icon opens dropdown menu
 - "Start Dictation" activates recording (same as the hands-free shortcut)
 - "Recent Files" shows last 5 transcriptions with one-click copy
-- Dynamic dock behavior: dock icon appears when main window is open, hidden otherwise
+- Dynamic Dock behavior: the Dock icon remains available in Dock mode; in Menu bar only mode it appears while a primary window is open and hides after that window closes
 
 **Main window:**
 
@@ -575,9 +575,11 @@ The app lives primarily in the menu bar. Click the icon for quick actions, or op
 - **Settings** -- License, dictation prefs, storage, permissions
 
 **Acceptance criteria:**
-- [x] App launches to menu bar only (no dock icon initially)
-- [x] Dock icon appears when main window opens, hides when closed
+- [x] App launches with the menu bar icon visible by default and preserves a visible access surface
+- [x] Dock icon remains available in Dock mode; Menu bar only mode hides it after the primary window closes
 - [x] Menu bar icon reflects current state (idle, recording, processing)
+- [x] Menu bar icon can be hidden when the Dock icon remains available
+- [x] Startup settings prevent hiding both the Dock and menu bar icons
 - [x] Menu bar dropdown shows quick actions
 - [x] Main window opens on demand (menu bar click or Cmd+O)
 - [x] Sidebar navigation between Transcribe, Dictations, Vocabulary, Settings
@@ -694,9 +696,11 @@ Audio path is computed from ID by default. Files stored as WAV (16kHz mono). Use
 │ Settings                                                         │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│ GENERAL                                                          │
+│ SYSTEM — STARTUP                                                 │
 │ ┌──────────────────────────────────────────────────────────────┐ │
 │ │ Launch at login                                    [toggle] │ │
+│ │ Hide menu bar icon                                 [toggle] │ │
+│ │ Menu bar only mode                                 [toggle] │ │
 │ └──────────────────────────────────────────────────────────────┘ │
 │                                                                  │
 │ DICTATION                                                        │
@@ -746,6 +750,8 @@ Audio path is computed from ID by default. Files stored as WAV (16kHz mono). Use
 | Setting | Options | Default |
 |---------|---------|---------|
 | Launch at login | On / Off | Off |
+| Hide menu bar icon | On / Off; enabling it turns off Menu bar only mode and leaves the Dock available | Off |
+| Menu bar only mode | On / Off; enabling it turns off Hide menu bar icon and restores the menu bar icon; a persisted conflict is repaired on launch by restoring the icon | Off |
 | Push-to-talk hotkey | Bare modifiers, standalone keys, modifier+key chords, and modifier-only chords with overlap checks | Fn |
 | Hands-free hotkey | Default shared Fn gesture preset; custom bare modifiers, standalone keys, modifier+key chords, and modifier-only chords; may exactly match push-to-talk for shared gesture behavior | Fn |
 | Stop mode | Auto-stop after silence / Manual | Manual |
