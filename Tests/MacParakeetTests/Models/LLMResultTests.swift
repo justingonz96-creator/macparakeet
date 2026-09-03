@@ -54,6 +54,36 @@ final class LLMResultTests: XCTestCase {
         XCTAssertEqual(result.provider, "ollama")
     }
 
+    func testLLMResultFromResponseCarriesEffectiveInferenceReceipt() {
+        let settings = PromptInferenceSettings(temperature: 0.2, maxTokens: 512)
+        let response = ChatCompletionResponse(
+            content: "hi",
+            model: "gpt-4.1",
+            effectiveInferenceSettings: settings
+        )
+
+        let result = LLMResult(response: response, provider: .openai, latencyMs: 50)
+
+        XCTAssertEqual(result.effectiveSettings, settings)
+    }
+
+    func testLLMResultEncodesEffectiveSettingsAdditively() throws {
+        let result = LLMResult(
+            output: "configured",
+            provider: "openai",
+            model: "gpt-4.1",
+            latencyMs: 12,
+            effectiveSettings: PromptInferenceSettings(temperature: 0.25, maxTokens: 256)
+        )
+
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(result)) as? [String: Any]
+        )
+        let receipt = try XCTUnwrap(object["effectiveSettings"] as? [String: Any])
+        XCTAssertEqual(receipt["temperature"] as? Double, 0.25)
+        XCTAssertEqual(receipt["maxTokens"] as? Int, 256)
+    }
+
     // MARK: - JSON encoding shape
 
     func testLLMResultEncodesAllFields() throws {

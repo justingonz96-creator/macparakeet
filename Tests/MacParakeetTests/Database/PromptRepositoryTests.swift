@@ -103,6 +103,69 @@ final class PromptRepositoryTests: XCTestCase {
         XCTAssertFalse(autoRun.contains(where: { $0.id == polish.id }))
     }
 
+    func testInferenceSettingsRoundTripAndDefaultNormalization() throws {
+        var prompt = Prompt(
+            name: "Configured Summary",
+            content: "Summarize this.",
+            inferenceSettings: PromptInferenceSettings(
+                temperature: 0.2,
+                topP: 0.9,
+                topK: 20,
+                maxTokens: 4096,
+                seed: 42,
+                thinkingMode: .disabled
+            )
+        )
+        try repo.save(prompt)
+
+        XCTAssertEqual(try repo.fetch(id: prompt.id)?.inferenceSettings, prompt.inferenceSettings)
+
+        // Exercise repository-boundary normalization after mutation, rather
+        // than relying only on the model initializer.
+        prompt.inferenceSettings = PromptInferenceSettings()
+        try repo.save(prompt)
+        XCTAssertNil(try repo.fetch(id: prompt.id)?.inferenceSettings)
+
+        let storedJSON = try manager.dbQueue.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT inferenceSettings FROM prompts WHERE id = ?",
+                arguments: [prompt.id]
+            )
+        }
+        XCTAssertNil(storedJSON)
+
+        // Repository mutations normalize legacy/manual all-default JSON too.
+        try manager.dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE prompts SET inferenceSettings = ? WHERE id = ?",
+                arguments: ["{}", prompt.id]
+            )
+        }
+        try repo.toggleVisibility(id: prompt.id)
+        let normalizedAfterToggle = try manager.dbQueue.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT inferenceSettings FROM prompts WHERE id = ?",
+                arguments: [prompt.id]
+            )
+        }
+        XCTAssertNil(normalizedAfterToggle)
+    }
+
+    func testMalformedInferenceSettingsIsAVisibleFetchError() throws {
+        let prompt = Prompt(name: "Malformed Settings", content: "Summarize this.")
+        try repo.save(prompt)
+        try manager.dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE prompts SET inferenceSettings = ? WHERE id = ?",
+                arguments: ["{not-json", prompt.id]
+            )
+        }
+
+        XCTAssertThrowsError(try repo.fetch(id: prompt.id))
+    }
+
     func testToggleAutoRunIgnoresTransformPrompts() throws {
         let polish = try XCTUnwrap(
             (try repo.fetchVisible(category: .transform))
@@ -267,6 +330,34 @@ final class PromptRepositoryTests: XCTestCase {
         let secondRepo = PromptRepository(dbQueue: second.dbQueue)
         let reloaded = try XCTUnwrap(try secondRepo.fetch(id: summary.id))
         XCTAssertEqual(reloaded.appliesToSources, [.file, .youtube, .podcast], "Reconciler must preserve user source-scoping on built-ins.")
+    }
+
+    func testReconcilerPreservesBuiltInInferenceSettings() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reconciler-inference-settings-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        let dbPath = tmpDir.appendingPathComponent("macparakeet.db").path
+
+        let first = try DatabaseManager(path: dbPath)
+        let firstRepo = PromptRepository(dbQueue: first.dbQueue)
+        var summary = try XCTUnwrap(
+            (try firstRepo.fetchAll()).first(where: { $0.name == "Summary" })
+        )
+        summary.inferenceSettings = PromptInferenceSettings(
+            temperature: 0.2,
+            thinkingMode: .disabled
+        )
+        try firstRepo.save(summary)
+
+        // A fresh launch updates canonical built-in content but must not clear
+        // persisted fields that reconciliation does not own.
+        let second = try DatabaseManager(path: dbPath)
+        let secondRepo = PromptRepository(dbQueue: second.dbQueue)
+        XCTAssertEqual(
+            try secondRepo.fetch(id: summary.id)?.inferenceSettings,
+            summary.inferenceSettings
+        )
     }
 
     func testReconcilerPreservesLegacyPartialAppliesToSources() throws {

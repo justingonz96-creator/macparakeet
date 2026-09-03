@@ -60,7 +60,8 @@ public final class InProcessLLMClient: LLMClientProtocol, Sendable {
             content: generation.content,
             finishReason: "stop",
             model: context.providerConfig.modelName,
-            generationMetrics: generation.metrics
+            generationMetrics: generation.metrics,
+            effectiveInferenceSettings: options.effectiveInferenceSettings
         )
     }
 
@@ -87,6 +88,36 @@ public final class InProcessLLMClient: LLMClientProtocol, Sendable {
             continuation.onTermination = { _ in
                 task.cancel()
             }
+        }
+    }
+
+    public func chatCompletionDetailedStream(
+        messages: [ChatMessage],
+        context: LLMExecutionContext,
+        options: ChatCompletionOptions
+    ) -> AsyncThrowingStream<LLMStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    _ = try await self.generateResponse(
+                        messages: messages,
+                        context: context,
+                        options: options,
+                        emit: { continuation.yield(.text($0)) }
+                    )
+                    continuation.yield(.completed(LLMStreamTerminal(
+                        provider: context.providerConfig.id.rawValue,
+                        model: context.providerConfig.modelName,
+                        stopReason: "stop",
+                        effectiveSettings: options.effectiveInferenceSettings
+                    )))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 

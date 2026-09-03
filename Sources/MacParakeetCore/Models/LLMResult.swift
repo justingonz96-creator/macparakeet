@@ -25,6 +25,7 @@ public struct LLMResult: Sendable, Codable, Equatable {
     public let usage: LLMUsage?
     public let stopReason: String?
     public let latencyMs: Int
+    public let effectiveSettings: PromptInferenceSettings?
 
     public init(
         output: String,
@@ -32,7 +33,8 @@ public struct LLMResult: Sendable, Codable, Equatable {
         model: String,
         usage: LLMUsage? = nil,
         stopReason: String? = nil,
-        latencyMs: Int
+        latencyMs: Int,
+        effectiveSettings: PromptInferenceSettings? = nil
     ) {
         self.output = output
         self.provider = provider
@@ -40,6 +42,7 @@ public struct LLMResult: Sendable, Codable, Equatable {
         self.usage = usage
         self.stopReason = stopReason
         self.latencyMs = latencyMs
+        self.effectiveSettings = effectiveSettings
     }
 }
 
@@ -92,7 +95,8 @@ extension LLMResult {
             model: response.model,
             usage: response.usage.map(LLMUsage.init),
             stopReason: response.finishReason,
-            latencyMs: latencyMs
+            latencyMs: latencyMs,
+            effectiveSettings: response.effectiveInferenceSettings
         )
     }
 }

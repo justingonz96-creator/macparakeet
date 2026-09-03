@@ -14,7 +14,7 @@ struct OllamaLLMHTTPAdapter: LLMHTTPAdapter {
         config: LLMProviderConfig,
         options: ChatCompletionOptions
     ) async throws -> ChatCompletionResponse {
-        let request = try buildRequest(messages: messages, config: config, stream: false)
+        let request = try buildRequest(messages: messages, config: config, options: options, stream: false)
 
         let (data, response) = try await transport.data(for: request)
 
@@ -48,7 +48,8 @@ struct OllamaLLMHTTPAdapter: LLMHTTPAdapter {
             content: ollamaResponse.message.content,
             finishReason: ollamaResponse.done_reason,
             model: ollamaResponse.model,
-            usage: usage
+            usage: usage,
+            effectiveInferenceSettings: options.effectiveInferenceSettings
         )
     }
 
@@ -60,7 +61,12 @@ struct OllamaLLMHTTPAdapter: LLMHTTPAdapter {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let request = try buildRequest(messages: messages, config: config, stream: true)
+                    let request = try buildRequest(
+                        messages: messages,
+                        config: config,
+                        options: options,
+                        stream: true
+                    )
 
                     let (bytes, response) = try await transport.bytes(for: request)
 
@@ -127,6 +133,85 @@ struct OllamaLLMHTTPAdapter: LLMHTTPAdapter {
         }
     }
 
+    func chatCompletionDetailedStream(
+        messages: [ChatMessage],
+        config: LLMProviderConfig,
+        options: ChatCompletionOptions
+    ) -> AsyncThrowingStream<LLMStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let request = try buildRequest(
+                        messages: messages,
+                        config: config,
+                        options: options,
+                        stream: true
+                    )
+                    let (bytes, response) = try await transport.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse else {
+                        throw LLMError.connectionFailed("Invalid response.")
+                    }
+                    guard (200...299).contains(http.statusCode) else {
+                        var errorData = Data()
+                        for try await byte in bytes { errorData.append(byte) }
+                        throw LLMHTTPErrorMapper.mapError(statusCode: http.statusCode, data: errorData)
+                    }
+
+                    var yieldedAnyContent = false
+                    for try await line in bytes.lines {
+                        try Task.checkCancellation()
+                        guard !line.isEmpty,
+                            let data = line.data(using: .utf8),
+                            let chunk = try? JSONDecoder().decode(OllamaChatResponse.self, from: data)
+                        else { continue }
+                        if let error = chunk.error {
+                            throw LLMHTTPErrorMapper.mapStreamingError(message: error)
+                        }
+                        if !chunk.message.content.isEmpty {
+                            yieldedAnyContent = true
+                            continuation.yield(.text(chunk.message.content))
+                        }
+                        if chunk.done == true {
+                            try validateStreamCompletion(
+                                providerID: config.id,
+                                sawSentinel: true,
+                                yieldedAnyContent: yieldedAnyContent
+                            )
+                            let usage: LLMUsage?
+                            if let prompt = chunk.prompt_eval_count, let completion = chunk.eval_count {
+                                usage = LLMUsage(
+                                    promptTokens: prompt,
+                                    completionTokens: completion,
+                                    totalTokens: prompt + completion
+                                )
+                            } else {
+                                usage = nil
+                            }
+                            continuation.yield(.completed(LLMStreamTerminal(
+                                provider: config.id.rawValue,
+                                model: chunk.model,
+                                usage: usage,
+                                stopReason: chunk.done_reason,
+                                effectiveSettings: options.effectiveInferenceSettings
+                            )))
+                            continuation.finish()
+                            return
+                        }
+                    }
+                    try validateStreamCompletion(
+                        providerID: config.id,
+                        sawSentinel: false,
+                        yieldedAnyContent: yieldedAnyContent
+                    )
+                    throw LLMError.streamingError("The Ollama stream ended without done:true.")
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     func listModels(config: LLMProviderConfig) async throws -> [String] {
         do {
             return try await listNativeModels(config: config)
@@ -141,6 +226,7 @@ struct OllamaLLMHTTPAdapter: LLMHTTPAdapter {
     func buildRequest(
         messages: [ChatMessage],
         config: LLMProviderConfig,
+        options: ChatCompletionOptions,
         stream: Bool
     ) throws -> URLRequest {
         // Use native /api/chat endpoint (strip /v1 suffix if present)
@@ -159,12 +245,20 @@ struct OllamaLLMHTTPAdapter: LLMHTTPAdapter {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
+        let usesPromptInferenceSettings = options.usesPromptInferenceSettings
         let body = OllamaChatRequest(
             model: config.modelName,
             messages: messages.map { OllamaMessage(role: $0.role.rawValue, content: $0.content) },
             stream: stream,
-            think: false,
-            options: OllamaRequestOptions(num_ctx: 8192)
+            think: usesPromptInferenceSettings && options.thinkingMode == .enabled,
+            options: OllamaRequestOptions(
+                num_ctx: 8192,
+                temperature: usesPromptInferenceSettings ? options.temperature : nil,
+                top_p: usesPromptInferenceSettings ? options.topP : nil,
+                top_k: usesPromptInferenceSettings ? options.topK : nil,
+                num_predict: usesPromptInferenceSettings ? options.maxTokens : nil,
+                seed: usesPromptInferenceSettings ? options.seed : nil
+            )
         )
 
         request.httpBody = try JSONEncoder().encode(body)

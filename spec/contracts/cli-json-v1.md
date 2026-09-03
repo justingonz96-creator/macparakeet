@@ -88,6 +88,22 @@ with human progress/status kept off stdout.
   (`is_built_in`, `created_at`), which predates this convention; its keys are
   frozen for v1 and would only change at a major boundary. New commands use
   camelCase.
+- `prompts list/show --json` prompt objects, and prompt objects returned by
+  `prompts set --json`, include additive optional `inferenceSettings`. When
+  present it is an object with optional `temperature`, `topP`, `topK`,
+  `maxTokens`, and `seed`, plus `thinkingMode` (`providerDefault`, `enabled`,
+  or `disabled`). This value records the prompt's request; it does not prove
+  that every field is supported by the provider selected for a later run.
+- LLM result JSON envelopes include additive optional `effectiveSettings` with
+  the same object shape. For `prompts run --json`, a present value is the
+  normalized adapter receipt after provider/model filtering. Absence means no
+  effective receipt is available; callers must not reinterpret it as raw
+  upstream-provider defaults. Other LLM commands omit it because per-prompt
+  settings do not apply to them.
+- `meetings results list|add --json` prompt-result objects include additive
+  optional `inferenceSettingsSnapshot` with the same settings shape. When
+  present it is the effective receipt stored with the result; imported results
+  created by `meetings results add` omit it.
 - `meetings show --json` and `meetings transcript --format json` expose
   `transcriptSegments` when the meeting row has durable segments. Each segment
   contains `id`, `startMs`, `endMs`, `speakerId`, `speakerLabel`, `text`, and

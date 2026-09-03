@@ -1,7 +1,6 @@
 # Per-Prompt LLM Inference Settings — Implementation Plan
 
-> Status: **PROPOSED / OWNER GATE** — implementation-ready after Decision
-> Gate 0 is accepted and reflected in the governing draft spec.
+> Status: **IN PROGRESS** — Decision Gate 0 accepted on 2026-09-03.
 
 Governing draft spec:
 [`spec/14-per-prompt-inference-settings.md`](../../spec/14-per-prompt-inference-settings.md)
@@ -93,7 +92,7 @@ speech recognition.
   make that possible later, but this feature does not add those ledger rows.
 - Changing the public/default status of the developer-gated MLX runtime.
 
-## Decision Gate 0 — Correct the Default Semantics
+## Decision Gate 0 — Correct the Default Semantics (Accepted)
 
 The draft labels blank numeric values and `thinkingMode.providerDefault` as
 “Provider default”. That cannot preserve current behavior with the proposed
@@ -105,7 +104,7 @@ optional model:
   “inherit MacParakeet's historical behavior” from “omit this key and let the
   provider decide”.
 
-Recommended v1 decision:
+Accepted v1 decision:
 
 1. Call the blank state **MacParakeet default** (or simply **Default**) in UI.
 2. Define `nil` per-prompt settings as “inherit the operation's current

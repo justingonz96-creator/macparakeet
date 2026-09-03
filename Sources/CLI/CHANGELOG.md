@@ -101,6 +101,15 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ### Added
 
+- Prompt JSON gains additive optional inference metadata. `prompts list/show`
+  (and prompt objects returned by `prompts set`) expose `inferenceSettings`
+  with optional `temperature`, `topP`, `topK`, `maxTokens`, `seed`, and a
+  `thinkingMode` value. LLM result envelopes, including `prompts run --json`,
+  gain optional `effectiveSettings`; when present it reports the normalized
+  settings actually sent after provider/model filtering. Existing callers may
+  ignore both fields, and unset/legacy values omit them. Meeting result
+  JSON and materialized `prompt-results.json` also preserve that receipt as
+  additive optional `inferenceSettingsSnapshot`.
 - `meetings artifact --json` and envelope output may now include the additive
   optional `meetingCaptureReport` field with frame-derived meeting capture
   quality, elapsed/playable durations, and per-source coverage. Legacy meetings

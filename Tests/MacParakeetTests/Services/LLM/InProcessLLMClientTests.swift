@@ -479,6 +479,39 @@ final class InProcessLLMClientTests: XCTestCase {
         XCTAssertEqual(chunks, ["stream", "-chunk"])
     }
 
+    func testDetailedStreamingEndsWithOneTerminalReceipt() async throws {
+        let modelDirectory = temporaryModelDirectory()
+        let runtime = FakeLocalLLMRuntime(eventPlans: [[.text("stream"), .text("-chunk")]])
+        let client = InProcessLLMClient(
+            runtime: runtime,
+            modelDirectoryResolver: { _ in modelDirectory },
+            idleUnloadDelaySeconds: 60
+        )
+        let settings = PromptInferenceSettings(temperature: 0.2, maxTokens: 64)
+        let options = ChatCompletionOptions(temperature: 0.2, maxTokens: 64).withInferenceReceipt(
+            usesPromptInferenceSettings: true,
+            effectiveSettings: settings
+        )
+
+        var events: [LLMStreamEvent] = []
+        for try await event in client.chatCompletionDetailedStream(
+            messages: [ChatMessage(role: .user, content: "Hi")],
+            context: LLMExecutionContext(providerConfig: .inProcessLocal(model: "stream-test")),
+            options: options
+        ) {
+            events.append(event)
+        }
+
+        XCTAssertEqual(Array(events.dropLast()), [.text("stream"), .text("-chunk")])
+        guard case .completed(let terminal) = events.last else {
+            return XCTFail("Expected terminal event")
+        }
+        XCTAssertEqual(terminal.provider, "inProcessLocal")
+        XCTAssertEqual(terminal.model, "stream-test")
+        XCTAssertEqual(terminal.stopReason, "stop")
+        XCTAssertEqual(terminal.effectiveSettings, settings)
+    }
+
     func testCancellationPropagates() async throws {
         let modelDirectory = temporaryModelDirectory()
         let runtime = FakeLocalLLMRuntime(

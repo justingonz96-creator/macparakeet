@@ -1,7 +1,7 @@
 # Per-Prompt LLM Inference Settings
 
-> Status: **DRAFT** — proposed contract for per-result-prompt generation
-> settings. Implementation is gated on the default-semantics decision in
+> Status: **DRAFT / IMPLEMENTATION IN PROGRESS** — the default-semantics
+> decision is accepted in
 > [`plans/active/2026-09-03-per-prompt-inference-settings.md`](../plans/active/2026-09-03-per-prompt-inference-settings.md).
 
 Target: MacParakeet
@@ -21,7 +21,7 @@ The first implementation supports:
 - `topK`
 - `maxTokens`
 - `seed`
-- `thinkingMode`: provider default, enabled, or disabled
+- `thinkingMode`: default, enabled, or disabled
 
 This is deliberately a typed feature, not an arbitrary JSON request editor.
 
@@ -44,8 +44,9 @@ reasoning.
 ### Prompt Library
 
 The create and edit forms gain a collapsed **Generation settings** section.
-Every field starts at **Provider default**. The user may set only the values
-needed by that prompt.
+Every field starts at **Default**. This means inheriting MacParakeet's current
+prompt-result and adapter behavior, not forcing the upstream provider to omit
+the parameter. The user may set only the values needed by that prompt.
 
 Controls:
 
@@ -56,9 +57,9 @@ Controls:
 | Top K | Optional integer | `0...1000`; `0` means disabled where supported |
 | Maximum output tokens | Optional integer | `1...131072` |
 | Seed | Optional signed integer | Provider-defined semantics |
-| Thinking | Picker | Provider default / Enabled / Disabled |
+| Thinking | Picker | Default / Enabled / Disabled |
 
-The section includes **Reset to provider defaults**, which clears every value.
+The section includes **Reset to defaults**, which clears every value.
 Validation happens before save and shows a field-level error. Blank means
 unset; blank is not converted into zero.
 
@@ -169,11 +170,11 @@ configured value when a model rejects it.
 
 | Provider path | Mapping |
 | --- | --- |
-| OpenAI-compatible, including llama.cpp / LM Studio | `temperature`, `top_p`, `top_k`, `max_tokens`, `seed`; thinking maps to `chat_template_kwargs.enable_thinking` |
+| Custom OpenAI-compatible, including llama.cpp | `temperature`, `top_p`, `top_k`, `max_tokens`, `seed`; thinking maps to `chat_template_kwargs.enable_thinking` |
 | Native Ollama | `temperature`, `top_p`, `top_k`, `num_predict`, `seed` inside `options`; thinking maps to top-level `think` |
 | Native OpenAI | `temperature` and `top_p` when model-compatible; output budget uses the adapter's existing `max_tokens` / `max_completion_tokens` policy; omit `top_k`, `seed`, and thinking |
 | Native Anthropic | `temperature`, `top_p`, and `max_tokens` when model-compatible; omit `top_k`, `seed`, and thinking |
-| Gemini / OpenRouter | Map fields explicitly supported by the existing endpoint contract; omit the rest |
+| Gemini / OpenRouter / LM Studio | Map fields explicitly supported by the existing endpoint contract; omit the rest |
 | In-process MLX / local CLI | Apply only fields supported by the runtime/CLI contract; report the rest as unsupported |
 
 For Qwen served through an OpenAI-compatible llama.cpp endpoint:
