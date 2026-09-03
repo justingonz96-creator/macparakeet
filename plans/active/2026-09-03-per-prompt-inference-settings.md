@@ -1,15 +1,14 @@
 # Per-Prompt LLM Inference Settings — Implementation Plan
 
-> Status: **IN PROGRESS** — Decision Gate 0 accepted on 2026-09-03.
+> Status: **PR OPEN** — implemented and locally verified on 2026-09-03.
 
 Governing draft spec:
 [`spec/14-per-prompt-inference-settings.md`](../../spec/14-per-prompt-inference-settings.md)
 
 Target branch base verified on 2026-09-03: `origin/main` at `02677ba7`
 
-Execution environment: continue implementation and run Swift build/tests on an
-Apple Silicon Mac. The current NUC checkout is suitable for specification and
-review work only; it cannot compile or run this macOS package.
+Execution environment: implementation and verification completed on an Apple
+Silicon Mac with Xcode 26.6.
 
 ## Goal
 
@@ -433,19 +432,19 @@ schema/public-surface change, use the documented PR review workflow and
 
 ## Acceptance Checklist
 
-- [ ] Decision Gate 0 wording/model is accepted and reflected in the proposal.
-- [ ] One custom prompt can set temperature, top-k, and max tokens without
+- [x] Decision Gate 0 wording/model is accepted and reflected in the proposal.
+- [x] One custom prompt can set temperature, top-k, and max tokens without
       affecting any other prompt.
-- [ ] Qwen thinking can be disabled on a custom OpenAI-compatible endpoint
+- [x] Qwen thinking can be disabled on a custom OpenAI-compatible endpoint
       without prompt-text injection.
-- [ ] Existing unset prompts produce unchanged requests on every provider path.
-- [ ] Queue, retry, regenerate, auto-run, and CLI run follow the documented
+- [x] Existing unset prompts produce unchanged requests on every provider path.
+- [x] Queue, retry, regenerate, auto-run, and CLI run follow the documented
       snapshot semantics.
-- [ ] Unsupported keys are omitted and reported non-blockingly.
-- [ ] Stored results contain only settings actually sent.
-- [ ] v0.31 migration preserves all historical prompt/result data.
-- [ ] No content or credentials are added to telemetry or `llm_runs`.
-- [ ] Focused tests, final full suite, lint, and substantial-change review
+- [x] Unsupported keys are omitted and reported non-blockingly.
+- [x] Stored results contain only settings actually sent.
+- [x] v0.31 migration preserves all historical prompt/result data.
+- [x] No content or credentials are added to telemetry or `llm_runs`.
+- [x] Focused tests, final full suite, lint, and substantial-change review
       converge.
 
 ## Main Risks
