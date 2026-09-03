@@ -453,7 +453,7 @@ public final class PromptsViewModel {
         }
     }
 
-    private static func displayName(for field: PromptInferenceSettings.Field) -> String {
+    nonisolated private static func displayName(for field: PromptInferenceSettings.Field) -> String {
         switch field {
         case .temperature: return "Temperature"
         case .topP: return "Top P"

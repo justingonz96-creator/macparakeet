@@ -402,9 +402,9 @@ final class LLMHTTPAdapterTests: XCTestCase {
             options: resolution.options
         )
 
-        XCTAssertEqual(
-            try canonicalJSONBody(from: try XCTUnwrap(capturedRequest)),
-            """
+        try assertJSONBody(
+            try XCTUnwrap(capturedRequest),
+            equals: """
             {"chat_template_kwargs":{"enable_thinking":false},"max_tokens":4096,"messages":[{"content":"System","role":"system"},{"content":"Hello","role":"user"}],"model":"qwen3.8-flash-next","seed":42,"stream":false,"temperature":0.2,"top_k":20,"top_p":0.9}
             """
         )
@@ -480,9 +480,9 @@ final class LLMHTTPAdapterTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(
-            try canonicalJSONBody(from: try XCTUnwrap(capturedRequest)),
-            """
+        try assertJSONBody(
+            try XCTUnwrap(capturedRequest),
+            equals: """
             {"max_tokens":4096,"messages":[{"content":"System","role":"system"},{"content":"Hello","role":"user"}],"model":"gpt-4o","stream":false,"temperature":0.2,"top_p":0.9}
             """
         )
@@ -624,9 +624,9 @@ final class LLMHTTPAdapterTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(
-            try canonicalJSONBody(from: try XCTUnwrap(capturedRequest)),
-            """
+        try assertJSONBody(
+            try XCTUnwrap(capturedRequest),
+            equals: """
             {"max_tokens":4096,"messages":[{"content":"Hello","role":"user"}],"model":"claude-sonnet-4-6","stream":false,"system":"System","temperature":0.2,"top_p":0.9}
             """
         )
@@ -825,9 +825,9 @@ final class LLMHTTPAdapterTests: XCTestCase {
             ).options
         )
 
-        XCTAssertEqual(
-            try canonicalJSONBody(from: try XCTUnwrap(capturedRequest)),
-            """
+        try assertJSONBody(
+            try XCTUnwrap(capturedRequest),
+            equals: """
             {"messages":[{"content":"System","role":"system"},{"content":"Hello","role":"user"}],"model":"qwen3.5:4b","options":{"num_ctx":8192,"num_predict":4096,"seed":42,"temperature":0.2,"top_k":20,"top_p":0.9},"stream":false,"think":true}
             """
         )
@@ -1056,6 +1056,19 @@ final class LLMHTTPAdapterTests: XCTestCase {
     private func jsonBody(from request: URLRequest) throws -> [String: Any] {
         let data = try XCTUnwrap(bodyData(from: request))
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    private func assertJSONBody(
+        _ request: URLRequest,
+        equals expectedJSON: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let actual = try jsonBody(from: request) as NSDictionary
+        let expected = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(expectedJSON.utf8)) as? NSDictionary
+        )
+        XCTAssertEqual(actual, expected, file: file, line: line)
     }
 
     private func canonicalJSONBody(from request: URLRequest) throws -> String {
