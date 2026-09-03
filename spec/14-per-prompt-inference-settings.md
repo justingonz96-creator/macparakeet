@@ -1,0 +1,283 @@
+# Per-Prompt LLM Inference Settings
+
+> Status: **DRAFT** — proposed contract for per-result-prompt generation
+> settings. Implementation is gated on the default-semantics decision in
+> [`plans/active/2026-09-03-per-prompt-inference-settings.md`](../plans/active/2026-09-03-per-prompt-inference-settings.md).
+
+Target: MacParakeet
+
+Scope: Prompt Library result prompts (`Prompt.Category.result`)
+
+## Outcome
+
+A custom Prompt Library prompt can carry its own generation settings. Manual,
+queued, auto-run, retry, and regenerate flows use the settings captured for
+that run. Existing prompts continue to behave exactly as they do today.
+
+The first implementation supports:
+
+- `temperature`
+- `topP`
+- `topK`
+- `maxTokens`
+- `seed`
+- `thinkingMode`: provider default, enabled, or disabled
+
+This is deliberately a typed feature, not an arbitrary JSON request editor.
+
+## Why this change is needed
+
+`ChatCompletionOptions` already carries `temperature` and `maxTokens`, and the
+HTTP adapters already apply model-specific rules such as using
+`max_completion_tokens` for OpenAI reasoning models. Prompt-result generation,
+however, always passes `.default`, while `Prompt` has no persisted inference
+settings. A user therefore cannot tune one summarization prompt without
+changing code or affecting unrelated LLM operations.
+
+Local models make this particularly visible. A long meeting summary may need a
+larger output budget and deterministic sampling, while a Qwen endpoint may need
+thinking explicitly disabled to avoid spending the context and token budget on
+reasoning.
+
+## Product behavior
+
+### Prompt Library
+
+The create and edit forms gain a collapsed **Generation settings** section.
+Every field starts at **Provider default**. The user may set only the values
+needed by that prompt.
+
+Controls:
+
+| Setting | UI | Accepted value |
+| --- | --- | --- |
+| Temperature | Optional number | `0...2` |
+| Top P | Optional number | `0...1` |
+| Top K | Optional integer | `0...1000`; `0` means disabled where supported |
+| Maximum output tokens | Optional integer | `1...131072` |
+| Seed | Optional signed integer | Provider-defined semantics |
+| Thinking | Picker | Provider default / Enabled / Disabled |
+
+The section includes **Reset to provider defaults**, which clears every value.
+Validation happens before save and shows a field-level error. Blank means
+unset; blank is not converted into zero.
+
+Built-in prompts remain read-only and keep all settings unset in the first
+release. A later product decision may add shipped settings without changing
+the storage contract.
+
+### Generation popover
+
+Selecting a prompt shows a compact, read-only summary when it has custom
+settings, for example `Temp 0.2 · Top K 20 · Max 4096 · Thinking off`. Editing
+remains in Prompt Library so the popover does not become a second settings UI.
+
+If the selected provider cannot use one or more configured settings, show a
+non-blocking compatibility note before generation. Unsupported settings are
+omitted from the request; they are never reinterpreted as different settings.
+
+### Queue and regeneration semantics
+
+- Enqueue snapshots the prompt text, extra instructions, user notes, and
+  inference settings together. Editing the prompt afterward does not alter an
+  already queued run.
+- Auto-run uses each prompt's own settings.
+- Retry reuses the failed queue item's captured settings.
+- Regenerate uses the settings snapshot stored on the existing `PromptResult`,
+  while continuing to use the current meeting notes as it does today.
+- A newly generated result stores the effective settings that were actually
+  sent after provider/model compatibility filtering.
+
+## Domain model
+
+Add a shared Core model rather than putting provider wire keys on `Prompt`:
+
+```swift
+public struct PromptInferenceSettings: Codable, Sendable, Equatable {
+    public var temperature: Double?
+    public var topP: Double?
+    public var topK: Int?
+    public var maxTokens: Int?
+    public var seed: Int?
+    public var thinkingMode: ThinkingMode
+}
+
+public enum ThinkingMode: String, Codable, Sendable {
+    case providerDefault
+    case enabled
+    case disabled
+}
+```
+
+`PromptInferenceSettings` owns range validation and exposes `isDefault`. Its
+default value has all numeric fields `nil` and `thinkingMode ==
+.providerDefault`.
+
+Extend `ChatCompletionOptions` with the same transport-neutral fields. Keep
+`responseFormat` separate: it is controlled by an operation such as knowledge
+card generation, not by a user prompt.
+
+Add:
+
+```swift
+public var inferenceSettings: PromptInferenceSettings?
+```
+
+to `Prompt`, and:
+
+```swift
+public var inferenceSettingsSnapshot: PromptInferenceSettings?
+```
+
+to `PromptResult` and `PendingGeneration`. Normalize `nil` and an all-default
+value to `nil` before persistence.
+
+## Persistence
+
+Register a new, never-rewritten migration after the current `v0.30` migration:
+
+```text
+v0.31-prompt-inference-settings
+```
+
+It adds nullable JSON columns:
+
+```sql
+ALTER TABLE prompts ADD COLUMN inferenceSettings TEXT;
+ALTER TABLE summaries ADD COLUMN inferenceSettingsSnapshot TEXT;
+```
+
+JSON is appropriate here because the fields are optional, are loaded with the
+owning row, do not need SQL filtering, and must evolve without one migration per
+provider capability. GRDB's existing Codable strategy should encode/decode the
+typed struct. A malformed stored value is a visible load error; it must not be
+silently replaced with defaults.
+
+No settings belong in `llm_runs`. That table remains the metadata-only ledger;
+the reproducibility snapshot belongs with the full prompt result in
+`summaries`.
+
+Update `spec/01-data-model.md`, `spec/12-processing-layer.md`, and
+`spec/11-llm-integration.md` in the implementation change. If the provider
+mapping is considered an architectural contract, add an ADR or amend ADR-013.
+
+## Provider adaptation
+
+Adapters receive transport-neutral `ChatCompletionOptions` and serialize only
+supported fields. Existing model policies remain authoritative and may omit a
+configured value when a model rejects it.
+
+| Provider path | Mapping |
+| --- | --- |
+| OpenAI-compatible, including llama.cpp / LM Studio | `temperature`, `top_p`, `top_k`, `max_tokens`, `seed`; thinking maps to `chat_template_kwargs.enable_thinking` |
+| Native Ollama | `temperature`, `top_p`, `top_k`, `num_predict`, `seed` inside `options`; thinking maps to top-level `think` |
+| Native OpenAI | `temperature` and `top_p` when model-compatible; output budget uses the adapter's existing `max_tokens` / `max_completion_tokens` policy; omit `top_k`, `seed`, and thinking |
+| Native Anthropic | `temperature`, `top_p`, and `max_tokens` when model-compatible; omit `top_k`, `seed`, and thinking |
+| Gemini / OpenRouter | Map fields explicitly supported by the existing endpoint contract; omit the rest |
+| In-process MLX / local CLI | Apply only fields supported by the runtime/CLI contract; report the rest as unsupported |
+
+For Qwen served through an OpenAI-compatible llama.cpp endpoint:
+
+```json
+{
+  "temperature": 0.2,
+  "top_p": 0.9,
+  "top_k": 20,
+  "max_tokens": 4096,
+  "seed": 42,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  }
+}
+```
+
+Do not inject `/no_think` into prompt text. Thinking is a request/template
+setting and must be represented as such.
+
+Provider adaptation returns both the serialized request and an effective
+settings value. The latter is what `PromptResult.inferenceSettingsSnapshot`
+stores. This prevents a result from claiming that a setting was used when the
+adapter omitted it.
+
+## Service and view-model flow
+
+1. `PromptsViewModel` validates and persists the optional settings with the
+   custom prompt.
+2. `PromptResultsViewModel.enqueueGeneration` copies them into
+   `PendingGeneration`.
+3. `LLMServiceProtocol.generatePromptResult*` accepts explicit
+   `ChatCompletionOptions` and passes them to `LLMClientProtocol`; other LLM
+   features keep their current options.
+4. The selected adapter normalizes settings for the active provider/model and
+   serializes the request.
+5. Completion returns the effective settings alongside terminal metadata so
+   `PromptResult` can snapshot them. Streaming must expose a terminal envelope
+   rather than losing this metadata after yielding text.
+
+That final point is load-bearing: do not guess effective settings in the view
+model, because provider/model filtering belongs in the adapter layer.
+
+## Backward compatibility and safety
+
+- Existing database rows decode with `nil` settings.
+- Existing prompt-result behavior is byte-for-byte unchanged when settings are
+  unset, including the current `.default` temperature.
+- Provider-specific keys are allow-listed; arbitrary nested JSON is out of
+  scope.
+- Settings affect Prompt Library result generation only. They do not alter
+  transcription, knowledge cards, chat, transforms, or formatter defaults.
+- Prompt exports/imports, CLI prompt commands, and built-in reconciliation must
+  preserve settings they do not edit.
+- No prompt, transcript, output, API key, or request body is added to telemetry
+  or `llm_runs`.
+- Context-window truncation remains independent from `maxTokens`; the service
+  must reserve the chosen output budget when calculating input capacity if the
+  provider exposes a combined context limit.
+
+## Tests
+
+Minimum automated coverage:
+
+1. Model validation, Codable round-trip, default normalization, and equality.
+2. Empty and upgraded database migrations; old rows decode as `nil`.
+3. `PromptRepository` and `PromptResultRepository` round-trip settings.
+4. Built-in reconciliation, CLI edits, and import/export preserve untouched
+   settings.
+5. Manual and auto-run generation snapshot settings at enqueue time.
+6. Retry and regenerate use the captured/result snapshot respectively.
+7. OpenAI-compatible request JSON covers every field and Qwen thinking off.
+8. Native Ollama maps sampling fields and `think` correctly.
+9. OpenAI reasoning-model tests still omit forbidden temperature and select the
+   correct output-token key.
+10. Unsupported fields are omitted and surfaced as compatibility information.
+11. With settings unset, existing request snapshots remain unchanged.
+12. Prompt Library create/edit validation and the generation-popover summary
+    have focused view-model or UI tests.
+
+During implementation, run focused LLM adapter, database migration/repository,
+and prompt view-model tests. Run the full `swift test` suite once at final
+verification, per repository guidance.
+
+## Acceptance criteria
+
+- A user can save `temperature`, `topK`, and `maxTokens` on one custom summary
+  prompt without affecting another prompt.
+- A user can explicitly disable Qwen thinking for an OpenAI-compatible local
+  endpoint without modifying the prompt text.
+- Manual, queued, auto-run, retry, and regenerate paths honor the documented
+  snapshot semantics.
+- The generated HTTP body contains only keys supported by the selected
+  provider/model.
+- Historical prompts and results migrate without data loss or behavior change.
+- The result retains an honest snapshot of the effective settings used.
+- The feature introduces no arbitrary request-body injection surface and no
+  new leakage of transcript or prompt content.
+
+## Suggested implementation slices
+
+1. Domain model, `ChatCompletionOptions`, provider normalization, and adapter
+   request tests.
+2. Database migration, repository round trips, and canonical spec updates.
+3. LLM service streaming terminal metadata and queue/result snapshots.
+4. Prompt Library controls, validation, compatibility note, and popover summary.
+5. Regression suite and one manual Qwen/llama.cpp meeting-summary test.
