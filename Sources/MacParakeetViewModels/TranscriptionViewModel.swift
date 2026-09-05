@@ -1561,6 +1561,17 @@ public final class TranscriptionViewModel {
         guard let transcription = currentTranscription,
               transcription.sourceType == .meeting
         else { return false }
+        return await updateMeetingNotes(for: transcription, to: newText)
+    }
+
+    /// Persists notes for the captured meeting even if navigation changes the
+    /// current selection while an autosave is pending.
+    @discardableResult
+    public func updateMeetingNotes(
+        for transcription: Transcription,
+        to newText: String
+    ) async -> Bool {
+        guard transcription.sourceType == .meeting else { return false }
         guard let repo = transcriptionRepo else {
             reportMissingConfiguration("transcriptionRepo", action: "updateCurrentMeetingNotes")
             return false

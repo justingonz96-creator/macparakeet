@@ -1716,12 +1716,13 @@ final transcripts remain plain text without word timestamps or speaker labels.
 > availability follows the normal channel process.
 
 The replacement does not restore a dedicated memo-steered built-in or enable
-notes automatically. Every saved meeting exposes a dedicated `Notes` tab after
-`Transcript`, with Add/Edit/Clear and explicit Save/Cancel. This keeps the
-user-authored editorial layer separate from the factual transcript. Notes are
-backed by canonical `transcriptions.userNotes`; blank saves become `NULL` and
-refresh the derived meeting artifacts. Non-meeting transcriptions do not expose
-the tab. Every result prompt, including read-only built-ins, exposes an
+notes automatically. Every saved meeting exposes a dedicated, always-editable
+`Notes` tab after `Transcript`. Changes auto-save after a 500 ms idle debounce,
+with Saving/Saved/Error feedback and Retry. This keeps the user-authored
+editorial layer separate from the factual transcript. Notes are backed by
+canonical `transcriptions.userNotes`; blank saves become `NULL` and refresh the
+derived meeting artifacts. Non-meeting transcriptions do not expose the tab.
+Every result prompt, including read-only built-ins, exposes an
 **Include meeting notes as context** checkbox. It defaults off for all existing
 and new prompts and is not available for Transforms.
 
@@ -1743,7 +1744,8 @@ fields.
 
 **Acceptance criteria:**
 
-- [x] Saved meetings support Add, Edit, Clear, Save, Cancel, and save/artifact error handling.
+- [x] Saved meetings expose an always-editable Notes tab with debounced
+  autosave, flush-before-LLM behavior, Retry, and separate artifact warnings.
 - [x] Rapid saves leave derived artifacts at the newest committed DB value.
 - [x] Prompt checkbox works independently for built-in and custom result prompts; existing prompts stay opted out.
 - [x] The shared GUI/CLI assembler follows the empty/off/token/no-duplication decision table from ADR-020.

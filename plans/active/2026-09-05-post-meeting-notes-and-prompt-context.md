@@ -67,7 +67,8 @@ custom prompt.
   whose transcript is still processing, failed, recovered, or retained without
   audio.
 - Edit or clear existing notes from the saved-meeting detail.
-- Explicit Save and Cancel actions with a local draft.
+- An always-editable plaintext surface with debounced autosave and visible
+  Saving/Saved/Error state.
 - A per-result-prompt `Include meeting notes as context` checkbox, disabled by
   default for existing, built-in, and newly created prompts.
 - The checkbox is configurable for built-in result prompts as well as custom
@@ -106,10 +107,9 @@ custom prompt.
 2. **The database remains canonical.** A successful DB write is not rolled
    back if a derived-artifact refresh fails. The UI reports the artifact
    warning separately and offers a retry.
-3. **Saved editing uses explicit Save/Cancel.** This avoids rewriting the
-   artifact set on every keystroke and establishes a stable value for the next
-   LLM request. `Command-Return` saves; Escape cancels after the standard dirty
-   draft confirmation.
+3. **Saved editing uses debounced autosave.** Every change schedules a save
+   after 500 ms idle, while navigation and LLM actions flush the latest draft.
+   Generate, Regenerate, and Chat stay blocked if that flush fails.
 4. **Blank means absent.** Saving nil, empty, or whitespace-only text persists
    `nil`, removes `notes.md`, and supplies no LLM context.
 5. **Prompt use is opt-in.** `includeMeetingNotes` defaults to `false`. A prompt
@@ -203,22 +203,18 @@ transcription row. Retranscription continues preserving `userNotes` as today.
 In `TranscriptResultView`, show a dedicated Notes tab for every saved meeting
 instead of placing the notes card inside the Transcript pane. The tab sits
 immediately after Transcript, before generated results and Chat, and remains
-present even when notes are absent:
+present even when notes are absent. The plaintext `TextEditor` is always active;
+there are no Add, Edit, Save, or Cancel steps. Copy uses the current draft. The
+footer combines word count/soft-cap warning with Saving, Saved, or Error + Retry.
+Saving an empty draft is the Clear operation.
 
-- **Empty:** `Your notes`, concise explanatory text, and `Add notes`.
-- **Read:** existing selectable text and Copy, plus Edit.
-- **Edit:** plaintext `TextEditor`, word count/soft-cap warning, Save, and
-  Cancel. Saving an empty draft is the Clear operation.
-
-Reuse the transcript editor's draft/focus/error patterns, but do not share its
-validation: an empty transcript is invalid, while empty notes deliberately
-clear the value. Reset all draft/edit/error state when the selected
-transcription changes so a draft cannot cross meeting boundaries.
+The autosave controller is bound to the captured meeting rather than the
+current selection, so a delayed write cannot contaminate another meeting. It
+coalesces rapid edits and preserves the newest state across overlapping saves.
 
 The tab remains available while post-meeting transcription is still processing.
 It is absent for file and URL transcriptions. Audio retention has no effect on
-editing. Leaving the tab with a dirty draft uses the existing discard
-confirmation.
+editing. Leaving the tab flushes the draft without a discard confirmation.
 
 ## Per-Prompt Configuration Design
 
@@ -298,9 +294,9 @@ assembly remains unchanged.
 
 ## Concurrency and Failure Semantics
 
-- Explicit Save prevents a prompt from observing an in-progress local draft.
-  A generation started before Save uses the previous committed notes; one
-  started after Save uses the new value.
+- Generate, Regenerate, and Chat flush autosave before reading notes from the
+  database. They do not start if persistence fails, so no LLM request observes
+  stale context.
 - Switching meetings resets the local editor state. No draft is silently saved
   to a different meeting.
 - Multiple prompt generations keep their independent enqueue snapshots.
@@ -325,10 +321,10 @@ assembly remains unchanged.
 
 - Expose repository update through the protocol.
 - Add the ViewModel save and ordered/latest-wins artifact-refresh boundary.
-- Add empty/read/edit states to a dedicated detail tab after Transcript.
-- Keep Notes unavailable for non-meeting sources and protect dirty drafts on
-  tab changes.
-- Cover Add, Edit, Clear, Cancel, failure, and meeting-switch behavior.
+- Add an always-editable TextEditor to a dedicated detail tab after Transcript.
+- Keep Notes unavailable for non-meeting sources and flush autosave on tab and
+  detail navigation.
+- Cover debounce, flush, Clear, failure/Retry, and meeting-switch behavior.
 
 ### Phase 3 — Prompt configuration
 
@@ -514,8 +510,9 @@ Passed in the real app:
 
 - saved-meeting tab ordering and separation: `Transcript`, `Notes`, generated
   results, then `Chat`, with no notes content left inside Transcript;
-- saved-meeting notes display and edit/save flow, including a persisted canonical
-  note while the existing Prompt Result retained its earlier notes snapshot;
+- saved-meeting always-editable notes surface, persisted content, word count,
+  and Saved status, while the existing Prompt Result retained its earlier notes
+  snapshot;
 - completed Prompt Result rendering in light and dark appearances;
 - saved Chat rendering through the same Markdown façade;
 - headings, emphasis, inline code, HTTP link styling, block quotes, tables,
@@ -559,14 +556,15 @@ presentation limitation rather than a newly introduced regression.
 
 ### Saved-notes ViewModel and artifacts
 
-- Add, edit, and clear update `currentTranscription` and the list copy.
-- Whitespace-only Save persists nil.
+- Editing and clearing update `currentTranscription` and the list copy.
+- Whitespace-only autosave persists nil.
 - A non-meeting update is rejected without a write.
-- Cancel performs no write.
+- Rapid edits coalesce into one save of the newest draft.
+- Flush persists immediately without duplicating an in-flight autosave.
 - DB failure retains the draft and displays an error.
 - Rapid successive saves leave both the database and derived artifacts at the
   newest committed value even if an older refresh completes later.
-- Successful Save refreshes all derived meeting artifacts.
+- Successful autosave refreshes all derived meeting artifacts.
 - Clear removes stale `notes.md`.
 - Artifact failure preserves the DB success and exposes Retry.
 
@@ -593,16 +591,16 @@ presentation limitation rather than a newly introduced regression.
 - Human output badges and JSON reflect the preference.
 - PromptResult JSON reflects the checkbox snapshot.
 - GUI and CLI assemble the same prompt for the same inputs.
-- Editing notes, saving, generating a standard Summary with opt-in enabled, and
+- Editing notes, waiting for Saved, generating a standard Summary with opt-in enabled, and
   sending a Chat question both use the committed notes.
 
 ## Manual Acceptance Checklist
 
-1. Open a saved meeting with no notes and add attendees, a URL, and a decision.
-2. Save, switch meetings, return, and relaunch; the notes remain.
+1. Open a saved meeting with no notes and directly type attendees, a URL, and a decision.
+2. Wait for Saved, switch meetings, return, and relaunch; the notes remain.
 3. Confirm `notes.md`, `meeting.md`, `transcript.json`, and the manifest match.
-4. Edit the notes, cancel, and confirm neither DB nor artifacts changed.
-5. Clear the notes and confirm the card returns to its empty state and
+4. Type rapidly and confirm only the final draft is persisted after the idle delay.
+5. Clear the notes and confirm the editor remains available and
    `notes.md` is removed.
 6. Enable note context on the built-in Summary prompt and generate a result;
    verify the notes influence the result and the snapshot records the opt-in.
@@ -611,12 +609,14 @@ presentation limitation rather than a newly introduced regression.
    checkbox off and does not duplicate notes with it on.
 9. Start a generation, then edit notes; verify the in-flight run keeps its old
    snapshot and the next run uses the saved edit.
-10. Send a Chat question after saving and confirm Chat sees the latest notes.
+10. Type and immediately send a Chat question; confirm the flush completes and
+    Chat sees the latest notes.
 11. Repeat after removing meeting audio; note editing and prompting still work.
 
 ## Acceptance Criteria
 
-- Every saved meeting exposes a discoverable Add/Edit/Clear notes workflow.
+- Every saved meeting exposes an immediately editable Notes surface with no
+  mode-switch controls.
 - Saved notes survive relaunch and immediately feed the next Chat request.
 - Derived meeting artifacts converge on the committed DB value.
 - Every result prompt independently opts in or out of automatic note context.

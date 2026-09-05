@@ -1814,6 +1814,35 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(mockRepo.fetch(id: meeting.id)).userNotes, "Final notes")
     }
 
+    func testCapturedMeetingNotesSaveDoesNotOverwriteNewSelection() async throws {
+        let firstMeeting = Transcription(
+            fileName: "First Meeting",
+            status: .completed,
+            sourceType: .meeting
+        )
+        let secondMeeting = Transcription(
+            fileName: "Second Meeting",
+            status: .completed,
+            sourceType: .meeting
+        )
+        mockRepo.transcriptions = [firstMeeting, secondMeeting]
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.currentTranscription = secondMeeting
+
+        let saved = await viewModel.updateMeetingNotes(
+            for: firstMeeting,
+            to: "Belongs to the first meeting"
+        )
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(
+            try XCTUnwrap(mockRepo.fetch(id: firstMeeting.id)).userNotes,
+            "Belongs to the first meeting"
+        )
+        XCTAssertNil(viewModel.currentTranscription?.userNotes)
+        XCTAssertEqual(viewModel.currentTranscription?.id, secondMeeting.id)
+    }
+
     // MARK: - Speaker Rename
 
     func testRenameSpeakerUpdatesInMemoryState() {

@@ -152,20 +152,16 @@ queued-completion behavior.
 Every saved meeting detail exposes a dedicated `Notes` tab immediately after
 `Transcript`, including meetings with no notes and meetings whose transcription
 is still processing. Notes are an editorial layer and never appear inside the
-factual transcript pane. The Notes tab has three explicit states:
+factual transcript pane. The tab always shows an editable plaintext
+`TextEditor`, including when notes are empty, with Copy, word count, and the
+existing 8,000-word soft-cap warning.
 
-- **Empty:** short context plus `Add notes`.
-- **Read:** selectable plaintext with `Copy` and `Edit`.
-- **Edit:** plaintext `TextEditor`, word count and the existing 8,000-word
-  soft-cap warning, plus `Save` and `Cancel`. Saving a blank draft clears the
-  canonical value.
-
-Save is explicit rather than debounced: it commits one stable value before the
-next Chat or result-prompt request and avoids refreshing meeting artifacts on
-every keystroke. `Command-Return` saves. Cancel asks before discarding a changed
-draft and does not write. Changing the selected transcription resets the local
-editor state; leaving the Notes tab with a changed draft also asks before
-discarding it. Database success remains authoritative even if the
+Changes auto-save after a 500 ms idle debounce. A quiet status reports Saving,
+Saved, or a retryable failure; the editor stays writable during persistence.
+Leaving the tab, leaving the detail page, or starting an LLM action flushes the
+latest draft. Chat and result prompts never start after a failed flush, so they
+cannot receive stale notes. Saving blank or whitespace-only text clears the
+canonical value. Database success remains authoritative even if the
 derived-artifact refresh reports a separate retryable warning. Successive
 saves use database last-writer-wins semantics, while artifact refresh remains
 ordered/latest-wins so stale completion cannot overwrite newer files.
