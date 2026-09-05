@@ -386,91 +386,14 @@ struct TranscriptResultView: View {
     ]
 
     var body: some View {
+        presentationContent
+    }
+
+    private var transcriptObservationContent: some View {
         adaptiveLayout
-            .onAppear {
-                // Lazy migration for existing webm/opus YouTube audio files
-                // saved before issue #237's playback fix shipped. The VM
-                // transcodes in the background; this callback persists the new
-                // .m4a path so the next open hits it directly.
-                playerViewModel.onPlaybackFilePathConverted = { [viewModel] id, newPath, sourcePath in
-                    try viewModel.applyConvertedPlaybackPath(
-                        transcriptionID: id,
-                        newFilePath: newPath,
-                        sourceFileToCleanup: sourcePath
-                    )
-                }
-                Task {
-                    if showVideoPanel {
-                        await playerViewModel.load(for: transcription)
-                    } else {
-                        await playerViewModel.prepare(for: transcription)
-                    }
-                    if let words = transcription.wordTimestamps, !words.isEmpty {
-                        playerViewModel.loadSubtitleCues(from: words)
-                    }
-                }
-                syncTranscriptDisplayMode()
-                if transcriptDisplayMode == .timed {
-                    scheduleSegmentCacheRebuild()
-                }
-                viewModel.loadPersistedContent()
-                promptResultsViewModel.loadVisiblePrompts()
-                promptResultsViewModel.loadPromptResults(transcriptionId: transcription.id)
-                chatViewModel.loadTranscript(transcriptText, transcriptionId: viewModel.currentTranscription?.id)
-                scheduleRichAIContextLoad()
-                // Feed the user's typed meeting notes (if any) into chat alongside
-                // the transcript. The closure is re-evaluated on every chat-send so
-                // a CLI edit to userNotes in another process is visible to the next
-                // chat turn without having to reload the page.
-                chatViewModel.bindUserNotesProvider { [viewModel] in
-                    viewModel.currentTranscription?.userNotes
-                }
-            }
+            .onAppear(perform: handleAppear)
             .onChange(of: transcription.id) {
-                Task {
-                    playerViewModel.cleanup()
-                    if showVideoPanel {
-                        await playerViewModel.load(for: transcription)
-                    } else {
-                        await playerViewModel.prepare(for: transcription)
-                    }
-                    if let words = transcription.wordTimestamps, !words.isEmpty {
-                        playerViewModel.loadSubtitleCues(from: words)
-                    }
-                }
-                headerExpanded = false
-                speakerOverviewExpanded = true
-                editingTitle = false
-                titleDraft = ""
-                editingTranscript = false
-                transcriptDraft = ""
-                transcriptEditError = nil
-                transcriptDisplayModeBeforeEdit = nil
-                editingSpeakerId = nil
-                editingSpeakerLabel = ""
-                showConversationPopover = false
-                hoveredConversationId = nil
-                lastScrolledSegmentMs = -1
-                autoScrollPaused = false
-                scrollPauseTask?.cancel()
-                // Reset find for the new transcript (no animation during the swap).
-                findBarVisible = false
-                findFieldFocused = false
-                findModel.clear()
-                findBlocks = []
-                findPausedAutoScroll = false
-                viewModel.hasConversations = false
-                viewModel.selectedTab = .transcript
-                viewModel.loadPersistedContent()
-                syncTranscriptDisplayMode()
-                if transcriptDisplayMode == .timed {
-                    scheduleSegmentCacheRebuild()
-                } else {
-                    applyEmptySegmentCache()
-                }
-                promptResultsViewModel.loadPromptResults(transcriptionId: transcription.id)
-                chatViewModel.loadTranscript(transcriptText, transcriptionId: viewModel.currentTranscription?.id)
-                scheduleRichAIContextLoad()
+                handleTranscriptionChange()
             }
             .onChange(of: activeTranscription.speakers) {
                 if transcriptDisplayMode == .timed {
@@ -490,6 +413,10 @@ struct TranscriptResultView: View {
                 }
                 if findBarVisible { rebuildFindBlocks() }
             }
+    }
+
+    private var contextObservationContent: some View {
+        transcriptObservationContent
             .onChange(of: transcriptText) {
                 if findBarVisible { rebuildFindBlocks() }
             }
@@ -509,15 +436,11 @@ struct TranscriptResultView: View {
                     promptResultsViewModel.markPromptResultViewed(id)
                 }
             }
-            .onDisappear {
-                richContextLoader.invalidate()
-                playerViewModel.cleanup()
-                if let monitor = scrollMonitor {
-                    NSEvent.removeMonitor(monitor)
-                    scrollMonitor = nil
-                }
-                scrollPauseTask?.cancel()
-            }
+            .onDisappear(perform: handleDisappear)
+    }
+
+    private var presentationContent: some View {
+        contextObservationContent
             .sheet(
                 isPresented: $showPromptLibrary,
                 onDismiss: {
@@ -543,6 +466,98 @@ struct TranscriptResultView: View {
             } message: {
                 Text("This action cannot be undone.")
             }
+    }
+
+    private func handleAppear() {
+        // Lazy migration for existing webm/opus YouTube audio files saved
+        // before issue #237's playback fix shipped.
+        playerViewModel.onPlaybackFilePathConverted = { [viewModel] id, newPath, sourcePath in
+            try viewModel.applyConvertedPlaybackPath(
+                transcriptionID: id,
+                newFilePath: newPath,
+                sourceFileToCleanup: sourcePath
+            )
+        }
+        Task {
+            if showVideoPanel {
+                await playerViewModel.load(for: transcription)
+            } else {
+                await playerViewModel.prepare(for: transcription)
+            }
+            if let words = transcription.wordTimestamps, !words.isEmpty {
+                playerViewModel.loadSubtitleCues(from: words)
+            }
+        }
+        syncTranscriptDisplayMode()
+        if transcriptDisplayMode == .timed {
+            scheduleSegmentCacheRebuild()
+        }
+        viewModel.loadPersistedContent()
+        promptResultsViewModel.loadVisiblePrompts()
+        promptResultsViewModel.loadPromptResults(transcriptionId: transcription.id)
+        chatViewModel.loadTranscript(transcriptText, transcriptionId: viewModel.currentTranscription?.id)
+        scheduleRichAIContextLoad()
+        // Re-evaluate typed meeting notes on every send so external CLI edits
+        // are visible without reloading the transcript.
+        chatViewModel.bindUserNotesProvider { [viewModel] in
+            viewModel.currentTranscription?.userNotes
+        }
+    }
+
+    private func handleTranscriptionChange() {
+        Task {
+            playerViewModel.cleanup()
+            if showVideoPanel {
+                await playerViewModel.load(for: transcription)
+            } else {
+                await playerViewModel.prepare(for: transcription)
+            }
+            if let words = transcription.wordTimestamps, !words.isEmpty {
+                playerViewModel.loadSubtitleCues(from: words)
+            }
+        }
+        headerExpanded = false
+        speakerOverviewExpanded = true
+        editingTitle = false
+        titleDraft = ""
+        editingTranscript = false
+        transcriptDraft = ""
+        transcriptEditError = nil
+        transcriptDisplayModeBeforeEdit = nil
+        editingSpeakerId = nil
+        editingSpeakerLabel = ""
+        showConversationPopover = false
+        hoveredConversationId = nil
+        lastScrolledSegmentMs = -1
+        autoScrollPaused = false
+        scrollPauseTask?.cancel()
+        findBarVisible = false
+        findFieldFocused = false
+        findModel.clear()
+        findBlocks = []
+        findPausedAutoScroll = false
+        viewModel.hasConversations = false
+        viewModel.selectedTab = .transcript
+        viewModel.loadPersistedContent()
+        syncTranscriptDisplayMode()
+        if transcriptDisplayMode == .timed {
+            scheduleSegmentCacheRebuild()
+        } else {
+            applyEmptySegmentCache()
+        }
+        promptResultsViewModel.loadPromptResults(transcriptionId: transcription.id)
+        chatViewModel.loadTranscript(transcriptText, transcriptionId: viewModel.currentTranscription?.id)
+        scheduleRichAIContextLoad()
+    }
+
+    private func handleDisappear() {
+        richContextLoader.invalidate()
+        playerViewModel.cleanup()
+        if let monitor = scrollMonitor {
+            NSEvent.removeMonitor(monitor)
+            scrollMonitor = nil
+        }
+        scrollPauseTask?.cancel()
     }
 
     @ViewBuilder
