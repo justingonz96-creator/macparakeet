@@ -180,6 +180,7 @@ final class TranscriptRichContextLoader {
         mode: TranscriptAIContextMode,
         contentRevision: UInt64,
         isCurrent: @escaping @MainActor (Request) -> Bool = { _ in true },
+        onStale: @escaping @MainActor () -> Void,
         action: @escaping @MainActor (String) -> Void
     ) -> Task<Void, Never>? {
         guard !preparingPromptContext else { return nil }
@@ -192,17 +193,17 @@ final class TranscriptRichContextLoader {
                     self.latestPromptActionID = nil
                 }
             }
-            guard
-                let prepared = await self.prepare(
-                    transcription: transcription,
-                    mode: mode,
-                    contentRevision: contentRevision,
-                    isCurrent: isCurrent
-                ),
-                !Task.isCancelled,
-                self.latestPromptActionID == actionID,
-                isCurrent(prepared.request)
-            else { return }
+            let prepared = await self.prepare(
+                transcription: transcription,
+                mode: mode,
+                contentRevision: contentRevision,
+                isCurrent: isCurrent
+            )
+            guard !Task.isCancelled, self.latestPromptActionID == actionID else { return }
+            guard let prepared, isCurrent(prepared.request) else {
+                onStale()
+                return
+            }
             action(prepared.text)
         }
     }
@@ -1098,7 +1099,7 @@ struct TranscriptResultView: View {
         let transcription = activeTranscription
         let mode = currentAIContextMode
         let revision = viewModel.currentTranscriptionRevision
-        richContextLoader.startPromptAction(
+        let preparation = richContextLoader.startPromptAction(
             transcription: transcription,
             mode: mode,
             contentRevision: revision,
@@ -1108,8 +1109,16 @@ struct TranscriptResultView: View {
                         == request.transcriptionID
                     && currentAIContextMode == request.mode
             },
+            onStale: {
+                guard viewModel.currentTranscription?.id == transcription.id else { return }
+                promptResultsViewModel.errorMessage =
+                    "The transcript or AI context changed while preparing this prompt. Please try again."
+            },
             action: action
         )
+        if preparation != nil {
+            promptResultsViewModel.errorMessage = nil
+        }
     }
 
     private var rawTranscriptText: String {
@@ -1245,6 +1254,15 @@ struct TranscriptResultView: View {
             }
             .padding(.horizontal, DesignSystem.Spacing.md)
             .padding(.vertical, DesignSystem.Spacing.sm)
+
+            if let errorMessage = promptResultsViewModel.errorMessage {
+                Text(errorMessage)
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.errorRed)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, DesignSystem.Spacing.md)
+                    .padding(.bottom, DesignSystem.Spacing.sm)
+            }
 
             // Expanded details section
             if headerExpanded {
@@ -2668,12 +2686,6 @@ struct TranscriptResultView: View {
                 Text(queueStatusText)
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(DesignSystem.Colors.textSecondary)
-            }
-
-            if let errorMessage = promptResultsViewModel.errorMessage {
-                Text(errorMessage)
-                    .font(DesignSystem.Typography.caption)
-                    .foregroundStyle(DesignSystem.Colors.errorRed)
             }
 
             // Actions row — manage prompts on the left, generate on the right
