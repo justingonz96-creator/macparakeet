@@ -1794,15 +1794,13 @@ public final class TranscriptionViewModel {
     }
 
     public func renameCurrentTranscription(to newFileName: String) {
-        guard var transcription = currentTranscription else { return }
+        guard let transcription = currentTranscription else { return }
         guard transcription.sourceType == .meeting else { return }
         guard let transcriptionRepo else { return }
         let trimmed = newFileName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != transcription.fileName else { return }
 
-        transcription.fileName = trimmed
-        transcription.derivedTitle = trimmed
-        currentTranscription = transcription
+        clearError()
         do {
             try transcriptionRepo.updateFileName(id: transcription.id, fileName: trimmed)
             let persistedTranscription = (try transcriptionRepo.fetch(id: transcription.id)) ?? transcription
@@ -1818,6 +1816,7 @@ public final class TranscriptionViewModel {
             logger.error(
                 "Failed to persist transcription rename error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
             )
+            setError(message: "Failed to rename transcription: \(error.localizedDescription)")
         }
     }
 

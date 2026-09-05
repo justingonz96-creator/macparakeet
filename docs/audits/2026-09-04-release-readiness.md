@@ -14,8 +14,8 @@ published-release state. PR/CI and merge identity belong to the subsequent gate.
   architecture. Preserve user recordings and the normal database.
 - Maintainer decisions: leave Discover unchanged; focus on the codebase and do
   **not** spend further effort on launching or visually checking the UI.
-- No DMG, Sparkle feed, production deployment, or hardware-certification claim is
-  part of this review.
+- No application release, DMG, Sparkle/appcast distribution, or
+  hardware-certification claim is part of this review.
 
 ## Findings and disposition
 
@@ -66,23 +66,47 @@ The [structured issue ledger](2026-09-04-release-readiness-issues.json) preserve
 each issue's title, severity, recommendation, evidence, uncertainty and next
 step. These are review recommendations, not assertions that issues were closed.
 
-Initial reviewer dispositions:
+Final source-evidence dispositions:
 
 | Disposition | Count |
 |---|---:|
-| Product backlog | 60 |
-| Code present on reviewed main | 14 |
-| Needs additional evidence | 29 |
-| Feedback-only closure recommendation | 5 |
+| Product backlog | 64 |
+| Code present on reviewed main | 4 |
+| Needs additional evidence | 35 |
+| Feedback-only closure recommendation | 3 |
 | Duplicate recommendation | 3 |
-| Code present only in candidate | 4 |
-| Release-blocking correction | 1 |
+| Code present only in candidate | 7 |
+| Release-blocking correction | 0 |
 
 The ledger is an assessment snapshot. Fixes made during this review are tracked
 above and must be associated with final verification/PR evidence before issue
-state is changed. Hardware-dependent reports are not closed merely because a
-related code change exists. Discover removal/opt-out requests remain open by
-explicit maintainer decision.
+state is changed. Code presence is distinguished from a user-available or
+field-verified feature: gated, partial, and hardware-dependent reports stay
+open rather than being closed on source presence alone. Discover removal/opt-out
+requests (#834, #891, #915) remain open, unchanged, by explicit maintainer
+decision.
+
+An initial pass conflated available features with gated source (#412),
+complete fixes with partial workarounds or unverified hardware (#409, #432,
+#481, #541, #604, #605, #947), candidate-only changes with reviewed main
+(#888, #912), and actionable UX/ASR reports with praise-only feedback (#449,
+#907); those rows were corrected to the conservative dispositions above, and
+issue #948's ledger entry was corrected from a stale "zero hits, P0
+release-blocker" evidence claim to `fixed-in-candidate`, matching this
+document's own summary table (the header is implemented and
+adapter/lifecycle-verified, without live-provider credential proof).
+
+Separately, the following tracker actions were completed and confirmed against
+live issue state: closed as praise-only feedback — #877, #886, #925; closed as
+duplicate — #903→#460, #923→#900, #929→#527; closed as already-available —
+#919; closed as reporter-confirmed — #942. All eight closures were verified
+open-then-closed via the tracker API; no other issue state was changed by
+these actions.
+
+Local Greptile CLI review was unavailable for this pass (wrapper exited 127;
+`npm exec` reported an expired session, so no local Greptile approval is
+claimed for this candidate). The GitHub review bot and independent/no-mistakes
+review remain the fallback coverage for this branch.
 
 ## Verification record
 

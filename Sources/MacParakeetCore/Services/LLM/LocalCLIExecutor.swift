@@ -370,7 +370,15 @@ public final class LocalCLIExecutor: Sendable {
                     state = .controlString(endsOnBEL: false)
                 case 0x7F...0x9F:
                     break
-                case 0x00...0x1F where value != 0x09 && value != 0x0A && value != 0x0D:
+                case 0x0D:
+                    sanitized.unicodeScalars.append(Unicode.Scalar(0x0A))
+                    var next = scalars.index(after: index)
+                    if next != scalars.endIndex && scalars[next].value == 0x0A {
+                        next = scalars.index(after: next)
+                    }
+                    index = next
+                    continue
+                case 0x00...0x1F where value != 0x09 && value != 0x0A:
                     break
                 default:
                     sanitized.unicodeScalars.append(scalar)

@@ -2255,6 +2255,30 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.currentTranscription?.fileName, "Design Review")
     }
 
+    func testRenameCurrentTranscriptionSurfacesPersistenceFailure() {
+        let t = Transcription(
+            fileName: "Meeting Apr 5",
+            status: .completed,
+            sourceType: .meeting,
+            derivedTitle: "Auto Derived Title"
+        )
+        mockRepo.transcriptions = [t]
+        mockRepo.updateFileNameError = LocalTitleRenameTestError.persistenceFailed
+        var renamedCallbacks: [MeetingRename] = []
+        viewModel.onMeetingRenamed = { renamedCallbacks.append($0) }
+
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.currentTranscription = t
+
+        viewModel.renameCurrentTranscription(to: "Design Review")
+
+        XCTAssertEqual(mockRepo.updateFileNameCalls.count, 1)
+        XCTAssertEqual(viewModel.currentTranscription?.fileName, "Meeting Apr 5")
+        XCTAssertEqual(viewModel.transcriptions.first?.fileName, "Meeting Apr 5")
+        XCTAssertTrue(viewModel.errorMessage?.contains("Failed to rename transcription") ?? false)
+        XCTAssertTrue(renamedCallbacks.isEmpty)
+    }
+
     func testRenameCurrentTranscriptionIgnoresEmptyName() {
         let t = Transcription(fileName: "Meeting Apr 5", status: .completed, sourceType: .meeting)
         mockRepo.transcriptions = [t]

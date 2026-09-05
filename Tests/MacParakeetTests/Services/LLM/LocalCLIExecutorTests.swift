@@ -298,14 +298,66 @@ final class LocalCLIExecutorTests: XCTestCase {
             LocalCLIExecutor.sanitizeStandardOutput(
                 "\u{0}A\u{1}B\u{7}C\u{8}D\u{B}E\u{C}F\u{E}\u{1F}GH\tI\nJ\rK"
             ),
-            "ABCDEFGH\tI\nJ\rK"
+            "ABCDEFGH\tI\nJ\nK"
         )
     }
 
     func testSanitizeStandardOutputPreservesCleanUnicodeAndWhitespace() {
         let output = "Résumé — 你好 👋\n  keep\tinternal  spacing\r\n[]{}!?;:'\""
 
-        XCTAssertEqual(LocalCLIExecutor.sanitizeStandardOutput(output), output)
+        XCTAssertEqual(
+            LocalCLIExecutor.sanitizeStandardOutput(output),
+            "Résumé — 你好 👋\n  keep\tinternal  spacing\n[]{}!?;:'\""
+        )
+    }
+
+    func testSanitizeStandardOutputNormalizesCRLFToSingleLF() {
+        XCTAssertEqual(
+            LocalCLIExecutor.sanitizeStandardOutput("line one\r\nline two\r\n"),
+            "line one\nline two\n"
+        )
+    }
+
+    func testSanitizeStandardOutputNormalizesBareCRToLF() {
+        XCTAssertEqual(
+            LocalCLIExecutor.sanitizeStandardOutput("SAFE\rDANGER"),
+            "SAFE\nDANGER"
+        )
+    }
+
+    func testSuccessfulExecutionNormalizesBareCarriageReturnOverwrite() async throws {
+        let executor = LocalCLIExecutor()
+        let config = LocalCLIConfig(
+            commandTemplate: "printf 'SAFE\\rDANGER'",
+            timeoutSeconds: 10
+        )
+
+        let output = try await executor.execute(
+            systemPrompt: "",
+            userPrompt: "",
+            config: config
+        )
+
+        XCTAssertEqual(output, "SAFE\nDANGER")
+    }
+
+    func testFailingExecutionNormalizesCarriageReturnsInStderr() async throws {
+        let executor = LocalCLIExecutor()
+        let config = LocalCLIConfig(
+            commandTemplate: "printf 'first line\\r\\nsecond\\rthird' 1>&2; exit 1",
+            timeoutSeconds: 10
+        )
+
+        do {
+            _ = try await executor.execute(
+                systemPrompt: "",
+                userPrompt: "",
+                config: config
+            )
+            XCTFail("Expected execution to throw")
+        } catch LocalCLIError.nonZeroExit(_, let stderr) {
+            XCTAssertEqual(stderr, "first line\nsecond\nthird")
+        }
     }
 
     func testStdinDelivery() async throws {

@@ -144,6 +144,7 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
     var fetchAllHandler: (@Sendable (Int?) throws -> [Transcription])?
     var fetchMeetingsWithStatusHandler: (@Sendable (Transcription.TranscriptionStatus) throws -> [Transcription])?
     var updateTitleOverrideError: Error?
+    var updateFileNameError: Error?
     var updateFilePathError: Error?
     var updateSpeakersError: Error?
     var updateSpeakersHandler: (@Sendable (UUID, [SpeakerInfo]?) throws -> Void)?
@@ -222,6 +223,9 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
 
     func updateFileName(id: UUID, fileName: String) throws {
         updateFileNameCalls.append((id: id, fileName: fileName))
+        if let updateFileNameError {
+            throw updateFileNameError
+        }
         if let idx = transcriptions.firstIndex(where: { $0.id == id }) {
             transcriptions[idx].fileName = fileName
             transcriptions[idx].derivedTitle = fileName
