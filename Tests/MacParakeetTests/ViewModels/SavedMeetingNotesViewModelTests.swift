@@ -3,11 +3,13 @@ import XCTest
 
 @MainActor
 final class SavedMeetingNotesViewModelTests: XCTestCase {
+    private let meetingID = UUID()
+
     func testConfigureRestoresTextWithoutWriting() async {
         let viewModel = SavedMeetingNotesViewModel()
         var writes: [String] = []
 
-        viewModel.configure(text: "Existing notes") { text in
+        viewModel.configure(meetingID: meetingID, text: "Existing notes") { text in
             writes.append(text)
             return true
         }
@@ -21,7 +23,7 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
     func testRapidEditsAutosaveOnlyLatestDraft() async {
         let viewModel = SavedMeetingNotesViewModel()
         var writes: [String] = []
-        viewModel.configure(text: nil) { text in
+        viewModel.configure(meetingID: meetingID, text: nil) { text in
             writes.append(text)
             return true
         }
@@ -38,7 +40,7 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
     func testFlushPersistsImmediatelyAndCancelsDebounce() async {
         let viewModel = SavedMeetingNotesViewModel()
         var writes: [String] = []
-        viewModel.configure(text: nil) { text in
+        viewModel.configure(meetingID: meetingID, text: nil) { text in
             writes.append(text)
             return true
         }
@@ -56,7 +58,7 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
         let viewModel = SavedMeetingNotesViewModel()
         var shouldSucceed = false
         var writes: [String] = []
-        viewModel.configure(text: nil) { text in
+        viewModel.configure(meetingID: meetingID, text: nil) { text in
             writes.append(text)
             return shouldSucceed
         }
@@ -77,7 +79,7 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
     func testFlushDuringSlowAutosaveDoesNotDuplicateWrite() async {
         let viewModel = SavedMeetingNotesViewModel()
         var writes: [String] = []
-        viewModel.configure(text: nil) { text in
+        viewModel.configure(meetingID: meetingID, text: nil) { text in
             writes.append(text)
             try? await Task.sleep(for: .milliseconds(500))
             return true
@@ -95,7 +97,7 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
     func testNewEditPersistsAfterOlderInFlightSaveFails() async {
         let viewModel = SavedMeetingNotesViewModel()
         var writes: [String] = []
-        viewModel.configure(text: nil) { text in
+        viewModel.configure(meetingID: meetingID, text: nil) { text in
             writes.append(text)
             if text == "Old draft" {
                 try? await Task.sleep(for: .milliseconds(500))
@@ -112,5 +114,75 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
         XCTAssertTrue(flushed)
         XCTAssertEqual(writes, ["Old draft", "Latest draft"])
         XCTAssertEqual(viewModel.saveState, .saved)
+    }
+
+    func testFailedSelectionTransitionPreservesPreviousDraftAndRetryState() async {
+        let viewModel = SavedMeetingNotesViewModel()
+        let nextMeetingID = UUID()
+        viewModel.configure(meetingID: meetingID, text: "Meeting A") { _ in false }
+        viewModel.textBinding.wrappedValue = "Unsaved meeting A"
+        let transition = viewModel.beginSelectionTransition()
+
+        let configured = await viewModel.completeSelectionTransition(
+            transition,
+            meetingID: nextMeetingID,
+            text: "Meeting B"
+        ) { _ in true }
+
+        XCTAssertFalse(configured)
+        XCTAssertEqual(viewModel.meetingID, meetingID)
+        XCTAssertEqual(viewModel.text, "Unsaved meeting A")
+        XCTAssertEqual(viewModel.saveState, .failed)
+    }
+
+    func testOlderSelectionTransitionCannotReplaceNewerMeeting() async {
+        let viewModel = SavedMeetingNotesViewModel()
+        let meetingBID = UUID()
+        let meetingCID = UUID()
+        var writesByMeeting: [UUID: [String]] = [:]
+        viewModel.configure(meetingID: meetingID, text: "Meeting A") { text in
+            writesByMeeting[self.meetingID, default: []].append(text)
+            try? await Task.sleep(for: .milliseconds(300))
+            return true
+        }
+        viewModel.textBinding.wrappedValue = "Updated A"
+
+        let transitionToB = viewModel.beginSelectionTransition()
+        let taskToB = Task { @MainActor in
+            await viewModel.completeSelectionTransition(
+                transitionToB,
+                meetingID: meetingBID,
+                text: "Meeting B"
+            ) { text in
+                writesByMeeting[meetingBID, default: []].append(text)
+                return true
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+        let transitionToC = viewModel.beginSelectionTransition()
+        let taskToC = Task { @MainActor in
+            await viewModel.completeSelectionTransition(
+                transitionToC,
+                meetingID: meetingCID,
+                text: "Meeting C"
+            ) { text in
+                writesByMeeting[meetingCID, default: []].append(text)
+                return true
+            }
+        }
+
+        let configuredB = await taskToB.value
+        let configuredC = await taskToC.value
+        XCTAssertFalse(configuredB)
+        XCTAssertTrue(configuredC)
+        XCTAssertEqual(viewModel.meetingID, meetingCID)
+        XCTAssertEqual(viewModel.text, "Meeting C")
+
+        viewModel.textBinding.wrappedValue = "Updated C"
+        let flushedC = await viewModel.flush()
+        XCTAssertTrue(flushedC)
+        XCTAssertEqual(writesByMeeting[meetingID], ["Updated A"])
+        XCTAssertNil(writesByMeeting[meetingBID])
+        XCTAssertEqual(writesByMeeting[meetingCID], ["Updated C"])
     }
 }

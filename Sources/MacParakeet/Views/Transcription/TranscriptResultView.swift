@@ -582,9 +582,9 @@ struct TranscriptResultView: View {
         transcriptDraft = ""
         transcriptEditError = nil
         let nextTranscription = activeTranscription
-        Task {  in
-            _ = await savedMeetingNotesViewModel.flush()
-            configureSavedMeetingNotes(for: nextTranscription)
+        let notesTransition = savedMeetingNotesViewModel.beginSelectionTransition()
+        Task { @MainActor in
+            await transitionSavedMeetingNotes(to: nextTranscription, transition: notesTransition)
         }
         transcriptDisplayModeBeforeEdit = nil
         editingSpeakerId = nil
@@ -2310,7 +2310,7 @@ struct TranscriptResultView: View {
                 Label("Couldn’t save", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(DesignSystem.Colors.errorRed)
                 Button("Retry") {
-                    Task { await savedMeetingNotesViewModel.retry() }
+                    retrySavedMeetingNotes()
                 }
                 .parakeetAction(.secondary)
                 .controlSize(.small)
@@ -3936,8 +3936,37 @@ struct TranscriptResultView: View {
             savedMeetingNotesViewModel.cancelPendingSave()
             return
         }
-        savedMeetingNotesViewModel.configure(text: transcription.userNotes) { [viewModel, transcription] text in
+        savedMeetingNotesViewModel.configure(meetingID: transcription.id, text: transcription.userNotes) { [viewModel, transcription] text in
             await viewModel.updateMeetingNotes(for: transcription, to: text)
+        }
+    }
+
+    private func transitionSavedMeetingNotes(
+        to transcription: Transcription,
+        transition: SavedMeetingNotesViewModel.SelectionTransition
+    ) async {
+        guard transcription.sourceType == .meeting else {
+            _ = await savedMeetingNotesViewModel.flush()
+            return
+        }
+        _ = await savedMeetingNotesViewModel.completeSelectionTransition(
+            transition,
+            meetingID: transcription.id,
+            text: transcription.userNotes
+        ) { [viewModel, transcription] text in
+            await viewModel.updateMeetingNotes(for: transcription, to: text)
+        }
+    }
+
+    private func retrySavedMeetingNotes() {
+        let currentMeeting = activeTranscription
+        guard savedMeetingNotesViewModel.meetingID != currentMeeting.id else {
+            Task { await savedMeetingNotesViewModel.retry() }
+            return
+        }
+        let transition = savedMeetingNotesViewModel.beginSelectionTransition()
+        Task { @MainActor in
+            await transitionSavedMeetingNotes(to: currentMeeting, transition: transition)
         }
     }
 

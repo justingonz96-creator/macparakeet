@@ -9,6 +9,10 @@ import SwiftUI
 @MainActor
 @Observable
 public final class SavedMeetingNotesViewModel {
+    public struct SelectionTransition: Equatable, Sendable {
+        fileprivate let token: UUID
+    }
+
     public enum SaveState: Equatable, Sendable {
         case saved
         case saving
@@ -20,6 +24,7 @@ public final class SavedMeetingNotesViewModel {
     public private(set) var text = ""
     public private(set) var wordCount = 0
     public private(set) var saveState: SaveState = .saved
+    public private(set) var meetingID: UUID?
 
     public var textBinding: Binding<String> {
         Binding(
@@ -34,12 +39,14 @@ public final class SavedMeetingNotesViewModel {
     private var inFlightToken: UUID?
     private var inFlightRevision: Int?
     private var configurationToken = UUID()
+    private var selectionTransitionToken = UUID()
     private var revision = 0
     private var savedRevision = 0
 
     public init() {}
 
     public func configure(
+        meetingID: UUID,
         text: String?,
         persist: @escaping (String) async -> Bool
     ) {
@@ -50,12 +57,43 @@ public final class SavedMeetingNotesViewModel {
         inFlightToken = nil
         inFlightRevision = nil
         configurationToken = UUID()
+        selectionTransitionToken = UUID()
+        self.meetingID = meetingID
         self.persist = persist
         self.text = text ?? ""
         wordCount = Self.wordCount(for: self.text)
         revision = 0
         savedRevision = 0
         saveState = .saved
+    }
+
+    /// Invalidates any older selection change before it can suspend in
+    /// `flush()`. The returned token must still be current when the save
+    /// completes before the editor can be rebound to another meeting.
+    public func beginSelectionTransition() -> SelectionTransition {
+        let transition = SelectionTransition(token: UUID())
+        selectionTransitionToken = transition.token
+        return transition
+    }
+
+    /// Saves the current meeting before binding the editor to a newly selected
+    /// one. A failed save preserves the old draft and retry state; an obsolete
+    /// transition cannot overwrite a newer selection.
+    @discardableResult
+    public func completeSelectionTransition(
+        _ transition: SelectionTransition,
+        meetingID: UUID,
+        text: String?,
+        persist: @escaping (String) async -> Bool
+    ) async -> Bool {
+        guard await flush() else { return false }
+        guard selectionTransitionToken == transition.token else { return false }
+        configure(meetingID: meetingID, text: text, persist: persist)
+        return true
+    }
+
+    public func invalidateSelectionTransition() {
+        selectionTransitionToken = UUID()
     }
 
     /// Cancels the idle timer and waits until the latest draft is persisted.
