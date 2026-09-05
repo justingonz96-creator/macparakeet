@@ -92,7 +92,9 @@ with human progress/status kept off stdout.
   `prompts set --json`, include additive optional `inferenceSettings`. When
   present it is an object with optional `temperature`, `topP`, `topK`,
   `maxTokens`, and `seed`, plus `thinkingMode` (`providerDefault`, `enabled`,
-  or `disabled`). This value records the prompt's request; it does not prove
+  or `disabled`) and optional `reasoningEffort` (`low`, `medium`, `high`, or
+  `xhigh`). Reasoning effort is normalized away unless thinking is enabled.
+  This value records the prompt's request; it does not prove
   that every field is supported by the provider selected for a later run.
 - LLM result JSON envelopes include additive optional `effectiveSettings` with
   the same object shape. For `prompts run --json`, a present value is the

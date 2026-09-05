@@ -11,6 +11,7 @@ public final class PromptsViewModel {
         public var maxTokens: String
         public var seed: String
         public var thinkingMode: PromptInferenceSettings.ThinkingMode
+        public var reasoningEffort: PromptInferenceSettings.ReasoningEffort?
 
         public init(
             temperature: String = "",
@@ -18,7 +19,8 @@ public final class PromptsViewModel {
             topK: String = "",
             maxTokens: String = "",
             seed: String = "",
-            thinkingMode: PromptInferenceSettings.ThinkingMode = .providerDefault
+            thinkingMode: PromptInferenceSettings.ThinkingMode = .providerDefault,
+            reasoningEffort: PromptInferenceSettings.ReasoningEffort? = nil
         ) {
             self.temperature = temperature
             self.topP = topP
@@ -26,6 +28,7 @@ public final class PromptsViewModel {
             self.maxTokens = maxTokens
             self.seed = seed
             self.thinkingMode = thinkingMode
+            self.reasoningEffort = thinkingMode == .enabled ? reasoningEffort : nil
         }
 
         public init(settings: PromptInferenceSettings?) {
@@ -35,6 +38,7 @@ public final class PromptsViewModel {
             maxTokens = settings?.maxTokens.map(String.init) ?? ""
             seed = settings?.seed.map(String.init) ?? ""
             thinkingMode = settings?.thinkingMode ?? .providerDefault
+            reasoningEffort = thinkingMode == .enabled ? settings?.reasoningEffort : nil
         }
 
         public var isDefault: Bool {
@@ -44,6 +48,7 @@ public final class PromptsViewModel {
                 && maxTokens.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && seed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && thinkingMode == .providerDefault
+                && reasoningEffort == nil
         }
 
         fileprivate static func renderNumber(_ value: Double) -> String {
@@ -239,7 +244,11 @@ public final class PromptsViewModel {
         if let seed = settings.seed { parts.append("Seed \(seed)") }
         switch settings.thinkingMode {
         case .providerDefault: break
-        case .enabled: parts.append("Thinking on")
+        case .enabled:
+            parts.append("Thinking on")
+            if let reasoningEffort = settings.reasoningEffort {
+                parts.append("Effort \(displayName(for: reasoningEffort))")
+            }
         case .disabled: parts.append("Thinking off")
         }
         return parts.joined(separator: " · ")
@@ -393,7 +402,8 @@ public final class PromptsViewModel {
                     topK: topK,
                     maxTokens: maxTokens,
                     seed: seed,
-                    thinkingMode: draft.thinkingMode
+                    thinkingMode: draft.thinkingMode,
+                    reasoningEffort: draft.reasoningEffort
                 )
                 let validated = try settings.validated()
                 return .valid(validated)
@@ -450,6 +460,7 @@ public final class PromptsViewModel {
         case .maxTokens: return "Enter a whole number from 1 to 131072."
         case .seed: return "Enter a signed whole number."
         case .thinkingMode: return "Choose a valid thinking mode."
+        case .reasoningEffort: return "Choose a valid reasoning effort."
         }
     }
 
@@ -461,6 +472,18 @@ public final class PromptsViewModel {
         case .maxTokens: return "Maximum output tokens"
         case .seed: return "Seed"
         case .thinkingMode: return "Thinking"
+        case .reasoningEffort: return "Reasoning effort"
+        }
+    }
+
+    nonisolated public static func displayName(
+        for effort: PromptInferenceSettings.ReasoningEffort
+    ) -> String {
+        switch effort {
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        case .xhigh: return "Extra high"
         }
     }
 

@@ -73,7 +73,12 @@ final class LLMResultTests: XCTestCase {
             provider: "openai",
             model: "gpt-4.1",
             latencyMs: 12,
-            effectiveSettings: PromptInferenceSettings(temperature: 0.25, maxTokens: 256)
+            effectiveSettings: PromptInferenceSettings(
+                temperature: 0.25,
+                maxTokens: 256,
+                thinkingMode: .enabled,
+                reasoningEffort: .high
+            )
         )
 
         let object = try XCTUnwrap(
@@ -82,6 +87,7 @@ final class LLMResultTests: XCTestCase {
         let receipt = try XCTUnwrap(object["effectiveSettings"] as? [String: Any])
         XCTAssertEqual(receipt["temperature"] as? Double, 0.25)
         XCTAssertEqual(receipt["maxTokens"] as? Int, 256)
+        XCTAssertEqual(receipt["reasoningEffort"] as? String, "high")
     }
 
     // MARK: - JSON encoding shape

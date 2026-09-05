@@ -104,7 +104,9 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 - Prompt JSON gains additive optional inference metadata. `prompts list/show`
   (and prompt objects returned by `prompts set`) expose `inferenceSettings`
   with optional `temperature`, `topP`, `topK`, `maxTokens`, `seed`, and a
-  `thinkingMode` value. LLM result envelopes, including `prompts run --json`,
+  `thinkingMode` value, plus optional `reasoningEffort` (`low`, `medium`,
+  `high`, or `xhigh`) when thinking is enabled. LLM result envelopes,
+  including `prompts run --json`,
   gain optional `effectiveSettings`; when present it reports the normalized
   settings actually sent after provider/model filtering. Existing callers may
   ignore both fields, and unset/legacy values omit them. Meeting result

@@ -118,7 +118,7 @@ public struct Prompt: Codable, Identifiable, Sendable {
     public var updatedAt: Date
     public var keyboardShortcut: String?  // transform-only encoded shortcut
     public var runningLabel: String?       // transform-only progress label
-    public var inferenceSettings: PromptInferenceSettings?  // result-only; nil = MacParakeet defaults
+    public var inferenceSettings: PromptInferenceSettings?  // result-only typed settings; nil = MacParakeet defaults
 
     public enum Category: String, Codable, Sendable {
         case result = "summary"
@@ -158,7 +158,7 @@ public struct PromptResult: Codable, Identifiable, Sendable {
     public var extraInstructions: String?  // user's extra instructions (if any)
     public var content: String            // the generated summary text
     public var userNotesSnapshot: String?  // notes value used at generation time
-    public var inferenceSettingsSnapshot: PromptInferenceSettings?  // effective settings sent
+    public var inferenceSettingsSnapshot: PromptInferenceSettings?  // normalized effective settings sent
     public var createdAt: Date
     public var updatedAt: Date
 }

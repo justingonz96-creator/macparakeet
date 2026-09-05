@@ -69,7 +69,8 @@ final class PromptResultsViewModelTests: XCTestCase {
                 temperature: 0.3,
                 maxTokens: 500,
                 seed: 42,
-                thinkingMode: .enabled
+                thinkingMode: .enabled,
+                reasoningEffort: .xhigh
             )
         )
         promptRepo.prompts = [prompt]
@@ -83,11 +84,11 @@ final class PromptResultsViewModelTests: XCTestCase {
 
         XCTAssertEqual(
             viewModel.selectedPromptInferenceSummary,
-            "Temp 0.3 · Max 500 · Seed 42 · Thinking on"
+            "Temp 0.3 · Max 500 · Seed 42 · Thinking on · Effort Extra high"
         )
         XCTAssertEqual(
             viewModel.selectedPromptInferenceCompatibilityMessage,
-            "Not supported by this provider/model: Temperature, Seed, Thinking."
+            "Not supported by this provider/model: Temperature, Seed, Thinking, Reasoning effort."
         )
     }
 
@@ -826,7 +827,9 @@ final class PromptResultsViewModelTests: XCTestCase {
         // One unscoped (all sources) + one meeting-only auto-run prompt.
         promptRepo.prompts = [
             Prompt(name: "Summary", content: "c", category: .result, isVisible: true, isAutoRun: true, sortOrder: 0),
-            Prompt(name: "Action Items", content: "c", category: .result, isVisible: true, isAutoRun: true, sortOrder: 1, appliesToSources: [.meeting]),
+            Prompt(
+                name: "Action Items", content: "c", category: .result, isVisible: true, isAutoRun: true, sortOrder: 1,
+                appliesToSources: [.meeting]),
         ]
         viewModel.configure(
             llmService: llm,
@@ -1032,7 +1035,8 @@ final class PromptResultsViewModelTests: XCTestCase {
         let longNotes = String(repeating: "word ", count: PromptResultsViewModel.userNotesPromptWordCap + 100)
             .trimmingCharacters(in: .whitespaces)
         let truncated = PromptResultsViewModel.truncateNotesForPrompt(longNotes)
-        let truncatedWordCount = truncated
+        let truncatedWordCount =
+            truncated
             .split(whereSeparator: \.isWhitespace)
             .filter { !$0.contains("[") && !$0.contains("words") && !$0.contains("(") }
             .count
@@ -1054,14 +1058,16 @@ final class PromptResultsViewModelTests: XCTestCase {
     func testTruncateNotesForPromptPreservesWhitespaceInKeptPortion() {
         let cap = PromptResultsViewModel.userNotesPromptWordCap
         // Build a structured prefix the kept portion must preserve verbatim.
-        let structuredPrefix = "## Roadmap\n\n**Action:** ship infra refactor\n\t- subtask: review staffing plan\n\n[6:02] confirmed"
+        let structuredPrefix =
+            "## Roadmap\n\n**Action:** ship infra refactor\n\t- subtask: review staffing plan\n\n[6:02] confirmed"
         let filler = String(repeating: " filler", count: cap + 50)
         let input = structuredPrefix + filler
 
         let truncated = PromptResultsViewModel.truncateNotesForPrompt(input)
 
         XCTAssertTrue(
-            truncated.contains("## Roadmap\n\n**Action:** ship infra refactor\n\t- subtask: review staffing plan\n\n[6:02] confirmed"),
+            truncated.contains(
+                "## Roadmap\n\n**Action:** ship infra refactor\n\t- subtask: review staffing plan\n\n[6:02] confirmed"),
             "Original whitespace (newlines, blank lines, tab indentation) must survive in the kept portion"
         )
         XCTAssertTrue(

@@ -113,7 +113,8 @@ final class PromptRepositoryTests: XCTestCase {
                 topK: 20,
                 maxTokens: 4096,
                 seed: 42,
-                thinkingMode: .disabled
+                thinkingMode: .enabled,
+                reasoningEffort: .xhigh
             )
         )
         try repo.save(prompt)
@@ -203,10 +204,10 @@ final class PromptRepositoryTests: XCTestCase {
         let meetingAuto = try repo.fetchAutoRunPrompts(for: .meeting).map(\.name)
         let youtubeAuto = try repo.fetchAutoRunPrompts(for: .youtube).map(\.name)
 
-        XCTAssertTrue(meetingAuto.contains("Summary"))                 // unscoped → all
-        XCTAssertTrue(meetingAuto.contains("Action Items & Decisions")) // meeting-scoped
+        XCTAssertTrue(meetingAuto.contains("Summary"))  // unscoped → all
+        XCTAssertTrue(meetingAuto.contains("Action Items & Decisions"))  // meeting-scoped
         XCTAssertTrue(youtubeAuto.contains("Summary"))
-        XCTAssertFalse(youtubeAuto.contains("Action Items & Decisions")) // not on YouTube
+        XCTAssertFalse(youtubeAuto.contains("Action Items & Decisions"))  // not on YouTube
         // The source-agnostic query still returns every auto-run prompt.
         XCTAssertTrue(try repo.fetchAutoRunPrompts().map(\.name).contains("Action Items & Decisions"))
     }
@@ -220,7 +221,9 @@ final class PromptRepositoryTests: XCTestCase {
         let reloaded = try XCTUnwrap(try repo.fetch(id: chapter.id))
         XCTAssertTrue(reloaded.isAutoRun)
         XCTAssertTrue(reloaded.isVisible)
-        XCTAssertEqual(reloaded.appliesToSources, [.meeting], "Enabling from off must scope to just that source — no leak onto other types.")
+        XCTAssertEqual(
+            reloaded.appliesToSources, [.meeting],
+            "Enabling from off must scope to just that source — no leak onto other types.")
         XCTAssertFalse(try repo.fetchAutoRunPrompts(for: .file).contains(where: { $0.id == chapter.id }))
     }
 
@@ -262,7 +265,8 @@ final class PromptRepositoryTests: XCTestCase {
 
         try repo.setAutoRun(id: summary.id, source: .meeting, enabled: true)
         let reloaded = try XCTUnwrap(try repo.fetch(id: summary.id))
-        XCTAssertNil(reloaded.appliesToSources, "Re-enabling the last missing source must normalize back to nil (all sources).")
+        XCTAssertNil(
+            reloaded.appliesToSources, "Re-enabling the last missing source must normalize back to nil (all sources).")
         XCTAssertTrue(reloaded.isAutoRun)
     }
 
@@ -272,13 +276,15 @@ final class PromptRepositoryTests: XCTestCase {
         chapter.appliesToSources = [.meeting]
         try repo.save(chapter)
 
-        try repo.toggleAutoRun(id: chapter.id) // off
+        try repo.toggleAutoRun(id: chapter.id)  // off
         XCTAssertFalse(try XCTUnwrap(repo.fetch(id: chapter.id)).isAutoRun)
-        try repo.toggleAutoRun(id: chapter.id) // on
+        try repo.toggleAutoRun(id: chapter.id)  // on
 
         let reloaded = try XCTUnwrap(try repo.fetch(id: chapter.id))
         XCTAssertTrue(reloaded.isAutoRun)
-        XCTAssertNil(reloaded.appliesToSources, "The global Auto-Run toggle means all sources — re-enabling must clear per-source scoping.")
+        XCTAssertNil(
+            reloaded.appliesToSources,
+            "The global Auto-Run toggle means all sources — re-enabling must clear per-source scoping.")
     }
 
     func testSetAutoRunAddsSourceToExistingPartialScope() throws {
@@ -303,13 +309,14 @@ final class PromptRepositoryTests: XCTestCase {
         // Built-ins ship unscoped, so restore must clear appliesToSources —
         // otherwise Summary comes back "visible" but silently meeting-only.
         let summary = try XCTUnwrap((try repo.fetchAll()).first(where: { $0.name == "Summary" }))
-        try repo.setAutoRun(id: summary.id, source: .meeting, enabled: false) // -> {file, youtube, podcast}
+        try repo.setAutoRun(id: summary.id, source: .meeting, enabled: false)  // -> {file, youtube, podcast}
         XCTAssertNotNil(try XCTUnwrap(repo.fetch(id: summary.id)).appliesToSources)
 
         try repo.restoreDefaults()
 
         let reloaded = try XCTUnwrap(try repo.fetch(id: summary.id))
-        XCTAssertNil(reloaded.appliesToSources, "Restore Defaults must return built-ins to their shipped unscoped state.")
+        XCTAssertNil(
+            reloaded.appliesToSources, "Restore Defaults must return built-ins to their shipped unscoped state.")
         XCTAssertTrue(reloaded.isVisible)
     }
 
@@ -323,13 +330,15 @@ final class PromptRepositoryTests: XCTestCase {
         let first = try DatabaseManager(path: dbPath)
         let firstRepo = PromptRepository(dbQueue: first.dbQueue)
         let summary = try XCTUnwrap((try firstRepo.fetchAll()).first(where: { $0.name == "Summary" }))
-        try firstRepo.setAutoRun(id: summary.id, source: .meeting, enabled: false) // -> {file, youtube, podcast}
+        try firstRepo.setAutoRun(id: summary.id, source: .meeting, enabled: false)  // -> {file, youtube, podcast}
 
         // Fresh boot re-runs the reconciler; the user's scoping must survive.
         let second = try DatabaseManager(path: dbPath)
         let secondRepo = PromptRepository(dbQueue: second.dbQueue)
         let reloaded = try XCTUnwrap(try secondRepo.fetch(id: summary.id))
-        XCTAssertEqual(reloaded.appliesToSources, [.file, .youtube, .podcast], "Reconciler must preserve user source-scoping on built-ins.")
+        XCTAssertEqual(
+            reloaded.appliesToSources, [.file, .youtube, .podcast],
+            "Reconciler must preserve user source-scoping on built-ins.")
     }
 
     func testReconcilerPreservesBuiltInInferenceSettings() throws {
@@ -402,7 +411,7 @@ final class PromptRepositoryTests: XCTestCase {
         let customShortcut = KeyboardShortcut(
             modifiers: KeyboardShortcut.ModifierFlag.option.rawValue
                 | KeyboardShortcut.ModifierFlag.shift.rawValue,
-            keyCode: 0x23, // kVK_ANSI_P
+            keyCode: 0x23,  // kVK_ANSI_P
             keyLabel: "P"
         )
         polish.name = "Personal Polish"
@@ -421,8 +430,12 @@ final class PromptRepositoryTests: XCTestCase {
         let reloaded = try XCTUnwrap(try secondRepo.fetch(id: polish.id))
 
         XCTAssertEqual(reloaded.name, "Personal Polish", "Reconciler must not overwrite user-set Transform names.")
-        XCTAssertEqual(reloaded.content, "Rewrite this in my house style.", "Reconciler must not overwrite user-set Transform prompt bodies.")
-        XCTAssertEqual(reloaded.updatedAt.timeIntervalSince1970, editDate.timeIntervalSince1970, accuracy: 0.001, "Reconciler must not overwrite the user's Transform edit timestamp.")
+        XCTAssertEqual(
+            reloaded.content, "Rewrite this in my house style.",
+            "Reconciler must not overwrite user-set Transform prompt bodies.")
+        XCTAssertEqual(
+            reloaded.updatedAt.timeIntervalSince1970, editDate.timeIntervalSince1970, accuracy: 0.001,
+            "Reconciler must not overwrite the user's Transform edit timestamp.")
         XCTAssertFalse(reloaded.isAutoRun, "Built-in Transforms must not keep leaked auto-run state.")
         XCTAssertEqual(reloaded.shortcut?.keyLabel, "P", "Reconciler must not overwrite user-set Transform shortcuts.")
         XCTAssertEqual(reloaded.shortcut?.modifierFlags, [.option, .shift])
@@ -532,14 +545,15 @@ final class PromptRepositoryTests: XCTestCase {
             decide.keyboardShortcut = KeyboardShortcut.parse("opt+3")!.encodedString()
             try promptRepo.save(decide)
 
-            try promptRepo.save(Prompt(
-                name: "Personal Decide",
-                content: "Use my decision template.",
-                category: .transform,
-                isBuiltIn: false,
-                sortOrder: 200,
-                keyboardShortcut: KeyboardShortcut.parse("ctrl+opt+3")!.encodedString()
-            ))
+            try promptRepo.save(
+                Prompt(
+                    name: "Personal Decide",
+                    content: "Use my decision template.",
+                    category: .transform,
+                    isBuiltIn: false,
+                    sortOrder: 200,
+                    keyboardShortcut: KeyboardShortcut.parse("ctrl+opt+3")!.encodedString()
+                ))
         }
 
         let reopenedManager = try DatabaseManager(path: dbPath)

@@ -9,14 +9,15 @@ final class PromptInferenceSettingsTests: XCTestCase {
     }
 
     func testValidationAcceptsBoundaryValues() throws {
-        XCTAssertNotNil(try PromptInferenceSettings(
-            temperature: 0,
-            topP: 1,
-            topK: 0,
-            maxTokens: 131_072,
-            seed: Int.min,
-            thinkingMode: .disabled
-        ).validated())
+        XCTAssertNotNil(
+            try PromptInferenceSettings(
+                temperature: 0,
+                topP: 1,
+                topK: 0,
+                maxTokens: 131_072,
+                seed: Int.min,
+                thinkingMode: .disabled
+            ).validated())
     }
 
     func testValidationRejectsInvalidAndNonFiniteValues() {
@@ -36,13 +37,28 @@ final class PromptInferenceSettingsTests: XCTestCase {
             topK: 20,
             maxTokens: 4096,
             seed: 42,
-            thinkingMode: .disabled
+            thinkingMode: .enabled,
+            reasoningEffort: .xhigh
         )
         let decoded = try JSONDecoder().decode(
             PromptInferenceSettings.self,
             from: JSONEncoder().encode(settings)
         )
         XCTAssertEqual(decoded, settings)
+    }
+
+    func testEveryReasoningEffortValueRoundTrips() throws {
+        for effort in PromptInferenceSettings.ReasoningEffort.allCases {
+            let settings = PromptInferenceSettings(
+                thinkingMode: .enabled,
+                reasoningEffort: effort
+            )
+            let decoded = try JSONDecoder().decode(
+                PromptInferenceSettings.self,
+                from: JSONEncoder().encode(settings)
+            )
+            XCTAssertEqual(decoded.reasoningEffort, effort)
+        }
     }
 
     func testDecodingOlderPartialJSONUsesDefaultThinkingMode() throws {
@@ -59,12 +75,44 @@ final class PromptInferenceSettingsTests: XCTestCase {
         XCTAssertEqual(partial, PromptInferenceSettings(temperature: 0.2))
     }
 
+    func testReasoningEffortIsEffectiveOnlyWhenThinkingIsEnabled() throws {
+        XCTAssertEqual(
+            try PromptInferenceSettings(
+                thinkingMode: .enabled,
+                reasoningEffort: .medium
+            ).validated(),
+            PromptInferenceSettings(thinkingMode: .enabled, reasoningEffort: .medium)
+        )
+        XCTAssertEqual(
+            try PromptInferenceSettings(
+                thinkingMode: .disabled,
+                reasoningEffort: .xhigh
+            ).validated(),
+            PromptInferenceSettings(thinkingMode: .disabled)
+        )
+        XCTAssertNil(try PromptInferenceSettings(reasoningEffort: .low).validated())
+    }
+
     func testOverlayPreservesHistoricalDefaultsWhenSettingsAreAbsent() {
         XCTAssertEqual(ChatCompletionOptions.default.applying(nil), .default)
         XCTAssertEqual(
             ChatCompletionOptions.default.applying(PromptInferenceSettings()),
             .default
         )
+    }
+
+    func testOverlayPreservesBaselineReasoningEffortWhenThinkingIsInherited() {
+        let baseline = ChatCompletionOptions(
+            temperature: 0.7,
+            thinkingMode: .enabled,
+            reasoningEffort: .high
+        )
+
+        let overlaid = baseline.applying(PromptInferenceSettings(maxTokens: 512))
+
+        XCTAssertEqual(overlaid.thinkingMode, .enabled)
+        XCTAssertEqual(overlaid.reasoningEffort, .high)
+        XCTAssertEqual(overlaid.maxTokens, 512)
     }
 
     func testEffectiveReceiptIncludesInheritedValuesActuallySent() {
@@ -97,11 +145,12 @@ final class PromptInferenceSettingsTests: XCTestCase {
             topK: 20,
             maxTokens: 4096,
             seed: 42,
-            thinkingMode: .disabled
+            thinkingMode: .enabled,
+            reasoningEffort: .xhigh
         )
         let resolution = PromptInferenceCapabilityResolver.resolve(
             config: .openaiCompatible(
-                model: "qwen3.8-flash-next",
+                model: "local-model",
                 baseURL: URL(string: "http://localhost:8080/v1")!
             ),
             requested: requested
@@ -110,7 +159,8 @@ final class PromptInferenceSettingsTests: XCTestCase {
         XCTAssertEqual(resolution.effectiveSettings, requested)
         XCTAssertTrue(resolution.unsupportedSettings.isEmpty)
         XCTAssertEqual(resolution.options.temperature, 0.2)
-        XCTAssertEqual(resolution.options.thinkingMode, .disabled)
+        XCTAssertEqual(resolution.options.thinkingMode, .enabled)
+        XCTAssertEqual(resolution.options.reasoningEffort, .xhigh)
     }
 
     func testOpenAIReasoningModelReportsUnsupportedSampling() {
@@ -122,7 +172,8 @@ final class PromptInferenceSettingsTests: XCTestCase {
                 topK: 20,
                 maxTokens: 4096,
                 seed: 42,
-                thinkingMode: .enabled
+                thinkingMode: .enabled,
+                reasoningEffort: .medium
             )
         )
 
@@ -130,7 +181,7 @@ final class PromptInferenceSettingsTests: XCTestCase {
         XCTAssertNil(resolution.options.temperature)
         XCTAssertEqual(
             resolution.unsupportedSettings,
-            [.temperature, .topP, .topK, .seed, .thinkingMode]
+            [.temperature, .topP, .topK, .seed, .thinkingMode, .reasoningEffort]
         )
         XCTAssertEqual(
             resolution.effectiveSettings,
@@ -169,5 +220,23 @@ final class PromptInferenceSettingsTests: XCTestCase {
             PromptInferenceSettings(thinkingMode: .disabled)
         )
         XCTAssertTrue(resolution.unsupportedSettings.isEmpty)
+    }
+
+    func testOllamaReportsReasoningEffortUnsupported() {
+        let resolution = PromptInferenceCapabilityResolver.resolve(
+            config: .ollama(model: "local-model"),
+            requested: PromptInferenceSettings(
+                thinkingMode: .enabled,
+                reasoningEffort: .medium
+            )
+        )
+
+        XCTAssertEqual(resolution.options.thinkingMode, .enabled)
+        XCTAssertNil(resolution.options.reasoningEffort)
+        XCTAssertEqual(resolution.unsupportedSettings, [.reasoningEffort])
+        XCTAssertEqual(
+            resolution.effectiveSettings,
+            PromptInferenceSettings(thinkingMode: .enabled)
+        )
     }
 }

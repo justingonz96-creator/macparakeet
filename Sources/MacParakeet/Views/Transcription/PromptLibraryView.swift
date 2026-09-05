@@ -665,6 +665,32 @@ private struct GenerationSettingsEditor: View {
                         .labelsHidden()
                         .pickerStyle(.menu)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .onChange(of: draft.thinkingMode) { _, mode in
+                            if mode != .enabled {
+                                draft.reasoningEffort = nil
+                            }
+                        }
+                    }
+
+                    if draft.thinkingMode == .enabled {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Reasoning effort")
+                                .font(DesignSystem.Typography.caption.weight(.medium))
+                                .foregroundStyle(DesignSystem.Colors.textSecondary)
+                            Picker("Reasoning effort", selection: $draft.reasoningEffort) {
+                                Text("Default").tag(PromptInferenceSettings.ReasoningEffort?.none)
+                                ForEach(PromptInferenceSettings.ReasoningEffort.allCases, id: \.self) { effort in
+                                    Text(PromptsViewModel.displayName(for: effort)).tag(Optional(effort))
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            Text("Available levels depend on the endpoint and model template.")
+                                .font(DesignSystem.Typography.micro)
+                                .foregroundStyle(DesignSystem.Colors.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
 
@@ -736,7 +762,8 @@ private struct GenerationSettingsEditor: View {
             topK: Int(draft.topK.trimmingCharacters(in: .whitespacesAndNewlines)),
             maxTokens: Int(draft.maxTokens.trimmingCharacters(in: .whitespacesAndNewlines)),
             seed: Int(draft.seed.trimmingCharacters(in: .whitespacesAndNewlines)),
-            thinkingMode: draft.thinkingMode
+            thinkingMode: draft.thinkingMode,
+            reasoningEffort: draft.reasoningEffort
         )
         return PromptsViewModel.compactInferenceSummary(settings)
     }

@@ -7,6 +7,13 @@ public struct PromptInferenceSettings: Codable, Sendable, Equatable {
         case disabled
     }
 
+    public enum ReasoningEffort: String, Codable, Sendable, CaseIterable {
+        case low
+        case medium
+        case high
+        case xhigh
+    }
+
     public enum Field: String, Codable, Sendable, Hashable, CaseIterable, Comparable {
         case temperature
         case topP
@@ -14,6 +21,7 @@ public struct PromptInferenceSettings: Codable, Sendable, Equatable {
         case maxTokens
         case seed
         case thinkingMode
+        case reasoningEffort
 
         public static func < (lhs: Field, rhs: Field) -> Bool {
             lhs.rawValue < rhs.rawValue
@@ -31,6 +39,7 @@ public struct PromptInferenceSettings: Codable, Sendable, Equatable {
     public var maxTokens: Int?
     public var seed: Int?
     public var thinkingMode: ThinkingMode
+    public var reasoningEffort: ReasoningEffort?
 
     public init(
         temperature: Double? = nil,
@@ -38,7 +47,8 @@ public struct PromptInferenceSettings: Codable, Sendable, Equatable {
         topK: Int? = nil,
         maxTokens: Int? = nil,
         seed: Int? = nil,
-        thinkingMode: ThinkingMode = .providerDefault
+        thinkingMode: ThinkingMode = .providerDefault,
+        reasoningEffort: ReasoningEffort? = nil
     ) {
         self.temperature = temperature
         self.topP = topP
@@ -46,10 +56,11 @@ public struct PromptInferenceSettings: Codable, Sendable, Equatable {
         self.maxTokens = maxTokens
         self.seed = seed
         self.thinkingMode = thinkingMode
+        self.reasoningEffort = reasoningEffort
     }
 
     private enum CodingKeys: String, CodingKey {
-        case temperature, topP, topK, maxTokens, seed, thinkingMode
+        case temperature, topP, topK, maxTokens, seed, thinkingMode, reasoningEffort
     }
 
     public init(from decoder: Decoder) throws {
@@ -59,8 +70,10 @@ public struct PromptInferenceSettings: Codable, Sendable, Equatable {
         topK = try container.decodeIfPresent(Int.self, forKey: .topK)
         maxTokens = try container.decodeIfPresent(Int.self, forKey: .maxTokens)
         seed = try container.decodeIfPresent(Int.self, forKey: .seed)
-        thinkingMode = try container.decodeIfPresent(ThinkingMode.self, forKey: .thinkingMode)
+        thinkingMode =
+            try container.decodeIfPresent(ThinkingMode.self, forKey: .thinkingMode)
             ?? .providerDefault
+        reasoningEffort = try container.decodeIfPresent(ReasoningEffort.self, forKey: .reasoningEffort)
     }
 
     public var isDefault: Bool {
@@ -70,10 +83,15 @@ public struct PromptInferenceSettings: Codable, Sendable, Equatable {
             && maxTokens == nil
             && seed == nil
             && thinkingMode == .providerDefault
+            && reasoningEffort == nil
     }
 
     public var normalized: PromptInferenceSettings? {
-        isDefault ? nil : self
+        var settings = self
+        if settings.thinkingMode != .enabled {
+            settings.reasoningEffort = nil
+        }
+        return settings.isDefault ? nil : settings
     }
 
     public func validated() throws -> PromptInferenceSettings? {
@@ -139,6 +157,7 @@ public enum PromptInferenceCapabilityResolver {
                 maxTokens: resolvedOptions.maxTokens,
                 seed: resolvedOptions.seed,
                 thinkingMode: .disabled,
+                reasoningEffort: nil,
                 responseFormat: resolvedOptions.responseFormat
             )
         }
@@ -176,7 +195,7 @@ public enum PromptInferenceCapabilityResolver {
         case .ollama:
             return [.temperature, .topP, .topK, .maxTokens, .seed, .thinkingMode]
         case .openaiCompatible:
-            return [.temperature, .topP, .topK, .maxTokens, .seed, .thinkingMode]
+            return [.temperature, .topP, .topK, .maxTokens, .seed, .thinkingMode, .reasoningEffort]
         case .gemini, .openrouter, .lmstudio:
             return [.temperature, .maxTokens]
         case .localCLI:
@@ -197,6 +216,7 @@ public enum PromptInferenceCapabilityResolver {
         if settings.maxTokens != nil { fields.insert(.maxTokens) }
         if settings.seed != nil { fields.insert(.seed) }
         if settings.thinkingMode != .providerDefault { fields.insert(.thinkingMode) }
+        if settings.reasoningEffort != nil { fields.insert(.reasoningEffort) }
         return fields
     }
 
@@ -211,6 +231,7 @@ public enum PromptInferenceCapabilityResolver {
             maxTokens: supported.contains(.maxTokens) ? options.maxTokens : nil,
             seed: supported.contains(.seed) ? options.seed : nil,
             thinkingMode: supported.contains(.thinkingMode) ? options.thinkingMode : .providerDefault,
+            reasoningEffort: supported.contains(.reasoningEffort) ? options.reasoningEffort : nil,
             responseFormat: options.responseFormat
         )
     }
@@ -236,7 +257,8 @@ public enum PromptInferenceCapabilityResolver {
             topK: options.topK,
             maxTokens: config.id == .anthropic ? (options.maxTokens ?? 4096) : options.maxTokens,
             seed: options.seed,
-            thinkingMode: options.thinkingMode
+            thinkingMode: options.thinkingMode,
+            reasoningEffort: options.reasoningEffort
         ).normalized
     }
 }

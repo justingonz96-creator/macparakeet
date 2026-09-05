@@ -100,7 +100,9 @@ plus sanitized prompt-result name.
 Each `prompt-results.json` record preserves the prompt-result snapshots,
 including additive optional `inferenceSettingsSnapshot`. When present, this is
 the normalized effective provider/model-filtered inference receipt stored on
-the canonical database row; legacy and externally imported rows may omit it.
+the canonical database row. Its optional `reasoningEffort` is one of `low`,
+`medium`, `high`, or `xhigh` and appears only with enabled thinking; legacy and
+externally imported rows may omit it.
 
 New recordings write the role-explicit audio filenames above. For read
 compatibility with folders created before the in-place v1 audio filename

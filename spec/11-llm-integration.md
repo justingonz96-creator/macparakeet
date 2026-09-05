@@ -199,6 +199,7 @@ public struct ChatCompletionOptions: Sendable {
     public let conversationID: UUID? // nil for a one-shot; header-only, not JSON
     public let seed: Int?
     public let thinkingMode: PromptInferenceSettings.ThinkingMode
+    public let reasoningEffort: PromptInferenceSettings.ReasoningEffort?
 }
 
 public struct ChatCompletionResponse: Sendable {
@@ -258,8 +259,8 @@ capability contract is:
 | --- | --- |
 | Native OpenAI | `temperature` and `topP` when model policy permits them; `maxTokens` through the existing token-key policy |
 | Native Anthropic | `temperature`, `topP`, and `maxTokens` when accepted by the model policy |
-| Native Ollama | All six settings; numeric values use Ollama `options`, thinking uses top-level `think` |
-| Custom OpenAI-compatible | All six settings; thinking uses `chat_template_kwargs.enable_thinking` |
+| Native Ollama | The original six settings; numeric values use Ollama `options`, thinking uses top-level `think`; reasoning effort is unsupported |
+| Custom OpenAI-compatible | All seven settings; thinking uses `chat_template_kwargs.enable_thinking`, and optional effort uses `chat_template_kwargs.reasoning_effort` only while thinking is enabled |
 | Gemini, OpenRouter, LM Studio | `temperature` and `maxTokens` initially |
 | In-process local | `temperature` and `maxTokens` |
 | Local CLI | None in the initial contract |

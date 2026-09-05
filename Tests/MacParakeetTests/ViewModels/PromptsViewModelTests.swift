@@ -41,7 +41,8 @@ final class PromptsViewModelTests: XCTestCase {
             topK: "20",
             maxTokens: "4096",
             seed: "-42",
-            thinkingMode: .disabled
+            thinkingMode: .enabled,
+            reasoningEffort: .medium
         )
 
         viewModel.addPrompt()
@@ -55,7 +56,8 @@ final class PromptsViewModelTests: XCTestCase {
                 topK: 20,
                 maxTokens: 4096,
                 seed: -42,
-                thinkingMode: .disabled
+                thinkingMode: .enabled,
+                reasoningEffort: .medium
             )
         )
         XCTAssertTrue(viewModel.newInferenceSettings.isDefault)
@@ -206,12 +208,14 @@ final class PromptsViewModelTests: XCTestCase {
         viewModel.editingInferenceSettings.temperature = "0"
         viewModel.editingInferenceSettings.topK = ""
         viewModel.editingInferenceSettings.thinkingMode = .enabled
+        viewModel.editingInferenceSettings.reasoningEffort = .xhigh
         viewModel.updatePrompt(custom, name: "New", content: "New content")
 
         let updated = try XCTUnwrap(viewModel.prompts.first { $0.id == custom.id })
         XCTAssertEqual(updated.inferenceSettings?.temperature, 0)
         XCTAssertNil(updated.inferenceSettings?.topK)
         XCTAssertEqual(updated.inferenceSettings?.thinkingMode, .enabled)
+        XCTAssertEqual(updated.inferenceSettings?.reasoningEffort, .xhigh)
     }
 
     func testResetInferenceDraftClearsEveryField() {
@@ -221,7 +225,8 @@ final class PromptsViewModelTests: XCTestCase {
             topK: "20",
             maxTokens: "4096",
             seed: "42",
-            thinkingMode: .disabled
+            thinkingMode: .enabled,
+            reasoningEffort: .high
         )
 
         viewModel.resetNewInferenceSettings()
@@ -248,13 +253,14 @@ final class PromptsViewModelTests: XCTestCase {
                 topK: 20,
                 maxTokens: 4096,
                 seed: 42,
-                thinkingMode: .disabled
+                thinkingMode: .enabled,
+                reasoningEffort: .medium
             )
         )
 
         XCTAssertEqual(
             summary,
-            "Temp 0.2 · Top P 0.9 · Top K 20 · Max 4096 · Seed 42 · Thinking off"
+            "Temp 0.2 · Top P 0.9 · Top K 20 · Max 4096 · Seed 42 · Thinking on · Effort Medium"
         )
         XCTAssertNil(PromptsViewModel.compactInferenceSummary(nil))
     }

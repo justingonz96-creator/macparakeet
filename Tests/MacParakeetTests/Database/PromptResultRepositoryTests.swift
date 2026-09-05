@@ -56,7 +56,8 @@ final class PromptResultRepositoryTests: XCTestCase {
                 topK: 20,
                 maxTokens: 4096,
                 seed: 42,
-                thinkingMode: .disabled
+                thinkingMode: .enabled,
+                reasoningEffort: .medium
             )
         )
         try repo.save(result)

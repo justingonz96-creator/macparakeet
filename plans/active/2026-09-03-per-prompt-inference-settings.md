@@ -1,6 +1,7 @@
 # Per-Prompt LLM Inference Settings — Implementation Plan
 
-> Status: **PR OPEN** — implemented and locally verified on 2026-09-03.
+> Status: **PR OPEN** — implemented and locally verified on 2026-09-03;
+> conditional reasoning effort added on 2026-09-05.
 
 Governing draft spec:
 [`spec/14-per-prompt-inference-settings.md`](../../spec/14-per-prompt-inference-settings.md)
@@ -143,7 +144,8 @@ Extend `Prompt` with `inferenceSettings` and `PromptResult` with
 record's `Columns` enum.
 
 Extend `ChatCompletionOptions` with transport-neutral `topP`, `topK`, `seed`,
-and `thinkingMode`. Keep an explicit merge function that overlays prompt
+`thinkingMode`, and optional `reasoningEffort`. Keep an explicit merge function
+that overlays prompt
 settings on `.default`; do not spread fallback rules across call sites.
 
 ### Capability resolution
@@ -168,8 +170,9 @@ Initial capability policy:
   model policy; omit top-k, seed, and thinking.
 - Ollama native: temperature/top-p/top-k/num-predict/seed in `options`, plus
   top-level `think` when explicitly enabled/disabled; retain `num_ctx`.
-- Custom OpenAI-compatible: temperature/top-p/top-k/max-tokens/seed and Qwen
-  `chat_template_kwargs.enable_thinking`. Keep this scoped to the custom
+- Custom OpenAI-compatible: temperature/top-p/top-k/max-tokens/seed plus
+  `chat_template_kwargs.enable_thinking` and optional nested
+  `reasoning_effort`. Keep this scoped to the custom
   endpoint path; do not send non-standard keys to OpenAI, Gemini, OpenRouter,
   or LM Studio without an explicit tested capability.
 - Gemini, OpenRouter, and LM Studio: start from only the fields already proven
@@ -251,7 +254,7 @@ operations.
 
 ### Prompt Library UI
 
-Introduce a small value-type draft for the six fields rather than six loosely
+Introduce a small value-type draft for the seven fields rather than loosely
 coupled strings in `PromptLibraryView`.
 
 - Create/edit sheets get a collapsed `DisclosureGroup("Generation settings")`.
@@ -375,8 +378,8 @@ public architecture decision than the ADR-013 amendment can explain cleanly.
 
 ### Providers
 
-- Custom OpenAI-compatible JSON covers all supported keys and Qwen thinking
-  off without changing prompt text.
+- Custom OpenAI-compatible JSON covers all supported keys, explicit thinking,
+  and optional reasoning effort without changing prompt text.
 - Native Ollama maps options and explicit thinking while retaining `num_ctx`.
 - OpenAI reasoning models omit forbidden temperature/top-p as required and use
   the correct output-token key.
@@ -435,8 +438,10 @@ schema/public-surface change, use the documented PR review workflow and
 - [x] Decision Gate 0 wording/model is accepted and reflected in the proposal.
 - [x] One custom prompt can set temperature, top-k, and max tokens without
       affecting any other prompt.
-- [x] Qwen thinking can be disabled on a custom OpenAI-compatible endpoint
+- [x] Thinking can be disabled on a custom OpenAI-compatible endpoint
       without prompt-text injection.
+- [x] A custom OpenAI-compatible endpoint can receive a typed reasoning effort
+      only while thinking is enabled.
 - [x] Existing unset prompts produce unchanged requests on every provider path.
 - [x] Queue, retry, regenerate, auto-run, and CLI run follow the documented
       snapshot semantics.

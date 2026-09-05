@@ -1,7 +1,7 @@
 # Per-Prompt LLM Inference Settings
 
-> Status: **DRAFT / IMPLEMENTATION IN PROGRESS** — the default-semantics
-> decision is accepted in
+> Status: **IMPLEMENTED / PR OPEN** — the default-semantics
+> decision and conditional reasoning-effort extension are accepted in
 > [`plans/active/2026-09-03-per-prompt-inference-settings.md`](../plans/active/2026-09-03-per-prompt-inference-settings.md).
 
 Target: MacParakeet
@@ -22,6 +22,8 @@ The first implementation supports:
 - `maxTokens`
 - `seed`
 - `thinkingMode`: default, enabled, or disabled
+- `reasoningEffort`: default, low, medium, high, or extra high; only effective
+  when thinking is enabled
 
 This is deliberately a typed feature, not an arbitrary JSON request editor.
 
@@ -35,9 +37,9 @@ settings. A user therefore cannot tune one summarization prompt without
 changing code or affecting unrelated LLM operations.
 
 Local models make this particularly visible. A long meeting summary may need a
-larger output budget and deterministic sampling, while a Qwen endpoint may need
-thinking explicitly disabled to avoid spending the context and token budget on
-reasoning.
+larger output budget and deterministic sampling, while a thinking-capable
+endpoint may need reasoning explicitly disabled or bounded to avoid spending
+the context and token budget unnecessarily.
 
 ## Product behavior
 
@@ -58,6 +60,7 @@ Controls:
 | Maximum output tokens | Optional integer | `1...131072` |
 | Seed | Optional signed integer | Provider-defined semantics |
 | Thinking | Picker | Default / Enabled / Disabled |
+| Reasoning effort | Conditional picker | Default / Low / Medium / High / Extra high; shown only when Thinking is Enabled |
 
 The section includes **Reset to defaults**, which clears every value.
 Validation happens before save and shows a field-level error. Blank means
@@ -101,6 +104,7 @@ public struct PromptInferenceSettings: Codable, Sendable, Equatable {
     public var maxTokens: Int?
     public var seed: Int?
     public var thinkingMode: ThinkingMode
+    public var reasoningEffort: ReasoningEffort?
 }
 
 public enum ThinkingMode: String, Codable, Sendable {
@@ -108,11 +112,20 @@ public enum ThinkingMode: String, Codable, Sendable {
     case enabled
     case disabled
 }
+
+public enum ReasoningEffort: String, Codable, Sendable {
+    case low
+    case medium
+    case high
+    case xhigh
+}
 ```
 
 `PromptInferenceSettings` owns range validation and exposes `isDefault`. Its
 default value has all numeric fields `nil` and `thinkingMode ==
-.providerDefault`.
+.providerDefault`; `reasoningEffort` is also `nil`. Normalization clears a
+reasoning effort unless thinking is explicitly enabled, preventing a hidden or
+stale effort from reaching a request.
 
 Extend `ChatCompletionOptions` with the same transport-neutral fields. Keep
 `responseFormat` separate: it is controlled by an operation such as knowledge
@@ -170,14 +183,14 @@ configured value when a model rejects it.
 
 | Provider path | Mapping |
 | --- | --- |
-| Custom OpenAI-compatible, including llama.cpp | `temperature`, `top_p`, `top_k`, `max_tokens`, `seed`; thinking maps to `chat_template_kwargs.enable_thinking` |
-| Native Ollama | `temperature`, `top_p`, `top_k`, `num_predict`, `seed` inside `options`; thinking maps to top-level `think` |
+| Custom OpenAI-compatible, including llama.cpp | `temperature`, `top_p`, `top_k`, `max_tokens`, `seed`; thinking and optional effort map to `chat_template_kwargs.enable_thinking` and `chat_template_kwargs.reasoning_effort` |
+| Native Ollama | `temperature`, `top_p`, `top_k`, `num_predict`, `seed` inside `options`; thinking maps to top-level `think`; reasoning effort is initially unsupported |
 | Native OpenAI | `temperature` and `top_p` when model-compatible; output budget uses the adapter's existing `max_tokens` / `max_completion_tokens` policy; omit `top_k`, `seed`, and thinking |
 | Native Anthropic | `temperature`, `top_p`, and `max_tokens` when model-compatible; omit `top_k`, `seed`, and thinking |
 | Gemini / OpenRouter / LM Studio | Map fields explicitly supported by the existing endpoint contract; omit the rest |
 | In-process MLX / local CLI | Apply only fields supported by the runtime/CLI contract; report the rest as unsupported |
 
-For Qwen served through an OpenAI-compatible llama.cpp endpoint:
+For a model served through an OpenAI-compatible llama.cpp endpoint:
 
 ```json
 {
@@ -191,6 +204,21 @@ For Qwen served through an OpenAI-compatible llama.cpp endpoint:
   }
 }
 ```
+
+When thinking is enabled and an effort is configured, the custom
+OpenAI-compatible mapping is:
+
+```json
+"chat_template_kwargs": {
+  "enable_thinking": true,
+  "reasoning_effort": "medium"
+}
+```
+
+The accepted levels are endpoint- and model-template-dependent. MacParakeet
+offers the common typed superset and reports the field as supported for custom
+OpenAI-compatible endpoints without claiming that every endpoint implements
+every value.
 
 Do not inject `/no_think` into prompt text. Thinking is a request/template
 setting and must be represented as such.
@@ -246,7 +274,8 @@ Minimum automated coverage:
    settings.
 5. Manual and auto-run generation snapshot settings at enqueue time.
 6. Retry and regenerate use the captured/result snapshot respectively.
-7. OpenAI-compatible request JSON covers every field and Qwen thinking off.
+7. OpenAI-compatible request JSON covers every field, including explicit
+   thinking and optional reasoning effort.
 8. Native Ollama maps sampling fields and `think` correctly.
 9. OpenAI reasoning-model tests still omit forbidden temperature and select the
    correct output-token key.
@@ -263,8 +292,10 @@ verification, per repository guidance.
 
 - A user can save `temperature`, `topK`, and `maxTokens` on one custom summary
   prompt without affecting another prompt.
-- A user can explicitly disable Qwen thinking for an OpenAI-compatible local
+- A user can explicitly disable thinking for an OpenAI-compatible local
   endpoint without modifying the prompt text.
+- A user can select a typed reasoning effort while thinking is enabled; it is
+  omitted when thinking is default or disabled.
 - Manual, queued, auto-run, retry, and regenerate paths honor the documented
   snapshot semantics.
 - The generated HTTP body contains only keys supported by the selected
@@ -281,4 +312,4 @@ verification, per repository guidance.
 2. Database migration, repository round trips, and canonical spec updates.
 3. LLM service streaming terminal metadata and queue/result snapshots.
 4. Prompt Library controls, validation, compatibility note, and popover summary.
-5. Regression suite and one manual Qwen/llama.cpp meeting-summary test.
+5. Regression suite and one manual OpenAI-compatible llama.cpp meeting-summary test.

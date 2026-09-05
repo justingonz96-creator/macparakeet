@@ -392,7 +392,8 @@ final class LLMHTTPAdapterTests: XCTestCase {
                 topK: 20,
                 maxTokens: 4096,
                 seed: 42,
-                thinkingMode: .disabled
+                thinkingMode: .enabled,
+                reasoningEffort: .medium
             )
         )
 
@@ -405,8 +406,8 @@ final class LLMHTTPAdapterTests: XCTestCase {
         try assertJSONBody(
             try XCTUnwrap(capturedRequest),
             equals: """
-            {"chat_template_kwargs":{"enable_thinking":false},"max_tokens":4096,"messages":[{"content":"System","role":"system"},{"content":"Hello","role":"user"}],"model":"local-model","seed":42,"stream":false,"temperature":0.2,"top_k":20,"top_p":0.9}
-            """
+                {"chat_template_kwargs":{"enable_thinking":true,"reasoning_effort":"medium"},"max_tokens":4096,"messages":[{"content":"System","role":"system"},{"content":"Hello","role":"user"}],"model":"local-model","seed":42,"stream":false,"temperature":0.2,"top_k":20,"top_p":0.9}
+                """
         )
     }
 
@@ -420,42 +421,67 @@ final class LLMHTTPAdapterTests: XCTestCase {
             config: config,
             requested: nil
         )
-        let inheritedBody = try jsonBody(from: openAIAdapter.buildRequest(
-            messages: goldenMessages,
-            config: config,
-            options: inherited.options,
-            stream: false
-        ))
+        let inheritedBody = try jsonBody(
+            from: openAIAdapter.buildRequest(
+                messages: goldenMessages,
+                config: config,
+                options: inherited.options,
+                stream: false
+            ))
         XCTAssertNil(inheritedBody["chat_template_kwargs"])
 
         let enabled = PromptInferenceCapabilityResolver.resolve(
             config: config,
-            requested: PromptInferenceSettings(thinkingMode: .enabled)
+            requested: PromptInferenceSettings(thinkingMode: .enabled, reasoningEffort: .xhigh)
         )
-        let enabledBody = try jsonBody(from: openAIAdapter.buildRequest(
-            messages: goldenMessages,
-            config: config,
-            options: enabled.options,
-            stream: false
-        ))
+        let enabledBody = try jsonBody(
+            from: openAIAdapter.buildRequest(
+                messages: goldenMessages,
+                config: config,
+                options: enabled.options,
+                stream: false
+            ))
         XCTAssertEqual(
-            (enabledBody["chat_template_kwargs"] as? [String: Bool])?["enable_thinking"],
+            (enabledBody["chat_template_kwargs"] as? [String: Any])?["enable_thinking"] as? Bool,
             true
+        )
+        XCTAssertEqual(
+            (enabledBody["chat_template_kwargs"] as? [String: Any])?["reasoning_effort"] as? String,
+            "xhigh"
         )
 
         let disabled = PromptInferenceCapabilityResolver.resolve(
             config: config,
             requested: PromptInferenceSettings(thinkingMode: .disabled)
         )
-        let disabledBody = try jsonBody(from: openAIAdapter.buildRequest(
-            messages: goldenMessages,
-            config: config,
-            options: disabled.options,
-            stream: false
-        ))
+        let disabledBody = try jsonBody(
+            from: openAIAdapter.buildRequest(
+                messages: goldenMessages,
+                config: config,
+                options: disabled.options,
+                stream: false
+            ))
         XCTAssertEqual(
-            (disabledBody["chat_template_kwargs"] as? [String: Bool])?["enable_thinking"],
+            (disabledBody["chat_template_kwargs"] as? [String: Any])?["enable_thinking"] as? Bool,
             false
+        )
+        XCTAssertNil(
+            (disabledBody["chat_template_kwargs"] as? [String: Any])?["reasoning_effort"]
+        )
+
+        let staleEffortBody = try jsonBody(
+            from: openAIAdapter.buildRequest(
+                messages: goldenMessages,
+                config: config,
+                options: ChatCompletionOptions(
+                    thinkingMode: .disabled,
+                    reasoningEffort: .high,
+                    usesPromptInferenceSettings: true
+                ),
+                stream: false
+            ))
+        XCTAssertNil(
+            (staleEffortBody["chat_template_kwargs"] as? [String: Any])?["reasoning_effort"]
         )
     }
 
@@ -483,8 +509,8 @@ final class LLMHTTPAdapterTests: XCTestCase {
         try assertJSONBody(
             try XCTUnwrap(capturedRequest),
             equals: """
-            {"max_tokens":4096,"messages":[{"content":"System","role":"system"},{"content":"Hello","role":"user"}],"model":"gpt-4o","stream":false,"temperature":0.2,"top_p":0.9}
-            """
+                {"max_tokens":4096,"messages":[{"content":"System","role":"system"},{"content":"Hello","role":"user"}],"model":"gpt-4o","stream":false,"temperature":0.2,"top_p":0.9}
+                """
         )
     }
 
@@ -627,8 +653,8 @@ final class LLMHTTPAdapterTests: XCTestCase {
         try assertJSONBody(
             try XCTUnwrap(capturedRequest),
             equals: """
-            {"max_tokens":4096,"messages":[{"content":"Hello","role":"user"}],"model":"claude-sonnet-4-6","stream":false,"system":"System","temperature":0.2,"top_p":0.9}
-            """
+                {"max_tokens":4096,"messages":[{"content":"Hello","role":"user"}],"model":"claude-sonnet-4-6","stream":false,"system":"System","temperature":0.2,"top_p":0.9}
+                """
         )
     }
 
@@ -684,14 +710,15 @@ final class LLMHTTPAdapterTests: XCTestCase {
 
     func testOpenAIDetailedStreamEmitsOneTerminalReceipt() async throws {
         AdapterRequestURLProtocol.handler = { request in
-            let data = Data("""
-            data: {"model":"gpt-4.1","choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
+            let data = Data(
+                """
+                data: {"model":"gpt-4.1","choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
 
-            data: {"model":"gpt-4.1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}
+                data: {"model":"gpt-4.1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}
 
-            data: [DONE]
+                data: [DONE]
 
-            """.utf8)
+                """.utf8)
             return (self.okResponse(for: request), data)
         }
         let settings = PromptInferenceSettings(temperature: 0.2)
@@ -700,11 +727,12 @@ final class LLMHTTPAdapterTests: XCTestCase {
             effectiveSettings: settings
         )
 
-        let events = try await collectDetailed(openAIAdapter.chatCompletionDetailedStream(
-            messages: goldenMessages,
-            config: .openai(apiKey: "test", model: "gpt-4.1"),
-            options: options
-        ))
+        let events = try await collectDetailed(
+            openAIAdapter.chatCompletionDetailedStream(
+                messages: goldenMessages,
+                config: .openai(apiKey: "test", model: "gpt-4.1"),
+                options: options
+            ))
 
         XCTAssertEqual(events.filter { $0.isTerminal }.count, 1)
         guard case .completed(let terminal) = events.last else {
@@ -718,24 +746,26 @@ final class LLMHTTPAdapterTests: XCTestCase {
 
     func testAnthropicDetailedStreamEmitsTerminalMetadata() async throws {
         AdapterRequestURLProtocol.handler = { request in
-            let data = Data("""
-            data: {"type":"message_start","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":8,"output_tokens":0}}}
+            let data = Data(
+                """
+                data: {"type":"message_start","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":8,"output_tokens":0}}}
 
-            data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}
+                data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}
 
-            data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}
+                data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}
 
-            data: {"type":"message_stop"}
+                data: {"type":"message_stop"}
 
-            """.utf8)
+                """.utf8)
             return (self.okResponse(for: request), data)
         }
 
-        let events = try await collectDetailed(anthropicAdapter.chatCompletionDetailedStream(
-            messages: goldenMessages,
-            config: .anthropic(apiKey: "test", model: "claude-sonnet-4-6"),
-            options: .default
-        ))
+        let events = try await collectDetailed(
+            anthropicAdapter.chatCompletionDetailedStream(
+                messages: goldenMessages,
+                config: .anthropic(apiKey: "test", model: "claude-sonnet-4-6"),
+                options: .default
+            ))
 
         XCTAssertEqual(events.filter { $0.isTerminal }.count, 1)
         guard case .completed(let terminal) = events.last else {
@@ -749,18 +779,20 @@ final class LLMHTTPAdapterTests: XCTestCase {
 
     func testOllamaDetailedStreamEmitsTerminalOnlyAfterDone() async throws {
         AdapterRequestURLProtocol.handler = { request in
-            let data = Data("""
-            {"model":"qwen3.5:4b","message":{"role":"assistant","content":"OK"},"done":false}
-            {"model":"qwen3.5:4b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":1}
-            """.utf8)
+            let data = Data(
+                """
+                {"model":"qwen3.5:4b","message":{"role":"assistant","content":"OK"},"done":false}
+                {"model":"qwen3.5:4b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":1}
+                """.utf8)
             return (self.okResponse(for: request), data)
         }
 
-        let events = try await collectDetailed(ollamaAdapter.chatCompletionDetailedStream(
-            messages: goldenMessages,
-            config: .ollama(model: "qwen3.5:4b"),
-            options: .default
-        ))
+        let events = try await collectDetailed(
+            ollamaAdapter.chatCompletionDetailedStream(
+                messages: goldenMessages,
+                config: .ollama(model: "qwen3.5:4b"),
+                options: .default
+            ))
 
         XCTAssertEqual(events.filter { $0.isTerminal }.count, 1)
         XCTAssertEqual(events.first, .text("OK"))
@@ -828,8 +860,8 @@ final class LLMHTTPAdapterTests: XCTestCase {
         try assertJSONBody(
             try XCTUnwrap(capturedRequest),
             equals: """
-            {"messages":[{"content":"System","role":"system"},{"content":"Hello","role":"user"}],"model":"qwen3.5:4b","options":{"num_ctx":8192,"num_predict":4096,"seed":42,"temperature":0.2,"top_k":20,"top_p":0.9},"stream":false,"think":true}
-            """
+                {"messages":[{"content":"System","role":"system"},{"content":"Hello","role":"user"}],"model":"qwen3.5:4b","options":{"num_ctx":8192,"num_predict":4096,"seed":42,"temperature":0.2,"top_k":20,"top_p":0.9},"stream":false,"think":true}
+                """
         )
     }
 

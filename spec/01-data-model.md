@@ -404,7 +404,9 @@ CREATE UNIQUE INDEX idx_prompts_name ON prompts(name COLLATE NOCASE);
 - `appliesToSources` (v0.20) scopes auto-run to specific transcription sources (JSON-encoded `Set<Transcription.SourceType>`). `NULL` means "all sources" — the canonical unscoped form. The Meetings "After each meeting" card sets `[.meeting]`; the global Prompt Library toggle, CLI `prompts set --auto-run`, and result-prompt default restore reset it to `NULL`. A set covering every source is normalized back to `NULL` so future `SourceType` cases are auto-included. Only consulted when `isAutoRun = true` (see `Prompt.autoRuns(for:)`).
 - `inferenceSettings` (v0.31) is nullable JSON for the transport-neutral
   `PromptInferenceSettings` value (`temperature`, `topP`, `topK`, `maxTokens`,
-  `seed`, and `thinkingMode`). It applies only to custom result prompts. `NULL`
+  `seed`, `thinkingMode`, and optional `reasoningEffort`). The effort values are
+  `low`, `medium`, `high`, and `xhigh`; normalization clears the field unless
+  `thinkingMode` is `enabled`. It applies only to custom result prompts. `NULL`
   and an all-default object are normalized to the same meaning: inherit the
   prompt-result operation's current MacParakeet and adapter defaults. They do
   not mean "force the upstream provider to omit every parameter." Built-in and

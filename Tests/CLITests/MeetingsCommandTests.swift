@@ -189,7 +189,9 @@ final class MeetingsCommandTests: XCTestCase {
                 content: "Keep the CLI contract explicit.",
                 inferenceSettingsSnapshot: PromptInferenceSettings(
                     temperature: 0.15,
-                    maxTokens: 300
+                    maxTokens: 300,
+                    thinkingMode: .enabled,
+                    reasoningEffort: .low
                 )
             ))
 
@@ -208,6 +210,7 @@ final class MeetingsCommandTests: XCTestCase {
             resultsPayload.first?["inferenceSettingsSnapshot"] as? [String: Any]
         )
         XCTAssertEqual(settings["temperature"] as? Double, 0.15)
+        XCTAssertEqual(settings["reasoningEffort"] as? String, "low")
         XCTAssertEqual(settings["maxTokens"] as? Int, 300)
 
         let listCommand = try MeetingsCommand.ListSubcommand.parse([
