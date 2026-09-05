@@ -106,6 +106,18 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
   speaker labels are preserved when present, while undiarized transcripts omit
   character agents and timestampless or edited transcripts remain untimed.
 
+### Fixed
+
+- OpenCode Go requests now carry an opaque per-conversation session header.
+  Probe and one-shot IDs are isolated; unsupported endpoints and redirects do
+  not receive the session identity (#948).
+- Local CLI output strips valid two-byte terminal escapes as well as CSI/OSC
+  sequences. Failure stderr is sanitized before error classification and
+  presentation, matching successful-output handling.
+- Default `health` inspects required directories without creating them and
+  opens existing databases read-only without running migrations. Repair flags
+  remain explicit opt-ins; JSON field names and exit codes are unchanged.
+
 ## [3.1.0] — 2026-07-19
 
 ### Added

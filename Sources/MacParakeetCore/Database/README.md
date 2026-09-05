@@ -5,10 +5,11 @@
 
 ## Entry point
 
-`DatabaseManager` — owns the `DatabaseQueue` and runs migrations on
-init. Every repository takes a `DatabaseManager` (or its `dbQueue`)
-and reads/writes through it. There is one `DatabaseManager` per app
-process.
+`DatabaseManager` — owns the `DatabaseQueue`. Normal initializers run migrations;
+`init(readOnlyPath:)` opens an existing database without initialization or
+migrations for non-mutating probes such as CLI `health`. Every repository takes
+a `DatabaseManager` (or its `dbQueue`). The app shares one manager; separate CLI
+processes own their connections.
 
 ## What's here
 
@@ -53,6 +54,8 @@ adjustment. The registered identifiers are exposed via
 against a database's `grdb_migrations` ledger — the CLI `health`
 command uses this to report schema skew when a stale CLI opens a
 database migrated by a newer app.
+The health probe uses `init(readOnlyPath:)` for its subsequent statistics reads
+too, so inspecting an older database does not apply pending migrations.
 
 **One repository per table. Don't combine tables in one repo.**
 Each repository implements a `…Protocol` so callers can be tested
@@ -137,6 +140,6 @@ the migration for the column, and the `resetLifetimeStats()` path.
   previous-version snapshot.
 - `swift test` — full suite. Schema changes ripple through services
   and view models.
-- Manual: delete `~/Library/Application Support/MacParakeet/macparakeet.db`,
-  relaunch the app, confirm migrations run cleanly from empty.
-  (Only do this on a dev install you don't mind resetting.)
+- Manual: launch a DEBUG build with `MACPARAKEET_DEBUG_APP_STATE_DIR` set to
+  a new temporary directory, then confirm migrations initialize its empty
+  database. Never delete or reset the normal app database for verification.

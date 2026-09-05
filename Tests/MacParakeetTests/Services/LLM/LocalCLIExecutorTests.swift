@@ -239,7 +239,8 @@ final class LocalCLIExecutorTests: XCTestCase {
     func testSuccessfulExecutionSanitizesTerminalSequences() async throws {
         let executor = LocalCLIExecutor()
         let config = LocalCLIConfig(
-            commandTemplate: "printf '\\033(B\\033[31mclean\\033[0m'",
+            commandTemplate:
+                "printf '\\0337\\033(B\\033[31mclean\\033[0m\\0338\\033c\\u0090hidden\\007still hidden\\u009c\\177\\u0085\\033Pother hidden data\\033\\\\'",
             timeoutSeconds: 10
         )
 
@@ -295,7 +296,7 @@ final class LocalCLIExecutorTests: XCTestCase {
     func testSanitizeStandardOutputRemovesUnsafeC0Controls() {
         XCTAssertEqual(
             LocalCLIExecutor.sanitizeStandardOutput(
-                "\u{0}A\u{1}B\u{7}C\u{8}D\u{B}E\u{C}F\u{E}\u{1F}G\u{1B}H\tI\nJ\rK"
+                "\u{0}A\u{1}B\u{7}C\u{8}D\u{B}E\u{C}F\u{E}\u{1F}GH\tI\nJ\rK"
             ),
             "ABCDEFGH\tI\nJ\rK"
         )
@@ -359,6 +360,42 @@ final class LocalCLIExecutorTests: XCTestCase {
             } else {
                 XCTFail("Expected nonZeroExit, got \(error)")
             }
+        }
+    }
+
+    func testNonZeroExitSanitizesTerminalSequencesInError() async throws {
+        let executor = LocalCLIExecutor()
+        let config = LocalCLIConfig(
+            commandTemplate:
+                "printf '\\u009fprivate control data\\u009c\\033]0;private title\\007\\033[31mprovider failed\\033[0m\\u0085\\n' >&2; exit 3",
+            timeoutSeconds: 10
+        )
+        do {
+            _ = try await executor.execute(systemPrompt: "", userPrompt: "", config: config)
+            XCTFail("Expected nonZeroExit error")
+        } catch let error as LocalCLIError {
+            guard case .nonZeroExit(let code, let stderr) = error else {
+                return XCTFail("Expected nonZeroExit, got \(error)")
+            }
+            XCTAssertEqual(code, 3)
+            XCTAssertEqual(stderr, "provider failed")
+        }
+    }
+
+    func testCommandNotFoundDetectionUsesSanitizedError() async throws {
+        let executor = LocalCLIExecutor()
+        let config = LocalCLIConfig(
+            commandTemplate: "printf 'command \\033[31mnot found\\033[0m\\n' >&2; exit 1",
+            timeoutSeconds: 10
+        )
+        do {
+            _ = try await executor.execute(systemPrompt: "", userPrompt: "", config: config)
+            XCTFail("Expected commandNotFound error")
+        } catch let error as LocalCLIError {
+            guard case .commandNotFound(let message) = error else {
+                return XCTFail("Expected commandNotFound, got \(error)")
+            }
+            XCTAssertEqual(message, "command not found")
         }
     }
 

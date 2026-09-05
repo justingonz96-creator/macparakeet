@@ -245,8 +245,8 @@ public final class LocalCLIExecutor: Sendable {
         case escapeIntermediate
         case csiParameter
         case csiIntermediate
-        case osc
-        case oscEscape
+        case controlString(endsOnBEL: Bool)
+        case controlStringEscape(endsOnBEL: Bool)
     }
 
     public init() {}
@@ -365,7 +365,11 @@ public final class LocalCLIExecutor: Sendable {
                 case 0x9B:
                     state = .csiParameter
                 case 0x9D:
-                    state = .osc
+                    state = .controlString(endsOnBEL: true)
+                case 0x90, 0x98, 0x9E, 0x9F:
+                    state = .controlString(endsOnBEL: false)
+                case 0x7F...0x9F:
+                    break
                 case 0x00...0x1F where value != 0x09 && value != 0x0A && value != 0x0D:
                     break
                 default:
@@ -377,9 +381,13 @@ public final class LocalCLIExecutor: Sendable {
                 case 0x5B:
                     state = .csiParameter
                 case 0x5D:
-                    state = .osc
+                    state = .controlString(endsOnBEL: true)
+                case 0x50, 0x58, 0x5E, 0x5F:
+                    state = .controlString(endsOnBEL: false)
                 case 0x20...0x2F:
                     state = .escapeIntermediate
+                case 0x30...0x7E:
+                    state = .text
                 default:
                     state = .text
                     continue
@@ -420,24 +428,28 @@ public final class LocalCLIExecutor: Sendable {
                     continue
                 }
 
-            case .osc:
+            case .controlString(let endsOnBEL):
                 switch value {
-                case 0x07, 0x9C:
+                case 0x07 where endsOnBEL:
+                    state = .text
+                case 0x9C:
                     state = .text
                 case 0x1B:
-                    state = .oscEscape
+                    state = .controlStringEscape(endsOnBEL: endsOnBEL)
                 default:
                     break
                 }
 
-            case .oscEscape:
+            case .controlStringEscape(let endsOnBEL):
                 switch value {
-                case 0x5C, 0x07, 0x9C:
+                case 0x07 where endsOnBEL:
+                    state = .text
+                case 0x5C, 0x9C:
                     state = .text
                 case 0x1B:
                     break
                 default:
-                    state = .osc
+                    state = .controlString(endsOnBEL: endsOnBEL)
                 }
             }
 
@@ -614,8 +626,9 @@ public final class LocalCLIExecutor: Sendable {
                     Self.stopProcess(processID, state: state)
 
                     let stdout = String(data: stdoutCapture.get(), encoding: .utf8) ?? ""
-                    let stderr = (String(data: stderrCapture.get(), encoding: .utf8) ?? "")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let stderr = Self.sanitizeStandardOutput(
+                        String(data: stderrCapture.get(), encoding: .utf8) ?? ""
+                    ).trimmingCharacters(in: .whitespacesAndNewlines)
 
                     let exitCode = Self.exitCode(from: terminationState.currentStatus() ?? 0)
                     if exitCode != 0 {

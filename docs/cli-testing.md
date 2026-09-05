@@ -20,111 +20,23 @@ scripts/dev/run_app.sh
 
 This script builds the latest debug binary, stops stale `/Applications`/`dist` app processes, and launches the current workspace build with build identity metadata.
 
-## Complete Command Reference
+## Command Discovery
 
+Use the installed CLI rather than a second manually maintained command catalog:
+
+```bash
+swift run macparakeet-cli --help
+swift run macparakeet-cli spec --json
+swift run macparakeet-cli <command> --help
 ```
-macparakeet-cli
-├── transcribe <input...> [--podcast QUERY] [options]
-│                                         Transcribe files, folders, podcasts, or media URLs
-│   ├── --format text|transcript|json|srt|vtt|dapt [--no-history] [--database PATH]
-│   └── --engine app-default|parakeet|nemotron|whisper|cohere [--language <code>]
-│       --parakeet-model app-default|v3|v2|unified [--output-dir DIR]
-│       --mode raw|clean|app-default --downloaded-audio app-default|keep|delete
-│       --speaker-detection app-default|on|off
-│       [--speaker-count N | --speaker-min N [--speaker-max N] | --speaker-max N]
-│       --media-audio-quality app-default|m4a|best-available
-├── search <query> [--since ISO-8601] [--until ISO-8601]
-│   │                  [--source meeting|file|url] [--speaker NAME] [--limit N] [--json]
-├── search-reindex [--json]               Rebuild derived segments + FTS5
-├── transcript <id> [--around TIME --window DUR]
-│                    [--around-seq N --context K] [--json]
-├── history                              View and manage history
-│   ├── dictations [--limit] [--json]    List recent dictations (default)
-│   ├── transcriptions [--limit] [--json]  List recent transcriptions
-│   ├── search <query> [--limit] [--json]  Search dictation history
-│   ├── search-transcriptions <query> [--limit] [--json]  Search transcriptions
-│   ├── delete-dictation <id> [--json]   Delete a dictation by ID
-│   ├── delete-transcription <id> [--json]  Delete a transcription by ID
-│   ├── delete-meeting-audio <id> [--json]  Detach/delete one meeting's stored audio
-│   ├── clear-meeting-audio [--json]     Delete all managed meeting audio
-│   ├── favorites [--json]               List favorite transcriptions
-│   ├── favorite <id>                    Mark a transcription as favorite
-│   └── unfavorite <id>                  Remove from favorites
-├── export <id> [options]                Export a transcription to file
-├── stats [--json]                       Show voice stats dashboard
-├── config                               Shared app/CLI preferences
-│   ├── list
-│   ├── get <key>
-│   └── set <key> <value>
-├── health [--repair-models] [--repair-attempts N] [--repair-binaries] [--json]
-│                                         System health and model/helper status
-├── models                               Speech model lifecycle
-│   ├── list [--json]                    List selectable speech models
-│   ├── select <model-id> [--json]       Set shared app/CLI speech default
-│   ├── status [--json]                  Show model status
-│   ├── download <model-id>              Download explicit speech model
-│   ├── delete <model-id> [--force] [--json]  Delete one downloaded speech model
-│   ├── warm-up [--attempts]             Warm up speech model
-│   ├── repair [--attempts]              Best-effort model repair
-│   └── clear [--json]                   Delete cached models
-├── vocab, flow                          Text processing pipeline (`flow` is deprecated)
-│   ├── process <text> [--copy]          Run clean text processing
-│   ├── words {list,add,delete}          Manage custom words
-│   │   ├── list [--source manual|learned|all] [--json]
-│   │   └── delete <id> [--json]
-│   ├── snippets {list,add,delete}       Manage text snippets
-│   │   ├── list [--json]
-│   │   └── delete <id> [--json]
-│   ├── export [--output path]           Export words/snippets as a JSON bundle
-│   ├── import [--input path] [--policy skip|replace] [--dry-run] [--json]
-│   └── schema [--json]                  Print the vocabulary bundle schema
-├── llm                                  LLM provider commands
-│   ├── test-connection                  Test provider connectivity
-│   ├── summarize <input>                Summarize text via LLM
-│   ├── chat <input> --question          Ask about a transcript
-│   └── transform <input> --prompt       Apply custom LLM transform
-├── prompts                              Manage prompt library
-│   ├── list [--filter all|visible|auto-run] [--json]
-│   ├── show <id-or-name> [--json]
-│   ├── add --name X (--content Y | --from-file path) [--auto-run]
-│   ├── set <id-or-name> [--visible|--hidden] [--auto-run|--no-auto-run] [--source file|youtube|podcast|meeting] [--json]
-│   ├── delete <id-or-name>              Delete custom prompt (built-ins protected)
-│   ├── restore-defaults                 Re-show built-in result prompts
-│   └── run <id-or-name> --transcription <id> [--no-store] [--stream] [--extra ...]
-├── quick-prompts                        Manage live meeting Ask quick prompts
-│   ├── list [--pinned true|false] [--visible-only] [--json]
-│   ├── show <id-or-label> [--json]
-│   ├── add --label X (--prompt Y | --from-file path) [--group X] [--pinned] [--hidden]
-│   ├── set <id-or-label> [--label X] [--prompt Y] [--group X] [--sort-order N] [--visible|--hidden]
-│   ├── delete <id-or-label>
-│   ├── pin <id-or-label> / unpin <id-or-label>
-│   ├── restore-defaults [--id UUID]
-│   └── export [--out path] [--pinned true|false] [--include-builtins] / import <path> [--mode merge|replace]
-├── transforms                           Manage and run saved Transforms
-│   ├── list [--json]
-│   ├── show <id-or-name> [--json]
-│   ├── run <id-or-name> --input FILE|- [--stream] [--json]
-│   ├── create --name X (--prompt Y | --from-file path) [--shortcut opt+1] [--json]
-│   ├── delete <id-or-name> [--json]
-│   ├── restore-defaults [--transform ID|NAME] [--json]
-│   └── history {list,show,delete,clear} [--json]
-├── meetings                             Inspect and manage local meeting recordings
-│   ├── list [--limit] [--json|--envelope]
-│   ├── show <meeting> [--json|--envelope]
-│   ├── transcript <meeting> [--format text|json|srt|vtt]
-│   ├── notes {get,set,append,clear} <meeting> [--json|--envelope]
-│   ├── results {list,add} <meeting> [--json|--envelope]
-│   ├── artifact <meeting> [--json|--envelope]
-│   └── export <meeting> [--format md|json] [--output path] [--stdout]
-├── calendar
-│   └── upcoming [--days N] [--filter link|participants|all] [--json]
-├── meeting-vad-sim <audio> [--mode fixed|vad|both] [--json]
-│                                         Dev replay of fixed vs VAD live chunking
-└── feedback <message> [options]         Submit feedback
-```
+
+The [integration guide](../integrations/README.md) contains supported operator
+workflows; [`cli-json-v1`](../spec/contracts/cli-json-v1.md) defines the stable
+automation contract. The examples below are focused verification scenarios, not
+an exhaustive option list.
 
 `flow` is a deprecated compatibility alias for `vocab` and remains accepted in
-CLI 3.0. Use `vocab` in new scripts; removal requires a future major-version
+CLI 3.x. Use `vocab` in new scripts; removal requires a future major-version
 contract change and a matching changelog entry.
 
 > **JSON output convention**: any query command marked `[--json]` emits a single
@@ -517,11 +429,28 @@ managed or app-bundled `yt-dlp`, but it does not install or update helper
 binaries. `health --repair-binaries` explicitly fetches the latest managed
 `yt-dlp` copy. App-bundled CLI installs include a signed `yt-dlp` seed so
 media URL transcription works without a first-use helper download.
+It also reports missing, non-directory, or unwritable runtime paths without
+creating them. Existing databases are opened read-only; inspecting a database
+does not run pending migrations or reconcile seeds.
 
 The database probe reports `database.status` as `ok`, `missing`, `schema_skew`,
 or `error`. `schema_skew` means the shared database was migrated by a newer
 MacParakeet app than this CLI build understands — upgrade `macparakeet-cli`
-and retry instead of debugging the database.
+and retry. Never reset or delete the user database to make a health probe pass.
+
+For a DEBUG-only missing-state regression (after building the CLI):
+
+```bash
+state_parent="$(mktemp -d)"
+MACPARAKEET_DEBUG_APP_STATE_DIR="$state_parent/absent" \
+  .build/debug/macparakeet-cli health --json
+test ! -e "$state_parent/absent"
+```
+
+Expect `directoriesOK: false` and `database.status: "missing"` with exit 0:
+health is a component report, not a single pass/fail verdict. The DEBUG state
+root does not isolate shared UserDefaults or Keychain; do not change configuration
+for this check. Release builds ignore this DEBUG override.
 
 ## Meetings
 
