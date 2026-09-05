@@ -123,6 +123,15 @@ The tile body is informational. Only the visible Start and Stop capsules are rea
 
 When `Library.filter == .meeting`, the view renders a date-grouped list (`Today` / `Yesterday` / `Previous 7 Days` / `Previous 30 Days` / `{Month Year}`) using `MeetingDateGroupHeader` + `MeetingRowCard` instead of the thumbnail grid the other filters use. Meeting rows surface saved-audio state directly (`Audio saved`, `Audio removed`, or `Audio missing`) so playback/retranscription expectations are visible before the user opens a menu.
 
+A finalized meeting whose `meetingCaptureReport.quality` is `partial` shows the
+existing **Partial audio** badge in its Library meeting row and the existing
+**Partial meeting audio** banner in transcript detail. The shared presentation
+explains elapsed versus captured duration and each degraded source. When the
+system source status is `silent`, its message is: “System audio contained no
+audible signal. Microphone audio remains saved.” This state is durable and
+appears after finalization; it does not add a live alert or automatically
+restart ScreenCaptureKit during a meeting.
+
 Opening an empty processing meeting row must preserve that same lifecycle
 truth. The transcript pane shows an indeterminate "Transcribing meeting"
 surface, states that the audio is saved and final transcription continues in

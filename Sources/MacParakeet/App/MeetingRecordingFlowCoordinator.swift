@@ -949,6 +949,15 @@ final class MeetingRecordingFlowCoordinator {
                             liveWordCount: liveWordCount,
                             liveTranscriptLagged: liveTranscriptLagged
                         )
+                        let message =
+                            stoppedOutput == nil
+                            ? "Meeting stop was cancelled"
+                            : "Meeting processing was interrupted and will be retried automatically."
+                        self.sendEvent(
+                            .transcriptionFailed(
+                                generation: gen,
+                                message: message
+                            ))
                         self.currentMeetingOperationContext = nil
                         self.currentMeetingTrigger = nil
                     } else {

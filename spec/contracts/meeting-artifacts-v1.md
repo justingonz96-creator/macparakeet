@@ -65,9 +65,9 @@ The v1 folder can contain these stable filenames:
   may also include additive `startContext` with the one-shot local start
   snapshot. `calendarEventSnapshot`, when present, is local EventKit context
   and can include attendee/organizer names and emails. New finalized recordings
-  also include additive `captureReport`, the frame-derived recording coverage
-  report described below; legacy sidecars may omit it. An unreadable optional
-  report is treated as unknown without invalidating the remaining sidecar.
+  also include additive `captureReport`, the finalized capture-quality report
+  described below; legacy sidecars may omit it. An unreadable optional report
+  is treated as unknown without invalidating the remaining sidecar.
   Each source-alignment track keeps `writtenFrameCount` as real captured frames
   and may include `timelineFrameCount` for its playable end after inserting
   silence across capture-recovery gaps. Legacy tracks omit the latter and use
@@ -148,15 +148,25 @@ the same additive shape as `transcriptions.meetingCaptureReport`:
 - `capturedDurationMs`: end of the longest selected playable source timeline,
   including silence inserted to preserve capture-recovery gaps
 - `sources`: stable microphone/system-order records with `source`,
-  `writtenDurationMs`, `coverageRatio`, and `status` (`complete`,
+  `writtenDurationMs`, `coverageRatio`, and `status` (`complete`, `silent`,
   `coverage_shortfall`, `interrupted`, `unavailable`, or `capture_failed`)
 - `interruptedSources`: terminally interrupted selected sources
 - `captureFailed`: runtime capture-control failure, kept separate from final
-  frame-derived quality
+  source quality
 - `playbackFallbackSource`: optional `microphone` or `system` marker when both
   selected source files were decodable but canonical playback had to use only
   the named source because combining them failed; its presence makes `quality`
   partial without changing otherwise-complete source capture statuses
+
+`silent` is written only for a selected system source when its finalized signal
+verdict is actionable: the system stream delivered buffers but its peak stayed
+at exact zero for the entire pause-adjusted session, the microphone had
+nonzero signal, and the session lasted at least 30 seconds. Short recordings,
+wholly silent sessions, and quiet system tracks with any nonzero sample do not
+receive `silent`. A silent selected source makes `quality` partial. Source
+status precedence is `interrupted`, `capture_failed`, `unavailable`, `silent`,
+`coverage_shortfall`, then `complete`, so terminal failures remain more
+informative and silence is not hidden by otherwise-complete duration coverage.
 
 Meeting `durationMs` is the probed duration of the decodable
 `meeting-playback.m4a` artifact. Normal finalization keeps it equal to

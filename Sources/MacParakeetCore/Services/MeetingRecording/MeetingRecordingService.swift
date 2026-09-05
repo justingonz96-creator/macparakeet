@@ -397,9 +397,10 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
                 eventName: eventName
             )
         },
-        writerFinalizationReportTransform: @escaping @Sendable (
-            MeetingAudioStorageWriter.FinalizationReport
-        ) -> MeetingAudioStorageWriter.FinalizationReport = { $0 }
+        writerFinalizationReportTransform:
+            @escaping @Sendable (
+                MeetingAudioStorageWriter.FinalizationReport
+            ) -> MeetingAudioStorageWriter.FinalizationReport = { $0 }
     ) {
         self.requestedMicProcessingMode = micProcessingMode
         self.audioCaptureService = audioCaptureService
@@ -933,11 +934,19 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
             writerMetrics: writerMetrics
         )
         let captureSourceMode = captureHealthMetrics.sourceMode ?? .microphoneAndSystem
+        let hasQualifyingSilentSystemTrack = MeetingSystemAudioSignalVerdict.shouldWarn(
+            verdict: systemAudioSignalVerdict,
+            microphonePeakLevel: captureHealthMetrics.microphonePeakLevel,
+            durationSeconds: captureElapsedDurationSeconds
+        )
+        let silentSources: Set<AudioSource> =
+            hasQualifyingSilentSystemTrack ? [.system] : []
         let preliminaryCaptureReport = MeetingCaptureReport(
             sourceMode: captureSourceMode,
             sourceAlignment: sourceAlignment,
             elapsedDurationMs: Int((captureElapsedDurationSeconds * 1_000).rounded()),
             interruptedSources: interruptedSources,
+            silentSources: silentSources,
             captureFailed: captureFailed
         )
         var recordingMetadata = MeetingRecordingMetadata(
@@ -1014,6 +1023,7 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
             sourceAlignment: sourceAlignment,
             elapsedDurationMs: preliminaryCaptureReport.elapsedDurationMs,
             interruptedSources: interruptedSources,
+            silentSources: silentSources,
             captureFailed: captureFailed,
             playbackFallbackSource: playbackArtifact.method == .bestSourceFallback
                 ? playbackArtifact.source
@@ -1152,7 +1162,8 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
         )
         emitSystemAudioSilenceWarningIfNeeded(
             session: session,
-            durationSeconds: captureElapsedDurationSeconds
+            durationSeconds: captureElapsedDurationSeconds,
+            shouldEmit: hasQualifyingSilentSystemTrack
         )
         AudioCaptureDiagnostics.append(
             echoSuppressionSummaryLine(session: session)
@@ -1504,9 +1515,11 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
 
     private var allSelectedSourcesAreInterrupted: Bool {
         guard let sourceMode = captureHealthMetrics.sourceMode else { return false }
-        let microphoneInterrupted = !sourceMode.capturesMicrophone
+        let microphoneInterrupted =
+            !sourceMode.capturesMicrophone
             || interruptedSources.contains(.microphone)
-        let systemInterrupted = !sourceMode.capturesSystemAudio
+        let systemInterrupted =
+            !sourceMode.capturesSystemAudio
             || interruptedSources.contains(.system)
         return microphoneInterrupted && systemInterrupted
     }
@@ -1977,23 +1990,15 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
         )
     }
 
-    /// Surface a system track that stayed at digital silence for a whole meeting.
-    ///
-    /// Nothing else notices this: the stream reports a first buffer, writes frames
-    /// for the full duration, and every stop stage succeeds, so the user only finds
-    /// out by reading a transcript with the other party missing from it.
+    /// Emit diagnostics for a system track that stayed at digital silence for
+    /// a whole meeting. The caller supplies the same finalized decision used
+    /// for the durable capture report so the warning and source status agree.
     private func emitSystemAudioSilenceWarningIfNeeded(
         session: Session,
-        durationSeconds: TimeInterval
+        durationSeconds: TimeInterval,
+        shouldEmit: Bool
     ) {
-        let verdict = systemAudioSignalVerdict
-        guard
-            MeetingSystemAudioSignalVerdict.shouldWarn(
-                verdict: verdict,
-                microphonePeakLevel: captureHealthMetrics.microphonePeakLevel,
-                durationSeconds: durationSeconds
-            )
-        else { return }
+        guard shouldEmit else { return }
         let sessionID = session.id.uuidString
         let durationLabel = String(format: "%.3f", durationSeconds)
         let micPeakLabel = String(format: "%.3f", captureHealthMetrics.microphonePeakLevel)

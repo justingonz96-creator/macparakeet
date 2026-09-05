@@ -14,6 +14,25 @@ private final class FinalizedAVAssetWriter: @unchecked Sendable {
     }
 }
 
+/// Process-local guard against recovery or discard reading source files while
+/// AVAssetWriter still owns their finalization. A process restart clears the
+/// registry only after macOS has closed every writer file descriptor.
+enum MeetingAudioWriterFinalizationRegistry {
+    private static let folders = OSAllocatedUnfairLock(initialState: Set<String>())
+
+    static func begin(folderURL: URL) {
+        _ = folders.withLock { $0.insert(folderURL.standardizedFileURL.path) }
+    }
+
+    static func end(folderURL: URL) {
+        _ = folders.withLock { $0.remove(folderURL.standardizedFileURL.path) }
+    }
+
+    static func contains(folderURL: URL) -> Bool {
+        folders.withLock { $0.contains(folderURL.standardizedFileURL.path) }
+    }
+}
+
 /// Non-Sendable audio sink owned and serialized by MeetingRecordingService.
 /// Its AVFoundation writer/converter objects are mutable reference types.
 final class MeetingAudioStorageWriter {
@@ -27,14 +46,56 @@ final class MeetingAudioStorageWriter {
     /// chunks without weakening the fail-before-drop policy for live audio.
     private static let recoveryGapBackpressureTimeout: TimeInterval = 0.25
     private static let recoveryGapBackpressurePollInterval: TimeInterval = 0.001
+    /// Match the existing five-second capture teardown boundary.
+    private static let finalizationTimeout: TimeInterval = 5
 
     struct FinalizationReport: Sendable, Equatable {
         let failedSources: Set<AudioSource>
     }
 
-    private struct FinalizationState {
-        var remainingSources = 2
-        var failedSources: Set<AudioSource> = []
+    /// Pure aggregate state. `finalize` serializes mutations with an unfair
+    /// lock; removing a pending source is the exactly-once completion gate.
+    struct FinalizationCoordinator {
+        struct Completion: Sendable, Equatable {
+            let report: FinalizationReport
+            let timedOutSources: [AudioSource]
+        }
+
+        private static let orderedSources: [AudioSource] = [.microphone, .system]
+
+        private let writtenFrameCounts: [AudioSource: Int64]
+        private var pendingSources: Set<AudioSource> = Set(orderedSources)
+        private var failedSources: Set<AudioSource> = []
+
+        init(writtenFrameCounts: [AudioSource: Int64]) {
+            self.writtenFrameCounts = writtenFrameCounts
+        }
+
+        mutating func sourceDidFinish(_ source: AudioSource, failed: Bool) -> Completion? {
+            guard pendingSources.remove(source) != nil else { return nil }
+            if failed {
+                failedSources.insert(source)
+            }
+            guard pendingSources.isEmpty else { return nil }
+            return Completion(
+                report: FinalizationReport(failedSources: failedSources),
+                timedOutSources: []
+            )
+        }
+
+        mutating func deadlineExpired() -> Completion? {
+            let timedOutSources = Self.orderedSources.filter { pendingSources.contains($0) }
+            guard !timedOutSources.isEmpty else { return nil }
+
+            pendingSources.removeAll()
+            failedSources.formUnion(
+                timedOutSources.filter { writtenFrameCounts[$0, default: 0] > 0 }
+            )
+            return Completion(
+                report: FinalizationReport(failedSources: failedSources),
+                timedOutSources: timedOutSources
+            )
+        }
     }
 
     struct SourceWriteMetrics: Sendable, Equatable {
@@ -153,6 +214,11 @@ final class MeetingAudioStorageWriter {
         let microphoneActualFrameCount = self.microphoneActualFrameCount
         let systemActualFrameCount = self.systemActualFrameCount
         let logger = self.logger
+        let folderURL = self.folderURL
+        let callbackTracker = OSAllocatedUnfairLock(
+            initialState: Set<AudioSource>([.microphone, .system])
+        )
+        MeetingAudioWriterFinalizationRegistry.begin(folderURL: folderURL)
 
         self.microphoneWriter = nil
         self.microphoneInput = nil
@@ -161,20 +227,45 @@ final class MeetingAudioStorageWriter {
         self.microphoneConverter = nil
         self.systemConverter = nil
 
-        let finalizationState = OSAllocatedUnfairLock(initialState: FinalizationState())
+        let finalizationCoordinator = OSAllocatedUnfairLock(
+            initialState: FinalizationCoordinator(
+                writtenFrameCounts: [
+                    .microphone: microphoneActualFrameCount,
+                    .system: systemActualFrameCount,
+                ]
+            )
+        )
         let completeOne: @Sendable (AudioSource, Bool) -> Void = { source, failed in
-            let report = finalizationState.withLock { state -> FinalizationReport? in
-                if failed {
-                    state.failedSources.insert(source)
-                }
-                state.remainingSources -= 1
-                guard state.remainingSources == 0 else { return nil }
-                return FinalizationReport(failedSources: state.failedSources)
+            let allCallbacksReturned = callbackTracker.withLock { pendingSources in
+                pendingSources.remove(source)
+                return pendingSources.isEmpty
             }
-            if let report {
-                completion(report)
+            if allCallbacksReturned {
+                MeetingAudioWriterFinalizationRegistry.end(folderURL: folderURL)
+            }
+            let outcome = finalizationCoordinator.withLock {
+                $0.sourceDidFinish(source, failed: failed)
+            }
+            if let outcome {
+                completion(outcome.report)
             }
         }
+
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + Self.finalizationTimeout
+        ) {
+            let outcome = finalizationCoordinator.withLock {
+                $0.deadlineExpired()
+            }
+            guard let outcome else { return }
+            Self.logFinalizationTimeout(
+                sources: outcome.timedOutSources,
+                timeout: Self.finalizationTimeout,
+                logger: logger
+            )
+            completion(outcome.report)
+        }
+
         Self.finish(
             source: .microphone,
             writtenFrameCount: microphoneActualFrameCount,
@@ -487,6 +578,21 @@ final class MeetingAudioStorageWriter {
             }
             completion(source, failed)
         }
+    }
+
+    private static func logFinalizationTimeout(
+        sources: [AudioSource],
+        timeout: TimeInterval,
+        logger: Logger
+    ) {
+        let sourceNames = sources.map(\.rawValue).joined(separator: ",")
+        let timeoutDescription = String(format: "%.3f", timeout)
+        logger.error(
+            "meeting_audio_writer_finalize_timed_out sources=\(sourceNames, privacy: .public) timeout_s=\(timeoutDescription, privacy: .public)"
+        )
+        AudioCaptureDiagnostics.append(
+            "meeting_audio_writer_finalize_timeout sources=\(sourceNames) timeout_s=\(timeoutDescription)"
+        )
     }
 
     private static func logFinalizationFailure(

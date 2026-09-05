@@ -21,6 +21,20 @@ import XCTest
 /// returns.
 final class MicrophoneEnginePlatformConfigChangeRecoveryTests: XCTestCase {
 
+    func testDefaultInputChangeBurstSchedulesOneBoundedDelivery() {
+        var coalescer = DefaultInputChangeBurstCoalescer()
+
+        XCTAssertTrue(coalescer.observeChange())
+        for _ in 1..<100 {
+            XCTAssertFalse(coalescer.observeChange())
+        }
+
+        XCTAssertEqual(coalescer.pendingCount, 100)
+        XCTAssertEqual(coalescer.takePendingCount(), 100)
+        XCTAssertFalse(coalescer.deliveryScheduled)
+        XCTAssertTrue(coalescer.observeChange(), "the next burst must schedule a fresh delivery")
+    }
+
     /// Device selection and `AVAudioEngine.prepare()` can enqueue their own
     /// configuration notification after preparation has already been marked.
     /// When the resolved route and input format are unchanged, that delayed

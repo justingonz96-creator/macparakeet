@@ -74,7 +74,11 @@ owned by `AppEnvironment`.
   is published. A source failure racing the initial async start is retained
   until the start-to-running handoff, so a dead stream cannot be promoted.
 - `MeetingAudioStorageWriter.swift` — fragmented MP4 writer for
-  meeting source files (ADR-019 crash recovery).
+  meeting source files (ADR-019 crash recovery). Finalization waits at most five
+  seconds for per-source AVFoundation callbacks and marks a timed-out source
+  failed only when it received real frames. A process-local registry prevents
+  recovery or discard from touching preserved source files until all late
+  callbacks return; after process exit, macOS has closed every writer handle.
 - `MeetingAudioError.swift`, `MeetingMicProcessingMode.swift` —
   value types.
 - Meeting mic conditioning lives outside this folder in
@@ -85,9 +89,9 @@ owned by `AppEnvironment`.
 
 **Helpers**
 - `AudioCaptureDiagnostics.swift` — public `append(_:)` to
-  `~/Library/Logs/MacParakeet/dictation-audio.log`. 5 MB cap;
-  delete-on-overflow (not rotated). Used by every file in this
-  folder, by `AppDelegate`'s boot marker, and by the dictation
+  `~/Library/Logs/MacParakeet/dictation-audio.log`. At the 5 MB cap it retains
+  the newest complete lines instead of deleting the whole history. Used by every
+  file in this folder, by `AppDelegate`'s boot marker, and by the dictation
   media-pause path (`SystemMediaController` +
   `DictationMediaPauseCoordinator` mirror their `media_pause_*` /
   `media_resume_*` outcomes here so uploaded logs show the

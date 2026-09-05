@@ -42,10 +42,12 @@ final class MeetingRecordingFlowCoordinatorTests: XCTestCase {
 
         let lines = MeetingRecordingFlowCoordinator.testHook_makePreviewLines(from: update)
 
-        XCTAssertEqual(lines.map(\.text), [
-            "First sentence ends. Second sentence ends. Third sentence ends.",
-            "Fourth sentence ends.",
-        ])
+        XCTAssertEqual(
+            lines.map(\.text),
+            [
+                "First sentence ends. Second sentence ends. Third sentence ends.",
+                "Fourth sentence ends.",
+            ])
         XCTAssertEqual(lines.map(\.timestamp), ["0:00", "0:01"])
     }
 
@@ -119,6 +121,41 @@ final class MeetingRecordingFlowCoordinatorTests: XCTestCase {
         XCTAssertEqual(operation.durationSeconds, output.durationSeconds)
         XCTAssertEqual(operation.microphoneTrackPresent, true)
         XCTAssertEqual(operation.systemTrackPresent, true)
+    }
+
+    func testCancelledDurableStopLeavesProcessingState() async throws {
+        let output = makeRecordingOutput()
+        let recordingService = MeetingRecordingServiceSpy(
+            output: output,
+            stopShouldCancel: true
+        )
+        let transcriptionService = MockTranscriptionService()
+        let settlementHarness = await makeSettlementHarness(
+            transcriptionService: transcriptionService
+        )
+        let coordinator = MeetingRecordingFlowCoordinator(
+            meetingRecordingService: recordingService,
+            transcriptionService: transcriptionService,
+            permissionService: MockPermissionService(),
+            transcriptionRepo: settlementHarness.transcriptionRepo,
+            conversationRepo: MockChatConversationRepository(),
+            quickPromptRepo: NoOpQuickPromptRepository(),
+            configStore: NoOpLLMConfigStore(),
+            llmService: nil,
+            pillViewModel: MeetingRecordingPillViewModel(),
+            meetingRecordingSettlement: settlementHarness.settlement,
+            onMenuBarIconUpdate: { _ in },
+            onTranscriptionReady: { _ in }
+        )
+        coordinator.testHook_enterRecording()
+
+        XCTAssertTrue(coordinator.stopRecording(operationTrigger: .manual))
+        await coordinator.testHook_waitForActionTask()
+
+        XCTAssertEqual(
+            coordinator.testHook_state,
+            .finishing(error: "Meeting stop was cancelled")
+        )
     }
 
     func testQueuedFinalizationFailurePersistsRetryableRowAndPostsOneNotification() async throws {
@@ -1234,6 +1271,7 @@ private actor MeetingRecordingServiceSpy: MeetingRecordingServiceProtocol {
 
     private let output: MeetingRecordingOutput
     private let blocksStart: Bool
+    private let stopShouldCancel: Bool
     let activeSpeechEngineSelection: SpeechEngineSelection?
     let activeMeetingSpeechPlan: MeetingSpeechPlan?
     var startCallCount = 0
@@ -1252,12 +1290,14 @@ private actor MeetingRecordingServiceSpy: MeetingRecordingServiceProtocol {
         output: MeetingRecordingOutput,
         activeSpeechEngineSelection: SpeechEngineSelection? = nil,
         activeMeetingSpeechPlan: MeetingSpeechPlan? = nil,
-        blocksStart: Bool = false
+        blocksStart: Bool = false,
+        stopShouldCancel: Bool = false
     ) {
         self.output = output
         self.activeSpeechEngineSelection = activeSpeechEngineSelection
         self.activeMeetingSpeechPlan = activeMeetingSpeechPlan
         self.blocksStart = blocksStart
+        self.stopShouldCancel = stopShouldCancel
     }
 
     func startRecording(
@@ -1307,6 +1347,9 @@ private actor MeetingRecordingServiceSpy: MeetingRecordingServiceProtocol {
         stopCallCount += 1
         paused = false
         resetCaptureFailureObservationState()
+        if stopShouldCancel {
+            throw CancellationError()
+        }
         return output
     }
 

@@ -9,13 +9,13 @@ public enum AudioCaptureDiagnostics {
         qos: .utility
     )
     private static let logPathOverrideEnvironmentKey = "MACPARAKEET_AUDIO_DIAGNOSTICS_LOG_PATH"
-    /// On-disk cap for `dictation-audio.log`. Crossing it deletes the file
-    /// (not append-rotate). Sized so a heavy user dictating 30–60 min/day
-    /// retains tens of days of context — enough that a stall reported via
-    /// the in-app feedback flow still has its surrounding window in the
-    /// log when the user shares it. Bumped from 1 MB after PR #210 added
-    /// the 5 s heartbeat, which roughly doubles per-recording log volume.
+    /// On-disk cap for `dictation-audio.log`. When the cap is reached, retain
+    /// the newest complete lines instead of deleting all diagnostic history.
+    /// Five MB keeps tens of days for normal use; retaining half leaves room
+    /// for the next burst without rotating on every append.
     private static let maxLogBytes: UInt64 = 5_000_000
+    private static let retainedLogBytes = Int(maxLogBytes / 2)
+    private static let maxMessageCharacters = 16_384
 
     public static var diagnosticLogFileURL: URL {
         diagnosticLogURL()
@@ -35,7 +35,8 @@ public enum AudioCaptureDiagnostics {
         guard let deviceID else { return "none" }
         let transport = AudioDeviceManager.transportType(deviceID)
         if transport == kAudioDeviceTransportTypeAggregate,
-           let subTransport = AudioDeviceManager.subDeviceTransport(deviceID) {
+            let subTransport = AudioDeviceManager.subDeviceTransport(deviceID)
+        {
             return "aggregate-\(safeTransportLabel(subTransport))"
         }
         return safeTransportLabel(transport)
@@ -84,7 +85,8 @@ public enum AudioCaptureDiagnostics {
     public static func append(_ message: @autoclosure () -> String) {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let line = "\(formatter.string(from: Date())) \(sanitizedMessage(message()))\n"
+        let sanitized = String(sanitizedMessage(message()).prefix(maxMessageCharacters))
+        let line = "\(formatter.string(from: Date())) \(sanitized)\n"
 
         guard let data = line.data(using: .utf8) else { return }
 
@@ -99,13 +101,22 @@ public enum AudioCaptureDiagnostics {
                 )
 
                 if let attributes = try? fm.attributesOfItem(atPath: logURL.path),
-                   let size = attributes[.size] as? UInt64,
-                   size > maxLogBytes {
-                    try? fm.removeItem(at: logURL)
+                    let size = attributes[.size] as? UInt64,
+                    size + UInt64(data.count) > maxLogBytes
+                {
+                    let existingData = try Data(contentsOf: logURL)
+                    var rotatedData = retainedLogSuffix(
+                        existingData,
+                        maxBytes: retainedLogBytes
+                    )
+                    rotatedData.append(data)
+                    try rotatedData.write(to: logURL, options: .atomic)
+                    return
                 }
 
                 if fm.fileExists(atPath: logURL.path),
-                   let handle = try? FileHandle(forWritingTo: logURL) {
+                    let handle = try? FileHandle(forWritingTo: logURL)
+                {
                     try handle.seekToEnd()
                     try handle.write(contentsOf: data)
                     try handle.close()
@@ -118,16 +129,32 @@ public enum AudioCaptureDiagnostics {
         }
     }
 
-    static func appendAsync(_ message: String) {
+    public static func appendAsync(_ message: String) {
         appendQueue.async {
             append(message)
         }
     }
 
+    /// Keeps only complete newest log lines. Starting after the first newline
+    /// also discards any UTF-8 code point split by the byte boundary.
+    static func retainedLogSuffix(_ data: Data, maxBytes: Int) -> Data {
+        guard maxBytes > 0, data.count > maxBytes else {
+            return maxBytes > 0 ? data : Data()
+        }
+
+        let suffix = data.suffix(maxBytes)
+        guard let firstNewline = suffix.firstIndex(of: 0x0A) else {
+            return Data()
+        }
+        let firstCompleteLine = suffix.index(after: firstNewline)
+        return Data(suffix[firstCompleteLine...])
+    }
+
     static func diagnosticLogURL() -> URL {
         let environment = ProcessInfo.processInfo.environment
         if let overridePath = environment[logPathOverrideEnvironmentKey],
-           !overridePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            !overridePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
             return URL(fileURLWithPath: overridePath)
         }
 

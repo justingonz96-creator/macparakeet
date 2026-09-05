@@ -57,6 +57,37 @@ final class MeetingPartialCapturePresentationTests: XCTestCase {
         )
     }
 
+    func testSilentSystemAudioExplainsThatMicrophoneAudioRemainsSaved() throws {
+        let report = MeetingCaptureReport(
+            sourceMode: .microphoneAndSystem,
+            sourceAlignment: MeetingSourceAlignment(
+                meetingOriginHostTime: 100,
+                microphone: track(durationMs: 30_000),
+                system: track(durationMs: 30_000)
+            ),
+            elapsedDurationMs: 30_000,
+            silentSources: [.system]
+        )
+        let transcription = Transcription(
+            fileName: "Silent System Review",
+            durationMs: report.capturedDurationMs,
+            status: .completed,
+            sourceType: .meeting,
+            meetingCaptureReport: report
+        )
+
+        let presentation = try XCTUnwrap(
+            MeetingPartialCapturePresentation.make(for: transcription)
+        )
+
+        XCTAssertEqual(presentation.badgeText, "Partial audio")
+        XCTAssertEqual(presentation.title, "Partial meeting audio")
+        XCTAssertEqual(
+            presentation.message,
+            "This 0:30 session contains partial audio. System audio contained no audible signal. Microphone audio remains saved."
+        )
+    }
+
     func testPlaybackFallbackExplainsWhyCompleteSourcesProducedPartialPlayback() throws {
         let report = MeetingCaptureReport(
             sourceMode: .microphoneAndSystem,

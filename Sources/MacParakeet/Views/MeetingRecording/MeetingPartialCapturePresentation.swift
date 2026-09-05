@@ -56,6 +56,8 @@ struct MeetingPartialCapturePresentation: Equatable {
             return ""
         case .coverageShortfall:
             return "\(label) captured \(duration)."
+        case .silent:
+            return "System audio contained no audible signal. Microphone audio remains saved."
         case .interrupted:
             return "\(label) capture was interrupted after \(duration)."
         case .unavailable:

@@ -22,6 +22,31 @@ final class MeetingRecordingRecoveryServiceTests: XCTestCase {
         try? FileManager.default.removeItem(at: tempRoot)
     }
 
+    func testActiveWriterFinalizationIsNeitherOfferedRecoveredNorDiscarded() async throws {
+        let fixture = try makeRecoverableSession()
+        MeetingAudioWriterFinalizationRegistry.begin(folderURL: fixture.folderURL)
+        defer {
+            MeetingAudioWriterFinalizationRegistry.end(folderURL: fixture.folderURL)
+        }
+
+        let recoveries = try await recoveryService.discoverPendingRecoveries()
+
+        XCTAssertFalse(recoveries.contains { $0.sessionId == fixture.lock.sessionId })
+        do {
+            _ = try await recoveryService.recover(fixture.lock)
+            XCTFail("Recovery must not read a source file while its writer is finalizing")
+        } catch MeetingRecordingRecoveryError.writerFinalizationInProgress {
+            // Expected.
+        }
+        do {
+            try await recoveryService.discard(fixture.lock)
+            XCTFail("Discard must not delete a source file while its writer is finalizing")
+        } catch MeetingRecordingRecoveryError.writerFinalizationInProgress {
+            // Expected.
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.folderURL.path))
+    }
+
     func testRecoverSynthesizesMetadataAndPersistsRecoveredTranscription() async throws {
         let fixture = try makeRecoverableSession()
 

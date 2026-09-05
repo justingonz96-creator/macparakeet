@@ -84,6 +84,49 @@ final class MeetingCaptureReportTests: XCTestCase {
         XCTAssertEqual(report.source(for: .microphone)?.coverageRatio, 0.92)
     }
 
+    func testSilentSelectedSystemSourceIsPartialAndPrecedesCoverageShortfall() {
+        let report = MeetingCaptureReport(
+            sourceMode: .microphoneAndSystem,
+            sourceAlignment: MeetingSourceAlignment(
+                meetingOriginHostTime: 100,
+                microphone: track(writtenDurationMs: 1_000),
+                system: track(writtenDurationMs: 1_000)
+            ),
+            elapsedDurationMs: 100_000,
+            silentSources: [.system]
+        )
+
+        XCTAssertEqual(report.quality, .partial)
+        XCTAssertEqual(report.source(for: .microphone)?.status, .coverageShortfall)
+        XCTAssertEqual(report.source(for: .system)?.status, .silent)
+    }
+
+    func testInterruptionAndCaptureFailurePrecedeSilentStatus() {
+        let alignment = MeetingSourceAlignment(
+            meetingOriginHostTime: 100,
+            microphone: track(writtenDurationMs: 10_000),
+            system: track(writtenDurationMs: 10_000)
+        )
+
+        let interrupted = MeetingCaptureReport(
+            sourceMode: .microphoneAndSystem,
+            sourceAlignment: alignment,
+            elapsedDurationMs: 10_000,
+            interruptedSources: [.system],
+            silentSources: [.system]
+        )
+        let failed = MeetingCaptureReport(
+            sourceMode: .microphoneAndSystem,
+            sourceAlignment: alignment,
+            elapsedDurationMs: 10_000,
+            silentSources: [.system],
+            captureFailed: true
+        )
+
+        XCTAssertEqual(interrupted.source(for: .system)?.status, .interrupted)
+        XCTAssertEqual(failed.source(for: .system)?.status, .captureFailed)
+    }
+
     func testCaptureFailureIsPartialDespiteHighCoverage() {
         let alignment = MeetingSourceAlignment(
             meetingOriginHostTime: 100,
@@ -215,6 +258,26 @@ final class MeetingCaptureReportTests: XCTestCase {
         XCTAssertNil(report.playbackFallbackSource)
     }
 
+    func testSilentStatusRoundTripsThroughCodable() throws {
+        let report = MeetingCaptureReport(
+            sourceMode: .microphoneAndSystem,
+            sourceAlignment: MeetingSourceAlignment(
+                meetingOriginHostTime: 100,
+                microphone: track(writtenDurationMs: 30_000),
+                system: track(writtenDurationMs: 30_000)
+            ),
+            elapsedDurationMs: 30_000,
+            silentSources: [.system]
+        )
+
+        let encoded = try JSONEncoder().encode(report)
+        let decoded = try JSONDecoder().decode(MeetingCaptureReport.self, from: encoded)
+
+        XCTAssertEqual(decoded, report)
+        XCTAssertEqual(decoded.quality, .partial)
+        XCTAssertEqual(decoded.source(for: .system)?.status, .silent)
+    }
+
     func testLegacyReportWithoutPlaybackFallbackDecodesAsNil() throws {
         let report = MeetingCaptureReport(
             sourceMode: .microphoneOnly,
@@ -238,6 +301,7 @@ final class MeetingCaptureReportTests: XCTestCase {
 
         XCTAssertNil(decoded.playbackFallbackSource)
         XCTAssertEqual(decoded.quality, .healthy)
+        XCTAssertEqual(decoded.source(for: .microphone)?.status, .complete)
     }
 
     private func track(

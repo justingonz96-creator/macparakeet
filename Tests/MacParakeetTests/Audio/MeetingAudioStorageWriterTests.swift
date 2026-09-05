@@ -121,6 +121,75 @@ final class MeetingAudioStorageWriterTests: XCTestCase {
         let report = await finalize(writer)
 
         XCTAssertTrue(report.failedSources.isEmpty)
+        XCTAssertFalse(
+            MeetingAudioWriterFinalizationRegistry.contains(folderURL: tempFolder)
+        )
+    }
+
+    func testFinalizationCoordinatorCompletesExactlyOnceAfterBothSourcesSucceed() {
+        var coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+            writtenFrameCounts: [.microphone: 48_000, .system: 48_000]
+        )
+
+        XCTAssertNil(coordinator.sourceDidFinish(.microphone, failed: false))
+        XCTAssertEqual(
+            coordinator.sourceDidFinish(.system, failed: false),
+            .init(report: .init(failedSources: []), timedOutSources: [])
+        )
+        XCTAssertNil(coordinator.deadlineExpired())
+        XCTAssertNil(coordinator.sourceDidFinish(.system, failed: false))
+    }
+
+    func testFinalizationCoordinatorReportsOrdinaryWrittenSourceFailure() {
+        var coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+            writtenFrameCounts: [.microphone: 48_000, .system: 48_000]
+        )
+
+        XCTAssertNil(coordinator.sourceDidFinish(.microphone, failed: true))
+        XCTAssertEqual(
+            coordinator.sourceDidFinish(.system, failed: false),
+            .init(report: .init(failedSources: [.microphone]), timedOutSources: [])
+        )
+    }
+
+    func testFinalizationCoordinatorReportsMissingWrittenSourceAtDeadlineWithoutWaiting() {
+        var coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+            writtenFrameCounts: [.microphone: 48_000, .system: 48_000]
+        )
+
+        XCTAssertNil(coordinator.sourceDidFinish(.system, failed: false))
+        XCTAssertEqual(
+            coordinator.deadlineExpired(),
+            .init(report: .init(failedSources: [.microphone]), timedOutSources: [.microphone])
+        )
+    }
+
+    func testFinalizationCoordinatorReportsBothWrittenSourcesWhenBothCallbacksTimeOut() {
+        var coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+            writtenFrameCounts: [.microphone: 48_000, .system: 48_000]
+        )
+
+        XCTAssertEqual(
+            coordinator.deadlineExpired(),
+            .init(
+                report: .init(failedSources: [.microphone, .system]),
+                timedOutSources: [.microphone, .system]
+            )
+        )
+    }
+
+    func testFinalizationCoordinatorIgnoresUnwrittenTimeoutAndLateCallback() {
+        var coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+            writtenFrameCounts: [.microphone: 48_000, .system: 0]
+        )
+
+        XCTAssertNil(coordinator.sourceDidFinish(.microphone, failed: false))
+        XCTAssertEqual(
+            coordinator.deadlineExpired(),
+            .init(report: .init(failedSources: []), timedOutSources: [.system])
+        )
+        XCTAssertNil(coordinator.sourceDidFinish(.system, failed: true))
+        XCTAssertNil(coordinator.deadlineExpired())
     }
 
     func testFinalizationFailurePolicyIgnoresUnwrittenSources() {
