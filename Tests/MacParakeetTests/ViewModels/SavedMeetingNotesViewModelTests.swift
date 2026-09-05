@@ -97,20 +97,31 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
     func testNewEditPersistsAfterOlderInFlightSaveFails() async {
         let viewModel = SavedMeetingNotesViewModel()
         var writes: [String] = []
+        let oldSaveStarted = expectation(description: "Old save started")
+        var releaseOldSave: (() -> Void)?
         viewModel.configure(meetingID: meetingID, text: nil) { text in
             writes.append(text)
             if text == "Old draft" {
-                try? await Task.sleep(for: .milliseconds(500))
+                oldSaveStarted.fulfill()
+                await withCheckedContinuation { continuation in
+                    releaseOldSave = { continuation.resume() }
+                }
                 return false
             }
             return true
         }
         viewModel.textBinding.wrappedValue = "Old draft"
-        try? await Task.sleep(for: .milliseconds(600))
+        let oldFlush = Task { @MainActor in
+            await viewModel.flush()
+        }
+        await fulfillment(of: [oldSaveStarted], timeout: 1)
         viewModel.textBinding.wrappedValue = "Latest draft"
+        releaseOldSave?()
 
         let flushed = await viewModel.flush()
+        let oldFlushed = await oldFlush.value
 
+        XCTAssertFalse(oldFlushed)
         XCTAssertTrue(flushed)
         XCTAssertEqual(writes, ["Old draft", "Latest draft"])
         XCTAssertEqual(viewModel.saveState, .saved)
