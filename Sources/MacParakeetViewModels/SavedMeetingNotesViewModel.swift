@@ -42,8 +42,17 @@ public final class SavedMeetingNotesViewModel {
     private var selectionTransitionToken = UUID()
     private var revision = 0
     private var savedRevision = 0
+    private let waitForDebounce: (Duration) async throws -> Void
 
-    public init() {}
+    public init() {
+        waitForDebounce = { duration in
+            try await ContinuousClock().sleep(for: duration)
+        }
+    }
+
+    init(waitForDebounce: @escaping (Duration) async throws -> Void) {
+        self.waitForDebounce = waitForDebounce
+    }
 
     public func configure(
         meetingID: UUID,
@@ -130,8 +139,9 @@ public final class SavedMeetingNotesViewModel {
     private func scheduleDebounce() {
         debounceTask?.cancel()
         debounceTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.debounceInterval)
-            guard !Task.isCancelled, let self else { return }
+            guard let self else { return }
+            try? await self.waitForDebounce(Self.debounceInterval)
+            guard !Task.isCancelled else { return }
             _ = await self.persistCurrentRevision()
         }
     }

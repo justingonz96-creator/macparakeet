@@ -5,6 +5,33 @@ import XCTest
 final class SavedMeetingNotesViewModelTests: XCTestCase {
     private let meetingID = UUID()
 
+    @MainActor
+    private final class ManualDebounceClock {
+        private let ticks: AsyncStream<Void>
+        private let tickContinuation: AsyncStream<Void>.Continuation
+        var onSleep: (() -> Void)?
+        var onWake: (() -> Void)?
+
+        init() {
+            var continuation: AsyncStream<Void>.Continuation?
+            ticks = AsyncStream { continuation = $0 }
+            tickContinuation = continuation!
+        }
+
+        func sleep(for _: Duration) async throws {
+            try Task.checkCancellation()
+            onSleep?()
+            defer { onWake?() }
+            var iterator = ticks.makeAsyncIterator()
+            guard await iterator.next() != nil else { throw CancellationError() }
+            try Task.checkCancellation()
+        }
+
+        func advance() {
+            tickContinuation.yield()
+        }
+    }
+
     func testConfigureRestoresTextWithoutWriting() async {
         let viewModel = SavedMeetingNotesViewModel()
         var writes: [String] = []
@@ -21,36 +48,50 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
     }
 
     func testRapidEditsAutosaveOnlyLatestDraft() async {
-        let viewModel = SavedMeetingNotesViewModel()
+        let clock = ManualDebounceClock()
+        let debounceStarted = expectation(description: "Debounce started")
+        let autosaveCompleted = expectation(description: "Autosave completed")
+        clock.onSleep = { debounceStarted.fulfill() }
+        let viewModel = SavedMeetingNotesViewModel(waitForDebounce: clock.sleep)
         var writes: [String] = []
         viewModel.configure(meetingID: meetingID, text: nil) { text in
             writes.append(text)
+            autosaveCompleted.fulfill()
             return true
         }
 
         viewModel.textBinding.wrappedValue = "First"
         viewModel.textBinding.wrappedValue = "First second"
 
-        try? await Task.sleep(for: .milliseconds(800))
+        await fulfillment(of: [debounceStarted], timeout: 1)
+        clock.advance()
+        await fulfillment(of: [autosaveCompleted], timeout: 1)
 
         XCTAssertEqual(writes, ["First second"])
         XCTAssertEqual(viewModel.saveState, .saved)
     }
 
     func testFlushPersistsImmediatelyAndCancelsDebounce() async {
-        let viewModel = SavedMeetingNotesViewModel()
+        let clock = ManualDebounceClock()
+        let debounceStarted = expectation(description: "Debounce started")
+        let debounceFinished = expectation(description: "Debounce finished")
+        clock.onSleep = { debounceStarted.fulfill() }
+        clock.onWake = { debounceFinished.fulfill() }
+        let viewModel = SavedMeetingNotesViewModel(waitForDebounce: clock.sleep)
         var writes: [String] = []
         viewModel.configure(meetingID: meetingID, text: nil) { text in
             writes.append(text)
             return true
         }
         viewModel.textBinding.wrappedValue = "Latest context"
+        await fulfillment(of: [debounceStarted], timeout: 1)
 
         let flushed = await viewModel.flush()
         XCTAssertTrue(flushed)
         XCTAssertEqual(writes, ["Latest context"])
 
-        try? await Task.sleep(for: .milliseconds(800))
+        clock.advance()
+        await fulfillment(of: [debounceFinished], timeout: 1)
         XCTAssertEqual(writes, ["Latest context"])
     }
 
@@ -77,17 +118,29 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
     }
 
     func testFlushDuringSlowAutosaveDoesNotDuplicateWrite() async {
-        let viewModel = SavedMeetingNotesViewModel()
+        let clock = ManualDebounceClock()
+        let debounceStarted = expectation(description: "Debounce started")
+        let saveStarted = expectation(description: "Save started")
+        var releaseSave: (() -> Void)?
+        clock.onSleep = { debounceStarted.fulfill() }
+        let viewModel = SavedMeetingNotesViewModel(waitForDebounce: clock.sleep)
         var writes: [String] = []
         viewModel.configure(meetingID: meetingID, text: nil) { text in
             writes.append(text)
-            try? await Task.sleep(for: .milliseconds(500))
+            saveStarted.fulfill()
+            await withCheckedContinuation { continuation in
+                releaseSave = { continuation.resume() }
+            }
             return true
         }
         viewModel.textBinding.wrappedValue = "One write"
 
-        try? await Task.sleep(for: .milliseconds(600))
-        let flushed = await viewModel.flush()
+        await fulfillment(of: [debounceStarted], timeout: 1)
+        clock.advance()
+        await fulfillment(of: [saveStarted], timeout: 1)
+        let flushTask = Task { @MainActor in await viewModel.flush() }
+        releaseSave?()
+        let flushed = await flushTask.value
 
         XCTAssertTrue(flushed)
         XCTAssertEqual(writes, ["One write"])
@@ -151,9 +204,14 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
         let meetingBID = UUID()
         let meetingCID = UUID()
         var writesByMeeting: [UUID: [String]] = [:]
+        let saveAStarted = expectation(description: "Meeting A save started")
+        var releaseSaveA: (() -> Void)?
         viewModel.configure(meetingID: meetingID, text: "Meeting A") { text in
             writesByMeeting[self.meetingID, default: []].append(text)
-            try? await Task.sleep(for: .milliseconds(300))
+            saveAStarted.fulfill()
+            await withCheckedContinuation { continuation in
+                releaseSaveA = { continuation.resume() }
+            }
             return true
         }
         viewModel.textBinding.wrappedValue = "Updated A"
@@ -169,7 +227,7 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
                 return true
             }
         }
-        try? await Task.sleep(for: .milliseconds(50))
+        await fulfillment(of: [saveAStarted], timeout: 1)
         let transitionToC = viewModel.beginSelectionTransition()
         let taskToC = Task { @MainActor in
             await viewModel.completeSelectionTransition(
@@ -181,6 +239,7 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
                 return true
             }
         }
+        releaseSaveA?()
 
         let configuredB = await taskToB.value
         let configuredC = await taskToC.value
