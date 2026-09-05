@@ -31,6 +31,45 @@ final class SpeakerEditSelectionModelTests: XCTestCase {
         XCTAssertEqual(model.anchorID, ids[4])
     }
 
+    func testRangeSelectionPreservesExistingIndependentSelections() {
+        let ids = makeIDs(6)
+        var model = SpeakerEditSelectionModel()
+
+        model.select(ids[0], intent: .toggling, orderedIDs: ids)
+        model.select(ids[4], intent: .toggling, orderedIDs: ids)
+        model.select(ids[2], intent: .extendingRange, orderedIDs: ids)
+
+        XCTAssertEqual(model.selectedIDs, Set([ids[0], ids[2], ids[3], ids[4]]))
+        XCTAssertEqual(model.anchorID, ids[4])
+    }
+
+    func testTurnToggleSelectsAndDeselectsWholeTurnWithoutDroppingOthers() {
+        let ids = makeIDs(6)
+        var model = SpeakerEditSelectionModel()
+        model.select(ids[0], intent: .toggling, orderedIDs: ids)
+
+        model.toggleTurn(Array(ids[2...4]), orderedIDs: ids)
+        XCTAssertEqual(model.selectedIDs, Set([ids[0], ids[2], ids[3], ids[4]]))
+        XCTAssertEqual(model.anchorID, ids[4])
+
+        model.toggleTurn(Array(ids[2...4]), orderedIDs: ids)
+        XCTAssertEqual(model.selectedIDs, [ids[0]])
+        XCTAssertEqual(model.anchorID, ids[0])
+    }
+
+    func testTurnToggleCompletesPartialTurnSelectionBeforeDeselectingIt() {
+        let ids = makeIDs(4)
+        var model = SpeakerEditSelectionModel()
+        model.select(ids[1], intent: .toggling, orderedIDs: ids)
+
+        model.toggleTurn(Array(ids[1...3]), orderedIDs: ids)
+        XCTAssertEqual(model.selectedIDs, Set(ids[1...3]))
+
+        model.toggleTurn(Array(ids[1...3]), orderedIDs: ids)
+        XCTAssertTrue(model.isEmpty)
+        XCTAssertNil(model.anchorID)
+    }
+
     func testRangeWithoutValidAnchorFallsBackToSingleSelection() {
         let ids = makeIDs(2)
         var model = SpeakerEditSelectionModel()

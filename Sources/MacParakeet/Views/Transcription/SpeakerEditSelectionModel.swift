@@ -46,7 +46,28 @@ struct SpeakerEditSelectionModel: Equatable {
                 return
             }
             let bounds = min(anchorIndex, selectedIndex)...max(anchorIndex, selectedIndex)
-            selectedIDs = Set(bounds.map { orderedIDs[$0] })
+            selectedIDs.formUnion(bounds.map { orderedIDs[$0] })
+        }
+    }
+
+    /// Toggle one contiguous rendered speaker turn as a single selection unit.
+    /// Existing selections outside the turn are preserved.
+    mutating func toggleTurn(
+        _ ids: [SpeakerEditableSegmentID],
+        orderedIDs: [SpeakerEditableSegmentID]
+    ) {
+        let available = Set(orderedIDs)
+        let turnIDs = ids.filter(available.contains)
+        guard !turnIDs.isEmpty else { return }
+
+        if turnIDs.allSatisfy(selectedIDs.contains) {
+            selectedIDs.subtract(turnIDs)
+            if let anchorID, !selectedIDs.contains(anchorID) {
+                self.anchorID = orderedIDs.first(where: selectedIDs.contains)
+            }
+        } else {
+            selectedIDs.formUnion(turnIDs)
+            anchorID = turnIDs.last
         }
     }
 

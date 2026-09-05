@@ -1750,6 +1750,11 @@ struct TranscriptResultView: View {
             if findBarVisible {
                 transcriptFindToolbar
             }
+            if editingSpeakers {
+                speakerEditingActionBar
+                    .padding(.horizontal, DesignSystem.Spacing.lg)
+                    .padding(.top, DesignSystem.Spacing.sm)
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
@@ -1789,9 +1794,6 @@ struct TranscriptResultView: View {
                             speakerSummaryPanel(speakers: attribution.speakers)
                         } else if let speakers = activeTranscription.speakers, !speakers.isEmpty {
                             speakerSummaryPanel(speakers: speakers)
-                        }
-                        if editingSpeakers {
-                            speakerEditingActionBar
                         }
                         timestampedView(words: timestamps)
                     } else if !transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1973,8 +1975,11 @@ struct TranscriptResultView: View {
                     .keyboardShortcut("z", modifiers: [.command, .shift])
                     .disabled(!viewModel.canRedoSpeakerCorrection)
                 Button("") {
-                    editingSpeakers = false
-                    speakerSelection.clear()
+                    if speakerSelection.isEmpty {
+                        editingSpeakers = false
+                    } else {
+                        speakerSelection.clear()
+                    }
                 }
                 .keyboardShortcut(.cancelAction)
             }
@@ -3887,13 +3892,17 @@ struct TranscriptResultView: View {
             effectiveHighlightRanges: effectiveHighlights,
             effectiveCurrentHighlight: effectiveCurrent,
             onSelectSegment: selectSpeakerSegment,
+            onToggleTurnSelection: toggleSpeakerTurnSelection,
+            onBeginSpeakerEditing: beginSpeakerEditing,
             onAssignSegment: { segment, assignment in
                 applySpeakerAssignment(assignment, from: segment)
             },
             onCreateSpeakerForSegment: { segment in
                 presentNewSpeaker(for: actionSegments(fallback: segment))
             },
-            onSplitSegment: presentSplitPicker
+            onSplitSegment: presentSplitPicker,
+            onAssignTurn: assignSpeakerTurn,
+            onCreateSpeakerForTurn: presentNewSpeaker
         )
     }
 
@@ -3902,6 +3911,16 @@ struct TranscriptResultView: View {
             Text("\(speakerSelection.count) selected")
                 .font(DesignSystem.Typography.caption)
                 .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+            if !speakerSelection.isEmpty {
+                Button("Clear") {
+                    speakerSelection.clear()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
+                .disabled(viewModel.isApplyingSpeakerCorrection)
+                .help("Deselect all transcript segments")
+            }
 
             Menu("Assign to…") {
                 ForEach(viewModel.speakerAttribution?.speakers ?? [], id: \.id) { speaker in
@@ -3957,14 +3976,26 @@ struct TranscriptResultView: View {
         let intent: SpeakerEditSelectionModel.Intent
         if modifiers.contains(.shift) {
             intent = .extendingRange
-        } else if modifiers.contains(.command) {
-            intent = .toggling
         } else {
-            intent = .replacing
+            intent = .toggling
         }
         speakerSelection.select(
             id,
             intent: intent,
+            orderedIDs: viewModel.speakerAttribution?.editableSegments.map(\.id) ?? []
+        )
+    }
+
+    private func beginSpeakerEditing() {
+        editingSpeakers = true
+        if findBarVisible {
+            closeFindBar()
+        }
+    }
+
+    private func toggleSpeakerTurnSelection(_ ids: [SpeakerEditableSegmentID]) {
+        speakerSelection.toggleTurn(
+            ids,
             orderedIDs: viewModel.speakerAttribution?.editableSegments.map(\.id) ?? []
         )
     }
@@ -3990,6 +4021,15 @@ struct TranscriptResultView: View {
 
     private func assignSelectedSegments(to assignment: SpeakerAssignment) {
         let targets = selectedSpeakerSegments.map(correctionTarget(for:))
+        guard !targets.isEmpty else { return }
+        viewModel.applySpeakerCorrection(.assign(targets: targets, to: assignment))
+    }
+
+    private func assignSpeakerTurn(
+        _ segments: [SpeakerEditableSegment],
+        to assignment: SpeakerAssignment
+    ) {
+        let targets = segments.map(correctionTarget(for:))
         guard !targets.isEmpty else { return }
         viewModel.applySpeakerCorrection(.assign(targets: targets, to: assignment))
     }
