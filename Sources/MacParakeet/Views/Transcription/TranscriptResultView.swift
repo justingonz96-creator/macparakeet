@@ -223,10 +223,19 @@ final class TranscriptRichContextLoader {
     }
 }
 
+enum TranscriptResultTabOrdering {
+    static func leadingTabs(
+        for sourceType: Transcription.SourceType
+    ) -> [TranscriptionViewModel.TranscriptTab] {
+        sourceType == .meeting ? [.transcript, .notes] : [.transcript]
+    }
+}
+
 private enum MeetingNotesDiscardAction {
     case cancelEditing
     case navigateBack
     case startNewTranscription
+    case selectTab(TranscriptionViewModel.TranscriptTab)
 }
 
 /// Records the user's engine choice from the retranscribe popover so the
@@ -1536,6 +1545,13 @@ struct TranscriptResultView: View {
                 switch viewModel.selectedTab {
                 case .transcript:
                     transcriptPane
+                case .notes:
+                    if activeTranscription.sourceType == .meeting {
+                        meetingNotesPane
+                    } else {
+                        transcriptPane
+                            .onAppear { viewModel.selectedTab = .transcript }
+                    }
                 case .result(let id):
                     if promptResultsViewModel.promptResults.contains(where: { $0.id == id }) {
                         promptResultContentPane(promptResultID: id)
@@ -1590,10 +1606,6 @@ struct TranscriptResultView: View {
 
                         if shouldShowTranscriptAISetupBanner {
                             chatConfigurationBanner
-                        }
-
-                        if activeTranscription.sourceType == .meeting {
-                            meetingNotesSection
                         }
 
                         if let error = transcriptEditError {
@@ -2343,10 +2355,17 @@ struct TranscriptResultView: View {
         )
     }
 
+    private var meetingNotesPane: some View {
+        ScrollView {
+            meetingNotesSection
+                .padding(DesignSystem.Spacing.lg)
+        }
+    }
+
     // MARK: - Tab Bar
 
     private var orderedTabs: [TranscriptionViewModel.TranscriptTab] {
-        var tabs: [TranscriptionViewModel.TranscriptTab] = [.transcript]
+        var tabs = TranscriptResultTabOrdering.leadingTabs(for: activeTranscription.sourceType)
         // Generated content after transcript, oldest first so new tabs appear on the right
         for promptResult in promptResultsViewModel.promptResults.reversed() {
             tabs.append(.result(id: promptResult.id))
@@ -2424,7 +2443,12 @@ struct TranscriptResultView: View {
         .foregroundStyle(isSelected ? DesignSystem.Colors.accent : DesignSystem.Colors.textSecondary)
         .animation(.easeInOut(duration: 0.3), value: isCopiedTab)
         .onTapGesture {
-            viewModel.selectedTab = tab
+            guard viewModel.selectedTab != tab else { return }
+            if case .notes = viewModel.selectedTab {
+                requestMeetingNotesNavigation(.selectTab(tab))
+            } else {
+                viewModel.selectedTab = tab
+            }
         }
         .contextMenu {
             if case .result(let id) = tab,
@@ -2496,6 +2520,8 @@ struct TranscriptResultView: View {
         switch tab {
         case .transcript:
             return "text.alignleft"
+        case .notes:
+            return "note.text"
         case .result:
             return "sparkles"
         case .generation(let id):
@@ -2516,6 +2542,8 @@ struct TranscriptResultView: View {
         switch tab {
         case .transcript:
             return "Transcript"
+        case .notes:
+            return "Notes"
         case .result(let id):
             guard let promptResult = promptResultsViewModel.promptResults.first(where: { $0.id == id }) else {
                 return "Result"
@@ -3974,6 +4002,8 @@ struct TranscriptResultView: View {
             onBack?()
         case .startNewTranscription:
             onStartNew?()
+        case .selectTab(let tab):
+            viewModel.selectedTab = tab
         }
     }
 

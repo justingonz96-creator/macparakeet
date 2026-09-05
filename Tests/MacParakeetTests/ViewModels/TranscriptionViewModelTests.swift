@@ -2658,6 +2658,20 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.showTabs)
     }
 
+    func testShowTabsTrueForSavedMeetingWithoutAIResultsOrChat() {
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.currentTranscription = Transcription(
+            fileName: "meeting.m4a",
+            status: .completed,
+            sourceType: .meeting
+        )
+
+        XCTAssertFalse(viewModel.llmAvailable)
+        XCTAssertFalse(viewModel.hasPromptResultTabs)
+        XCTAssertFalse(viewModel.hasConversations)
+        XCTAssertTrue(viewModel.showTabs)
+    }
+
     func testUpdateConversationStatusUpdatesShowTabs() {
         viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
         let transcription = Transcription(

@@ -93,6 +93,7 @@ public final class TranscriptionViewModel {
 
     public enum TranscriptTab: Hashable, Sendable {
         case transcript
+        case notes
         case result(id: UUID)
         case generation(id: UUID)
         case chat
@@ -216,7 +217,8 @@ public final class TranscriptionViewModel {
     public var hasConversations: Bool = false
 
     public var showTabs: Bool {
-        llmAvailable
+        currentTranscription?.sourceType == .meeting
+            || llmAvailable
             || hasPromptResultTabs
             || hasConversations
     }

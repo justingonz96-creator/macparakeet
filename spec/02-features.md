@@ -1716,12 +1716,14 @@ final transcripts remain plain text without word timestamps or speaker labels.
 > availability follows the normal channel process.
 
 The replacement does not restore a dedicated memo-steered built-in or enable
-notes automatically. Every saved meeting exposes Add/Edit/Clear notes with
-explicit Save/Cancel, backed by canonical `transcriptions.userNotes`; blank
-saves become `NULL` and refresh the derived meeting artifacts. Every result
-prompt, including read-only built-ins, exposes an **Include meeting notes as
-context** checkbox. It defaults off for all existing and new prompts and is not
-available for Transforms.
+notes automatically. Every saved meeting exposes a dedicated `Notes` tab after
+`Transcript`, with Add/Edit/Clear and explicit Save/Cancel. This keeps the
+user-authored editorial layer separate from the factual transcript. Notes are
+backed by canonical `transcriptions.userNotes`; blank saves become `NULL` and
+refresh the derived meeting artifacts. Non-meeting transcriptions do not expose
+the tab. Every result prompt, including read-only built-ins, exposes an
+**Include meeting notes as context** checkbox. It defaults off for all existing
+and new prompts and is not available for Transforms.
 
 When enabled, non-empty notes are added once as a delimited context block and
 the transcript remains the factual source of truth. Advanced custom prompts

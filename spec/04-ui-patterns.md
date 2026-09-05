@@ -149,9 +149,10 @@ queued-completion behavior.
 
 ### Saved Meeting Notes
 
-Every saved meeting detail keeps a `Your notes` card above the transcript,
-including meetings with no notes and meetings whose transcription is still
-processing. The card has three explicit states:
+Every saved meeting detail exposes a dedicated `Notes` tab immediately after
+`Transcript`, including meetings with no notes and meetings whose transcription
+is still processing. Notes are an editorial layer and never appear inside the
+factual transcript pane. The Notes tab has three explicit states:
 
 - **Empty:** short context plus `Add notes`.
 - **Read:** selectable plaintext with `Copy` and `Edit`.
@@ -163,7 +164,8 @@ Save is explicit rather than debounced: it commits one stable value before the
 next Chat or result-prompt request and avoids refreshing meeting artifacts on
 every keystroke. `Command-Return` saves. Cancel asks before discarding a changed
 draft and does not write. Changing the selected transcription resets the local
-editor state. Database success remains authoritative even if the
+editor state; leaving the Notes tab with a changed draft also asks before
+discarding it. Database success remains authoritative even if the
 derived-artifact refresh reports a separate retryable warning. Successive
 saves use database last-writer-wins semantics, while artifact refresh remains
 ordered/latest-wins so stale completion cannot overwrite newer files.
