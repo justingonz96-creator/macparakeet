@@ -127,6 +127,26 @@ recording interval**. It does not inspect speech or transcript completeness and
 must not be conflated with §2's proposed offline-VAD transcript-gap repair.
 Selective/full VAD-driven transcript repair remains unimplemented.
 
+### 2026-09-04 candidate amendment: silent saved system audio
+
+Frame coverage alone cannot detect a system stream that delivered only zeros.
+The candidate marks a selected system source `silent` only when it delivered
+buffers, successfully written converted PCM has an exact-zero peak absolute
+sample, microphone signal is nonzero, and pause-adjusted capture lasts at least
+30 seconds. The system writer's existing downmix/conversion supplies that
+metric, not input channel 0 or the UI RMS meter. Retained pre-pause audio counts;
+dropped paused audio does not. Quiet nonzero, short, and wholly silent sessions
+remain outside this verdict.
+
+This is a durable post-stop partial-audio explanation, not a live warning,
+inferred source restart, or transcript-repair mechanism. Recovery preserves a
+known `silent` verdict while reconciling surviving media; interruption,
+capture failure, and unavailable media remain higher-precedence evidence.
+The matching contracts are [meeting artifacts](../contracts/meeting-artifacts-v1.md)
+and [recovery ownership](../contracts/meeting-recovery-retention.md).
+Candidate writer timeouts use the latter contract's aggregate deadline and
+retained ownership, never destructive `cancelWriting()`.
+
 ### 1. Mic-health watchdog: system audio is the liveness oracle (REQ-MEET-017)
 
 During an active meeting, **the system-audio stream is the ground

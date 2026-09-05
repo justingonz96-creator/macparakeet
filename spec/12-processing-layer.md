@@ -72,9 +72,12 @@ Additional categories are future schema decisions and are not part of this spec.
 
 ### Dictation AI Formatter Profiles
 
-Dictation AI Formatter app/category profiles are deliberately separate from the
-Prompt Library. They live in `ai_formatter_profiles` and are resolved by
-`AIFormatterProfileMatcher` before the formatter calls `LLMService`.
+Dictation AI Formatter app/category profile code is deliberately separate from
+the Prompt Library, but `AppFeatures.aiFormatterProfilesEnabled = false` keeps
+its routing and management out of the normal product surface. The
+`ai_formatter_profiles` table still migrates. When enabled, profiles resolve
+through `AIFormatterProfileMatcher`; otherwise dictation uses the global
+formatter prompt.
 
 Reasoning:
 
@@ -341,9 +344,9 @@ Provider architecture is unchanged. The Prompt Library changes what goes into th
 |------------------|---------------|
 | `prompts` table + community prompt seeds | Action types beyond prompt-driven summarization |
 | `summaries` table / `PromptResult` model (one-to-many) | Workflow engine / step chaining |
-| Prompt model + repository, including Transform prompt rows | Triggered automation |
+| Prompt model + repository, including Transform prompt rows | Generalized triggered workflows (the existing post-meeting hook is narrower) |
 | PromptResult model + repository | Agent profiles / agent handoff |
-| Dictation AI Formatter profiles in `ai_formatter_profiles` | Browser hostname/domain matching |
+| Gated Dictation AI Formatter profile code/storage (not public-enabled) | Browser hostname/domain matching |
 | Prompt chips + generation popover | Desktop-context collection |
 | Extra instructions field | Apple Shortcuts / App Intents integration |
 | Multi-summary tab navigation + queued pipeline | |
@@ -380,7 +383,7 @@ The future design space for actions, workflows, agents, and voice control is doc
 2. Generating a summary creates a new summary record (does not overwrite previous summaries).
 3. Multiple summaries per transcript are displayed as tabs, with pending generations appearing immediately.
 4. User can add extra instructions that layer on top of the selected prompt.
-5. Community prompts are available on first launch from the bundled JSON seed.
+5. Community prompts are available on first launch from `Prompt.builtInPrompts()` Swift seeds; the bundled JSON is contribution/reference material, not the runtime loader.
 6. Community prompts can be hidden but not edited or deleted.
 7. Custom prompts can be created, edited, and deleted via the management sheet.
 8. Prompt management is accessible from the generation popover.

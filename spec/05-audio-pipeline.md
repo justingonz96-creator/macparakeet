@@ -232,6 +232,33 @@ Mic Input    → SharedMicrophoneStream (+ Voice Processing I/O when active)┘ 
 - Live chunk enqueue keeps a conservative guard: when recent system energy strongly dominates processed mic energy for a short freshness window, mic chunks are skipped for live transcription only. Mic audio is still written to disk and included in final mix/output.
 - Joiner queue overflow, long-session sync lag, and runtime capture failures are emitted as diagnostics for observability (`MeetingAudioCaptureEvent.error` where available).
 
+### Final Capture Truth
+
+Frame coverage and signal presence are distinct from transcript completeness.
+The finalized `MeetingCaptureReport` compares written/timeline durations with
+pause-adjusted elapsed time and can mark successfully transcribed audio
+`partial`. Missing legacy reports mean unknown, not healthy.
+
+The release-readiness candidate adds qualified `silent` system-source reporting:
+at least 30 seconds, system buffers delivered, nonzero microphone signal, and
+exact-zero peak absolute sample in successfully written converted/downmixed
+system PCM. This includes retained pre-pause buffers and excludes dropped
+paused buffers. Right-channel-only input is not silence if it survives the
+downmix; phase-cancelling input is evaluated as written. There is no quiet-audio
+threshold or new live restart. `system_peak_level` diagnostics now describe
+written PCM peak magnitude, not the UI's input-channel RMS meter.
+
+Recovery refreshes surviving media duration/alignment while retaining prior
+silence and interruption history; unavailable/interrupted media still takes
+precedence. Full field/precedence details live in the
+[artifact contract](contracts/meeting-artifacts-v1.md).
+
+Source-writer finalization has one aggregate five-second deadline. A timed-out
+written source fails settlement without cancelling AVAssetWriter or deleting
+audio. A process-local folder guard remains until all callbacks return;
+recovery/discard cannot touch still-owned files. See the
+[recovery ownership contract](contracts/meeting-recovery-retention.md#source-writer-finalization-ownership).
+
 ### Meeting Echo Cancellation (AEC)
 
 Dual-source meeting capture preserves raw source artifacts:
@@ -407,11 +434,11 @@ Dictation can show a display-only live transcript preview above the dictation
 pill while you speak (`AppFeatures.liveDictationStreamingEnabled`, #517). It is
 decoupled from the paste: the final inserted text always comes from the
 stop-time transcription path, so a jumpy or approximate preview can never
-corrupt the result. Per engine: Parakeet runs a single-flight tail-window batch
-preview (~1s cadence over the last ~15s of mic samples through its existing
-`[Float]` batch path); both Nemotron builds reuse their native live-partial
-path; Whisper stays default-off pending a per-pass latency probe, and Cohere
-stays off because it is record-then-transcribe only. Users toggle
+corrupt the result. Per engine: Parakeet TDT runs a single-flight tail-window
+batch preview (~1s cadence over the last ~15s of mic samples through its
+existing `[Float]` batch path); Parakeet Unified and both Nemotron builds use
+native streaming partials. Whisper stays default-off pending a per-pass latency
+probe, and Cohere stays off because it is record-then-transcribe only. Users toggle
 it — and pick a preview text size — in Settings → Capture → Dictation
 (`showLiveDictationPreview`, default on); the toggle gates only the preview
 sink.
@@ -429,10 +456,10 @@ alter the pasted text. See `docs/research/live-dictation-streaming.md`.
 ### Meeting Live Preview
 
 `CaptureOrchestrator` buffers audio into live-preview chunks and sends them through the scheduler using the meeting plan's preview route. The preview route is the captured Live Speech selection only when its capabilities provide the word timings required by the renderer; otherwise no live chunks are created and there is no fallback engine. The fixed cadence keeps the original 5s / 1s-overlap `AudioChunker`. When `AppFeatures.meetingVadLiveChunkingEnabled` is true, launch-time prep tries to cache the Silero VAD model; if it is cached and preview uses Parakeet, the live path cuts chunks at speech boundaries per source. Nemotron and Whisper preview use the fixed cadence. Cohere cannot preview. VAD unavailable/error cases fall back to fixed chunking, while the authoritative post-stop pass independently uses the plan's captured final route and durable audio. This provides:
-- Live transcript preview in the recording pill
+- Live transcript preview in the meeting panel; the floating pill is a control/status surface
 - Source-aware labels: mic chunks → "Me", system chunks → "Them"
 - Raw mic capture plus a residual safeguard that suppresses clearly system-dominant mic chunks in live preview windows
-- Immediate transcript availability when recording stops
+- Best-effort preview during capture; the authoritative saved transcript still waits for queued post-stop finalization
 
 ---
 

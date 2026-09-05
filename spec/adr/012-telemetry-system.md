@@ -53,7 +53,7 @@ This is not "anonymous" in the strict GDPR sense (session + chip + locale + coun
 
 ### What We Collect
 
-97 event types today — the live source of truth is the `TelemetryEventName`
+The live source of truth for event types is the `TelemetryEventName`
 enum (`Sources/MacParakeetCore/Services/Telemetry/TelemetryEvent.swift`) and the
 catalog in `docs/telemetry.md`. They span app lifecycle, dictation,
 transcription, speaker diarization, meeting recording + crash recovery, calendar

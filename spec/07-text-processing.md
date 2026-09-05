@@ -84,14 +84,14 @@ Final normalization pass:
 
 | Mode | Processing | Engine | Latency |
 |------|-----------|--------|---------|
-| Raw | None | N/A | 0ms |
+| Raw (default) | Configured terminal action extraction only | TextProcessingPipeline | No cleanup pipeline |
 | Clean | Deterministic pipeline | TextProcessingPipeline | <1ms |
 
 ### Mode Details
 
-**Raw**: No processing. The exact text output from Parakeet is used as-is. Useful for debugging or when the user wants full control.
+**Raw** (default): Skip cleanup and insertion styling. Preserve engine output except for configured trailing action extraction, so Voice Return works without enabling Clean processing.
 
-**Clean** (default): The deterministic 5-step pipeline runs. Fast and predictable. Good for most dictation use cases.
+**Clean** (opt-in): Run the deterministic 5-step pipeline, including trailing action extraction.
 
 Clean dictation also has an insertion-style preference. Sentence style keeps
 the historical sentence-shaped output. Inline style keeps the same deterministic

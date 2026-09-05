@@ -64,7 +64,9 @@ The [notarized DMG](https://downloads.macparakeet.com/MacParakeet.dmg) is the st
 | Channel | Status | Includes |
 |---------|--------|----------|
 | Stable DMG `0.7.3` | Recommended for normal use | Dictation, file/video/media URL and podcast transcription, meeting recording with selectable mic/system capture, cleaned-mic finalization and audio-retention controls, meeting calendar reminders and opt-in auto-start/auto-stop, System Default microphone routing, separate live/final speech-engine routes, bounded meeting-capture lifecycle handling, Transforms, VAD-guided meeting live-preview chunking, Parakeet v3/v2/Unified model selection, optional Nemotron Beta, Cohere, and WhisperKit, bundled CLI 3.0, exports, vocabulary, AI features |
-| `main` branch | Development | Current `0.7.3` source plus subsequent reviewed development; developer-gated in-process MLX local LLM groundwork remains compiled/tested but hidden from normal users |
+| Development source (this revision) | Unreleased; not the stable download | CLI 3.2 discovery/JSON coverage, local segment search/context reads, knowledge cards, DAPT export, silent-system capture and recovery reporting, bounded writer finalization, and transcript AI-context hardening |
+
+See the [canonical release and feature-gate status](spec/README.md#release-channels-and-feature-flags). App-aware AI Formatter profiles, activity-based meeting detection, and the in-process MLX LLM remain gated; source presence does not mean they are available in the stable app.
 
 Meeting calendar support is live in the stable DMG. MacParakeet reads upcoming meetings from the local macOS Calendar store through EventKit, can show reminders, and can optionally start a recording after a countdown. Auto-start defaults to `.off` and must be opted into. Recordings stop manually unless the separate activity-based auto-stop setting is enabled; that setting also defaults off.
 
@@ -76,7 +78,7 @@ Meeting calendar support is live in the stable DMG. MacParakeet reads upcoming m
 
 **Meeting recording** — Record system audio and microphone together, or pick microphone-only or system-only capture (microphone-only needs no Screen Recording permission). See a live local transcript preview, take notes during the call, then save the finalized transcript to the library with export, prompts, and chat. Choose how long to keep the source audio: keep it, auto-delete after a set number of days, or remove it right after transcription.
 
-**Meeting calendar support** — Grant Calendar access to get local reminders for upcoming meetings or opt into auto-start. MacParakeet uses calendars already configured in macOS Calendar through EventKit; it does not add Google or Microsoft sign-ins, and recordings still stop manually.
+**Meeting calendar support** — Grant Calendar access to get local reminders for upcoming meetings or opt into auto-start. MacParakeet uses calendars already configured in macOS Calendar through EventKit; it does not add Google or Microsoft sign-ins. Recordings stop manually unless you separately enable activity-based auto-stop.
 
 **Text cleanup** — Filler word removal, custom word replacements, text snippets with triggers. Deterministic pipeline, no LLM needed.
 
@@ -171,7 +173,7 @@ The dev script creates a signed `.app` bundle so macOS grants mic and accessibil
 
 `macparakeet-cli` is the public automation surface for MacParakeet: the canonical Swift-native interface to Parakeet TDT on Apple Silicon, plus the scriptable entry point for MacParakeet's local library, model cache, prompts, meetings, and JSON contracts. Use [`integrations/README.md`](integrations/README.md) for the agent-facing automation guide and [`Sources/CLI/CHANGELOG.md`](Sources/CLI/CHANGELOG.md) for compatibility notes.
 
-Discover the current machine-readable command catalog:
+Discover the installed binary's machine-readable command catalog. The examples describe current development; the stable bundled CLI and independently released Homebrew CLI may expose an earlier catalog:
 
 ```bash
 macparakeet-cli spec --json
@@ -206,6 +208,9 @@ Inspect and update local history, saved meetings, and agent-readable artifacts:
 
 ```bash
 macparakeet-cli history transcriptions --json
+macparakeet-cli search '"design review"' --json
+macparakeet-cli transcript <id> --around-seq 18 --context 2 --json
+macparakeet-cli cards list --source meeting --json
 macparakeet-cli retranscribe <id-or-prefix-or-title> --update --json
 macparakeet-cli meetings list --json
 macparakeet-cli meetings show <meeting-id> --json
@@ -234,8 +239,8 @@ The Vocabulary panel controls how dictated text is cleaned up before pasting. No
 
 You choose between two **processing modes**:
 
-- **Raw** — Paste exactly what the speech engine produces, no changes
-- **Clean** (default) — Run the text through a multi-step pipeline before pasting
+- **Raw** (default) — Skip cleanup; configured terminal Voice Return triggers are still extracted
+- **Clean** — Run the text through a multi-step pipeline before pasting
 
 **The Clean pipeline** applies these steps in order:
 
@@ -245,11 +250,11 @@ You choose between two **processing modes**:
 4. **Snippet expansion** — Replaces short trigger phrases with longer text (e.g., "my signature" expands to "Best regards, David"). Triggers are natural language phrases because that's what the speech engine outputs. Matched longest-first to prevent collisions.
 5. **Whitespace cleanup** — Collapses spaces, fixes punctuation spacing, capitalizes the first letter
 
-Every dictation stores both the raw and clean transcript so you can always see what changed.
+When dictation history is enabled, saved entries retain the raw transcript and any processed result so you can inspect what changed.
 
 ## AI Features
 
-AI features are entirely **opt-in** and separate from speech recognition — transcription is always local. The LLM only sees transcript text, never audio.
+AI features are entirely **opt-in** and separate from speech recognition — transcription is always local. Configured providers receive text context (transcripts, notes, selected text, or chat as required by the feature), never captured audio.
 
 **What it does:**
 
@@ -276,9 +281,9 @@ All speech recognition runs locally. Parakeet uses the Neural Engine; optional N
 - **No cloud STT.** The model runs on-device. No audio is transmitted.
 - **No accounts.** No login, no email, no registration.
 - **Opt-out telemetry.** Non-identifying usage analytics and crash reporting go to a self-hosted endpoint only when telemetry is enabled. No persistent IDs, no IP storage, and no transcript/audio content is transmitted. [Source code is right here](Sources/MacParakeetCore/Services/Telemetry/TelemetryService.swift) — verify it yourself.
-- **Temp files cleaned up.** Audio deleted after transcription unless you save it. Saved meeting audio follows your retention setting (kept by default).
+- **User-controlled retention.** Temporary working audio is cleaned up by its owning flow. Saved dictation, file/media, and meeting audio follows the relevant storage setting; meeting audio is kept by default. Deleting audio does not imply deleting the transcript.
 
-**What does use the network:** AI summaries, chat/Meeting Ask, AI Formatter, and Transforms connect to configured LLM providers, or to whatever service a configured CLI tool chooses to use, when you choose them. Sparkle checks for app updates. Media URL transcription downloads via yt-dlp; Apple Podcasts links query the public iTunes lookup API to find the episode audio, then download it. Telemetry and crash reports go to our self-hosted server unless you opt out. Core dictation and transcription stay fully offline.
+**What does use the network:** Configured LLM features (including opted-in automatic prompts, formatter, titles, and knowledge cards) send text context to the chosen provider, or whatever service a configured CLI tool uses. Model setup downloads required assets; Sparkle checks for app updates. Media imports use yt-dlp, the public iTunes directory/RSS feeds, and episode downloads. Telemetry/crash reports go to our self-hosted endpoint unless you opt out. **Discover independently requests `https://macparakeet.com/api/discover.json` at app launch**, even when telemetry is disabled and the Discover page is unopened; it falls back to cached/bundled content offline. Explicit feedback and Discover thought submissions also use the network. Core capture and local transcription work offline after model setup, but there is no global no-network toggle.
 
 **Note:** Builds from source also send telemetry by default. Opt out in Settings or set `MACPARAKEET_TELEMETRY_URL` to override.
 
