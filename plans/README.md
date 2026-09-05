@@ -20,7 +20,8 @@
 | **TODO** | Not started. Drift-check before executing. |
 | **EXECUTOR-READY** | Self-contained, verified, a cheap model can run it now. |
 | **PR OPEN** | Implemented and locally verified; hosted checks/review remain. |
-| **PARTIAL** | Some phases shipped; a defined remainder is open. |
+| **IMPLEMENTED** | Code is present on the named branch; `ON MAIN` identifies integration, not stable release. `QA REMAINDER` leaves only the named verification open. |
+| **PARTIAL** | Some implementation is present; a defined remainder is open. `PRODUCT GATE` or `OWNER GATE` identifies the decision still required before continuing or broadening availability. |
 | **ON HOLD** | Deliberately parked (usually pending telemetry/decision). |
 | **DECISION** | A settled product rule, not buildable work; follow-up hardening only. |
 | **PROPOSED** | Exploration/direction; not committed work. |

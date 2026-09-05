@@ -153,6 +153,12 @@ Local transcription rows expose `Rename...` with a `pencil` symbol in the same L
 
 The transcript detail header uses the same effective title as the Library. The pencil affordance is available for supported title-editing sources: meetings through the existing meeting title path, and local file transcriptions through the persisted title override path.
 
+Meeting rename publishes the row returned by its database write; a missing
+record is an error, not a successful local rename. Library and Recent Meetings
+replace any in-flight meeting-capable query snapshot while preserving its
+requested page window. Idle date-sorted windows update in place; title sorting
+and search membership are re-evaluated. Non-meeting-only queries are unaffected.
+
 ### Library Multi-Select Cleanup
 
 Library offers a `Select Many...` secondary action when there are visible rows. Selection mode keeps actions in a contextual bar above the content: `Cancel`, `Select All` (which targets the loaded rows only, so deletion never reaches unloaded records), `Clear`, `Remove Audio Only...` for selected meetings with stored audio, and `Delete Items...` / `Delete Meetings...` for full deletion.
@@ -775,6 +781,11 @@ changes invalidate stale prepared context; disappearing invalidates owned
 context work. Late completion cannot replace current chat context or submit
 the previous transcript. This is the context-loader contract, not a claim that
 every media task is cancelled or that long-transcript hardware/UI QA has passed.
+If the same transcript's revision or context mode changes while a prompt is
+being prepared, the still-current action shows a retry notice without submitting
+stale context. Navigation, disappearance, explicit cancellation, and replacement
+actions remain silent. The notice uses the existing result-header error surface;
+there is no automatic resubmission.
 
 ### Recent Transcriptions List
 

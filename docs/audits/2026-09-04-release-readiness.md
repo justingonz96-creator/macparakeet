@@ -2,9 +2,11 @@
 
 ## Verdict and scope
 
-**Pre-PR evidence checkpoint; not a published-release approval.** This record
+**PR review record; not a published-release approval.** This record
 distinguishes code presence, executable verification, merged-main state, and
-published-release state. PR/CI and merge identity belong to the subsequent gate.
+published-release state. [PR #953](https://github.com/moona3k/macparakeet/pull/953)
+holds the subsequent source/CI/merge identities; historical local checks below
+remain recorded with their actual outcomes.
 
 - Reviewed main baseline: `9e849baf72b8f6939b618f584c3ca8c285ef497c`.
 - Starting candidate: `b884c948`, branch `codex/release-readiness-20260904`.
@@ -25,10 +27,10 @@ results are recorded below; inspection alone is not a reproduction claim.
 | Finding | Evidence | Disposition |
 |---|---|---|
 | Recovery loses persisted silent-track status | `MeetingRecordingRecoveryService.reconciledCaptureReport` reconstructed a report without its silent sources. | Implemented and regression-verified: preserve silent sources while retaining failed/interrupted/unavailable precedence. |
-| Silence verdict does not match retained stereo audio | Stop-time verdict used input channel-zero RMS rather than PCM successfully appended by `MeetingAudioStorageWriter`. Converter defaults also selected channel zero. | Implemented and regression-verified: reuse explicit mono downmix; measure retained PCM, including pre-pause audio. Right-only audio and phase cancellation are covered. Live metering unchanged. |
+| Silence verdict does not match retained stereo audio | Stop-time verdict used input channel-zero RMS rather than PCM successfully appended by `MeetingAudioStorageWriter`. Converter defaults also selected channel zero. | Implemented and regression-verified: measure retained PCM, including pre-pause audio; preserve ordinary averaging while retaining one whole dominant-energy channel under destructive cancellation. Right-only and inverse stereo retain signal. Live metering unchanged. |
 | OpenCode Go requires conversation identity | [Issue #948](https://github.com/moona3k/macparakeet/issues/948), [provider documentation](https://opencode.ai/docs/go/). | Implemented and adapter/lifecycle-verified: opaque conversation UUID through existing chat APIs, scoped session header, isolated probes/one-shots, redirect protection. No live-provider validation claim. |
 | Startup is presented as active recording before capture startup completes | `MeetingRecordingFlowCoordinator` presented recording before accepted startup. | Implemented and regression-verified: neutral `.starting` state across existing presentation models; preserve stop/cancel and stale-start guards. This does not fix an OS/hardware startup stall. |
-| Meeting rename violates active library query | `TranscriptionLibraryViewModel.applyMeetingRename` retained stale title sort/search membership. | Implemented and regression-verified: query-aware refresh through existing repository/load ownership, including unloaded renamed-in rows. |
+| Meeting rename violates persistence and active library query | Synthetic success could follow a missing-row update; a separate fetch could fail after commit; unloaded rows could arrive from stale query snapshots. | Implemented and regression-verified: return the row from the write transaction, reject missing IDs before success/artifact work, and preserve the requested window when replacing in-flight meeting-capable loads. |
 | Prompt preparation ownership survives transcript navigation | A view-local unscoped Boolean kept new-transcript actions disabled until stale work finished. | Implemented and regression-verified: existing rich-context loader owns request-scoped actions; stale completion cannot submit or clear a newer request. |
 | Local CLI failures retain terminal control sequences | Actual CLI calls leaked escape finals, stderr controls and C1/control-string payloads; colored “command not found” was misclassified. | Implemented; real subprocess and CLI regressions pass. Sanitize stdout/stderr before classification; consume valid escape finals and bounded parser states for control strings. |
 | Default CLI health probe repairs directories and opens a migrating database | Actual baseline CLI created an absent isolated state root; default database initialization migrates. | Implemented; focused tests and actual CLI confirm a non-creating probe. Read-only database open does not migrate/seed; use a repository count rather than loading transcripts. JSON/exit contract unchanged. |
@@ -62,6 +64,12 @@ fix; preserve undo-window audio and require event-origin evidence.
 
 All **116 open issues** in the captured inventory were assigned exactly once and
 reviewed with their full bodies and available comments (68 comments total).
+Issue #952 arrived later and was separately assessed, bringing the ledger to
+**117 issues**. Its supplied Core ML/ANE compiler wait chain is accepted as
+evidence of a model-preparation stall. Whisper's progress watchdog only reports
+progress; it cannot interrupt that synchronous load. The issue remains an open
+release risk, not a fix delivered by onboarding error handling. Do not kill
+system-wide compiler services or delete shared caches as automatic recovery.
 The [structured issue ledger](2026-09-04-release-readiness-issues.json) preserves
 each issue's title, severity, recommendation, evidence, uncertainty and next
 step. These are review recommendations, not assertions that issues were closed.
@@ -72,7 +80,7 @@ Final source-evidence dispositions:
 |---|---:|
 | Product backlog | 64 |
 | Code present on reviewed main | 4 |
-| Needs additional evidence | 35 |
+| Needs additional evidence | 36 |
 | Feedback-only closure recommendation | 3 |
 | Duplicate recommendation | 3 |
 | Code present only in candidate | 7 |
@@ -187,9 +195,52 @@ swift test --jobs 1 -Xswiftc -disable-batch-mode \
 - Throwaway sanitizer source harness and unsuccessful temporary GUI bundle/state
   removed. Synthetic CLI outputs remain outside the repository as local evidence.
 
+### PR review correction checkpoint
+
+- `no-mistakes` returned `checks-passed` at
+  `c24c9a88d4bdea5a72ad62ee72ec501ed28ce4b5`. Hosted
+  [push CI](https://github.com/moona3k/macparakeet/actions/runs/33948699389) and
+  [PR CI](https://github.com/moona3k/macparakeet/actions/runs/33948702300) passed.
+  This is a prior checkpoint, not approval of the follow-up corrections below.
+- Follow-up source verification executed **566 XCTest cases, 0 failures** in
+  **40.114 seconds**, after a **426.90-second build**. The focused command used
+  `swift test --jobs 1 -Xswiftc -disable-batch-mode --filter` across writer,
+  downmix, route recovery, meeting recording/recovery, repository, rename/query,
+  prompt ownership, capture presentation, HTTP adapter and downloader suites.
+- The writer now has one locked callback/deadline state instead of separate
+  callback bookkeeping. Late callbacks retain ownership through timeout and
+  release it before a completed outcome; duplicate callbacks cannot release a
+  later owner's folder. Retired route callbacks and interrupted-source silence
+  precedence also have focused regressions.
+- Atomic rename returns current persisted content, not a stale reconstructed
+  row. Missing IDs produce no success callback or artifact refresh. Gated
+  initial/page-load regressions cover Library and Recent Meetings.
+- Current same-transcript stale prompt actions show a retry notice; cancelled,
+  replaced and navigated-away actions remain silent. Capture copy promises
+  saved microphone audio only when reported written duration is positive.
+- A standalone harness using the production OpenCode redirect implementation
+  reproduced forwarding of synthetic credentials **and prompt bodies** to
+  unapproved destinations. The corrected handler refuses those redirects while
+  preserving approved requests; the post-fix harness and adapter tests passed.
+  No live provider request or credential was used.
+- The real downloader privacy regression passed with an isolated **5,000,000-byte**
+  log. Rotation retained **2,500,157 bytes**, including the new failure record;
+  the old fixed-offset slice would have been empty. First-buffer callback logs
+  now use the existing asynchronous append path.
+- The rebuilt debug CLI completed the synthetic transcription → isolated SQLite
+  → Markdown smoke. Evidence remains in the test-owned `cli-post-review` folder
+  outside the repository.
+- Declined the broad read-only-health failure claim: actual current-schema CLI
+  health returned `ok` without changing database bytes. Declined the diagnostic
+  locale claim: with `AppleLocale=de_DE`, plain `String(format:)` emitted `0.123`,
+  while the explicitly localized overload emitted `0,123`.
+- Plan status modifiers, rotation guidance, unmeasured Raw latency, and matching
+  database/artifact/UI/HTTP contracts were reconciled. Final follow-up commit,
+  independent review and CI identities belong in PR #953 before merge.
+
 ### Verification boundaries
 
-- PR/CI and merged-main identity are not established by this pre-PR checkpoint.
+- Prior PR/CI proof is recorded above; merged-main identity is established only by the subsequent PR merge.
 - Visual UI verification was waived by the maintainer.
 - Teams/system-audio, USB/Bluetooth startup, signed-candidate upgrade and recovery
   are not certified by source review, unit tests or synthetic CLI smoke.

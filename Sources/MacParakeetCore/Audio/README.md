@@ -28,6 +28,8 @@ owned by `AppEnvironment`.
   emits exact-zero PCM converges on the same bounded fresh-engine recovery.
   Notifications received while a replacement still awaits its first buffer
   remain in the same recovery episode; they do not replenish the retry budget.
+  Removing route observers retires their generation, pending coalesced delivery,
+  and queued recovery; a replacement listener starts a fresh burst.
 
 **Mic consumers (each subscribes to the shared stream)**
 - `AudioRecorder.swift` — dictation capture.
@@ -81,9 +83,13 @@ owned by `AppEnvironment`.
   using healthy completed sources; cancel, empty Stop, and failed-start cleanup
   preserve the pending folder and lock for later recovery/discard. A process-local
   registry blocks recovery or discard until all late callbacks return; after
-  process exit, macOS has closed every writer handle. Retained mono explicitly
-  averages all input channels before sample-rate conversion, rather than relying
-  on AVAudioConverter's default channel map.
+  process exit, macOS has closed every writer handle. One locked coordinator
+  arbitrates callbacks and the deadline, releasing the registry before a
+  completed outcome. Retained mono normally averages all input channels before
+  sample-rate conversion. If the unscaled channel sum retains less than 25% of
+  the input-channel power, one greatest-energy channel supplies the whole buffer
+  (lowest-index tie), preserving destructive inverse stereo without per-sample
+  switching. The VPIO channel-zero path is unchanged.
 - `MeetingAudioError.swift`, `MeetingMicProcessingMode.swift` —
   value types.
 - Meeting mic conditioning lives outside this folder in
@@ -101,6 +107,8 @@ owned by `AppEnvironment`.
   `DictationMediaPauseCoordinator` mirror their `media_pause_*` /
   `media_resume_*` outcomes here so uploaded logs show the
   press→pause window next to the capture timeline; issue #474).
+  Capture-callback first-buffer records use `appendAsync` so log compaction
+  cannot block buffer delivery.
 - `DiagnosticLogScope.swift` — `AudioCaptureDiagnostics.scopedLogForUpload`
   trims the log to a recent window (`.recent`, the feedback default:
   last 7 days, 2 MB / 20k-line safety ceilings, min-tail fallback) or
@@ -397,13 +405,12 @@ terminal `sourceInterrupted`/`error` event. Duplicate stall callbacks are
 coalesced, stale generations cannot publish buffers, and explicit Stop cancels
 and awaits recovery so no delayed attempt can revive capture.
 
-**The diagnostic log file is shared across processes.** Both the dev
-app and `swift test` write to
-`~/Library/Logs/MacParakeet/dictation-audio.log`. The
-`dictation_diagnostics_session_start` line emitted by `AppDelegate`
-on launch is the only reliable per-process separator. The 5 MB cap
-deletes the file when crossed (no rotation); a heavy user retains
-tens of days of context.
+**App processes share the diagnostic log file** at
+`~/Library/Logs/MacParakeet/dictation-audio.log`; tests use per-process
+temporary logs unless an explicit log-path override is set. The
+`dictation_diagnostics_session_start` launch marker separates app sessions.
+At the 5 MB cap, the log is compacted to the newest complete-line tail
+(about 2.5 MB) before appending new data; it is not deleted wholesale.
 
 ## How to verify a change
 

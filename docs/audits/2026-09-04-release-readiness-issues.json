@@ -4,7 +4,7 @@
   "mainBaseline": "9e849baf72b8f6939b618f584c3ca8c285ef497c",
   "candidateBaseline": "b884c948",
   "scope": "Assessment snapshot, not issue closures or release verification",
-  "reviewedIssueCount": 116,
+  "reviewedIssueCount": 117,
   "issues": [
     {
       "number": 126,
@@ -1379,7 +1379,7 @@
       "category": "bug",
       "verdict": "fixed-in-candidate",
       "severity": "P0",
-      "evidence": "`x-opencode-session` is implemented: `LLMHTTPTransport.swift`'s `OpenCodeRequestHeaders.apply` sets a per-conversation UUID header scoped to OpenCode Go's documented API origin, wired through both `AnthropicLLMHTTPAdapter` and `OpenAICompatibleLLMHTTPAdapter`, with a redirect delegate that strips the header off-origin. Covered by an adversarial LLM HTTP adapter test. This lands in the reviewed candidate branch; no live OpenCode Go credential/provider validation was performed.",
+      "evidence": "OpenCodeRequestHeaders.apply sends an opaque per-conversation UUID only to documented HTTPS Go endpoints through both existing HTTP adapters. Its redirect delegate now refuses unapproved destinations entirely, protecting credentials and prompt bodies. Adapter/lifecycle tests and a synthetic redirect reproduction passed; no live OpenCode Go credential/provider validation was performed.",
       "reason": "The prior ledger evidence (zero hits, unimplemented, P0 release-blocker) was stale: it contradicted this same audit's own summary table, which already recorded the header as adapter/lifecycle-verified. Source presence plus a passing adversarial test establishes candidate-side implementation; without a live-provider run this is fixed-in-candidate, not release-blocking, and not yet main-verified.",
       "next_action": "Associate with the final PR and CI; confirm the header reaches OpenCode Go in a live/manual smoke before closing the underlying GitHub issue.",
       "canonical_issue": null,
@@ -1397,6 +1397,18 @@
       "canonical_issue": null,
       "confidence": "low",
       "title": "Transcriptions are ending suddenly, with an undo countdown"
+    },
+    {
+      "number": 952,
+      "title": "[Bug Report] Title: Switching engine Parakeet → Whisper hangs indefinitely at \"Initializing s...",
+      "category": "bug",
+      "verdict": "needs-evidence",
+      "severity": "P1",
+      "confidence": "high",
+      "evidence": "Reporter supplied a synchronous CoreML/ANE compile wait chain (MacParakeet → aned → compiler service), persistent across relaunch, with recovery after a system-daemon/cache workaround. Current WhisperEngine.prepareLocked awaits WhisperKit(WhisperKitConfig(load:true, download:false)); makePrepareWatchdog emits progress at 15/60/180/300 seconds only and does not terminate or recover a blocked load.",
+      "reason": "This is a newly reported model-preparation stall, not covered by the candidate onboarding error-classification changes: a blocked load never returns an error for those handlers. The supplied process trace is accepted; no reproduction or hardware-fix claim from this review.",
+      "next_action": "Keep open as a release risk. Define a bounded stalled-load presentation without releasing still-owned model/ANE resources; investigate safe compute-unit fallback separately. Do not automatically kill system-wide aned or delete shared compiler caches. Correlate the actual OS/build (body vs generated metadata differ) and capture the downstream compiler-service trace if available.",
+      "canonical_issue": null
     }
   ]
 }

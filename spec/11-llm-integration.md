@@ -100,7 +100,7 @@ For HTTPS requests to the exact `opencode.ai` host (default port or 443) at
 the candidate sends `User-Agent: MacParakeet` and
 `x-opencode-session: <opaque UUID>`. HTTP, alternate ports, lookalike/subdomains,
 and unrelated paths do not receive this session header. Redirects outside these
-endpoints strip the session header before following the redirect.
+endpoints are refused, so neither credentials nor prompt content follow them.
 
 - Saved chat uses the existing `ChatConversation.id` across turns, tail-response
   regeneration, conversation switching, and reopening.

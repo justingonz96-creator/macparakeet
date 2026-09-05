@@ -117,8 +117,9 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 ### Fixed
 
 - OpenCode Go requests now carry an opaque per-conversation session header.
-  Probe and one-shot IDs are isolated; unsupported endpoints and redirects do
-  not receive the session identity (#948).
+  Probe and one-shot IDs are isolated; unsupported endpoints do not receive the
+  session identity. Unapproved redirects are refused so credentials and prompt
+  content cannot be forwarded outside the allowed endpoints (#948).
 - Local CLI output strips valid two-byte terminal escapes as well as CSI/OSC
   sequences. Failure stderr is sanitized before error classification and
   presentation, matching successful-output handling.

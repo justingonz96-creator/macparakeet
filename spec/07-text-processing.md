@@ -84,7 +84,7 @@ Final normalization pass:
 
 | Mode | Processing | Engine | Latency |
 |------|-----------|--------|---------|
-| Raw (default) | Configured terminal action extraction only | TextProcessingPipeline | No cleanup pipeline |
+| Raw (default) | Configured terminal action extraction only | TextProcessingPipeline | Not separately measured |
 | Clean | Deterministic pipeline | TextProcessingPipeline | <1ms |
 
 ### Mode Details

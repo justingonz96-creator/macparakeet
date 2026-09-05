@@ -14,6 +14,11 @@ For meeting rows, `transcriptions.meetingArtifactFolderPath` is the durable
 folder locator. `transcriptions.filePath` is only the mixed-audio
 playback/export path and may be cleared by user deletion or retention.
 
+Meeting rename refreshes artifacts from the row returned by the rename's
+database transaction, preserving its current transcript, notes, and folder
+metadata. A missing row is not a successful rename and starts no artifact
+refresh.
+
 ## Producers
 
 - `MeetingRecordingService`: creates session folders and source audio.
@@ -162,11 +167,13 @@ In the release-readiness candidate, `silent` is written only for a selected
 system source when its finalized signal verdict is actionable: system buffers
 arrived, the peak absolute sample in successfully appended converted PCM stayed
 at exact zero, the microphone had nonzero signal, and pause-adjusted capture
-lasted at least 30 seconds. The normal source writer explicitly averages every
-input channel before converting system input to 48 kHz mono; right-channel-only
-audio is retained and exact opposite stereo cancels. This measures the retained
-signal, not channel 0 of the input or
-the UI RMS meter. Preserved pre-pause buffers count; buffers dropped for an
+lasted at least 30 seconds. Interrupted system sources do not produce a new
+silent verdict or silence warning. The source writer normally averages input
+channels before converting system input to 48 kHz mono; severe destructive
+cancellation instead retains one dominant-energy channel for the whole buffer.
+Right-channel-only and inverse stereo retain signal. This measures retained PCM,
+not channel 0 of the input or the UI RMS meter.
+Preserved pre-pause buffers count; buffers dropped for an
 intentional pause do not. Short recordings, wholly silent sessions, and quiet
 system tracks with any nonzero written sample do not receive `silent`.
 
@@ -174,6 +181,9 @@ A silent selected source makes `quality` partial. Source status precedence is
 `interrupted`, `capture_failed`, `unavailable`, `silent`, `coverage_shortfall`,
 then `complete`, so terminal failures remain more informative and silence is
 not hidden by otherwise-complete duration coverage.
+Presentation promises preserved microphone audio only when that source has
+positive `writtenDurationMs`; an unavailable or padding-only microphone does
+not justify that promise.
 
 Meeting `durationMs` is the probed duration of the decodable
 `meeting-playback.m4a` artifact. Normal finalization keeps it equal to

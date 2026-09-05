@@ -65,6 +65,11 @@ orchestration live at the service layer. A table-owned read-model query may
 join immutable metadata when SQL-level filtering or ranking requires it; for
 example, segment search joins transcription dates, sources, and titles.
 
+Meeting rename uses `TranscriptionRepository.updateFileName` to return the
+updated row from the same write transaction, or `nil` when the ID is missing.
+Publish state and refresh artifacts from that returned row; do not synthesize
+success from a stale snapshot or make a second fetch part of write success.
+
 **Segments are derived retrieval state, not new source-of-truth transcript
 data.** `segments` normalizes meeting and file/URL transcript JSON for search;
 `segments_fts` is an external-content FTS5 index kept in sync by triggers.
