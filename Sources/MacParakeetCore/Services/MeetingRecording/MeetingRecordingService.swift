@@ -751,9 +751,10 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
         await liveChunkTranscriber.finishSession()
         let writer = self.writer
         self.writer = nil
-        _ = await finalizeWriter(writer)
+        let finalization = await finalizeWriter(writer)
         await releaseSpeechEngineLease()
         cleanupState()
+        guard finalization.timedOutSources.isEmpty else { return }
 
         do {
             try lockFileStore.delete(folderURL: folderURL)
@@ -856,9 +857,7 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
         let writerFinalizeStartedAt = Date()
         let finalizedWriter = writer
         writer = nil
-        let writerFinalization = writerFinalizationReportTransform(
-            await finalizeWriter(finalizedWriter)
-        )
+        let writerFinalization = await finalizeWriter(finalizedWriter)
         let writerMetrics = [
             AudioSource.microphone: finalizedWriter?.metrics(for: .microphone),
             AudioSource.system: finalizedWriter?.metrics(for: .system),
@@ -897,7 +896,10 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
         let sourceURLsStartedAt = Date()
         let inputURLs: [URL]
         do {
-            inputURLs = try existingSourceURLs(for: session)
+            inputURLs = try existingSourceURLs(
+                for: session,
+                excluding: writerFinalization.timedOutSources
+            )
             appendStopStage("source_urls", startedAt: sourceURLsStartedAt)
         } catch {
             serviceStopOutcome = "failure_source_urls"
@@ -920,10 +922,12 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
                 )
             )
             await liveChunkTranscriber.finishSession()
-            try? lockFileStore.delete(folderURL: session.folderURL)
             await releaseSpeechEngineLease()
             cleanupState()
-            try? fileManager.removeItem(at: session.folderURL)
+            if writerFinalization.timedOutSources.isEmpty {
+                try? lockFileStore.delete(folderURL: session.folderURL)
+                try? fileManager.removeItem(at: session.folderURL)
+            }
             serviceStopOutcome = "failure_no_audio"
             throw MeetingAudioError.noAudioCaptured
         }
@@ -1298,11 +1302,15 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
         await liveChunkTranscriber.finishSession()
         let finalizedWriter = writer
         writer = nil
-        _ = await finalizeWriter(finalizedWriter)
-        try? lockFileStore.delete(folderURL: session.folderURL)
+        let finalization = await finalizeWriter(finalizedWriter)
         await releaseSpeechEngineLease()
         cleanupState()
-        try? fileManager.removeItem(at: session.folderURL)
+        // A deadline bounds waiting, not AVFoundation's ownership. Preserve
+        // pending artifacts and their lock for later safe recovery/discard.
+        if finalization.timedOutSources.isEmpty {
+            try? lockFileStore.delete(folderURL: session.folderURL)
+            try? fileManager.removeItem(at: session.folderURL)
+        }
         logger.info("Meeting recording cancelled: \(session.id.uuidString, privacy: .public)")
         AudioCaptureDiagnostics.append(
             "meeting_recording_cancelled session=\(session.id.uuidString)"
@@ -1321,11 +1329,12 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
         guard let writer else {
             return MeetingAudioStorageWriter.FinalizationReport(failedSources: [])
         }
-        return await withCheckedContinuation { continuation in
+        let report = await withCheckedContinuation { continuation in
             writer.finalize { report in
                 continuation.resume(returning: report)
             }
         }
+        return writerFinalizationReportTransform(report)
     }
 
     static func requireSuccessfulWriterFinalization(
@@ -1421,13 +1430,12 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
                     timelineTimeSeconds: pauseAdjustedHostTimeSeconds(for: time)
                 )
                 recordCaptureMetrics(for: .system, time: time)
-                let systemLevel = buffer.rmsLevel
-                captureHealthMetrics.systemPeakLevel = max(
-                    captureHealthMetrics.systemPeakLevel,
-                    systemLevel
-                )
+                // Include preserved pre-pause writes, but classify the mono
+                // signal actually retained rather than input channel zero.
+                captureHealthMetrics.systemPeakLevel =
+                    writer?.metrics(for: .system).peakSampleMagnitude ?? 0
                 if handling == .recordAndProcess {
-                    latestLevels.system = systemLevel
+                    latestLevels.system = buffer.rmsLevel
                     updateSystemRms(with: latestLevels.system)
                     if let samples = AudioChunker.extractAndResample(from: buffer) {
                         await ingestResampledSamples(
@@ -1852,11 +1860,15 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
         return false
     }
 
-    private func existingSourceURLs(for session: Session) throws -> [URL] {
+    private func existingSourceURLs(
+        for session: Session,
+        excluding pendingSources: Set<AudioSource>
+    ) throws -> [URL] {
         // Preserve deterministic channel mapping for dual-source sessions:
         // input[0] = microphone (L), input[1] = system (R).
         let candidates = [session.microphoneAudioURL, session.systemAudioURL]
         return try candidates.filter { url in
+            guard !pendingSources.contains(source(for: url)) else { return false }
             guard fileManager.fileExists(atPath: url.path) else { return false }
             let size = try fileManager.attributesOfItem(atPath: url.path)[.size] as? NSNumber
             guard (size?.intValue ?? 0) > 0 else { return false }

@@ -158,21 +158,30 @@ the same additive shape as `transcriptions.meetingCaptureReport`:
   the named source because combining them failed; its presence makes `quality`
   partial without changing otherwise-complete source capture statuses
 
-`silent` is written only for a selected system source when its finalized signal
-verdict is actionable: the system stream delivered buffers but its peak stayed
-at exact zero for the entire pause-adjusted session, the microphone had
-nonzero signal, and the session lasted at least 30 seconds. Short recordings,
-wholly silent sessions, and quiet system tracks with any nonzero sample do not
-receive `silent`. A silent selected source makes `quality` partial. Source
-status precedence is `interrupted`, `capture_failed`, `unavailable`, `silent`,
-`coverage_shortfall`, then `complete`, so terminal failures remain more
-informative and silence is not hidden by otherwise-complete duration coverage.
+In the release-readiness candidate, `silent` is written only for a selected
+system source when its finalized signal verdict is actionable: system buffers
+arrived, the peak absolute sample in successfully appended converted PCM stayed
+at exact zero, the microphone had nonzero signal, and pause-adjusted capture
+lasted at least 30 seconds. The normal source writer explicitly averages every
+input channel before converting system input to 48 kHz mono; right-channel-only
+audio is retained and exact opposite stereo cancels. This measures the retained
+signal, not channel 0 of the input or
+the UI RMS meter. Preserved pre-pause buffers count; buffers dropped for an
+intentional pause do not. Short recordings, wholly silent sessions, and quiet
+system tracks with any nonzero written sample do not receive `silent`.
+
+A silent selected source makes `quality` partial. Source status precedence is
+`interrupted`, `capture_failed`, `unavailable`, `silent`, `coverage_shortfall`,
+then `complete`, so terminal failures remain more informative and silence is
+not hidden by otherwise-complete duration coverage.
 
 Meeting `durationMs` is the probed duration of the decodable
 `meeting-playback.m4a` artifact. Normal finalization keeps it equal to
 `capturedDurationMs`. Crash recovery refreshes surviving source media facts and
-rebuilds `capturedDurationMs`, while preserving elapsed/interruption history,
-so both values remain coherent even when a damaged source must be dropped. A
+rebuilds `capturedDurationMs`, while preserving elapsed/interruption history
+and prior `silent` source verdicts. A missing or interrupted recovered source
+takes the more informative status above. Both duration values remain coherent
+even when a damaged source must be dropped. A
 partial report does not change transcription `status`: successfully processed
 partial audio remains `completed`. Archived reconstruction re-probes the
 resolved canonical playback file and uses a supplied stored duration only when

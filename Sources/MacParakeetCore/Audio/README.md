@@ -76,9 +76,14 @@ owned by `AppEnvironment`.
 - `MeetingAudioStorageWriter.swift` — fragmented MP4 writer for
   meeting source files (ADR-019 crash recovery). Finalization waits at most five
   seconds for per-source AVFoundation callbacks and marks a timed-out source
-  failed only when it received real frames. A process-local registry prevents
-  recovery or discard from touching preserved source files until all late
-  callbacks return; after process exit, macOS has closed every writer handle.
+  failed only when it received real frames. Every timeout retains ownership,
+  including empty sources: Stop excludes pending files from inspection while
+  using healthy completed sources; cancel, empty Stop, and failed-start cleanup
+  preserve the pending folder and lock for later recovery/discard. A process-local
+  registry blocks recovery or discard until all late callbacks return; after
+  process exit, macOS has closed every writer handle. Retained mono explicitly
+  averages all input channels before sample-rate conversion, rather than relying
+  on AVAudioConverter's default channel map.
 - `MeetingAudioError.swift`, `MeetingMicProcessingMode.swift` —
   value types.
 - Meeting mic conditioning lives outside this folder in

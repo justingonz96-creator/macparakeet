@@ -727,6 +727,140 @@ final class MeetingRecordingServiceTests: XCTestCase {
         await service.cancelRecording()
     }
 
+    func testInactiveSourceTimeoutKeepsHealthyPlaybackWithoutReadingPendingSource() async throws {
+        let captureService = MockMeetingAudioCaptureService(
+            startReport: MeetingAudioCaptureStartReport(sourceMode: .microphoneOnly)
+        )
+        let lockStore = RecordingLockFileStore()
+        let fileManager = PendingSourceReadGuard()
+        let service = MeetingRecordingService(
+            audioCaptureService: captureService,
+            audioConverter: MockMeetingAudioFileConverter(),
+            sttTranscriber: CountingMeetingSTTClient(),
+            lockFileStore: lockStore,
+            fileManager: fileManager,
+            micConditionerFactory: { PassthroughMicConditioner() },
+            writerFinalizationReportTransform: { report in
+                .init(failedSources: report.failedSources, timedOutSources: [.system])
+            }
+        )
+        try await service.startRecording(sourceMode: .microphoneOnly)
+        let folderURL = try XCTUnwrap(lockStore.writes.first?.folderURL)
+        defer { try? FileManager.default.removeItem(at: folderURL) }
+        fileManager.forbidReads(at: folderURL.appendingPathComponent("system-raw.m4a"))
+        let buffer = try XCTUnwrap(makeMonoFloatBuffer(frameCount: 16_000, sampleValue: 0.25))
+        await captureService.yield(
+            .microphoneBuffer(buffer, AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 100)))
+        )
+
+        let output = try await service.stopRecording()
+
+        XCTAssertEqual(fileManager.attemptedReads, [])
+        XCTAssertNotNil(output.sourceAlignment.microphone)
+        XCTAssertNil(output.sourceAlignment.system)
+        XCTAssertNil(output.captureReport?.source(for: .system))
+        let duration = try await playableAudioDuration(at: output.mixedAudioURL)
+        XCTAssertEqual(duration, 1, accuracy: 0.1)
+        XCTAssertTrue(lockStore.deletes.isEmpty)
+        XCTAssertEqual(lockStore.writes.last?.file.state, .awaitingTranscription)
+        let isRecording = await service.isRecording
+        XCTAssertFalse(isRecording)
+    }
+
+    func testCancelPreservesArtifactsAndLockWhenSourceFinalizationTimesOut() async throws {
+        let captureService = MockMeetingAudioCaptureService()
+        let lockStore = RecordingLockFileStore()
+        let service = MeetingRecordingService(
+            audioCaptureService: captureService,
+            audioConverter: MockMeetingAudioFileConverter(),
+            sttTranscriber: CountingMeetingSTTClient(),
+            lockFileStore: lockStore,
+            micConditionerFactory: { PassthroughMicConditioner() },
+            writerFinalizationReportTransform: { report in
+                .init(failedSources: report.failedSources.union([.microphone]), timedOutSources: [.microphone])
+            }
+        )
+        try await service.startRecording()
+        let folderURL = try XCTUnwrap(lockStore.writes.first?.folderURL)
+        defer { try? FileManager.default.removeItem(at: folderURL) }
+        let buffer = try XCTUnwrap(makeMonoFloatBuffer(frameCount: 16_000, sampleValue: 0.25))
+        await captureService.yield(
+            .microphoneBuffer(buffer, AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 100)))
+        )
+
+        await service.cancelRecording()
+
+        XCTAssertTrue(lockStore.deletes.isEmpty)
+        XCTAssertEqual(lockStore.writes.last?.file.state, .recording)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: folderURL.appendingPathComponent("microphone-raw.m4a").path))
+        let isRecording = await service.isRecording
+        XCTAssertFalse(isRecording)
+    }
+
+    func testEmptyStopPreservesArtifactsAndLockWhenUnwrittenSourceFinalizationTimesOut() async throws {
+        let captureService = MockMeetingAudioCaptureService()
+        let lockStore = RecordingLockFileStore()
+        let service = MeetingRecordingService(
+            audioCaptureService: captureService,
+            audioConverter: MockMeetingAudioFileConverter(),
+            sttTranscriber: CountingMeetingSTTClient(),
+            lockFileStore: lockStore,
+            micConditionerFactory: { PassthroughMicConditioner() },
+            writerFinalizationReportTransform: { report in
+                .init(failedSources: report.failedSources, timedOutSources: [.system])
+            }
+        )
+        try await service.startRecording()
+        let folderURL = try XCTUnwrap(lockStore.writes.first?.folderURL)
+        defer { try? FileManager.default.removeItem(at: folderURL) }
+
+        do {
+            _ = try await service.stopRecording()
+            XCTFail("Expected no audio from an empty capture")
+        } catch MeetingAudioError.noAudioCaptured {
+        }
+
+        XCTAssertTrue(lockStore.deletes.isEmpty)
+        XCTAssertEqual(lockStore.writes.last?.file.state, .recording)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folderURL.path))
+        let isRecording = await service.isRecording
+        XCTAssertFalse(isRecording)
+    }
+
+    func testFailedStartPreservesArtifactsAndLockWhenUnwrittenSourceFinalizationTimesOut() async throws {
+        let captureService = BlockingStartMeetingAudioCaptureService()
+        let lockStore = RecordingLockFileStore()
+        let service = MeetingRecordingService(
+            audioCaptureService: captureService,
+            audioConverter: MockMeetingAudioFileConverter(),
+            sttTranscriber: CountingMeetingSTTClient(),
+            lockFileStore: lockStore,
+            micConditionerFactory: { PassthroughMicConditioner() },
+            writerFinalizationReportTransform: { report in
+                .init(failedSources: report.failedSources, timedOutSources: [.system])
+            }
+        )
+        let startTask = Task { try await service.startRecording() }
+        await captureService.waitForStartCall()
+        let folderURL = try XCTUnwrap(lockStore.writes.first?.folderURL)
+        defer { try? FileManager.default.removeItem(at: folderURL) }
+        startTask.cancel()
+        await captureService.releaseStart()
+
+        do {
+            try await startTask.value
+            XCTFail("Expected cancelled startup to fail")
+        } catch is CancellationError {
+        }
+
+        XCTAssertTrue(lockStore.deletes.isEmpty)
+        XCTAssertEqual(lockStore.writes.last?.file.state, .recording)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folderURL.path))
+        let isRecording = await service.isRecording
+        XCTAssertFalse(isRecording)
+    }
+
     func testStopRecordingWritesPrivacySafeCaptureHealthSummary() async throws {
         let captureService = MockMeetingAudioCaptureService(
             startReport: MeetingAudioCaptureStartReport(
@@ -832,6 +966,79 @@ final class MeetingRecordingServiceTests: XCTestCase {
         XCTAssertTrue(healthLine.contains("capture_quality=partial"), String(healthLine))
         XCTAssertTrue(healthLine.contains("system_capture_status=silent"), String(healthLine))
         XCTAssertTrue(healthLine.contains("system_signal=silent"), String(healthLine))
+    }
+
+    func testStopRecordingRightChannelOnlySystemAudioIsNotSilent() async throws {
+        try await assertStereoSystemCaptureStatus(left: 0, right: 0.25, expectedStatus: .complete)
+    }
+
+    func testStopRecordingPhaseCancelledSystemAudioIsSilent() async throws {
+        try await assertStereoSystemCaptureStatus(left: 0.25, right: -0.25, expectedStatus: .silent)
+    }
+
+    func testStopRecordingPreservedPrePauseRightChannelSystemAudioIsNotSilent() async throws {
+        try await assertStereoSystemCaptureStatus(
+            left: 0,
+            right: 0.25,
+            expectedStatus: .complete,
+            pauseBeforeDelivery: true
+        )
+    }
+
+    private func assertStereoSystemCaptureStatus(
+        left: Float,
+        right: Float,
+        expectedStatus: MeetingCaptureReport.SourceReport.Status,
+        pauseBeforeDelivery: Bool = false
+    ) async throws {
+        let wallClock = MeetingTestWallClock(now: Date(timeIntervalSince1970: 1_700_000_000))
+        let captureService = MockMeetingAudioCaptureService(
+            startReport: MeetingAudioCaptureStartReport(sourceMode: .microphoneAndSystem)
+        )
+        let service = MeetingRecordingService(
+            audioCaptureService: captureService,
+            audioConverter: MockMeetingAudioFileConverter(),
+            sttTranscriber: CountingMeetingSTTClient(),
+            micConditionerFactory: { PassthroughMicConditioner() },
+            wallClockNow: { wallClock.now }
+        )
+        try await service.startRecording()
+        let microphoneBuffer = try XCTUnwrap(
+            makeMonoFloatBuffer(frameCount: 480_016, sampleValue: 0.25)
+        )
+        let format = try XCTUnwrap(
+            AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 48_000,
+                channels: 2,
+                interleaved: false
+            )
+        )
+        let systemBuffer = try XCTUnwrap(
+            AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1_440_000)
+        )
+        systemBuffer.frameLength = systemBuffer.frameCapacity
+        let channels = try XCTUnwrap(systemBuffer.floatChannelData)
+        channels[0].update(repeating: left, count: Int(systemBuffer.frameLength))
+        channels[1].update(repeating: right, count: Int(systemBuffer.frameLength))
+        wallClock.advance(by: MeetingSystemAudioSignalVerdict.defaultMinimumWarningDurationSeconds)
+        if pauseBeforeDelivery {
+            await service.pauseRecording()
+        }
+        // A pre-pause timestamp keeps already-captured audio even when its
+        // delivery is delayed until after pause. It must still affect silence.
+        let time = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 100))
+        await captureService.yield(.microphoneBuffer(microphoneBuffer, time))
+        await captureService.yield(.systemBuffer(systemBuffer, time))
+
+        let output = try await service.stopRecording()
+        defer { try? FileManager.default.removeItem(at: output.folderURL) }
+        let report = try XCTUnwrap(output.captureReport)
+        XCTAssertEqual(report.elapsedDurationMs, 30_000)
+        XCTAssertEqual(report.source(for: .microphone)?.status, .complete)
+        XCTAssertEqual(report.source(for: .system)?.status, expectedStatus)
+        let metadata = try MeetingRecordingMetadataStore.load(from: output.folderURL)
+        XCTAssertEqual(metadata.captureReport, report)
     }
 
     func testStopRecordingReportsSevereCaptureCoverageShortfallAsPartial() async throws {
@@ -4104,6 +4311,31 @@ private final class RecordingLockFileStore: MeetingRecordingLockFileStoring, @un
 
     func discoverOrphans(meetingsRoot: URL) throws -> [MeetingRecordingLockFile] {
         []
+    }
+}
+
+/// Treat even an existence probe as a read of a writer-owned source. Returning
+/// false keeps a regressed consumer from opening that path after the deadline.
+private final class PendingSourceReadGuard: FileManager {
+    private let lock = NSLock()
+    private var pendingPath: String?
+    private var reads: [String] = []
+
+    var attemptedReads: [String] {
+        lock.withLock { reads }
+    }
+
+    func forbidReads(at url: URL) {
+        lock.withLock { pendingPath = url.path }
+    }
+
+    override func fileExists(atPath path: String) -> Bool {
+        let forbidden = lock.withLock {
+            guard path == pendingPath else { return false }
+            reads.append(path)
+            return true
+        }
+        return forbidden ? false : super.fileExists(atPath: path)
     }
 }
 

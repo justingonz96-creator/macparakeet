@@ -519,6 +519,7 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
             sourceAlignment: sourceAlignment,
             elapsedDurationMs: report.elapsedDurationMs,
             interruptedSources: Set(report.interruptedSources),
+            silentSources: Set(report.sources.compactMap { $0.status == .silent ? $0.source : nil }),
             captureFailed: report.captureFailed,
             playbackFallbackSource: playbackFallbackSource
         )
