@@ -938,11 +938,13 @@ public actor MeetingRecordingService: MeetingRecordingServiceProtocol {
             writerMetrics: writerMetrics
         )
         let captureSourceMode = captureHealthMetrics.sourceMode ?? .microphoneAndSystem
-        let hasQualifyingSilentSystemTrack = MeetingSystemAudioSignalVerdict.shouldWarn(
-            verdict: systemAudioSignalVerdict,
-            microphonePeakLevel: captureHealthMetrics.microphonePeakLevel,
-            durationSeconds: captureElapsedDurationSeconds
-        )
+        let hasQualifyingSilentSystemTrack =
+            !interruptedSources.contains(.system)
+            && MeetingSystemAudioSignalVerdict.shouldWarn(
+                verdict: systemAudioSignalVerdict,
+                microphonePeakLevel: captureHealthMetrics.microphonePeakLevel,
+                durationSeconds: captureElapsedDurationSeconds
+            )
         let silentSources: Set<AudioSource> =
             hasQualifyingSilentSystemTrack ? [.system] : []
         let preliminaryCaptureReport = MeetingCaptureReport(

@@ -968,12 +968,47 @@ final class MeetingRecordingServiceTests: XCTestCase {
         XCTAssertTrue(healthLine.contains("system_signal=silent"), String(healthLine))
     }
 
+    func testStopRecordingInterruptedZeroSystemAudioDoesNotAlsoReportSilence() async throws {
+        let wallClock = MeetingTestWallClock(now: Date(timeIntervalSince1970: 1_700_000_000))
+        let captureService = MockMeetingAudioCaptureService(
+            startReport: MeetingAudioCaptureStartReport(sourceMode: .microphoneAndSystem)
+        )
+        let service = MeetingRecordingService(
+            audioCaptureService: captureService,
+            audioConverter: MockMeetingAudioFileConverter(),
+            sttTranscriber: CountingMeetingSTTClient(),
+            micConditionerFactory: { PassthroughMicConditioner() },
+            wallClockNow: { wallClock.now }
+        )
+        try await service.startRecording()
+        let microphone = try XCTUnwrap(makeMonoFloatBuffer(frameCount: 480_016, sampleValue: 0.25))
+        let system = try XCTUnwrap(makeMonoFloatBuffer(frameCount: 480_016, sampleValue: 0))
+        let time = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 100))
+        await captureService.yield(.microphoneBuffer(microphone, time))
+        await captureService.yield(.systemBuffer(system, time))
+        await captureService.yield(
+            .sourceInterrupted(source: .system, error: .captureRuntimeFailure("system stream ended"))
+        )
+        _ = try await waitForCaptureHealth(service) { $0.system.status == .interrupted }
+        wallClock.advance(by: MeetingSystemAudioSignalVerdict.defaultMinimumWarningDurationSeconds)
+
+        let output = try await service.stopRecording()
+        defer { try? FileManager.default.removeItem(at: output.folderURL) }
+        let report = try XCTUnwrap(output.captureReport)
+        XCTAssertEqual(report.interruptedSources, [.system])
+        XCTAssertEqual(report.source(for: .system)?.status, .interrupted)
+        let metadata = try MeetingRecordingMetadataStore.load(from: output.folderURL)
+        XCTAssertEqual(metadata.captureReport, report)
+        let log = try String(contentsOf: AudioCaptureDiagnostics.diagnosticLogURL(), encoding: .utf8)
+        XCTAssertFalse(log.contains("meeting_system_audio_silent session=\(output.sessionID.uuidString)"))
+    }
+
     func testStopRecordingRightChannelOnlySystemAudioIsNotSilent() async throws {
         try await assertStereoSystemCaptureStatus(left: 0, right: 0.25, expectedStatus: .complete)
     }
 
-    func testStopRecordingPhaseCancelledSystemAudioIsSilent() async throws {
-        try await assertStereoSystemCaptureStatus(left: 0.25, right: -0.25, expectedStatus: .silent)
+    func testStopRecordingInverseSystemAudioRetainsSignalAndIsNotSilent() async throws {
+        try await assertStereoSystemCaptureStatus(left: 0.25, right: -0.25, expectedStatus: .complete)
     }
 
     func testStopRecordingPreservedPrePauseRightChannelSystemAudioIsNotSilent() async throws {

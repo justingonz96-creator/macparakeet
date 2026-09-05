@@ -23,16 +23,34 @@ final class MicrophoneEnginePlatformConfigChangeRecoveryTests: XCTestCase {
 
     func testDefaultInputChangeBurstSchedulesOneBoundedDelivery() {
         var coalescer = DefaultInputChangeBurstCoalescer()
+        let generation = coalescer.generation
 
-        XCTAssertTrue(coalescer.observeChange())
+        XCTAssertTrue(coalescer.observeChange(generation: generation))
         for _ in 1..<100 {
-            XCTAssertFalse(coalescer.observeChange())
+            XCTAssertFalse(coalescer.observeChange(generation: generation))
         }
 
-        XCTAssertEqual(coalescer.pendingCount, 100)
-        XCTAssertEqual(coalescer.takePendingCount(), 100)
-        XCTAssertFalse(coalescer.deliveryScheduled)
-        XCTAssertTrue(coalescer.observeChange(), "the next burst must schedule a fresh delivery")
+        XCTAssertEqual(coalescer.takePendingCount(generation: generation), 100)
+        XCTAssertNil(coalescer.takePendingCount(generation: generation))
+        XCTAssertTrue(coalescer.observeChange(generation: generation))
+    }
+
+    func testRetiredDefaultInputListenerAndDeliveryCannotConsumeReplacementBurst() {
+        var coalescer = DefaultInputChangeBurstCoalescer()
+        let retired = coalescer.generation
+        XCTAssertTrue(coalescer.observeChange(generation: retired))
+
+        coalescer.invalidate()
+        XCTAssertFalse(coalescer.observeChange(generation: retired))
+        XCTAssertNil(coalescer.takePendingCount(generation: retired))
+
+        let replacement = coalescer.generation
+        XCTAssertTrue(coalescer.observeChange(generation: replacement))
+        XCTAssertFalse(coalescer.observeChange(generation: retired))
+        XCTAssertNil(coalescer.takePendingCount(generation: retired))
+        XCTAssertFalse(coalescer.observeChange(generation: replacement))
+        XCTAssertEqual(coalescer.takePendingCount(generation: replacement), 2)
+        XCTAssertNil(coalescer.takePendingCount(generation: replacement))
     }
 
     /// Device selection and `AVAudioEngine.prepare()` can enqueue their own

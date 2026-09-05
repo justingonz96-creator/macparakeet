@@ -127,7 +127,7 @@ final class MeetingAudioStorageWriterTests: XCTestCase {
         XCTAssertGreaterThan(try decodedPeak(at: writer.systemAudioURL), 0)
     }
 
-    func testRetainedMonoCancelsOppositeInterleavedChannels() async throws {
+    func testRetainedMonoPreservesOppositeInterleavedChannels() async throws {
         let writer = try MeetingAudioStorageWriter(folderURL: tempFolder)
         let buffer = try makeStereoSineBuffer(leftGain: 1, rightGain: -1, interleaved: true)
         try writer.write(buffer, source: .system)
@@ -135,10 +135,10 @@ final class MeetingAudioStorageWriterTests: XCTestCase {
         let report = await finalize(writer)
 
         XCTAssertTrue(report.failedSources.isEmpty)
-        XCTAssertEqual(writer.metrics(for: .system).peakSampleMagnitude, 0)
+        XCTAssertEqual(writer.metrics(for: .system).peakSampleMagnitude, 0.2, accuracy: 0.000_001)
         XCTAssertEqual(writer.metrics(for: .system).writtenFrameCount, 48_000)
         XCTAssertEqual(writer.metrics(for: .system).timelineFrameCount, 48_000)
-        XCTAssertEqual(try decodedPeak(at: writer.systemAudioURL), 0)
+        XCTAssertGreaterThan(try decodedPeak(at: writer.systemAudioURL), 0.1)
     }
 
     func testSuccessfulFinalizationReportsNoFailedWrittenSources() async throws {
@@ -155,21 +155,29 @@ final class MeetingAudioStorageWriterTests: XCTestCase {
     }
 
     func testFinalizationCoordinatorCompletesExactlyOnceAfterBothSourcesSucceed() {
-        var coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+        let coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+            folderURL: tempFolder,
             writtenFrameCounts: [.microphone: 48_000, .system: 48_000]
         )
 
         XCTAssertNil(coordinator.sourceDidFinish(.microphone, failed: false))
+        XCTAssertTrue(MeetingAudioWriterFinalizationRegistry.contains(folderURL: tempFolder))
         XCTAssertEqual(
             coordinator.sourceDidFinish(.system, failed: false),
             .init(failedSources: [], timedOutSources: [])
         )
+        XCTAssertFalse(MeetingAudioWriterFinalizationRegistry.contains(folderURL: tempFolder))
         XCTAssertNil(coordinator.deadlineExpired())
         XCTAssertNil(coordinator.sourceDidFinish(.system, failed: false))
+        MeetingAudioWriterFinalizationRegistry.begin(folderURL: tempFolder)
+        defer { MeetingAudioWriterFinalizationRegistry.end(folderURL: tempFolder) }
+        XCTAssertNil(coordinator.sourceDidFinish(.microphone, failed: false))
+        XCTAssertTrue(MeetingAudioWriterFinalizationRegistry.contains(folderURL: tempFolder))
     }
 
     func testFinalizationCoordinatorReportsOrdinaryWrittenSourceFailure() {
-        var coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+        let coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+            folderURL: tempFolder,
             writtenFrameCounts: [.microphone: 48_000, .system: 48_000]
         )
 
@@ -178,10 +186,12 @@ final class MeetingAudioStorageWriterTests: XCTestCase {
             coordinator.sourceDidFinish(.system, failed: false),
             .init(failedSources: [.microphone], timedOutSources: [])
         )
+        XCTAssertFalse(MeetingAudioWriterFinalizationRegistry.contains(folderURL: tempFolder))
     }
 
     func testFinalizationCoordinatorReportsMissingWrittenSourceAtDeadlineWithoutWaiting() {
-        var coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+        let coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+            folderURL: tempFolder,
             writtenFrameCounts: [.microphone: 48_000, .system: 48_000]
         )
 
@@ -190,10 +200,14 @@ final class MeetingAudioStorageWriterTests: XCTestCase {
             coordinator.deadlineExpired(),
             .init(failedSources: [.microphone], timedOutSources: [.microphone])
         )
+        XCTAssertTrue(MeetingAudioWriterFinalizationRegistry.contains(folderURL: tempFolder))
+        XCTAssertNil(coordinator.sourceDidFinish(.microphone, failed: false))
+        XCTAssertFalse(MeetingAudioWriterFinalizationRegistry.contains(folderURL: tempFolder))
     }
 
     func testFinalizationCoordinatorReportsBothWrittenSourcesWhenBothCallbacksTimeOut() {
-        var coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+        let coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+            folderURL: tempFolder,
             writtenFrameCounts: [.microphone: 48_000, .system: 48_000]
         )
 
@@ -204,10 +218,17 @@ final class MeetingAudioStorageWriterTests: XCTestCase {
                 timedOutSources: [.microphone, .system]
             )
         )
+        XCTAssertTrue(MeetingAudioWriterFinalizationRegistry.contains(folderURL: tempFolder))
+        XCTAssertNil(coordinator.sourceDidFinish(.system, failed: false))
+        XCTAssertTrue(MeetingAudioWriterFinalizationRegistry.contains(folderURL: tempFolder))
+        XCTAssertNil(coordinator.deadlineExpired())
+        XCTAssertNil(coordinator.sourceDidFinish(.microphone, failed: false))
+        XCTAssertFalse(MeetingAudioWriterFinalizationRegistry.contains(folderURL: tempFolder))
     }
 
     func testFinalizationCoordinatorPreservesUnwrittenTimeoutOwnershipAndIgnoresLateCallback() {
-        var coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+        let coordinator = MeetingAudioStorageWriter.FinalizationCoordinator(
+            folderURL: tempFolder,
             writtenFrameCounts: [.microphone: 48_000, .system: 0]
         )
 
@@ -216,8 +237,10 @@ final class MeetingAudioStorageWriterTests: XCTestCase {
             coordinator.deadlineExpired(),
             .init(failedSources: [], timedOutSources: [.system])
         )
+        XCTAssertTrue(MeetingAudioWriterFinalizationRegistry.contains(folderURL: tempFolder))
         XCTAssertNil(coordinator.sourceDidFinish(.system, failed: true))
         XCTAssertNil(coordinator.deadlineExpired())
+        XCTAssertFalse(MeetingAudioWriterFinalizationRegistry.contains(folderURL: tempFolder))
     }
 
     func testFinalizationFailurePolicyIgnoresUnwrittenSources() {
