@@ -155,6 +155,11 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'PLIST'
     <string>1</string>
     <key>CFBundleShortVersionString</key>
     <string>0.0.0</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>MacParakeet needs microphone access for voice dictation.</string>
     <key>NSAudioCaptureUsageDescription</key>

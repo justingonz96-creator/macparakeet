@@ -89,12 +89,17 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ## [Unreleased]
 
+## [3.2.0] — 2026-09-04
+
 ### Added
 
 - `meetings artifact --json` and envelope output may now include the additive
   optional `meetingCaptureReport` field with frame-derived meeting capture
   quality, elapsed/playable durations, and per-source coverage. Legacy meetings
   omit it; omission means unknown rather than healthy.
+  Reports may now use source status `silent` when a selected system-audio track
+  delivered buffers but remained at exact digital silence for an actionable
+  meeting; consumers must treat unknown future status values defensively.
 - `export --format dapt` and `transcribe --format dapt` now emit W3C DAPT 1.0
   `originalTranscript` documents through the shared exporter. File output uses
   `.dapt.xml`; stdout is supported by both commands. Aligned word timing and
