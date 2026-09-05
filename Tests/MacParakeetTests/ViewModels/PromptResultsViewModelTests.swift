@@ -954,6 +954,163 @@ final class PromptResultsViewModelTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
 
         XCTAssertEqual(promptResultRepo.saveCalls.first?.userNotesSnapshot, "snapshot me")
+        XCTAssertFalse(try XCTUnwrap(promptResultRepo.saveCalls.first).includeMeetingNotesSnapshot)
+    }
+
+    func testGeneratePromptResultOptInAppendsNotesAndPersistsEffectiveReceipt() async throws {
+        let transcriptionID = UUID()
+        try transcriptionRepo.save(
+            Transcription(
+                id: transcriptionID,
+                fileName: "meeting.m4a",
+                sourceType: .meeting,
+                userNotes: "Launch Friday"
+            )
+        )
+        let prompt = Prompt(
+            name: "Summary",
+            content: "Summarize.",
+            includeMeetingNotes: true
+        )
+        promptRepo.prompts = [prompt]
+        viewModel.configure(
+            llmService: llm,
+            promptRepo: promptRepo,
+            promptResultRepo: promptResultRepo,
+            transcriptionRepo: transcriptionRepo
+        )
+        viewModel.selectedPrompt = prompt
+        llm.streamTokens = ["ok"]
+
+        viewModel.generatePromptResult(transcript: "transcript", transcriptionId: transcriptionID)
+        try await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertTrue(
+            try XCTUnwrap(llm.lastSummarySystemPrompt).contains("<meeting_notes>\nLaunch Friday\n</meeting_notes>"))
+        XCTAssertEqual(promptResultRepo.saveCalls.first?.userNotesSnapshot, "Launch Friday")
+        XCTAssertTrue(try XCTUnwrap(promptResultRepo.saveCalls.first).includeMeetingNotesSnapshot)
+    }
+
+    func testGeneratePromptResultWithoutOptInOrTokenDoesNotSnapshotNotes() async throws {
+        let transcriptionID = UUID()
+        try transcriptionRepo.save(
+            Transcription(
+                id: transcriptionID,
+                fileName: "meeting.m4a",
+                sourceType: .meeting,
+                userNotes: "Private context"
+            )
+        )
+        let prompt = Prompt(name: "Summary", content: "Summarize.")
+        promptRepo.prompts = [prompt]
+        viewModel.configure(
+            llmService: llm,
+            promptRepo: promptRepo,
+            promptResultRepo: promptResultRepo,
+            transcriptionRepo: transcriptionRepo
+        )
+        viewModel.selectedPrompt = prompt
+        llm.streamTokens = ["ok"]
+
+        viewModel.generatePromptResult(transcript: "transcript", transcriptionId: transcriptionID)
+        try await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertEqual(llm.lastSummarySystemPrompt, "Summarize.")
+        XCTAssertNil(promptResultRepo.saveCalls.first?.userNotesSnapshot)
+    }
+
+    func testRegenerateUsesCheckboxSnapshotWithCurrentNotes() async throws {
+        let transcriptionID = UUID()
+        try transcriptionRepo.save(
+            Transcription(
+                id: transcriptionID,
+                fileName: "meeting.m4a",
+                sourceType: .meeting,
+                userNotes: "Current notes"
+            )
+        )
+        let existing = PromptResult(
+            transcriptionId: transcriptionID,
+            promptName: "Summary",
+            promptContent: "Summarize.",
+            content: "Old",
+            userNotesSnapshot: "Old notes",
+            includeMeetingNotesSnapshot: true
+        )
+        promptResultRepo.promptResults = [existing]
+        viewModel.configure(
+            llmService: llm,
+            promptRepo: promptRepo,
+            promptResultRepo: promptResultRepo,
+            transcriptionRepo: transcriptionRepo
+        )
+        viewModel.loadPromptResults(transcriptionId: transcriptionID)
+        llm.streamTokens = ["New"]
+
+        _ = viewModel.regeneratePromptResult(existing, transcript: "transcript")
+        try await Task.sleep(for: .milliseconds(200))
+
+        let replacement = try XCTUnwrap(promptResultRepo.replaceCalls.first?.promptResult)
+        XCTAssertEqual(replacement.userNotesSnapshot, "Current notes")
+        XCTAssertTrue(replacement.includeMeetingNotesSnapshot)
+    }
+
+    func testRetryKeepsExactCappedNotesSnapshotWithoutRecappingOrRefetching() async throws {
+        let transcriptionID = UUID()
+        let longNotes = String(
+            repeating: "word ",
+            count: PromptResultsViewModel.userNotesPromptWordCap + 1
+        )
+        try transcriptionRepo.save(
+            Transcription(
+                id: transcriptionID,
+                fileName: "meeting.m4a",
+                sourceType: .meeting,
+                userNotes: longNotes
+            )
+        )
+        let existing = PromptResult(
+            transcriptionId: transcriptionID,
+            promptName: "Summary",
+            promptContent: "Summarize.",
+            content: "Old",
+            includeMeetingNotesSnapshot: true
+        )
+        promptResultRepo.promptResults = [existing]
+        viewModel.configure(
+            llmService: llm,
+            promptRepo: promptRepo,
+            promptResultRepo: promptResultRepo,
+            transcriptionRepo: transcriptionRepo
+        )
+        viewModel.loadPromptResults(transcriptionId: transcriptionID)
+        llm.streamTokenBatches = [[], ["Recovered"]]
+
+        let failedID = try XCTUnwrap(viewModel.regeneratePromptResult(existing, transcript: "transcript"))
+        try await waitUntil {
+            if case .failed = self.viewModel.pendingGeneration(id: failedID)?.state { return true }
+            return false
+        }
+        let exactSnapshot = try XCTUnwrap(viewModel.pendingGeneration(id: failedID)?.userNotes)
+
+        try transcriptionRepo.save(
+            Transcription(
+                id: transcriptionID,
+                fileName: "meeting.m4a",
+                sourceType: .meeting,
+                userNotes: "Edited after failure"
+            )
+        )
+        _ = try XCTUnwrap(viewModel.retryGeneration(id: failedID))
+        try await waitUntil { self.promptResultRepo.replaceCalls.count == 1 }
+
+        let replacement = try XCTUnwrap(promptResultRepo.replaceCalls.first?.promptResult)
+        XCTAssertEqual(replacement.userNotesSnapshot, exactSnapshot)
+        XCTAssertEqual(
+            replacement.userNotesSnapshot,
+            PromptSystemPromptAssembler.truncateNotesForPrompt(longNotes)
+        )
+        XCTAssertFalse(replacement.userNotesSnapshot?.contains("Edited after failure") == true)
     }
 
     func testGeneratePromptResultRendersEmptyWhenUserNotesAreNil() async throws {

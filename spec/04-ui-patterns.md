@@ -147,6 +147,45 @@ window, or replace an unrelated open detail page. Recorder-idle queued
 completion may still present the finished meeting, matching the existing
 queued-completion behavior.
 
+### Saved Meeting Notes
+
+Every saved meeting detail keeps a `Your notes` card above the transcript,
+including meetings with no notes and meetings whose transcription is still
+processing. The card has three explicit states:
+
+- **Empty:** short context plus `Add notes`.
+- **Read:** selectable plaintext with `Copy` and `Edit`.
+- **Edit:** plaintext `TextEditor`, word count and the existing 8,000-word
+  soft-cap warning, plus `Save` and `Cancel`. Saving a blank draft clears the
+  canonical value.
+
+Save is explicit rather than debounced: it commits one stable value before the
+next Chat or result-prompt request and avoids refreshing meeting artifacts on
+every keystroke. `Command-Return` saves. Cancel asks before discarding a changed
+draft and does not write. Changing the selected transcription resets the local
+editor state. Database success remains authoritative even if the
+derived-artifact refresh reports a separate retryable warning. Successive
+saves use database last-writer-wins semantics, while artifact refresh remains
+ordered/latest-wins so stale completion cannot overwrite newer files.
+
+### Result Prompt Meeting-Notes Context
+
+The expanded configuration area of every result-prompt card includes an
+**Include meeting notes as context** checkbox and this help text:
+
+> When this prompt runs on a meeting with notes, use those notes as additional
+> context. The transcript remains the source of truth.
+
+The checkbox is present for built-in and custom result prompts, absent for
+Transforms, and off by default. Custom-prompt Create/Edit sheets expose the
+same choice; an enabled card may show a quiet `Meeting notes` context badge.
+The primary UI does not mention `{{userNotes}}`: that variable remains an
+advanced custom-template compatibility mechanism. Chat/Ask does not gain this
+checkbox and retains its existing automatic use of committed meeting notes.
+
+This UI was implemented and locally verified on 2026-09-05. Release
+availability follows the normal channel process.
+
 ### Local Transcription Rename
 
 Local transcription rows expose `Rename...` with a `pencil` symbol in the same Library card/context menu as `Open`, placed before selection and destructive actions. The dialog is compact, prefilled with the effective display title, and rejects blank titles. Until the user explicitly renames it, a Local row's effective title is its original media filename rather than transcript-derived opening words. Rename is a display-metadata operation only: the original source filename/path remain unchanged, and copy-on-import/media-retention behavior is not implied.

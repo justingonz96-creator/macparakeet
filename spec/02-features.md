@@ -1701,11 +1701,54 @@ final transcripts remain plain text without word timestamps or speaker labels.
 **What still ships:**
 - [x] `PromptTemplateRenderer` supports `{{userNotes}}` and `{{transcript}}` substitution; single-pass and simultaneous to prevent injection via user notes containing `{{transcript}}` literals
 - [x] Variable names are case-sensitive; canonical lowercase (typos fall through to empty-string fallback rather than silently producing empty output)
-- [x] `Summary` row (PromptResult) gains `userNotesSnapshot: String?` — the value of `userNotes` at the moment of summary generation, captured alongside the existing prompt snapshot per ADR-013
+- [x] `Summary` row (PromptResult) gains `userNotesSnapshot: String?`; the
+  original implementation captured the row value at generation time. The
+  in-progress replacement tightens it to the exact bounded notes value actually
+  supplied to assembly.
 
 **Reverted:**
 - [x] "Memo-Steered Notes" prompt removed from `Prompt.builtInPrompts()` and `community-prompts.json`; reconciler deletes the row on next launch for any DB that has it from a prior build
 - [x] Auto-run insertion guard from ADR-020 §5 is still tested via `Summary` (the remaining auto-run built-in) — the mechanism is intact and ready for the next prompt that needs it
+
+#### Replacement: saved notes + per-prompt opt-in context
+
+> Status: **IMPLEMENTED AND LOCALLY VERIFIED (2026-09-05)** — release
+> availability follows the normal channel process.
+
+The replacement does not restore a dedicated memo-steered built-in or enable
+notes automatically. Every saved meeting exposes Add/Edit/Clear notes with
+explicit Save/Cancel, backed by canonical `transcriptions.userNotes`; blank
+saves become `NULL` and refresh the derived meeting artifacts. Every result
+prompt, including read-only built-ins, exposes an **Include meeting notes as
+context** checkbox. It defaults off for all existing and new prompts and is not
+available for Transforms.
+
+When enabled, non-empty notes are added once as a delimited context block and
+the transcript remains the factual source of truth. Advanced custom prompts
+may continue to place notes explicitly with case-sensitive `{{userNotes}}`,
+even when the checkbox is off; enabling the checkbox cannot duplicate that
+content. Empty notes preserve the previous assembled prompt byte-for-byte.
+Chat/Ask remains unchanged and keeps using the latest committed notes at send
+time without a checkbox.
+
+The additive schema stores
+`prompts.includeMeetingNotes` and
+`summaries.includeMeetingNotesSnapshot`, both non-null and default false.
+`userNotesSnapshot` stores the exact bounded notes value supplied to prompt
+assembly. The public CLI mirrors the setting on `prompts set` with
+`--include-meeting-notes` / `--no-include-meeting-notes` and additive JSON
+fields.
+
+**Acceptance criteria:**
+
+- [x] Saved meetings support Add, Edit, Clear, Save, Cancel, and save/artifact error handling.
+- [x] Rapid saves leave derived artifacts at the newest committed DB value.
+- [x] Prompt checkbox works independently for built-in and custom result prompts; existing prompts stay opted out.
+- [x] The shared GUI/CLI assembler follows the empty/off/token/no-duplication decision table from ADR-020.
+- [x] Queue, retry, regenerate, and saved-result snapshots remain reproducible.
+- [x] Focused tests pass.
+- [ ] Manual end-to-end app verification is still required before release.
+- [x] The final full Swift suite passes.
 
 ### F38: Slash Commands in Notes
 

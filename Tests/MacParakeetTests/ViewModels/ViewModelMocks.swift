@@ -149,6 +149,8 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
     var updateFilePathError: Error?
     var updateSpeakersError: Error?
     var updateSpeakersHandler: (@Sendable (UUID, [SpeakerInfo]?) throws -> Void)?
+    var userNotesReadBackError: Error?
+    private var failNextUserNotesReadBack = false
     var saveError: Error?
 
     func save(_ transcription: Transcription) throws {
@@ -164,6 +166,10 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
 
     func fetch(id: UUID) throws -> Transcription? {
         if let fetchError { throw fetchError }
+        if failNextUserNotesReadBack, let userNotesReadBackError {
+            failNextUserNotesReadBack = false
+            throw userNotesReadBackError
+        }
         return transcriptions.first(where: { $0.id == id })
     }
 
@@ -273,6 +279,18 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
             )
             transcriptions[idx].updatedAt = Date()
         }
+    }
+
+    @discardableResult
+    func updateUserNotes(id: UUID, userNotes: String?) throws -> Bool {
+        guard var transcription = transcriptions.first(where: { $0.id == id }) else {
+            return false
+        }
+        transcription.userNotes = userNotes
+        transcription.updatedAt = Date()
+        try save(transcription)
+        failNextUserNotesReadBack = userNotesReadBackError != nil
+        return true
     }
 
     func updateFilePath(id: UUID, filePath: String?) throws {
@@ -1128,6 +1146,13 @@ final class MockPromptRepository: PromptRepositoryProtocol, @unchecked Sendable 
             prompts[index].isVisible = true
             prompts[index].appliesToSources = nil
         }
+        prompts[index].updatedAt = Date()
+    }
+
+    func setIncludeMeetingNotes(id: UUID, enabled: Bool) throws {
+        guard let index = prompts.firstIndex(where: { $0.id == id }) else { return }
+        guard prompts[index].category == .result else { return }
+        prompts[index].includeMeetingNotes = enabled
         prompts[index].updatedAt = Date()
     }
 

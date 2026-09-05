@@ -96,6 +96,15 @@ with human progress/status kept off stdout.
   `xhigh`). Reasoning effort is normalized away unless thinking is enabled.
   This value records the prompt's request; it does not prove
   that every field is supported by the provider selected for a later run.
+- The same prompt JSON objects include additive Boolean
+  `includeMeetingNotes`, the result prompt's automatic meeting-notes context
+  preference. Its default is `false`. The `--include-meeting-notes` flag on
+  `prompts set <prompt>` enables it and `--no-include-meeting-notes` disables
+  it; the flags are mutually exclusive and rejected for Transform prompts.
+  Explicit `{{userNotes}}` custom-template substitution remains
+  independent of this preference. This additive surface was implemented and
+  locally verified on 2026-09-05; release availability follows the normal
+  channel process.
 - LLM result JSON envelopes include additive optional `effectiveSettings` with
   the same object shape. For `prompts run --json`, a present value is the
   normalized adapter receipt after provider/model filtering. Absence means no
@@ -106,6 +115,12 @@ with human progress/status kept off stdout.
   optional `inferenceSettingsSnapshot` with the same settings shape. When
   present it is the effective receipt stored with the result; imported results
   created by `meetings results add` omit it.
+- Saved prompt-result JSON objects include additive Boolean
+  `includeMeetingNotesSnapshot`, the automatic-context preference captured for
+  that generation. `false` covers migrated and externally imported results.
+  Nullable `userNotesSnapshot` contains the exact normalized, bounded notes
+  value supplied to prompt assembly, not necessarily the full canonical note.
+  This field has the same pending-validation status as the CLI flags above.
 - `meetings show --json` and `meetings transcript --format json` expose
   `transcriptSegments` when the meeting row has durable segments. Each segment
   contains `id`, `startMs`, `endMs`, `speakerId`, `speakerLabel`, `text`, and

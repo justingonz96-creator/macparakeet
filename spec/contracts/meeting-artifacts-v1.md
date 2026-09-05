@@ -98,11 +98,15 @@ The v1 folder can contain these stable filenames:
 plus sanitized prompt-result name.
 
 Each `prompt-results.json` record preserves the prompt-result snapshots,
-including additive optional `inferenceSettingsSnapshot`. When present, this is
-the normalized effective provider/model-filtered inference receipt stored on
-the canonical database row. Its optional `reasoningEffort` is one of `low`,
-`medium`, `high`, or `xhigh` and appears only with enabled thinking; legacy and
-externally imported rows may omit it.
+including `userNotesSnapshot`, the additive Boolean
+`includeMeetingNotesSnapshot` (default `false` for legacy and imported rows),
+and optional `inferenceSettingsSnapshot`. The per-result Markdown view also
+states whether automatic meeting-notes context was enabled. When inference
+settings are present, they are the normalized effective
+provider/model-filtered receipt stored on the canonical database row. Their
+optional `reasoningEffort` is one of `low`, `medium`, `high`, or `xhigh` and
+appears only with enabled thinking; legacy and externally imported rows may
+omit it.
 
 New recordings write the role-explicit audio filenames above. For read
 compatibility with folders created before the in-place v1 audio filename

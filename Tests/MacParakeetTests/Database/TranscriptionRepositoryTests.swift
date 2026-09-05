@@ -431,11 +431,13 @@ final class TranscriptionRepositoryTests: XCTestCase {
     }
 
     func testUpdateUserNotesPreservesOtherFields() throws {
+        let oldUpdatedAt = Date(timeIntervalSince1970: 1_000)
         let transcription = Transcription(
             fileName: "Meeting Apr 5",
             rawTranscript: "Transcript",
             status: .completed,
-            sourceType: .meeting
+            sourceType: .meeting,
+            updatedAt: oldUpdatedAt
         )
         try repo.save(transcription)
 
@@ -445,6 +447,25 @@ final class TranscriptionRepositoryTests: XCTestCase {
         XCTAssertEqual(fetched.userNotes, "Decision: ship it")
         XCTAssertEqual(fetched.rawTranscript, "Transcript")
         XCTAssertEqual(fetched.sourceType, .meeting)
+        XCTAssertGreaterThan(fetched.updatedAt, oldUpdatedAt)
+    }
+
+    func testUpdateUserNotesCanClearNotes() throws {
+        let transcription = Transcription(
+            fileName: "Meeting Apr 5",
+            status: .completed,
+            sourceType: .meeting,
+            userNotes: "Decision: ship it"
+        )
+        try repo.save(transcription)
+
+        try repo.updateUserNotes(id: transcription.id, userNotes: nil)
+
+        XCTAssertNil(try XCTUnwrap(repo.fetch(id: transcription.id)).userNotes)
+    }
+
+    func testUpdateUserNotesReturnsFalseWhenRowIsMissing() throws {
+        XCTAssertFalse(try repo.updateUserNotes(id: UUID(), userNotes: "Unsaved"))
     }
 
     func testDelete() throws {

@@ -211,7 +211,7 @@ extension PromptsCommand {
     struct SetSubcommand: ParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "set",
-            abstract: "Toggle a prompt's visibility or auto-run state."
+            abstract: "Configure a prompt's visibility, auto-run, or meeting-note context."
         )
 
         @Argument(help: "Prompt ID, ID prefix, or name.")
@@ -229,7 +229,17 @@ extension PromptsCommand {
         @Flag(name: .long, help: "Disable auto-run.")
         var noAutoRun: Bool = false
 
-        @Option(name: .long, help: "Scope --auto-run/--no-auto-run to one source: file, youtube, podcast, meeting. Omit for global all-source behavior.")
+        @Flag(name: .long, help: "Include meeting notes as additional context for this result prompt.")
+        var includeMeetingNotes: Bool = false
+
+        @Flag(name: .long, help: "Do not include meeting notes automatically for this result prompt.")
+        var noIncludeMeetingNotes: Bool = false
+
+        @Option(
+            name: .long,
+            help:
+                "Scope --auto-run/--no-auto-run to one source: file, youtube, podcast, meeting. Omit for global all-source behavior."
+        )
         var source: PromptAutoRunSource?
 
         @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
@@ -245,6 +255,9 @@ extension PromptsCommand {
             if autoRun && noAutoRun {
                 throw ValidationError("--auto-run and --no-auto-run are mutually exclusive")
             }
+            if includeMeetingNotes && noIncludeMeetingNotes {
+                throw ValidationError("--include-meeting-notes and --no-include-meeting-notes are mutually exclusive")
+            }
             // Auto-run requires visible (mirrors PromptRepository.toggleAutoRun).
             // Reject the contradictory combo explicitly so the user doesn't get a
             // silent precedence surprise where one flag overrides the other.
@@ -259,8 +272,8 @@ extension PromptsCommand {
                     throw ValidationError("--source requires --auto-run or --no-auto-run")
                 }
             }
-            if !(visible || hidden || autoRun || noAutoRun) {
-                throw ValidationError("specify at least one of --visible / --hidden / --auto-run / --no-auto-run")
+            if !(visible || hidden || autoRun || noAutoRun || includeMeetingNotes || noIncludeMeetingNotes) {
+                throw ValidationError("specify at least one setting flag")
             }
         }
 
@@ -291,12 +304,20 @@ extension PromptsCommand {
                 let db = try DatabaseManager(path: resolvedDatabasePath(database))
                 let repo = PromptRepository(dbQueue: db.dbQueue)
 
-                var prompt = try findPrompt(idOrName: idOrName, repo: repo)
+                let meetingNotesFlagSpecified = includeMeetingNotes || noIncludeMeetingNotes
+                var prompt = try findPrompt(
+                    idOrName: idOrName,
+                    repo: repo,
+                    category: meetingNotesFlagSpecified ? nil : .result
+                )
+                if meetingNotesFlagSpecified, prompt.category != .result {
+                    throw ValidationError("meeting-note context is only available for result prompts")
+                }
 
                 if let source {
                     try repo.setAutoRun(id: prompt.id, source: source.sourceType, enabled: autoRun)
                     prompt = try repo.fetch(id: prompt.id) ?? prompt
-                } else {
+                } else if visible || hidden || autoRun || noAutoRun {
                     Self.applyFlags(
                         to: &prompt,
                         visible: visible,
@@ -307,6 +328,11 @@ extension PromptsCommand {
 
                     prompt.updatedAt = Date()
                     try repo.save(prompt)
+                }
+
+                if includeMeetingNotes || noIncludeMeetingNotes {
+                    try repo.setIncludeMeetingNotes(id: prompt.id, enabled: includeMeetingNotes)
+                    prompt = try repo.fetch(id: prompt.id) ?? prompt
                 }
 
                 if json {
@@ -397,7 +423,11 @@ extension PromptsCommand {
         @Flag(name: .long, help: "Stream the response token by token.")
         var stream: Bool = false
 
-        @Flag(name: .long, help: "Emit a structured JSON envelope (output, provider, model, usage, stopReason, latencyMs, effectiveSettings) instead of plain text.")
+        @Flag(
+            name: .long,
+            help:
+                "Emit a structured JSON envelope (output, provider, model, usage, stopReason, latencyMs, effectiveSettings) instead of plain text."
+        )
         var json: Bool = false
 
         @Option(name: .long, help: "Extra instructions appended to the prompt for this run.")
@@ -408,7 +438,9 @@ extension PromptsCommand {
 
         func validate() throws {
             if json && stream {
-                throw ValidationError("--json with --stream is not yet supported. Run without --stream for the envelope, or omit --json for token streaming.")
+                throw ValidationError(
+                    "--json with --stream is not yet supported. Run without --stream for the envelope, or omit --json for token streaming."
+                )
             }
         }
 
@@ -430,12 +462,14 @@ extension PromptsCommand {
 
                 let trimmedExtra = extra?.trimmingCharacters(in: .whitespacesAndNewlines)
                 let normalizedExtra = (trimmedExtra?.isEmpty == false) ? trimmedExtra : nil
-                let systemPrompt = PromptSystemPromptAssembler.assemble(
+                let assembly = PromptSystemPromptAssembler.assembleDetailed(
                     promptContent: prompt.content,
                     extraInstructions: normalizedExtra,
+                    includeMeetingNotes: prompt.includeMeetingNotes,
                     userNotes: transcript.userNotes,
                     transcript: transcriptText
                 )
+                let systemPrompt = assembly.systemPrompt
 
                 let execution = try llm.buildExecutionContext()
                 let service = LLMService(
@@ -493,6 +527,7 @@ extension PromptsCommand {
                         prompt: prompt,
                         extraInstructions: normalizedExtra,
                         output: output,
+                        userNotesSnapshot: assembly.effectiveUserNotes,
                         effectiveSettings: effectiveSettings
                     )
                     try resultRepo.save(result)
@@ -501,7 +536,8 @@ extension PromptsCommand {
                         resultRepo: resultRepo
                     )
                     // Status messages on stderr so stdout stays grep-able as the prompt output.
-                    FileHandle.standardError.write(Data("\nSaved PromptResult \(result.id.uuidString.prefix(8))\n".utf8))
+                    FileHandle.standardError.write(
+                        Data("\nSaved PromptResult \(result.id.uuidString.prefix(8))\n".utf8))
                 }
 
                 if let jsonResult {
@@ -517,6 +553,7 @@ func makeStoredPromptRunResult(
     prompt: Prompt,
     extraInstructions: String?,
     output: String,
+    userNotesSnapshot: String?,
     effectiveSettings: PromptInferenceSettings?
 ) -> PromptResult {
     PromptResult(
@@ -525,7 +562,8 @@ func makeStoredPromptRunResult(
         promptContent: prompt.content,
         extraInstructions: extraInstructions,
         content: output,
-        userNotesSnapshot: transcript.userNotes,
+        userNotesSnapshot: userNotesSnapshot,
+        includeMeetingNotesSnapshot: prompt.includeMeetingNotes,
         inferenceSettingsSnapshot: effectiveSettings
     )
 }
@@ -565,6 +603,7 @@ private func renderBadges(_ p: Prompt) -> String {
             badges.append("auto-run")
         }
     }
+    if p.includeMeetingNotes { badges.append("meeting notes") }
     return badges.isEmpty ? "" : "  [\(badges.joined(separator: ", "))]"
 }
 

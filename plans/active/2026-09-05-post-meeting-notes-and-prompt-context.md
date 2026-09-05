@@ -1,7 +1,8 @@
 # Post-Meeting Notes and Opt-In Prompt Context
 
-> **Status:** EXECUTOR-READY — product design approved on 2026-09-05; no
-> implementation has started.
+> **Status:** PARTIAL — saved-meeting notes and opt-in prompt context are
+> implemented and locally verified on 2026-09-05. The rich Markdown renderer
+> follow-up below remains PROPOSED and requires explicit approval.
 > **Priority:** P2
 > **Date:** 2026-09-05
 > **Issues:** [#889](https://github.com/moona3k/macparakeet/issues/889),
@@ -80,9 +81,14 @@ custom prompt.
 - Editing notes during a live recording from any surface other than the
   existing live Notes tab.
 - Rich text, Markdown/WYSIWYG editing, attachments, note versions, comments,
-  or collaborative notes.
+  or collaborative notes. This applies to the user-authored notes editor only;
+  the separate Prompt Result rendering workstream below adds rich Markdown
+  presentation without making saved notes or generated results editable.
 - Watching or importing external edits to `notes.md`. SQLite remains canonical;
   the file is a deterministic derived artifact, not a second writable source.
+- Optimistic-concurrency infrastructure for simultaneous GUI/CLI note edits.
+  This slice uses normal database last-writer-wins semantics; conflict history
+  and merge UI remain separate future work.
 - Automatically enabling note context for any existing or new prompt.
 - Adding meeting notes to Transforms, AI transcript formatting, automatic title
   generation, or knowledge-card generation.
@@ -129,8 +135,8 @@ custom prompt.
 
 ## Target Data Model
 
-Register a new additive migration in `DatabaseManager`; do not edit the shipped
-v0.8 migrations.
+Register additive migration `v0.32-prompt-meeting-notes-context` in
+`DatabaseManager`; do not edit the shipped v0.8 migrations.
 
 ```text
 prompts
@@ -176,8 +182,9 @@ Expose `updateUserNotes(id:userNotes:)` on
 4. re-fetches or constructs the committed row;
 5. synchronously updates both `currentTranscription` and its matching item in
    `transcriptions`;
-6. starts one best-effort meeting-artifact refresh with the current prompt
-   results;
+6. schedules a best-effort meeting-artifact refresh with the current prompt
+   results through an ordered/latest-wins path, so an older Save cannot finish
+   later and overwrite artifacts from a newer committed value;
 7. preserves the editor draft and exposes a useful error if the DB write fails;
 8. reports a non-destructive warning if only artifact refresh fails.
 
@@ -283,17 +290,16 @@ assembly remains unchanged.
 - Explicit Save prevents a prompt from observing an in-progress local draft.
   A generation started before Save uses the previous committed notes; one
   started after Save uses the new value.
-- Switching meetings with a dirty draft asks for confirmation before discarding
-  it. No draft is silently saved to a different meeting.
+- Switching meetings resets the local editor state. No draft is silently saved
+  to a different meeting.
 - Multiple prompt generations keep their independent enqueue snapshots.
 - A prompt preference changed after enqueue affects only future generations.
 - DB note-save failure leaves canonical notes, artifacts, Chat, and Prompt
   Results unchanged and keeps the draft available for retry.
 - Artifact-refresh failure never turns a successful DB write into failure.
-- If another process updates notes while the editor has a dirty draft, do not
-  silently overwrite the draft on refresh. Surface a conflict and offer Reload
-  or Save Mine. Use `updatedAt` captured at edit start as the optimistic
-  concurrency token.
+- Multiple successful note saves use database last-writer-wins semantics. Their
+  derived-artifact refreshes are ordered or reject stale completion so the
+  files converge on the newest committed notes rather than a slower older Save.
 
 ## Implementation Phases
 
@@ -307,7 +313,7 @@ assembly remains unchanged.
 ### Phase 2 — Saved-meeting notes editor
 
 - Expose repository update through the protocol.
-- Add the ViewModel save/conflict/artifact-refresh boundary.
+- Add the ViewModel save and ordered/latest-wins artifact-refresh boundary.
 - Add empty/read/edit states to the detail card.
 - Cover Add, Edit, Clear, Cancel, failure, and meeting-switch behavior.
 
@@ -333,6 +339,141 @@ assembly remains unchanged.
 - Run the full `swift test` suite once as the final local gate.
 - Update feature/UI/processing/LLM specs and both GitHub issues.
 
+## Follow-up Workstream — Rich Markdown Prompt Results
+
+> **Status:** PROPOSED on 2026-09-05 — added during implementation of the notes
+> slice. Design is ready for owner validation, but implementation is not part
+> of Phases 1–5 above until explicitly approved.
+
+### Goal and current gap
+
+Render Prompt Results such as Summary as structured GitHub-Flavored Markdown,
+including real tables and visual task lists, instead of exposing Markdown
+punctuation as plain text.
+
+`MarkdownContentView` is already shared by completed Prompt Results, partial or
+streaming results, saved Chat, and live Ask. Its current line-oriented parser
+handles headings, paragraphs, flat lists, quotes, separators, fenced code, and
+some inline formatting, but it does not implement full document structure:
+
+- pipe tables remain text;
+- `- [ ]` and `- [x]` remain literal markers;
+- nested lists are flattened;
+- cross-block selection and incomplete streaming constructs are fragile.
+
+Keep `PromptResult.content` as the raw Markdown source of truth. This workstream
+changes presentation only; it requires no database migration and does not
+rewrite historical results.
+
+### V1 Markdown dialect
+
+Support the CommonMark/GFM subset routinely emitted by LLMs:
+
+- headings H1–H6, paragraphs, and hard/soft line breaks;
+- bold, italic, strikethrough, inline code, and links;
+- ordered, unordered, and nested lists;
+- display-only task lists for `- [ ]` and `- [x]`;
+- block quotes and thematic separators;
+- fenced code blocks with horizontal overflow;
+- tables with a header, left/center/right column alignment, borders, inline
+  formatting in cells, and horizontal scrolling when too wide.
+
+Remain explicitly out of scope:
+
+- interactive task-list mutations — generated results stay immutable;
+- raw HTML, scripts, Mermaid, iframes, or embedded web content;
+- remote image loading or any renderer-triggered network request;
+- editing generated Markdown in place;
+- changing `.md`/`.txt` export or Copy Result semantics.
+
+### Renderer decision
+
+Preserve `MarkdownContentView(_:, font:)` as MacParakeet's local façade so the
+third-party choice never leaks across feature views. Replace its ad hoc parser
+behind that boundary with
+[`SwiftStreamingMarkdown`](https://github.com/microsoft/SwiftStreamingMarkdown).
+
+The dependency was re-verified on 2026-09-05: release `0.7.0` uses Swift tools
+5.9, supports macOS 14, and documents tables, display-only task lists, nested
+content, links, and static/streaming renderers. Pin exactly `0.7.0`; do not use
+an open-ended version range. Before adoption, inspect and record its transitive
+dependency/license footprint (`swift-markdown`, syntax highlighting, math, and
+UI helpers) and confirm the approximately 1 MB release-size claim against a
+MacParakeet app build.
+
+If the dependency fails the selection, accessibility, size, or streaming gate,
+fall back to `swift-markdown` plus a local renderer. Do not extend the current
+line parser with one-off table and checkbox branches; that would create a
+second incomplete Markdown engine.
+
+### Integration and trust boundaries
+
+- Add the exact package in `Package.swift` and expose its product only to the
+  GUI target that owns `MarkdownContentView`; Core and CLI stay dependency-free.
+- Provide a static path for completed content and a streaming path that remains
+  readable when the last emphasis marker, fence, list item, or table row is
+  incomplete.
+- Apply the shared renderer consistently to completed/partial Prompt Results,
+  saved Chat, and live Ask. Do not create a Summary-only renderer.
+- Disable remote images and embedded content at configuration level.
+- Permit only `http` and `https` links after URL validation. Render `file:`,
+  `javascript:`, custom schemes, and malformed destinations as inert text.
+- Keep all colors/fonts dynamic and mapped through `DesignSystem` for light and
+  dark appearances.
+- Tables wider than their container scroll horizontally without expanding the
+  transcript or live-meeting panel.
+- Task-list boxes are visual, non-interactive, and expose checked/unchecked
+  state to VoiceOver.
+- Ordinary text and table-cell text remain selectable. Keyboard focus and link
+  activation must remain usable without a pointer.
+
+### Copy, export, and persistence invariants
+
+- `PromptResult.content` remains byte-identical raw Markdown.
+- Copy Result continues copying that raw source, not a flattened visual
+  rendering or HTML.
+- Meeting artifacts and `.md`/`.txt` exports remain unchanged.
+- Renderer failure degrades to readable selectable text; it never loses or
+  mutates stored content.
+- Rendering content supplied by an LLM never triggers network I/O, executable
+  content, or local-file access.
+
+### Markdown implementation phases
+
+1. **Dependency gate:** pin `0.7.0` on a spike branch; verify SwiftPM/Xcode
+   compatibility, licenses, release-size delta, macOS 14 behavior, and absence
+   of unwanted network/image behavior.
+2. **Local façade:** replace the internals of `MarkdownContentView` while
+   preserving its public initializer and current call sites.
+3. **Static parity:** style the supported dialect, tables, task lists, links,
+   code overflow, selection, accessibility, and fallback behavior.
+4. **Streaming parity:** connect incremental Prompt Result and Ask snapshots;
+   validate incomplete constructs and long-response MainActor performance.
+5. **Docs and review:** specify the supported dialect in
+   `spec/12-processing-layer.md` and the presentation/trust rules in
+   `spec/04-ui-patterns.md`; remove obsolete Markdown future-work wording from
+   ADR-018 only after the renderer ships.
+
+### Markdown test and manual-validation plan
+
+Add focused renderer tests around one kitchen-sink fixture and smaller failure
+fixtures:
+
+- table alignment, inline cell formatting, narrow/wide layout, and overflow;
+- checked/unchecked task items and VoiceOver labels;
+- nested lists and ordered lists starting at a non-one value;
+- headings, quotes, separators, emphasis, strikethrough, links, and code;
+- Unicode, malformed Markdown, and empty/plaintext inputs;
+- partial streaming emphasis, an open code fence, and an incomplete table;
+- rejected `file:`, `javascript:`, custom-scheme, and malformed links;
+- remote images never load;
+- Copy Result and export preserve the raw source byte-for-byte;
+- a long streaming response does not introduce visible MainActor stalls.
+
+Manual QA must cover completed and streaming Summary output, saved Chat, live
+Ask, a wide table in the 360 px panel, text selection across blocks/cells,
+mouse and keyboard link activation, VoiceOver task states, and light/dark mode.
+
 ## Test Plan
 
 ### Database and repositories
@@ -353,8 +494,8 @@ assembly remains unchanged.
 - A non-meeting update is rejected without a write.
 - Cancel performs no write.
 - DB failure retains the draft and displays an error.
-- Stale `updatedAt` produces a reload/save-mine conflict instead of silently
-  overwriting external CLI edits.
+- Rapid successive saves leave both the database and derived artifacts at the
+  newest committed value even if an older refresh completes later.
 - Successful Save refreshes all derived meeting artifacts.
 - Clear removes stale `notes.md`.
 - Artifact failure preserves the DB success and exposes Retry.

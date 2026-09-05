@@ -39,6 +39,12 @@ public struct Prompt: Codable, Identifiable, Sendable {
     /// provider-default behavior. Transform prompts do not use this field.
     public var inferenceSettings: PromptInferenceSettings?
 
+    /// Whether meeting notes should be appended as additional context when
+    /// this result prompt runs. Explicit `{{userNotes}}` template references
+    /// continue to work independently of this preference. Transform prompts
+    /// never use this field.
+    public var includeMeetingNotes: Bool
+
     public enum Category: String, Codable, Sendable {
         // Keep the stored raw value as "summary" until the prompts table itself is migrated.
         case result = "summary"
@@ -59,7 +65,8 @@ public struct Prompt: Codable, Identifiable, Sendable {
         keyboardShortcut: String? = nil,
         runningLabel: String? = nil,
         appliesToSources: Set<Transcription.SourceType>? = nil,
-        inferenceSettings: PromptInferenceSettings? = nil
+        inferenceSettings: PromptInferenceSettings? = nil,
+        includeMeetingNotes: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -75,6 +82,7 @@ public struct Prompt: Codable, Identifiable, Sendable {
         self.runningLabel = runningLabel
         self.appliesToSources = appliesToSources
         self.inferenceSettings = inferenceSettings?.normalized
+        self.includeMeetingNotes = category == .result ? includeMeetingNotes : false
     }
 
     /// Whether this prompt should auto-run after a transcription of `source`
@@ -433,6 +441,6 @@ extension Prompt: FetchableRecord, PersistableRecord {
     public enum Columns: String, ColumnExpression {
         case id, name, content, category, isBuiltIn, isVisible, isAutoRun
         case sortOrder, createdAt, updatedAt
-        case keyboardShortcut, runningLabel, appliesToSources, inferenceSettings
+        case keyboardShortcut, runningLabel, appliesToSources, inferenceSettings, includeMeetingNotes
     }
 }

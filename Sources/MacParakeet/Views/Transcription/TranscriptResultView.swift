@@ -223,6 +223,12 @@ final class TranscriptRichContextLoader {
     }
 }
 
+private enum MeetingNotesDiscardAction {
+    case cancelEditing
+    case navigateBack
+    case startNewTranscription
+}
+
 /// Records the user's engine choice from the retranscribe popover so the
 /// confirmation alert can be presented in a *separate* render cycle from
 /// the popover dismissal — chaining popover → alert in the same cycle on
@@ -353,6 +359,11 @@ struct TranscriptResultView: View {
     @State private var resultButtonCopiedResetTask: Task<Void, Never>?
     @State private var notesCopied = false
     @State private var notesCopiedResetTask: Task<Void, Never>?
+    @State private var editingMeetingNotes = false
+    @State private var meetingNotesDraft = ""
+    @State private var meetingNotesEditError: String?
+    @State private var pendingMeetingNotesDiscardAction: MeetingNotesDiscardAction?
+    @State private var savingMeetingNotes = false
     @State private var dismissTask: Task<Void, Never>?
     @State private var editingTitle = false
     @State private var titleDraft = ""
@@ -417,6 +428,7 @@ struct TranscriptResultView: View {
     @FocusState private var chatInputFocused: Bool
     @FocusState private var titleFocused: Bool
     @FocusState private var transcriptEditorFocused: Bool
+    @FocusState private var meetingNotesEditorFocused: Bool
     @FocusState private var speakerRenameFocused: Bool
     @FocusState private var findFieldFocused: Bool
 
@@ -492,6 +504,26 @@ struct TranscriptResultView: View {
                 PromptLibraryView(viewModel: promptsViewModel)
             }
             .alert(
+                "Discard note changes?",
+                isPresented: Binding(
+                    get: { pendingMeetingNotesDiscardAction != nil },
+                    set: { if !$0 { pendingMeetingNotesDiscardAction = nil } }
+                )
+            ) {
+                Button("Keep Editing", role: .cancel) { }
+                Button("Discard", role: .destructive) {
+                    let action = pendingMeetingNotesDiscardAction
+                    cancelMeetingNotesEdit()
+                    guard let action else { return }
+                    Task { @MainActor in
+                        await Task.yield()
+                        performMeetingNotesDiscardAction(action)
+                    }
+                }
+            } message: {
+                Text("Your unsaved meeting notes will be lost.")
+            }
+            .alert(
                 "Delete Result?",
                 isPresented: Binding(
                     get: { promptResultsViewModel.pendingDeletePromptResult != nil },
@@ -565,6 +597,11 @@ struct TranscriptResultView: View {
         editingTranscript = false
         transcriptDraft = ""
         transcriptEditError = nil
+        editingMeetingNotes = false
+        meetingNotesDraft = ""
+        meetingNotesEditError = nil
+        pendingMeetingNotesDiscardAction = nil
+        savingMeetingNotes = false
         transcriptDisplayModeBeforeEdit = nil
         editingSpeakerId = nil
         editingSpeakerLabel = ""
@@ -897,9 +934,9 @@ struct TranscriptResultView: View {
 
             Spacer()
 
-            if let onStartNew {
+            if onStartNew != nil {
                 Button {
-                    onStartNew()
+                    requestMeetingNotesNavigation(.startNewTranscription)
                 } label: {
                     Label("New Transcription", systemImage: "plus")
                 }
@@ -1180,8 +1217,10 @@ struct TranscriptResultView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Always-visible compact row: back button + title + metadata + mandala + expand toggle
             HStack(alignment: .center, spacing: DesignSystem.Spacing.sm) {
-                if let onBack {
-                    Button(action: onBack) {
+                if onBack != nil {
+                    Button {
+                        requestMeetingNotesNavigation(.navigateBack)
+                    } label: {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 14, weight: .bold))
                             .foregroundStyle(backHovered ? DesignSystem.Colors.accent : DesignSystem.Colors.textPrimary)
@@ -1553,10 +1592,8 @@ struct TranscriptResultView: View {
                             chatConfigurationBanner
                         }
 
-                        if let userNotes = activeTranscription.userNotes,
-                            !userNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        {
-                            meetingNotesSection(userNotes)
+                        if activeTranscription.sourceType == .meeting {
+                            meetingNotesSection
                         }
 
                         if let error = transcriptEditError {
@@ -2170,7 +2207,7 @@ struct TranscriptResultView: View {
             ))
     }
 
-    private func meetingNotesSection(_ notes: String) -> some View {
+    private var meetingNotesSection: some View {
         VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
             HStack(spacing: DesignSystem.Spacing.xs) {
                 Label("Your notes", systemImage: "note.text")
@@ -2179,35 +2216,124 @@ struct TranscriptResultView: View {
 
                 Spacer()
 
-                Button {
-                    TranscriptResultActions.copyText(notes)
-                    notesCopied = true
-                    notesCopiedResetTask?.cancel()
-                    notesCopiedResetTask = Task {
-                        try? await Task.sleep(for: .seconds(1))
-                        if !Task.isCancelled {
-                            notesCopied = false
+                if !editingMeetingNotes {
+                    if let notes = normalizedMeetingNotes {
+                        Button {
+                            TranscriptResultActions.copyText(notes)
+                            notesCopied = true
+                            notesCopiedResetTask?.cancel()
+                            notesCopiedResetTask = Task {
+                                try? await Task.sleep(for: .seconds(1))
+                                if !Task.isCancelled {
+                                    notesCopied = false
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: DesignSystem.Spacing.xs) {
+                                Image(systemName: notesCopied ? "checkmark" : "doc.on.doc")
+                                Text(notesCopied ? "Copied" : "Copy")
+                            }
+                            .font(DesignSystem.Typography.caption)
+                            .foregroundStyle(notesCopied ? DesignSystem.Colors.successGreen : .primary)
                         }
+                        .parakeetAction(.secondary)
+                        .controlSize(.small)
+                        .accessibilityLabel(notesCopied ? "Notes copied" : "Copy your notes")
                     }
-                } label: {
-                    HStack(spacing: DesignSystem.Spacing.xs) {
-                        Image(systemName: notesCopied ? "checkmark" : "doc.on.doc")
-                        Text(notesCopied ? "Copied" : "Copy")
+
+                    Button(normalizedMeetingNotes == nil ? "Add notes" : "Edit") {
+                        beginMeetingNotesEdit()
                     }
-                    .font(DesignSystem.Typography.caption)
-                    .foregroundStyle(notesCopied ? DesignSystem.Colors.successGreen : .primary)
+                    .parakeetAction(.secondary)
+                    .controlSize(.small)
                 }
-                .parakeetAction(.secondary)
-                .controlSize(.small)
-                .accessibilityLabel(notesCopied ? "Notes copied" : "Copy your notes")
             }
 
-            Text(notes)
-                .font(DesignSystem.Typography.body)
-                .foregroundStyle(DesignSystem.Colors.textPrimary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if editingMeetingNotes {
+                TextEditor(text: $meetingNotesDraft)
+                    .font(DesignSystem.Typography.body)
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+                    .scrollContentBackground(.hidden)
+                    .focused($meetingNotesEditorFocused)
+                    .frame(minHeight: 150)
+                    .padding(DesignSystem.Spacing.sm)
+                    .background(
+                        RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
+                            .fill(DesignSystem.Colors.surface)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
+                            .strokeBorder(DesignSystem.Colors.accent.opacity(0.30), lineWidth: 1)
+                    )
+                    .disabled(savingMeetingNotes)
+                    .accessibilityLabel("Meeting notes")
+                    .accessibilityHint("Add private context, decisions, or reminders for this meeting.")
+
+                HStack(spacing: DesignSystem.Spacing.sm) {
+                    if meetingNotesDraftWordCount >= MeetingNotesViewModel.softCapWarningWordCount {
+                        Label(
+                            "Prompts may trim notes past 8,000 words.",
+                            systemImage: "exclamationmark.circle.fill"
+                        )
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.warningAmber)
+                    }
+                    Spacer()
+                    Text("\(meetingNotesDraftWordCount.formatted()) words")
+                        .font(DesignSystem.Typography.caption.monospacedDigit())
+                        .foregroundStyle(DesignSystem.Colors.textTertiary)
+                }
+
+                if let meetingNotesEditError {
+                    Label(meetingNotesEditError, systemImage: "exclamationmark.triangle.fill")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.errorRed)
+                }
+
+                HStack {
+                    Spacer()
+                    Button("Cancel") {
+                        requestCancelMeetingNotesEdit()
+                    }
+                    .parakeetAction(.secondary)
+                    .keyboardShortcut(.escape, modifiers: [])
+                    .disabled(savingMeetingNotes)
+
+                    Button(savingMeetingNotes ? "Saving…" : "Save") {
+                        commitMeetingNotesEdit()
+                    }
+                    .parakeetAction(.primary)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(savingMeetingNotes)
+                }
+            } else if let notes = normalizedMeetingNotes {
+                Text(notes)
+                    .font(DesignSystem.Typography.body)
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text("Add private context, decisions, or reminders for this meeting.")
+                    .font(DesignSystem.Typography.body)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+            }
+
+            if let warning = viewModel.meetingNotesArtifactWarning {
+                HStack(spacing: DesignSystem.Spacing.sm) {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.warningAmber)
+                    Spacer()
+                    Button("Retry") {
+                        Task {
+                            await viewModel.retryCurrentMeetingNotesArtifactRefresh()
+                        }
+                    }
+                    .parakeetAction(.secondary)
+                    .controlSize(.small)
+                }
+            }
         }
         .padding(DesignSystem.Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -3788,6 +3914,94 @@ struct TranscriptResultView: View {
 
     private func syncTranscriptDisplayMode() {
         transcriptDisplayMode = (hasCleanTranscriptText || !hasTimestamps) ? .text : .timed
+    }
+
+    private var normalizedMeetingNotes: String? {
+        guard let notes = activeTranscription.userNotes,
+              !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return notes
+    }
+
+    private var meetingNotesDraftWordCount: Int {
+        var count = 0
+        var inWord = false
+        for character in meetingNotesDraft {
+            if character.isWhitespace {
+                inWord = false
+            } else if !inWord {
+                inWord = true
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private func beginMeetingNotesEdit() {
+        meetingNotesDraft = activeTranscription.userNotes ?? ""
+        meetingNotesEditError = nil
+        editingMeetingNotes = true
+        Task { @MainActor in
+            meetingNotesEditorFocused = true
+        }
+    }
+
+    private func requestCancelMeetingNotesEdit() {
+        if hasDirtyMeetingNotesDraft {
+            pendingMeetingNotesDiscardAction = .cancelEditing
+        } else {
+            cancelMeetingNotesEdit()
+        }
+    }
+
+    private var hasDirtyMeetingNotesDraft: Bool {
+        editingMeetingNotes && meetingNotesDraft != (activeTranscription.userNotes ?? "")
+    }
+
+    private func requestMeetingNotesNavigation(_ action: MeetingNotesDiscardAction) {
+        guard hasDirtyMeetingNotesDraft else {
+            performMeetingNotesDiscardAction(action)
+            return
+        }
+        pendingMeetingNotesDiscardAction = action
+    }
+
+    private func performMeetingNotesDiscardAction(_ action: MeetingNotesDiscardAction) {
+        switch action {
+        case .cancelEditing:
+            break
+        case .navigateBack:
+            onBack?()
+        case .startNewTranscription:
+            onStartNew?()
+        }
+    }
+
+    private func cancelMeetingNotesEdit() {
+        meetingNotesDraft = ""
+        meetingNotesEditError = nil
+        editingMeetingNotes = false
+        pendingMeetingNotesDiscardAction = nil
+    }
+
+    private func commitMeetingNotesEdit() {
+        guard !savingMeetingNotes else { return }
+        savingMeetingNotes = true
+        let draft = meetingNotesDraft
+        let meetingID = activeTranscription.id
+        Task { @MainActor in
+            let saved = await viewModel.updateCurrentMeetingNotes(to: draft)
+            guard activeTranscription.id == meetingID else { return }
+            savingMeetingNotes = false
+            guard saved else {
+                meetingNotesEditError = "Could not save meeting notes. Your draft is still here."
+                SoundManager.shared.play(.errorSoft)
+                return
+            }
+            meetingNotesDraft = ""
+            meetingNotesEditError = nil
+            editingMeetingNotes = false
+        }
     }
 
     private func beginTranscriptEdit() {

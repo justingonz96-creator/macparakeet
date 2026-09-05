@@ -165,7 +165,8 @@ struct PromptLibraryView: View {
         let settingsChanged =
             viewModel.editingInferenceSettings
             != PromptsViewModel.InferenceSettingsDraft(settings: prompt.inferenceSettings)
-        if nameChanged || contentChanged || settingsChanged {
+        let meetingNotesChanged = viewModel.editingIncludeMeetingNotes != prompt.includeMeetingNotes
+        if nameChanged || contentChanged || settingsChanged || meetingNotesChanged {
             showingDiscardConfirm = true
         } else {
             viewModel.cancelEditing()
@@ -303,11 +304,31 @@ struct PromptLibraryView: View {
                     }
                     .clipped()
 
-                if let summary = PromptsViewModel.compactInferenceSummary(prompt.inferenceSettings) {
-                    Label(summary, systemImage: "slider.horizontal.3")
-                        .font(DesignSystem.Typography.caption)
-                        .foregroundStyle(DesignSystem.Colors.textSecondary)
-                        .lineLimit(2)
+                HStack(spacing: DesignSystem.Spacing.sm) {
+                    if let summary = PromptsViewModel.compactInferenceSummary(prompt.inferenceSettings) {
+                        Label(summary, systemImage: "slider.horizontal.3")
+                            .lineLimit(2)
+                    }
+                    if prompt.includeMeetingNotes {
+                        Label("Meeting notes", systemImage: "note.text")
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(DesignSystem.Colors.surfaceElevated)
+                            .clipShape(Capsule())
+                            .accessibilityLabel("Uses meeting notes as context")
+                    }
+                }
+                .font(DesignSystem.Typography.caption)
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                if isExpanded {
+                    meetingNotesContextToggle(
+                        isOn: Binding(
+                            get: { prompt.includeMeetingNotes },
+                            set: { viewModel.setIncludeMeetingNotes(prompt, enabled: $0) }
+                        )
+                    )
+                    .padding(.top, DesignSystem.Spacing.xs)
                 }
             }
 
@@ -459,6 +480,8 @@ struct PromptLibraryView: View {
                     errors: viewModel.newInferenceValidationErrors,
                     onReset: viewModel.resetNewInferenceSettings
                 )
+
+                meetingNotesContextToggle(isOn: $viewModel.newIncludeMeetingNotes)
             }
             .padding(DesignSystem.Spacing.lg)
 
@@ -560,6 +583,8 @@ struct PromptLibraryView: View {
                         errors: viewModel.editingInferenceValidationErrors,
                         onReset: viewModel.resetEditingInferenceSettings
                     )
+
+                    meetingNotesContextToggle(isOn: $viewModel.editingIncludeMeetingNotes)
                 }
                 .padding(DesignSystem.Spacing.xl)
             }
@@ -596,6 +621,26 @@ struct PromptLibraryView: View {
         }
         .frame(width: 540, height: 500)
         .background(.thickMaterial)
+    }
+
+    private func meetingNotesContextToggle(isOn: Binding<Bool>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Include meeting notes as context", isOn: isOn)
+                .toggleStyle(.checkbox)
+                .font(DesignSystem.Typography.body.weight(.medium))
+                .accessibilityHint(
+                    "Adds user-authored notes when this prompt runs on a meeting."
+                )
+            Text(
+                "When this prompt runs on a meeting with notes, use those notes as additional context. "
+                    + "The transcript remains the source of truth."
+            )
+            .font(DesignSystem.Typography.caption)
+            .foregroundStyle(DesignSystem.Colors.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.leading, 20)
+        }
+        .foregroundStyle(DesignSystem.Colors.textPrimary)
     }
 }
 

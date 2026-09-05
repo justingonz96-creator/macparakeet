@@ -101,6 +101,14 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ### Added
 
+- In progress, pending final validation: `prompts set <prompt>` gains mutually
+  exclusive `--include-meeting-notes` and `--no-include-meeting-notes` flags
+  for result prompts. Prompt JSON gains additive Boolean
+  `includeMeetingNotes`, and saved PromptResult JSON gains additive Boolean
+  `includeMeetingNotesSnapshot`. Both default to `false`; Transform prompts
+  reject the setting. Advanced custom prompts may still use `{{userNotes}}`
+  independently, and `prompts run` avoids duplicating notes when both the token
+  and checkbox are present.
 - Prompt JSON gains additive optional inference metadata. `prompts list/show`
   (and prompt objects returned by `prompts set`) expose `inferenceSettings`
   with optional `temperature`, `topP`, `topK`, `maxTokens`, and a

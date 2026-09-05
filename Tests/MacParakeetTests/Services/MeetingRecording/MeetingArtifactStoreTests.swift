@@ -47,6 +47,7 @@ final class MeetingArtifactStoreTests: XCTestCase {
             extraInstructions: "External agent",
             content: "Ship the artifact contract.",
             userNotesSnapshot: transcription.userNotes,
+            includeMeetingNotesSnapshot: true,
             inferenceSettingsSnapshot: PromptInferenceSettings(
                 temperature: 0.2,
                 maxTokens: 500
@@ -176,6 +177,7 @@ final class MeetingArtifactStoreTests: XCTestCase {
         XCTAssertEqual(promptResults.count, 1)
         XCTAssertEqual(promptResult["index"] as? Int, 1)
         XCTAssertEqual(promptResult["name"] as? String, "Executive Summary")
+        XCTAssertEqual(promptResult["includeMeetingNotesSnapshot"] as? Bool, true)
         let inferenceSettings = try XCTUnwrap(
             promptResult["inferenceSettingsSnapshot"] as? [String: Any]
         )
@@ -189,6 +191,7 @@ final class MeetingArtifactStoreTests: XCTestCase {
         let resultMarkdown = try String(contentsOfFile: resultMarkdownPath, encoding: .utf8)
         XCTAssertTrue(resultMarkdown.contains("# Executive Summary"))
         XCTAssertTrue(resultMarkdown.contains("Ship the artifact contract."))
+        XCTAssertTrue(resultMarkdown.contains("Automatic meeting notes context: enabled"))
     }
 
     func testMaterializeDoesNotPublishManifestWhenMarkdownWriteFails() async throws {

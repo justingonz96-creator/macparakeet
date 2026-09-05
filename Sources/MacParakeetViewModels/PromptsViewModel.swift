@@ -64,6 +64,9 @@ public final class PromptsViewModel {
     public var newContent: String = "" {
         didSet { resetValidationError() }
     }
+    public var newIncludeMeetingNotes = false {
+        didSet { resetValidationError() }
+    }
     public var newInferenceSettings = InferenceSettingsDraft() {
         didSet {
             newInferenceValidationErrors = [:]
@@ -75,6 +78,9 @@ public final class PromptsViewModel {
             editingInferenceValidationErrors = [:]
             resetValidationError()
         }
+    }
+    public var editingIncludeMeetingNotes = false {
+        didSet { resetValidationError() }
     }
     public private(set) var newInferenceValidationErrors: InferenceValidationErrors = [:]
     public private(set) var editingInferenceValidationErrors: InferenceValidationErrors = [:]
@@ -137,7 +143,8 @@ public final class PromptsViewModel {
             isBuiltIn: false,
             isVisible: true,
             sortOrder: nextSortOrder,
-            inferenceSettings: inferenceSettings
+            inferenceSettings: inferenceSettings,
+            includeMeetingNotes: newIncludeMeetingNotes
         )
 
         do {
@@ -145,6 +152,7 @@ public final class PromptsViewModel {
             Telemetry.send(.promptCreated)
             newName = ""
             newContent = ""
+            newIncludeMeetingNotes = false
             newInferenceSettings = InferenceSettingsDraft()
             newInferenceValidationErrors = [:]
             errorMessage = nil
@@ -188,6 +196,10 @@ public final class PromptsViewModel {
         var updated = prompt
         updated.name = trimmedName
         updated.content = trimmedContent
+        updated.includeMeetingNotes =
+            editingPrompt?.id == prompt.id
+            ? editingIncludeMeetingNotes
+            : prompt.includeMeetingNotes
         updated.inferenceSettings = inferenceSettings
         updated.updatedAt = Date()
 
@@ -195,6 +207,7 @@ public final class PromptsViewModel {
             try repo.save(updated)
             Telemetry.send(.promptUpdated)
             editingPrompt = nil
+            editingIncludeMeetingNotes = false
             editingInferenceSettings = InferenceSettingsDraft()
             editingInferenceValidationErrors = [:]
             errorMessage = nil
@@ -206,6 +219,7 @@ public final class PromptsViewModel {
 
     public func beginEditing(_ prompt: Prompt) {
         guard !prompt.isBuiltIn else { return }
+        editingIncludeMeetingNotes = prompt.includeMeetingNotes
         editingInferenceSettings = InferenceSettingsDraft(settings: prompt.inferenceSettings)
         editingInferenceValidationErrors = [:]
         editingPrompt = prompt
@@ -213,6 +227,7 @@ public final class PromptsViewModel {
 
     public func cancelEditing() {
         editingPrompt = nil
+        editingIncludeMeetingNotes = false
         editingInferenceSettings = InferenceSettingsDraft()
         editingInferenceValidationErrors = [:]
     }
@@ -278,6 +293,17 @@ public final class PromptsViewModel {
         guard let repo else { return }
         do {
             try repo.toggleAutoRun(id: prompt.id)
+            errorMessage = nil
+            loadPrompts()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func setIncludeMeetingNotes(_ prompt: Prompt, enabled: Bool) {
+        guard let repo, prompt.category == .result else { return }
+        do {
+            try repo.setIncludeMeetingNotes(id: prompt.id, enabled: enabled)
             errorMessage = nil
             loadPrompts()
         } catch {
