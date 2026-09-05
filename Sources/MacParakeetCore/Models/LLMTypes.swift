@@ -133,15 +133,20 @@ public struct ChatCompletionOptions: Sendable, Equatable {
     public let temperature: Double?
     public let maxTokens: Int?
     public let responseFormat: ChatResponseFormat?
+    /// Opaque thread identity for provider request headers, never part of the JSON body.
+    /// Nil identifies a one-shot operation; the HTTP adapter generates its request ID.
+    public let conversationID: UUID?
 
     public init(
         temperature: Double? = nil,
         maxTokens: Int? = nil,
-        responseFormat: ChatResponseFormat? = nil
+        responseFormat: ChatResponseFormat? = nil,
+        conversationID: UUID? = nil
     ) {
         self.temperature = temperature
         self.maxTokens = maxTokens
         self.responseFormat = responseFormat
+        self.conversationID = conversationID
     }
 
     public static let `default` = ChatCompletionOptions(temperature: 0.7, maxTokens: nil)

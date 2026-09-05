@@ -40,7 +40,7 @@ struct LLMHTTPTransport: Sendable {
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         do {
-            return try await session.data(for: request)
+            return try await session.data(for: request, delegate: OpenCodeRequestHeaders.redirectDelegate(for: request))
         } catch {
             throw LLMError.connectionFailed(error.localizedDescription)
         }
@@ -48,9 +48,56 @@ struct LLMHTTPTransport: Sendable {
 
     func bytes(for request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
         do {
-            return try await session.bytes(for: request)
+            return try await session.bytes(
+                for: request, delegate: OpenCodeRequestHeaders.redirectDelegate(for: request))
         } catch {
             throw LLMError.connectionFailed(error.localizedDescription)
+        }
+    }
+}
+
+/// OpenCode Go's session metadata is restricted to its documented API origin and endpoints.
+enum OpenCodeRequestHeaders {
+    static func isOpenCodeGoURL(_ url: URL?) -> Bool {
+        guard let url,
+            url.scheme?.lowercased() == "https",
+            url.host?.lowercased() == "opencode.ai",
+            url.port == nil || url.port == 443,
+            url.user == nil, url.password == nil
+        else { return false }
+        switch url.path {
+        case "/zen/go/v1/chat/completions", "/zen/go/v1/messages", "/zen/go/v1/models":
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func apply(to request: inout URLRequest, conversationID: UUID? = nil) {
+        guard isOpenCodeGoURL(request.url) else { return }
+        request.setValue((conversationID ?? UUID()).uuidString, forHTTPHeaderField: "x-opencode-session")
+        request.setValue("MacParakeet", forHTTPHeaderField: "User-Agent")
+    }
+
+    static func redirectDelegate(for request: URLRequest) -> (any URLSessionTaskDelegate)? {
+        request.value(forHTTPHeaderField: "x-opencode-session") == nil ? nil : redirectHandler
+    }
+
+    private static let redirectHandler = RedirectHandler()
+
+    private final class RedirectHandler: NSObject, URLSessionTaskDelegate {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping @Sendable (URLRequest?) -> Void
+        ) {
+            var redirected = request
+            if !OpenCodeRequestHeaders.isOpenCodeGoURL(request.url) {
+                redirected.setValue(nil, forHTTPHeaderField: "x-opencode-session")
+            }
+            completionHandler(redirected)
         }
     }
 }
@@ -65,7 +112,8 @@ enum LLMHTTPErrorMapper {
         if let errorBody = try? JSONDecoder().decode(OpenAIErrorResponse.self, from: data) {
             rawMessage = errorBody.error.message
         } else if let geminiArray = try? JSONDecoder().decode([GeminiErrorWrapper].self, from: data),
-                  let first = geminiArray.first {
+            let first = geminiArray.first
+        {
             rawMessage = first.error.message
         } else {
             rawMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
@@ -106,7 +154,8 @@ enum LLMHTTPErrorMapper {
         if lowered.contains("context")
             || lowered.contains("tokens to keep")
             || lowered.contains("too many tokens")
-            || lowered.contains("maximum number of tokens") {
+            || lowered.contains("maximum number of tokens")
+        {
             return .contextTooLong
         }
         if lowered.contains("rate limit") || lowered.contains("rate_limit") {
@@ -114,11 +163,13 @@ enum LLMHTTPErrorMapper {
         }
         if lowered.contains("unauthorized")
             || lowered.contains("authentication")
-            || lowered.contains("api key") {
+            || lowered.contains("api key")
+        {
             return .authenticationFailed(message)
         }
         if lowered.contains("model")
-            && (lowered.contains("not found") || lowered.contains("does not exist")) {
+            && (lowered.contains("not found") || lowered.contains("does not exist"))
+        {
             return .modelNotFound(message)
         }
         return .streamingError(message)
@@ -207,21 +258,24 @@ enum LLMHTTPStreamCompletionPolicy {
 enum LLMHTTPModelCatalog {
     static func modelsURL(for config: LLMProviderConfig) -> URL {
         if config.id.modelListEndpoint == .anthropic,
-           let url = urlByAppendingQueryItems(
-            [URLQueryItem(name: "limit", value: "1000")],
-            to: config.baseURL.appendingPathComponent("models")
-           ) {
+            let url = urlByAppendingQueryItems(
+                [URLQueryItem(name: "limit", value: "1000")],
+                to: config.baseURL.appendingPathComponent("models")
+            )
+        {
             return url
         }
         if config.id.modelListEndpoint == .gemini,
-           let url = geminiModelsURL(from: config.baseURL, apiKey: config.apiKey) {
+            let url = geminiModelsURL(from: config.baseURL, apiKey: config.apiKey)
+        {
             return url
         }
         if config.id == .openrouter,
-           let url = urlByAppendingQueryItems(
-            [URLQueryItem(name: "output_modalities", value: "text")],
-            to: config.baseURL.appendingPathComponent("models")
-           ) {
+            let url = urlByAppendingQueryItems(
+                [URLQueryItem(name: "output_modalities", value: "text")],
+                to: config.baseURL.appendingPathComponent("models")
+            )
+        {
             return url
         }
         return config.baseURL.appendingPathComponent("models")
@@ -323,7 +377,8 @@ enum LLMHTTPModelCatalog {
     private static func supportsTextInputOutput(_ architecture: ModelsListResponse.ModelArchitecture?) -> Bool {
         guard let architecture else { return true }
         if let inputModalities = architecture.input_modalities?.map({ $0.lowercased() }),
-           !inputModalities.contains("text") {
+            !inputModalities.contains("text")
+        {
             return false
         }
         if let outputModalities = architecture.output_modalities?.map({ $0.lowercased() }) {
@@ -409,18 +464,21 @@ struct StreamErrorResponse: Decodable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         if let message = try? container.decode(String.self, forKey: .message),
-           !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
             error = message
             return
         }
         if let errorMessage = try? container.decode(String.self, forKey: .error),
-           !errorMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            !errorMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
             error = errorMessage
             return
         }
         if let errorObject = try? container.decode(ErrorObject.self, forKey: .error),
-           let message = errorObject.message,
-           !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let message = errorObject.message,
+            !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
             error = message
             return
         }

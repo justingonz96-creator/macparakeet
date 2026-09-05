@@ -1,6 +1,7 @@
 import XCTest
 import Network
 @testable import MacParakeetCore
+@testable import MacParakeetViewModels
 
 private final class AdapterRequestURLProtocol: URLProtocol {
     nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
@@ -46,6 +47,263 @@ final class LLMHTTPAdapterTests: XCTestCase {
 
     override func tearDown() {
         AdapterRequestURLProtocol.handler = nil
+    }
+
+    func testOpenCodeServicePreservesConversationIdentityForNonstreamingChat() async throws {
+        let conversationID = UUID()
+        var sessionIDs: [String?] = []
+        AdapterRequestURLProtocol.handler = { request in
+            sessionIDs.append(request.value(forHTTPHeaderField: "x-opencode-session"))
+            return (self.okResponse(for: request), self.validOpenAIResponseData())
+        }
+        let service = openCodeService()
+        _ = try await service.chat(
+            question: "Question", transcript: "Transcript", userNotes: nil, history: [],
+            source: .transcriptChat, conversationID: conversationID
+        )
+        _ = try await service.chatDetailed(
+            question: "Follow-up", transcript: "Transcript", userNotes: nil,
+            history: [ChatMessage(role: .user, content: "Question"), ChatMessage(role: .assistant, content: "OK")],
+            source: .transcriptChat, conversationID: conversationID
+        )
+        XCTAssertEqual(sessionIDs, [conversationID.uuidString, conversationID.uuidString])
+    }
+
+    func testOpenCodeRedirectsStripSessionOutsideAllowedEndpoints() async throws {
+        var original = URLRequest(url: URL(string: "https://opencode.ai/zen/go/v1/chat/completions")!)
+        let conversationID = UUID()
+        OpenCodeRequestHeaders.apply(to: &original, conversationID: conversationID)
+        let delegate = try XCTUnwrap(OpenCodeRequestHeaders.redirectDelegate(for: original))
+        let task = session.dataTask(with: original)
+        defer { task.cancel() }
+        for destination in [
+            "https://opencode.ai/zen/go/v1/messages",
+            "https://opencode.ai.evil.example/zen/go/v1/chat/completions",
+            "https://opencode.ai/unrelated",
+            "http://opencode.ai/zen/go/v1/chat/completions",
+        ] {
+            var proposed = original
+            proposed.url = URL(string: destination)!
+            let completed = expectation(description: "redirect decision")
+            delegate.urlSession?(
+                session, task: task,
+                willPerformHTTPRedirection: HTTPURLResponse(
+                    url: original.url!, statusCode: 307, httpVersion: nil, headerFields: nil
+                )!,
+                newRequest: proposed
+            ) { result in
+                XCTAssertEqual(result?.url?.absoluteString, destination)
+                XCTAssertEqual(
+                    result?.value(forHTTPHeaderField: "x-opencode-session"),
+                    destination == "https://opencode.ai/zen/go/v1/messages" ? conversationID.uuidString : nil
+                )
+                completed.fulfill()
+            }
+            await fulfillment(of: [completed], timeout: 2)
+        }
+    }
+
+    func testOpenCodeConversationIdentityAcrossHTTPModesAndIsolatedOperations() async throws {
+        let baseURL = URL(string: "https://opencode.ai/zen/go/v1")!
+        for provider in [LLMProviderID.openaiCompatible, .anthropic] {
+            let config = LLMProviderConfig(
+                id: provider, baseURL: baseURL, apiKey: "test-key", modelName: "test-model", isLocal: false
+            )
+            let client = LLMClient(session: session)
+            let conversationID = UUID()
+            var requests: [URLRequest] = []
+            AdapterRequestURLProtocol.handler = { request in
+                requests.append(request)
+                if request.httpMethod == "GET" {
+                    return (self.okResponse(for: request), Data(#"{"data":[{"id":"test-model"}]}"#.utf8))
+                }
+                let body = try XCTUnwrap(
+                    JSONSerialization.jsonObject(with: XCTUnwrap(self.bodyData(from: request))) as? [String: Any]
+                )
+                if body["stream"] as? Bool == true {
+                    let stream =
+                        provider == .anthropic
+                        ? "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+                        : "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: [DONE]\n\n"
+                    return (self.okResponse(for: request), Data(stream.utf8))
+                }
+                return (
+                    self.okResponse(for: request),
+                    provider == .anthropic
+                        ? self.validAnthropicResponseData() : self.validOpenAIResponseData()
+                )
+            }
+
+            let options = ChatCompletionOptions(temperature: 0.25, maxTokens: 123, conversationID: conversationID)
+            _ = try await client.chatCompletion(messages: goldenMessages, config: config, options: options)
+            let chunks = try await collect(
+                client.chatCompletionStream(messages: goldenMessages, config: config, options: options))
+            XCTAssertEqual(chunks, ["Hello"])
+            _ = try await client.chatCompletion(
+                messages: goldenMessages, config: config, options: ChatCompletionOptions(conversationID: UUID())
+            )
+            _ = try await client.chatCompletion(messages: goldenMessages, config: config, options: .default)
+            _ = try await client.chatCompletion(messages: goldenMessages, config: config, options: .default)
+            try await client.testConnection(config: config)
+            _ = try await client.listModels(config: config)
+            _ = try await client.listModels(config: config)
+
+            let ids = try requests.map { request in
+                XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "MacParakeet")
+                return try XCTUnwrap(
+                    UUID(uuidString: XCTUnwrap(request.value(forHTTPHeaderField: "x-opencode-session"))))
+            }
+            XCTAssertEqual(Array(ids.prefix(2)), [conversationID, conversationID])
+            XCTAssertEqual(
+                Set(ids.dropFirst()).count, 7, "Distinct conversations, one-shots and probes must not share IDs")
+            let expectedBody =
+                provider == .anthropic
+                ? #"{"max_tokens":123,"messages":[{"content":"Hello","role":"user"}],"model":"test-model","stream":false,"system":"System"}"#
+                : #"{"max_tokens":123,"messages":[{"content":"System","role":"system"},{"content":"Hello","role":"user"}],"model":"test-model","stream":false,"temperature":0.25}"#
+            XCTAssertEqual(try canonicalJSONBody(from: XCTUnwrap(requests.first)), expectedBody)
+            XCTAssertNil(requests.last?.httpBody)
+        }
+    }
+
+    func testOpenCodeHeadersDoNotLeakToOtherOriginsOrPaths() async throws {
+        let urls = [
+            "https://api.openai.com/v1",
+            "https://opencode.ai.evil.example/zen/go/v1",
+            "https://evilopencode.ai/zen/go/v1",
+            "https://api.opencode.ai/zen/go/v1",
+            "https://opencode.ai/zen/go/v10",
+            "https://opencode.ai/zen/v1",
+            "https://opencode.ai/other",
+            "http://opencode.ai/zen/go/v1",
+            "https://opencode.ai:8443/zen/go/v1",
+        ]
+        AdapterRequestURLProtocol.handler = { request in
+            XCTAssertNil(request.value(forHTTPHeaderField: "x-opencode-session"), request.url!.absoluteString)
+            XCTAssertNotEqual(request.value(forHTTPHeaderField: "User-Agent"), "MacParakeet")
+            return (
+                self.okResponse(for: request),
+                request.httpMethod == "GET"
+                    ? Data(#"{"data":[]}"#.utf8) : self.validOpenAIResponseData()
+            )
+        }
+        for url in urls {
+            let config = LLMProviderConfig.openaiCompatible(model: "test", baseURL: URL(string: url)!)
+            _ = try await openAIAdapter.chatCompletion(
+                messages: goldenMessages, config: config, options: ChatCompletionOptions(conversationID: UUID())
+            )
+            _ = try await openAIAdapter.listModels(config: config)
+        }
+    }
+
+    @MainActor
+    func testOpenCodeUIChatReusesSavedThreadAcrossTurnsRegenerationAndReload() async throws {
+        var sessionIDs: [String?] = []
+        AdapterRequestURLProtocol.handler = { request in
+            sessionIDs.append(request.value(forHTTPHeaderField: "x-opencode-session"))
+            return (
+                self.okResponse(for: request),
+                Data("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: [DONE]\n\n".utf8)
+            )
+        }
+        let service = openCodeService()
+        let repo = MockChatConversationRepository()
+        let vm = TranscriptChatViewModel()
+        vm.configure(llmService: service, transcriptText: "Transcript", conversationRepo: repo)
+        let transcriptionID = UUID()
+        vm.loadTranscript("Transcript", transcriptionId: transcriptionID)
+        vm.inputText = "Question"
+        vm.sendMessage()
+        try await finishChat(vm)
+        let first = try XCTUnwrap(vm.currentConversation)
+        vm.inputText = "Follow-up"
+        vm.sendMessage()
+        try await finishChat(vm)
+        vm.regenerateLastResponse()
+        try await finishChat(vm)
+        vm.newChat()
+        vm.inputText = "Question"
+        vm.sendMessage()
+        try await finishChat(vm)
+        let second = try XCTUnwrap(vm.currentConversation)
+        XCTAssertNotEqual(first.id, second.id)
+        vm.switchConversation(first)
+        vm.inputText = "Back to first"
+        vm.sendMessage()
+        try await finishChat(vm)
+        let reloaded = TranscriptChatViewModel()
+        reloaded.configure(llmService: service, transcriptText: "Transcript", conversationRepo: repo)
+        reloaded.loadTranscript("Transcript", transcriptionId: transcriptionID)
+        reloaded.switchConversation(try XCTUnwrap(repo.conversations.first { $0.id == first.id }))
+        reloaded.inputText = "After reload"
+        reloaded.sendMessage()
+        try await finishChat(reloaded)
+        XCTAssertEqual(
+            sessionIDs,
+            [
+                first.id.uuidString, first.id.uuidString, first.id.uuidString,
+                second.id.uuidString, first.id.uuidString, first.id.uuidString,
+            ])
+    }
+
+    @MainActor
+    func testOpenCodeLiveChatKeepsIdentityWhenPromotedAndResetsForNewChat() async throws {
+        var sessionIDs: [String?] = []
+        AdapterRequestURLProtocol.handler = { request in
+            sessionIDs.append(request.value(forHTTPHeaderField: "x-opencode-session"))
+            return (
+                self.okResponse(for: request),
+                Data("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: [DONE]\n\n".utf8)
+            )
+        }
+        let vm = TranscriptChatViewModel()
+        vm.configure(llmService: openCodeService(), transcriptText: "Live")
+        vm.inputText = "Question"
+        vm.sendMessage()
+        try await finishChat(vm)
+        let liveHeader = try XCTUnwrap(try XCTUnwrap(sessionIDs.first))
+        let liveID = try XCTUnwrap(UUID(uuidString: liveHeader))
+        vm.updateTranscriptText("Live transcript grew")
+        vm.inputText = "Follow-up"
+        vm.sendMessage()
+        try await finishChat(vm)
+        vm.bindPersistedConversation(
+            transcriptionId: UUID(), transcriptionRepo: MockTranscriptionRepository(),
+            conversationRepo: MockChatConversationRepository()
+        )
+        XCTAssertEqual(vm.currentConversation?.id, liveID)
+        vm.inputText = "After meeting"
+        vm.sendMessage()
+        try await finishChat(vm)
+        XCTAssertEqual(sessionIDs, Array(repeating: liveID.uuidString, count: 3))
+        vm.newChat()
+        vm.inputText = "New thread"
+        vm.sendMessage()
+        try await finishChat(vm)
+        let newHeader = try XCTUnwrap(try XCTUnwrap(sessionIDs.last))
+        XCTAssertNotEqual(newHeader, liveID.uuidString)
+    }
+
+    private func openCodeService() -> LLMService {
+        LLMService(
+            client: LLMClient(session: session),
+            contextResolver: StaticLLMExecutionContextResolver(
+                context: LLMExecutionContext(
+                    providerConfig: .openaiCompatible(
+                        model: "test-model", baseURL: URL(string: "https://opencode.ai/zen/go/v1")!
+                    )
+                ))
+        )
+    }
+
+    @MainActor
+    private func finishChat(_ vm: TranscriptChatViewModel) async throws {
+        let deadline = Date().addingTimeInterval(2)
+        while vm.isStreaming && Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(vm.isStreaming)
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertEqual(vm.messages.last?.content, "Hello")
     }
 
     func testOpenAICompatibleAdapterBuildsGoldenRequest() async throws {
@@ -288,9 +546,9 @@ final class LLMHTTPAdapterTests: XCTestCase {
     func testAnthropicAdapterRejectsStrictEOFMissingMessageStop() async throws {
         AdapterRequestURLProtocol.handler = { request in
             let body = """
-            data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}
+                data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}
 
-            """
+                """
             return (self.okResponse(for: request), Data(body.utf8))
         }
 
@@ -315,9 +573,9 @@ final class LLMHTTPAdapterTests: XCTestCase {
     func testOllamaAdapterAcceptsLenientEOFWithoutDoneAfterContent() async throws {
         AdapterRequestURLProtocol.handler = { request in
             let body = """
-            {"model":"qwen3.5:4b","message":{"role":"assistant","content":"Hello"},"done":false}
+                {"model":"qwen3.5:4b","message":{"role":"assistant","content":"Hello"},"done":false}
 
-            """
+                """
             return (self.okResponse(for: request), Data(body.utf8))
         }
 
@@ -354,9 +612,9 @@ final class LLMHTTPAdapterTests: XCTestCase {
     func testAnthropicAdapterCancelsStreamingRequestMidStream() async throws {
         let server = try StreamingHTTPServer(
             firstChunk: """
-            data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}
+                data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}
 
-            """
+                """
         )
         defer { server.stop() }
         let adapter = AnthropicLLMHTTPAdapter(transport: LLMHTTPTransport(session: .shared))
@@ -374,9 +632,9 @@ final class LLMHTTPAdapterTests: XCTestCase {
     func testOllamaAdapterCancelsStreamingRequestMidStream() async throws {
         let server = try StreamingHTTPServer(
             firstChunk: """
-            {"model":"qwen3.5:4b","message":{"role":"assistant","content":"Hello"},"done":false}
+                {"model":"qwen3.5:4b","message":{"role":"assistant","content":"Hello"},"done":false}
 
-            """
+                """
         )
         defer { server.stop() }
         let adapter = OllamaLLMHTTPAdapter(transport: LLMHTTPTransport(session: .shared))
@@ -432,21 +690,24 @@ final class LLMHTTPAdapterTests: XCTestCase {
     }
 
     private func validOpenAIResponseData() -> Data {
-        Data("""
-        {"model":"gpt-4o","choices":[{"message":{"content":"OK"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}
-        """.utf8)
+        Data(
+            """
+            {"model":"gpt-4o","choices":[{"message":{"content":"OK"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}
+            """.utf8)
     }
 
     private func validAnthropicResponseData() -> Data {
-        Data("""
-        {"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Hello!"}],"usage":{"input_tokens":10,"output_tokens":5},"stop_reason":"end_turn"}
-        """.utf8)
+        Data(
+            """
+            {"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Hello!"}],"usage":{"input_tokens":10,"output_tokens":5},"stop_reason":"end_turn"}
+            """.utf8)
     }
 
     private func validOllamaResponseData() -> Data {
-        Data("""
-        {"model":"qwen3.5:4b","message":{"role":"assistant","content":"OK"},"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":1}
-        """.utf8)
+        Data(
+            """
+            {"model":"qwen3.5:4b","message":{"role":"assistant","content":"OK"},"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":1}
+            """.utf8)
     }
 
     private func canonicalJSONBody(from request: URLRequest) throws -> String {
@@ -504,7 +765,8 @@ private final class StreamingHTTPServer: @unchecked Sendable {
         listener.start(queue: queue)
 
         guard ready.wait(timeout: .now() + 2) == .success,
-              let port = listener.port else {
+            let port = listener.port
+        else {
             throw URLError(.cannotConnectToHost)
         }
 
@@ -526,18 +788,20 @@ private final class StreamingHTTPServer: @unchecked Sendable {
 
         let chunkData = Data(firstChunk.utf8)
         let response = """
-        HTTP/1.1 200 OK\r
-        Content-Type: text/event-stream\r
-        Transfer-Encoding: chunked\r
-        Connection: keep-alive\r
-        \r
-        \(String(chunkData.count, radix: 16))\r
-        \(firstChunk)\r
-        """
+            HTTP/1.1 200 OK\r
+            Content-Type: text/event-stream\r
+            Transfer-Encoding: chunked\r
+            Connection: keep-alive\r
+            \r
+            \(String(chunkData.count, radix: 16))\r
+            \(firstChunk)\r
+            """
 
-        connection.send(content: Data(response.utf8), completion: .contentProcessed { [weak self] _ in
-            self?.observeClose(on: connection)
-        })
+        connection.send(
+            content: Data(response.utf8),
+            completion: .contentProcessed { [weak self] _ in
+                self?.observeClose(on: connection)
+            })
     }
 
     private func observeClose(on connection: NWConnection) {

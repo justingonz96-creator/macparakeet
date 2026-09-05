@@ -825,7 +825,8 @@ final class MockLLMService: LLMServiceProtocol, @unchecked Sendable {
     }
 
     func chat(
-        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource
+        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource,
+        conversationID: UUID
     ) async throws -> String {
         chatCallCount += 1
         lastChatQuestion = question
@@ -848,10 +849,12 @@ final class MockLLMService: LLMServiceProtocol, @unchecked Sendable {
     }
 
     func chatDetailed(
-        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource
+        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource,
+        conversationID: UUID
     ) async throws -> LLMResult {
         let output = try await chat(
-            question: question, transcript: transcript, userNotes: userNotes, history: history, source: source)
+            question: question, transcript: transcript, userNotes: userNotes, history: history, source: source,
+            conversationID: conversationID)
         return LLMResult(output: output, provider: "mock", model: "mock-model", latencyMs: 0)
     }
 
@@ -936,7 +939,8 @@ final class MockLLMService: LLMServiceProtocol, @unchecked Sendable {
     }
 
     func chatStream(
-        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource
+        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource,
+        conversationID: UUID
     ) -> AsyncThrowingStream<String, Error> {
         chatCallCount += 1
         lastChatQuestion = question

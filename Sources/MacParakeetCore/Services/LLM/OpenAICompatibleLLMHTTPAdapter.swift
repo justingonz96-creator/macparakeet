@@ -148,6 +148,7 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
                 request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
             }
         }
+        OpenCodeRequestHeaders.apply(to: &request)
 
         let (data, response) = try await transport.data(for: request)
 
@@ -156,7 +157,8 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
         }
 
         if config.id.modelListEndpoint == .gemini,
-           let modelsResponse = try? JSONDecoder().decode(GeminiModelsListResponse.self, from: data) {
+            let modelsResponse = try? JSONDecoder().decode(GeminiModelsListResponse.self, from: data)
+        {
             return modelsResponse.models
                 .filter(LLMHTTPModelCatalog.isGeminiTextLLMModel)
                 .map { entry in
@@ -208,6 +210,7 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
         if let token = authToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
+        OpenCodeRequestHeaders.apply(to: &request, conversationID: options.conversationID)
 
         // OpenAI reasoning models reject max_tokens. Explicit temperature
         // support varies by model and reasoning effort, so omit it for the
@@ -325,7 +328,8 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
         // Only process data: lines
         guard line.hasPrefix("data: ") || line.hasPrefix("data:") else { return .skip }
 
-        let payload = line.hasPrefix("data: ")
+        let payload =
+            line.hasPrefix("data: ")
             ? String(line.dropFirst(6))
             : String(line.dropFirst(5))
 
@@ -343,7 +347,8 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
         // the human-readable context-length failure. Surface those as errors
         // instead of silently dropping the frame and accepting an empty EOF.
         if let streamError = try? JSONDecoder().decode(StreamErrorResponse.self, from: data),
-           let errorMessage = streamError.error {
+            let errorMessage = streamError.error
+        {
             return .error(errorMessage)
         }
 
@@ -353,8 +358,9 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
 
         // Extract content delta, ignoring role-only and finish_reason frames
         guard let delta = chunk.choices.first?.delta,
-              let content = delta.content,
-              !content.isEmpty else {
+            let content = delta.content,
+            !content.isEmpty
+        else {
             return .skip
         }
 
@@ -400,7 +406,7 @@ struct OpenAIRequestBody: Encodable {
     let max_tokens: Int?
     let max_completion_tokens: Int?
     let response_format: OpenAIResponseFormat?
-    let options: OllamaRequestOptions? // Ollama-specific: num_ctx etc.
+    let options: OllamaRequestOptions?  // Ollama-specific: num_ctx etc.
 }
 
 struct OpenAIResponseFormat: Encodable {
