@@ -490,8 +490,26 @@ public final class TranscriptionLibraryViewModel {
         }
     }
 
-    /// Applies a persisted meeting rename to a loaded row without requerying the repository.
+    /// Applies a persisted meeting rename, requerying when titles affect ordering or membership.
     public func applyMeetingRename(_ rename: MeetingRename) {
+        if let query = makeQuery(offset: 0),
+            query.sortOrder == .titleAscending || query.searchText != nil
+        {
+            // The renamed meeting may not be loaded yet, or may no longer match.
+            // Invalidate old snapshots before replacing the active query's window.
+            cancelActiveLoad()
+            errorMessage = nil
+            do {
+                try reloadLoadedWindow()
+            } catch {
+                logger.error(
+                    "Renamed meeting but failed to refresh Library: \(error.localizedDescription, privacy: .private)"
+                )
+                errorMessage = "Renamed meeting, but failed to refresh Library: \(error.localizedDescription)"
+            }
+            return
+        }
+
         guard let index = transcriptions.firstIndex(where: { $0.id == rename.id }),
             transcriptions[index].sourceType == .meeting
         else {

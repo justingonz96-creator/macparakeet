@@ -1,4 +1,5 @@
 import AVKit
+import Observation
 import SwiftUI
 import MacParakeetCore
 import MacParakeetViewModels
@@ -68,6 +69,7 @@ private enum TranscriptDisplayMode: String, CaseIterable, Hashable {
 /// actions. Formatting always runs in a detached task; equal requests coalesce
 /// and reuse their result, while a new revision or mode invalidates old work.
 @MainActor
+@Observable
 final class TranscriptRichContextLoader {
     typealias Builder = @Sendable (Transcription, TranscriptAIContextMode) async -> String
 
@@ -88,6 +90,9 @@ final class TranscriptRichContextLoader {
     private var taskRequest: Request?
     private var cached: Prepared?
     private var latestScheduledApplyID: UUID?
+    private var latestPromptActionID: UUID?
+
+    var preparingPromptContext: Bool { latestPromptActionID != nil }
 
     init(
         builder: @escaping Builder = { transcription, mode in
@@ -167,7 +172,43 @@ final class TranscriptRichContextLoader {
         }
     }
 
+    /// Owns submission separately from shared formatting so navigation can
+    /// release the action without waiting for a cancelled detached builder.
+    @discardableResult
+    func startPromptAction(
+        transcription: Transcription,
+        mode: TranscriptAIContextMode,
+        contentRevision: UInt64,
+        isCurrent: @escaping @MainActor (Request) -> Bool = { _ in true },
+        action: @escaping @MainActor (String) -> Void
+    ) -> Task<Void, Never>? {
+        guard !preparingPromptContext else { return nil }
+        let actionID = UUID()
+        latestPromptActionID = actionID
+        return Task { [weak self] in
+            guard let self, self.latestPromptActionID == actionID else { return }
+            defer {
+                if self.latestPromptActionID == actionID {
+                    self.latestPromptActionID = nil
+                }
+            }
+            guard
+                let prepared = await self.prepare(
+                    transcription: transcription,
+                    mode: mode,
+                    contentRevision: contentRevision,
+                    isCurrent: isCurrent
+                ),
+                !Task.isCancelled,
+                self.latestPromptActionID == actionID,
+                isCurrent(prepared.request)
+            else { return }
+            action(prepared.text)
+        }
+    }
+
     func invalidate() {
+        latestPromptActionID = nil
         latestScheduledApplyID = nil
         invalidatePreparedWork()
     }
@@ -362,7 +403,6 @@ struct TranscriptResultView: View {
     @State private var cachedSpeakerStats: [String: SpeakerStatistics] = [:]
     @State private var segmentCacheRequestID = UUID()
     @State private var richContextLoader = TranscriptRichContextLoader()
-    @State private var preparingPromptContext = false
     @State private var autoScrollPaused = false
     @State private var scrollPauseTask: Task<Void, Never>?
     @State private var scrollMonitor: Any?
@@ -505,6 +545,7 @@ struct TranscriptResultView: View {
     }
 
     private func handleTranscriptionChange() {
+        richContextLoader.invalidate()
         Task {
             playerViewModel.cleanup()
             if showVideoPanel {
@@ -1051,38 +1092,24 @@ struct TranscriptResultView: View {
     /// verifies that same revision and context mode immediately before use.
     /// A formatter completion from an edited/reverted/switched transcript is
     /// therefore never eligible for an AI request.
-    private func prepareCurrentAIContext() async -> String? {
-        let transcription = activeTranscription
-        let mode = currentAIContextMode
-        let revision = viewModel.currentTranscriptionRevision
-        guard
-            let prepared = await richContextLoader.prepare(
-                transcription: transcription,
-                mode: mode,
-                contentRevision: revision,
-                isCurrent: { request in
-                    viewModel.currentTranscriptionRevision == request.contentRevision
-                        && (viewModel.currentTranscription?.id ?? transcription.id)
-                            == request.transcriptionID
-                        && currentAIContextMode == request.mode
-                }
-            ), !Task.isCancelled
-        else {
-            return nil
-        }
-        return prepared.text
-    }
-
     private func startPromptContextAction(
         _ action: @escaping @MainActor (String) -> Void
     ) {
-        guard !preparingPromptContext else { return }
-        preparingPromptContext = true
-        Task {
-            defer { preparingPromptContext = false }
-            guard let context = await prepareCurrentAIContext() else { return }
-            action(context)
-        }
+        let transcription = activeTranscription
+        let mode = currentAIContextMode
+        let revision = viewModel.currentTranscriptionRevision
+        richContextLoader.startPromptAction(
+            transcription: transcription,
+            mode: mode,
+            contentRevision: revision,
+            isCurrent: { request in
+                viewModel.currentTranscriptionRevision == request.contentRevision
+                    && (viewModel.currentTranscription?.id ?? transcription.id)
+                        == request.transcriptionID
+                    && currentAIContextMode == request.mode
+            },
+            action: action
+        )
     }
 
     private var rawTranscriptText: String {
@@ -2396,7 +2423,7 @@ struct TranscriptResultView: View {
                         .parakeetAction(.secondary)
                         .controlSize(.small)
                         .disabled(
-                            preparingPromptContext
+                            richContextLoader.preparingPromptContext
                                 || !promptResultsViewModel.canGeneratePromptResult
                                 || transcriptText.isEmpty
                         )
@@ -2679,7 +2706,7 @@ struct TranscriptResultView: View {
                 .controlSize(.regular)
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(
-                    preparingPromptContext
+                    richContextLoader.preparingPromptContext
                         || !promptResultsViewModel.canGenerateManualPromptResult
                         || transcriptText.isEmpty
                 )

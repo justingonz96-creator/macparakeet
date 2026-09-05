@@ -293,15 +293,12 @@ final class TranscriptChatViewModelTests: XCTestCase {
         )
         var submitted: [String] = []
 
-        let action = Task {
-            guard
-                let prepared = await loader.prepare(
-                    transcription: transcription,
-                    mode: .richTranscript,
-                    contentRevision: 8
-                )
-            else { return }
-            submitted.append(prepared.text)
+        let action = loader.startPromptAction(
+            transcription: transcription,
+            mode: .richTranscript,
+            contentRevision: 8
+        ) { context in
+            submitted.append(context)
         }
 
         await builder.waitUntilStarted("ten-thousand-word transcript")
@@ -311,7 +308,7 @@ final class TranscriptChatViewModelTests: XCTestCase {
         )
 
         await builder.finish("ten-thousand-word transcript", with: "prepared rich context")
-        await action.value
+        await action?.value
         XCTAssertEqual(submitted, ["prepared rich context"])
     }
 
@@ -328,29 +325,110 @@ final class TranscriptChatViewModelTests: XCTestCase {
         var currentRevision: UInt64 = 20
         var submitted: [String] = []
 
-        let action = Task {
-            guard
-                let prepared = await loader.prepare(
-                    transcription: transcription,
-                    mode: .richTranscript,
-                    contentRevision: 20,
-                    isCurrent: { request in
-                        request.contentRevision == currentRevision
-                    }
-                )
-            else { return }
-            submitted.append(prepared.text)
+        let action = loader.startPromptAction(
+            transcription: transcription,
+            mode: .richTranscript,
+            contentRevision: 20,
+            isCurrent: { request in
+                request.contentRevision == currentRevision
+            }
+        ) { context in
+            submitted.append(context)
         }
         await builder.waitUntilStarted("original revision")
 
         currentRevision = 21
         await builder.finish("original revision", with: "stale context")
-        await action.value
+        await action?.value
 
         XCTAssertTrue(
             submitted.isEmpty,
             "A transcript changed during formatting must never submit stale context."
         )
+    }
+
+    func testNavigationAllowsNewPromptActionBeforeOldFormatterFinishes() async {
+        let builder = ControlledRichContextBuilder()
+        let loader = TranscriptRichContextLoader { transcription, mode in
+            await builder.build(transcription, mode)
+        }
+        let oldTranscription = Transcription(
+            fileName: "old.mp3",
+            rawTranscript: "old transcript",
+            status: .completed
+        )
+        let newTranscription = Transcription(
+            fileName: "new.mp3",
+            rawTranscript: "new transcript",
+            status: .completed
+        )
+        var submitted: [String] = []
+        let oldAction = loader.startPromptAction(
+            transcription: oldTranscription,
+            mode: .richTranscript,
+            contentRevision: 1
+        ) { submitted.append($0) }
+        await builder.waitUntilStarted("old transcript")
+
+        // Navigation/disappearance releases action ownership even if the
+        // detached formatter does not cooperate with cancellation.
+        loader.invalidate()
+        XCTAssertFalse(loader.preparingPromptContext)
+        let newAction = loader.startPromptAction(
+            transcription: newTranscription,
+            mode: .richTranscript,
+            contentRevision: 2
+        ) { submitted.append($0) }
+        guard newAction != nil else {
+            XCTFail("Navigation must admit a prompt action before old formatting completes.")
+            await builder.finish("old transcript", with: "stale context")
+            await oldAction?.value
+            return
+        }
+        await builder.waitUntilStarted("new transcript")
+
+        await builder.finish("old transcript", with: "stale context")
+        await oldAction?.value
+        XCTAssertTrue(submitted.isEmpty, "The old action must not submit after navigation.")
+        XCTAssertTrue(loader.preparingPromptContext, "Old completion must not clear the new action's busy state.")
+        let duplicate = loader.startPromptAction(
+            transcription: newTranscription,
+            mode: .richTranscript,
+            contentRevision: 2
+        ) { submitted.append($0) }
+        XCTAssertNil(duplicate, "The new action must retain exclusive submission ownership.")
+
+        await builder.finish("new transcript", with: "new context")
+        await newAction?.value
+        await duplicate?.value
+        XCTAssertEqual(submitted, ["new context"])
+        XCTAssertFalse(loader.preparingPromptContext)
+    }
+
+    func testDisappearanceRejectsPromptCompletionWithoutReplacementAction() async {
+        let builder = ControlledRichContextBuilder()
+        let loader = TranscriptRichContextLoader { transcription, mode in
+            await builder.build(transcription, mode)
+        }
+        let transcription = Transcription(
+            fileName: "closed.mp3",
+            rawTranscript: "closed transcript",
+            status: .completed
+        )
+        var submitted: [String] = []
+        let action = loader.startPromptAction(
+            transcription: transcription,
+            mode: .richTranscript,
+            contentRevision: 1
+        ) { submitted.append($0) }
+        await builder.waitUntilStarted("closed transcript")
+
+        loader.invalidate()
+        XCTAssertFalse(loader.preparingPromptContext)
+        await builder.finish("closed transcript", with: "stale context")
+        await action?.value
+        XCTAssertTrue(submitted.isEmpty)
+        XCTAssertFalse(loader.preparingPromptContext)
     }
 
     // MARK: - Cancel Streaming
