@@ -139,6 +139,8 @@ raw-audio filenames.
 - `promptResultCount`
 - `calendarEventSnapshot`
 - `meetingCaptureReport`
+- `speakerCorrectionsApplied`
+- `speakerCorrectionRevision`
 
 `manifest.json` keeps:
 
@@ -217,9 +219,17 @@ unknown, not healthy.
 `meeting.md` frontmatter keeps the local Markdown schema
 `com.macparakeet.meeting-markdown` with `schemaVersion: 1`, meeting identity,
 timestamps, duration/status/source/engine metadata, artifact/audio paths when
-available, `speakerLabelsIncluded`, and `promptResultCount`. The body section
+available, `speakerLabelsIncluded`, `speakerCorrectionsApplied`,
+`speakerCorrectionRevision`, and `promptResultCount`. The body section
 order is: title, optional notes, transcript, optional prompt results, and
 artifact paths.
+
+`transcript.json` publishes the effective speaker projection and includes
+`speakerCorrectionsApplied` plus `speakerCorrectionRevision`. Each durable
+`transcriptSegments` item may additionally include `speakerSpans`. A span has
+`wordRange`, nullable `speakerId`, and `speakerLabel`; multiple spans preserve
+manual splits that cannot be represented by the segment's legacy single
+speaker fields.
 
 `transcript.json` keeps meeting essentials: `id`, `title`, timestamps,
 `durationMs`, `status`, raw/clean/transcript text, word/speaker/diarization

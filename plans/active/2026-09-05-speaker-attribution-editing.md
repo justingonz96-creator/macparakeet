@@ -1,7 +1,7 @@
 # Speaker Attribution Editing and Speaker Management
 
-> **Status:** PROPOSED — design ready for product approval; no implementation
-> has started.
+> **Status:** IN PROGRESS — Phases 0–2 and output parity implemented; final UX
+> hardening and Phase 4 remain.
 > **Priority:** P1
 > **Date:** 2026-09-05
 > **Tracks:** [#542](https://github.com/moona3k/macparakeet/issues/542),
@@ -159,10 +159,18 @@ speaker_corrections
   branchState             current | redo | abandoned
   createdAt               timestamp
 
-transcriptions (additive correction metadata)
-  speakerCorrectionHeadId UUID nullable
-  speakerCorrectionRevision integer not null default 0
+speaker_correction_states
+  transcriptionId       UUID primary key, foreign key -> transcriptions(id) ON DELETE CASCADE
+  transcriptFingerprint current automatic transcript-version hash
+  headId                 current correction cursor, nullable
+  revision               optimistic-concurrency revision, not null default 0
+  updatedAt              timestamp
 ```
+
+The cursor lives in a separate one-row-per-transcription table rather than in
+`transcriptions`. Existing transcription and retranscription paths save whole
+`Transcription` value snapshots; keeping correction state separate prevents an
+older snapshot from silently overwriting the persisted Undo/Redo head.
 
 The versioned payload supports these domain values:
 
@@ -469,6 +477,16 @@ with durable replay outcome (`applied`, `needsReview`, `obsolete`) and
 Never use speaker-name guessing to force a replay.
 
 ## Implementation Sequence
+
+Implementation checkpoint (2026-09-05): the correction payload/fingerprint,
+resolver, v0.32 persistence, transactional commands, search derivation,
+interactive Timed-view editing, persistent Undo/Redo, and per-run Auto/Exact
+retranscription controls are implemented. App display/export/LLM context,
+knowledge-card generation/recheck, meeting artifact refresh, CLI commands,
+bulk export, and public artifact JSON contracts use the effective projection.
+Remaining before the plan can be completed: explicit artifact
+Retry/stale-result presentation, a dedicated remove-split UI beyond Undo, and
+the Phase 4 hardening/replay work below.
 
 ### Phase 0 — Contract and Parity Foundation
 

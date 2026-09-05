@@ -122,6 +122,22 @@ public final class TranscriptionViewModel {
                 hasConversations = false
             }
             refreshPromptResultStatus()
+            if transcriptionChanged, let currentTranscription {
+                speakerAttributionLoadToken = nil
+                speakerAttributionTranscriptionID = nil
+                speakerAttribution = nil
+                speakerCorrectionsApplied = false
+                canUndoSpeakerCorrection = false
+                canRedoSpeakerCorrection = false
+                loadSpeakerAttribution(for: currentTranscription)
+            } else if currentTranscription == nil {
+                speakerAttributionLoadToken = nil
+                speakerAttributionTranscriptionID = nil
+                speakerAttribution = nil
+                speakerCorrectionsApplied = false
+                canUndoSpeakerCorrection = false
+                canRedoSpeakerCorrection = false
+            }
         }
     }
     public var pendingDeleteTranscription: Transcription?
@@ -223,6 +239,24 @@ public final class TranscriptionViewModel {
             || hasConversations
     }
     public private(set) var isConfigured = false
+    public private(set) var speakerAttribution: EffectiveSpeakerAttribution?
+    public private(set) var speakerCorrectionsApplied = false
+    public private(set) var canUndoSpeakerCorrection = false
+    public private(set) var canRedoSpeakerCorrection = false
+    public private(set) var isApplyingSpeakerCorrection = false
+    public var effectiveCurrentTranscription: Transcription? {
+        guard let currentTranscription,
+              speakerAttributionTranscriptionID == currentTranscription.id,
+              let speakerAttribution
+        else {
+            return currentTranscription
+        }
+        return SpeakerAttributionProjection(
+            automaticTranscription: currentTranscription,
+            attribution: speakerAttribution,
+            correctionsApplied: speakerCorrectionsApplied
+        ).effectiveTranscription
+    }
 
     public func handlePromptResultDeleted(_ deletedID: UUID) {
         guard case .result(let selectedID) = selectedTab, selectedID == deletedID else { return }
@@ -238,6 +272,10 @@ public final class TranscriptionViewModel {
     private var audioTrackService: AudioTrackSelectingTranscriptionService?
     private var transcriptionRepo: TranscriptionRepositoryProtocol?
     private var promptResultRepo: PromptResultRepositoryProtocol?
+    private var speakerAttributionReader: SpeakerAttributionReading?
+    private var speakerCorrectionService: SpeakerCorrectionServicing?
+    private var speakerAttributionLoadToken: UUID?
+    private var speakerAttributionTranscriptionID: UUID?
     private var transcriptionTask: Task<Void, Never>?
     private var activeTranscriptionTaskID: UUID?
     private var audioTrackPreflightID: UUID?
@@ -310,7 +348,9 @@ public final class TranscriptionViewModel {
         audioTrackService: AudioTrackSelectingTranscriptionService? = nil,
         llmService: LLMServiceProtocol? = nil,
         promptResultRepo: PromptResultRepositoryProtocol? = nil,
-        promptResultsViewModel: PromptResultsViewModel? = nil
+        promptResultsViewModel: PromptResultsViewModel? = nil,
+        speakerAttributionReader: SpeakerAttributionReading? = nil,
+        speakerCorrectionService: SpeakerCorrectionServicing? = nil
     ) {
         self.transcriptionService = transcriptionService
         self.audioTrackService =
@@ -320,9 +360,14 @@ public final class TranscriptionViewModel {
         self.llmAvailable = llmService != nil
         self.promptResultRepo = promptResultRepo
         self.promptResultsViewModel = promptResultsViewModel
+        self.speakerAttributionReader = speakerAttributionReader
+        self.speakerCorrectionService = speakerCorrectionService
         isConfigured = true
         clearError()
         loadTranscriptions()
+        if let currentTranscription {
+            loadSpeakerAttribution(for: currentTranscription)
+        }
     }
 
     public func loadTranscriptions() {
@@ -860,7 +905,11 @@ public final class TranscriptionViewModel {
         }
     }
 
-    public func retranscribe(_ original: Transcription, speechEngineOverride: SpeechEngineSelection? = nil) {
+    public func retranscribe(
+        _ original: Transcription,
+        speechEngineOverride: SpeechEngineSelection? = nil,
+        speakerSelection: RetranscriptionSpeakerSelection? = nil
+    ) {
         guard let service = transcriptionService else {
             reportMissingConfiguration("transcriptionService", action: "retranscribe")
             return
@@ -900,20 +949,41 @@ public final class TranscriptionViewModel {
                 if original.sourceType == .meeting,
                     let meetingRecording = archivedMeetingRecording(for: original, mixedAudioURL: url)
                 {
-                    result = try await service.retranscribeMeeting(
-                        existing: original,
-                        recording: meetingRecording,
-                        speechEngineOverride: speechEngineOverride,
-                        onProgress: progressHandler
-                    )
+                    if let speakerSelection, meetingRecording.sourceAlignment.system != nil {
+                        result = try await service.retranscribeMeeting(
+                            existing: original,
+                            recording: meetingRecording,
+                            speechEngineOverride: speechEngineOverride,
+                            speakerSelection: speakerSelection,
+                            onProgress: progressHandler
+                        )
+                    } else {
+                        result = try await service.retranscribeMeeting(
+                            existing: original,
+                            recording: meetingRecording,
+                            speechEngineOverride: speechEngineOverride,
+                            onProgress: progressHandler
+                        )
+                    }
                 } else {
-                    result = try await service.retranscribe(
-                        existing: original,
-                        fileURL: url,
-                        source: retranscriptionSource,
-                        speechEngineOverride: speechEngineOverride,
-                        onProgress: progressHandler
-                    )
+                    if let speakerSelection, original.sourceType != .meeting {
+                        result = try await service.retranscribe(
+                            existing: original,
+                            fileURL: url,
+                            source: retranscriptionSource,
+                            speechEngineOverride: speechEngineOverride,
+                            speakerSelection: speakerSelection,
+                            onProgress: progressHandler
+                        )
+                    } else {
+                        result = try await service.retranscribe(
+                            existing: original,
+                            fileURL: url,
+                            source: retranscriptionSource,
+                            speechEngineOverride: speechEngineOverride,
+                            onProgress: progressHandler
+                        )
+                    }
                 }
                 var updatedResult = result
                 // Preserve row identity and user-owned metadata so retranscription updates
@@ -950,6 +1020,20 @@ public final class TranscriptionViewModel {
                 completeFailedTranscription(taskID: taskID, error: error)
             }
         }
+    }
+
+    /// Whether the retranscription UI can safely offer a per-run speaker count.
+    /// Archived meetings require their retained isolated system track; applying
+    /// a remote-speaker count to the mixed-audio fallback would include `Me` and
+    /// change the option's meaning.
+    public func canConfigureSpeakersForRetranscription(_ original: Transcription) -> Bool {
+        guard original.sourceType == .meeting else { return true }
+        guard let filePath = original.filePath else { return false }
+        return archivedMeetingRecording(
+            for: original,
+            mixedAudioURL: URL(fileURLWithPath: filePath),
+            logFailure: false
+        )?.sourceAlignment.system != nil
     }
 
     private func archivedMeetingRecording(
@@ -1755,14 +1839,166 @@ public final class TranscriptionViewModel {
         }
     }
 
+    // MARK: - Speaker Corrections
+
+    public func loadSpeakerAttribution(for transcription: Transcription) {
+        guard let speakerAttributionReader else {
+            speakerAttributionLoadToken = nil
+            speakerAttribution = SpeakerAttributionResolver.resolve(transcription: transcription)
+            speakerAttributionTranscriptionID = transcription.id
+            speakerCorrectionsApplied = false
+            canUndoSpeakerCorrection = false
+            canRedoSpeakerCorrection = false
+            return
+        }
+
+        let token = UUID()
+        speakerAttributionLoadToken = token
+        let transcriptionID = transcription.id
+        Task { [weak self, speakerAttributionReader] in
+            do {
+                let projection = try await Task.detached(priority: .userInitiated) {
+                    try speakerAttributionReader.resolve(transcriptionId: transcriptionID)
+                }.value
+                guard let self,
+                      self.speakerAttributionLoadToken == token,
+                      self.currentTranscription?.id == transcriptionID,
+                      let projection
+                else { return }
+                self.speakerAttribution = projection.attribution
+                self.speakerAttributionTranscriptionID = transcriptionID
+                self.speakerCorrectionsApplied = projection.correctionsApplied
+                self.canUndoSpeakerCorrection = projection.canUndo
+                self.canRedoSpeakerCorrection = projection.canRedo
+            } catch {
+                guard let self, self.speakerAttributionLoadToken == token else { return }
+                self.setError(message: "Couldn't load speaker corrections.")
+                self.logger.error(
+                    "speaker_correction_load_failed error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+                )
+            }
+        }
+    }
+
+    public func applySpeakerCorrection(_ command: SpeakerCorrectionCommand) {
+        guard let transcriptionID = currentTranscription?.id,
+              let attribution = speakerAttribution,
+              let speakerCorrectionService,
+              !isApplyingSpeakerCorrection
+        else { return }
+        isApplyingSpeakerCorrection = true
+        Task { [weak self, speakerCorrectionService] in
+            do {
+                let result = try await speakerCorrectionService.apply(
+                    transcriptionId: transcriptionID,
+                    command: command,
+                    expectedFingerprint: attribution.fingerprint,
+                    expectedRevision: attribution.correctionRevision
+                )
+                self?.publishSpeakerCorrectionResult(result, transcriptionID: transcriptionID)
+            } catch {
+                self?.handleSpeakerCorrectionFailure(error, transcriptionID: transcriptionID)
+            }
+        }
+    }
+
+    public func undoSpeakerCorrection() {
+        performSpeakerHistoryAction(isUndo: true)
+    }
+
+    public func redoSpeakerCorrection() {
+        performSpeakerHistoryAction(isUndo: false)
+    }
+
+    private func performSpeakerHistoryAction(isUndo: Bool) {
+        guard let transcriptionID = currentTranscription?.id,
+              let attribution = speakerAttribution,
+              let speakerCorrectionService,
+              !isApplyingSpeakerCorrection
+        else { return }
+        isApplyingSpeakerCorrection = true
+        Task { [weak self, speakerCorrectionService] in
+            do {
+                let result: SpeakerCorrectionResult
+                if isUndo {
+                    result = try await speakerCorrectionService.undo(
+                        transcriptionId: transcriptionID,
+                        expectedFingerprint: attribution.fingerprint,
+                        expectedRevision: attribution.correctionRevision
+                    )
+                } else {
+                    result = try await speakerCorrectionService.redo(
+                        transcriptionId: transcriptionID,
+                        expectedFingerprint: attribution.fingerprint,
+                        expectedRevision: attribution.correctionRevision
+                    )
+                }
+                self?.publishSpeakerCorrectionResult(result, transcriptionID: transcriptionID)
+            } catch {
+                self?.handleSpeakerCorrectionFailure(error, transcriptionID: transcriptionID)
+            }
+        }
+    }
+
+    private func publishSpeakerCorrectionResult(
+        _ result: SpeakerCorrectionResult,
+        transcriptionID: UUID
+    ) {
+        guard currentTranscription?.id == transcriptionID else {
+            isApplyingSpeakerCorrection = false
+            return
+        }
+        // Invalidate an older read that may still be in flight. A committed
+        // correction is always newer than the snapshot that initiated it.
+        speakerAttributionLoadToken = UUID()
+        speakerAttribution = result.attribution
+        speakerAttributionTranscriptionID = transcriptionID
+        speakerCorrectionsApplied = result.canUndo
+        canUndoSpeakerCorrection = result.canUndo
+        canRedoSpeakerCorrection = result.canRedo
+        isApplyingSpeakerCorrection = false
+        // Artifact refresh generations are local monotonic tokens, independent
+        // of correction revisions (which restart after retranscription).
+        let artifactGeneration = (speakerRenameGenerations[transcriptionID] ?? 0) + 1
+        speakerRenameGenerations[transcriptionID] = artifactGeneration
+        enqueueMeetingArtifactRefresh(
+            transcriptionID: transcriptionID,
+            generation: artifactGeneration
+        )
+    }
+
+    private func handleSpeakerCorrectionFailure(_ error: Error, transcriptionID: UUID) {
+        isApplyingSpeakerCorrection = false
+        if error as? SpeakerCorrectionServiceError == .conflict,
+           let transcription = currentTranscription,
+           transcription.id == transcriptionID {
+            loadSpeakerAttribution(for: transcription)
+            setError(message: "Speaker changes were updated elsewhere. Review and try again.")
+        } else {
+            setError(message: "Couldn't save speaker changes. Nothing was changed.")
+        }
+        logger.error(
+            "speaker_correction_failed error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+        )
+    }
+
     // MARK: - Speaker Rename
 
     public func renameSpeaker(id speakerId: String, to newLabel: String) {
+        let trimmed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if speakerCorrectionService != nil,
+           speakerAttribution != nil,
+           currentTranscription?.status == .completed,
+           !(currentTranscription?.wordTimestamps ?? []).isEmpty,
+           !(currentTranscription?.transcriptSegments ?? []).isEmpty {
+            applySpeakerCorrection(.rename(speakerID: speakerId, label: trimmed))
+            return
+        }
         guard var transcription = currentTranscription,
             var speakers = transcription.speakers
         else { return }
         guard let index = speakers.firstIndex(where: { $0.id == speakerId }) else { return }
-        let trimmed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, speakers[index].label != trimmed else { return }
         let previousCurrentSpeakers = speakers
         let previousCurrentSegments = transcription.transcriptSegments
@@ -1877,9 +2113,10 @@ public final class TranscriptionViewModel {
         )
 
         let artifactStore = meetingArtifactStore
+        let attributionReader = speakerAttributionReader
         let logger = logger
         let task = Task.detached(priority: .utility) {
-            [weak self, previousTask, transcriptionRepo, promptResultRepo, artifactStore, logger] in
+            [weak self, previousTask, transcriptionRepo, promptResultRepo, artifactStore, attributionReader, logger] in
             await previousTask?.value
             let shouldMaterialize = await MainActor.run { [weak self] in
                 guard let self else { return false }
@@ -1904,8 +2141,11 @@ public final class TranscriptionViewModel {
                         break
                     }
                     let promptResults = try promptResultRepo.fetchAll(transcriptionId: transcriptionID)
+                    let materializedTranscription = try attributionReader?
+                        .resolve(transcriptionId: transcriptionID)?
+                        .effectiveTranscription ?? persisted
                     _ = try await artifactStore.materialize(
-                        transcription: persisted,
+                        transcription: materializedTranscription,
                         promptResults: promptResults
                     )
                 } catch {

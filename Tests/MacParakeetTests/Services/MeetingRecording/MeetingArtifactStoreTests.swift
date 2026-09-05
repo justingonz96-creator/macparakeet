@@ -194,6 +194,93 @@ final class MeetingArtifactStoreTests: XCTestCase {
         XCTAssertTrue(resultMarkdown.contains("Automatic meeting notes context: enabled"))
     }
 
+    func testMaterializeProjectionPreservesCorrectedSplitSpeakerSpans() async throws {
+        let segmentID = UUID()
+        let transcription = Transcription(
+            fileName: "Split Review",
+            filePath: folderURL.appendingPathComponent("meeting-playback.m4a").path,
+            rawTranscript: "One two three four.",
+            wordTimestamps: [
+                WordTimestamp(word: "One", startMs: 0, endMs: 200, confidence: 1, speakerId: "S1"),
+                WordTimestamp(word: "two", startMs: 220, endMs: 400, confidence: 1, speakerId: "S1"),
+                WordTimestamp(word: "three", startMs: 420, endMs: 600, confidence: 1, speakerId: "S1"),
+                WordTimestamp(word: "four.", startMs: 620, endMs: 800, confidence: 1, speakerId: "S1"),
+            ],
+            speakerCount: 2,
+            speakers: [
+                SpeakerInfo(id: "S1", label: "Alice"),
+                SpeakerInfo(id: "S2", label: "Bob"),
+            ],
+            transcriptSegments: [TranscriptSegmentRecord(
+                id: segmentID,
+                startMs: 0,
+                endMs: 800,
+                speakerId: "S1",
+                speakerLabel: "Alice",
+                text: "One two three four.",
+                wordRange: .init(startIndex: 0, endIndexExclusive: 4)
+            )],
+            status: .completed,
+            sourceType: .meeting
+        )
+        let fingerprint = SpeakerAttributionResolver.fingerprint(for: transcription)
+        let fullTarget = SpeakerCorrectionTarget(
+            anchorTranscriptSegmentIDs: [segmentID],
+            wordRange: .init(startIndex: 0, endIndexExclusive: 4)
+        )
+        let split = SpeakerCorrection(
+            transcriptionId: transcription.id,
+            parentId: nil,
+            sequence: 1,
+            transcriptFingerprint: fingerprint,
+            payload: .split(target: fullTarget, atWordIndex: 2)
+        )
+        let assign = SpeakerCorrection(
+            transcriptionId: transcription.id,
+            parentId: split.id,
+            sequence: 2,
+            transcriptFingerprint: fingerprint,
+            payload: .assign(
+                targets: [SpeakerCorrectionTarget(
+                    anchorTranscriptSegmentIDs: [segmentID],
+                    wordRange: .init(startIndex: 2, endIndexExclusive: 4)
+                )],
+                to: .speaker(id: "S2")
+            )
+        )
+        let state = SpeakerCorrectionState(
+            transcriptionId: transcription.id,
+            transcriptFingerprint: fingerprint.rawValue,
+            headId: assign.id,
+            revision: 2
+        )
+        let projection = SpeakerAttributionProjection(
+            automaticTranscription: transcription,
+            attribution: SpeakerAttributionResolver.resolve(
+                transcription: transcription,
+                corrections: [split, assign],
+                state: state
+            ),
+            correctionsApplied: true
+        )
+
+        let snapshot = try await MeetingArtifactStore().materialize(
+            projection: projection,
+            promptResults: []
+        )
+
+        let transcript = try jsonObject(at: URL(fileURLWithPath: snapshot.transcriptPath))
+        XCTAssertEqual(transcript["speakerCorrectionsApplied"] as? Bool, true)
+        XCTAssertEqual(transcript["speakerCorrectionRevision"] as? Int, 2)
+        let segments = try XCTUnwrap(transcript["transcriptSegments"] as? [[String: Any]])
+        let spans = try XCTUnwrap(segments.first?["speakerSpans"] as? [[String: Any]])
+        XCTAssertEqual(spans.count, 2)
+        XCTAssertEqual(spans.map { $0["speakerLabel"] as? String }, ["Alice", "Bob"])
+        let markdown = try String(contentsOfFile: snapshot.markdownPath!, encoding: .utf8)
+        XCTAssertTrue(markdown.contains("speakerCorrectionsApplied: true"))
+        XCTAssertTrue(markdown.contains("speakerCorrectionRevision: 2"))
+    }
+
     func testMaterializeDoesNotPublishManifestWhenMarkdownWriteFails() async throws {
         let transcription = makeMeeting(notes: "Draft note")
         let store = MeetingArtifactStore(markdownWriter: { _, _ in

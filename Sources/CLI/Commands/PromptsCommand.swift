@@ -451,9 +451,12 @@ extension PromptsCommand {
                 let promptRepo = PromptRepository(dbQueue: db.dbQueue)
                 let transcriptionRepo = TranscriptionRepository(dbQueue: db.dbQueue)
                 let resultRepo = PromptResultRepository(dbQueue: db.dbQueue)
+                let speakerAttributionReader = SpeakerAttributionReadService(dbQueue: db.dbQueue)
 
                 let prompt = try findPrompt(idOrName: promptIdOrName, repo: promptRepo)
-                let transcript = try findTranscription(id: transcription, repo: transcriptionRepo)
+                let automaticTranscript = try findTranscription(id: transcription, repo: transcriptionRepo)
+                let projection = try speakerAttributionReader.resolve(transcription: automaticTranscript)
+                let transcript = projection.effectiveTranscription
 
                 let transcriptText = transcript.cleanTranscript ?? transcript.rawTranscript ?? ""
                 guard !transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -532,7 +535,7 @@ extension PromptsCommand {
                     )
                     try resultRepo.save(result)
                     await refreshMeetingArtifacts(
-                        transcription: transcript,
+                        projection: projection,
                         resultRepo: resultRepo
                     )
                     // Status messages on stderr so stdout stays grep-able as the prompt output.
@@ -570,15 +573,16 @@ func makeStoredPromptRunResult(
 
 /// Refreshes meeting artifacts; failures are logged and never surfaced or thrown, and refresh never blocks or fails the triggering user action.
 private func refreshMeetingArtifacts(
-    transcription: Transcription,
+    projection: SpeakerAttributionProjection,
     resultRepo: PromptResultRepositoryProtocol
 ) async {
+    let transcription = projection.effectiveTranscription
     guard transcription.sourceType == .meeting else { return }
 
     do {
         let promptResults = try resultRepo.fetchAll(transcriptionId: transcription.id)
         _ = try await MeetingArtifactStore().materialize(
-            transcription: transcription,
+            projection: projection,
             promptResults: promptResults
         )
     } catch {

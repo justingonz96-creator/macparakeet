@@ -140,6 +140,8 @@ public final class TranscriptionLibraryViewModel {
     public var calendar: Calendar = .autoupdatingCurrent
 
     private var transcriptionRepo: TranscriptionRepositoryProtocol?
+    public private(set) var speakerAttributionProjectionProvider:
+        (@Sendable (Transcription) throws -> SpeakerAttributionProjection)?
     private var loadTask: Task<Void, Never>?
     private var searchDebounceTask: Task<Void, Never>?
     private var loadGeneration = 0
@@ -151,8 +153,14 @@ public final class TranscriptionLibraryViewModel {
         self.scope = scope
     }
 
-    public func configure(transcriptionRepo: TranscriptionRepositoryProtocol) {
+    public func configure(
+        transcriptionRepo: TranscriptionRepositoryProtocol,
+        speakerAttributionReader: SpeakerAttributionReading? = nil
+    ) {
         self.transcriptionRepo = transcriptionRepo
+        speakerAttributionProjectionProvider = speakerAttributionReader.map { reader in
+            { transcription in try reader.resolve(transcription: transcription) }
+        }
     }
 
     public var selectedTranscriptionCount: Int {

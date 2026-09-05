@@ -127,6 +127,11 @@ with human progress/status kept off stdout.
   `wordRange.startIndex` / `wordRange.endIndexExclusive` into the same payload's
   `wordTimestamps` array. Callers that need stable citations should prefer
   these persisted segments over re-segmenting words.
+- `export --format json`, `meetings show --json`, `meetings transcript
+  --format json`, and `meetings export --stdout --format json` expose the
+  effective speaker attribution. They include additive
+  `speakerCorrectionsApplied` and `speakerCorrectionRevision` fields; revision
+  `0` with `false` means the automatic baseline is active.
 - `meetings show --json` meeting objects can include optional `startContext`
   for meeting rows. When present it contains `triggerKind`, `sourceMode`, and
   optional `frontmostApplication` (`bundleIdentifier`, `localizedName`).

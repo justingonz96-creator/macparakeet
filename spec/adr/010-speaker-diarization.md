@@ -177,6 +177,18 @@ Skip diarization for: dictation (single speaker by design), or when the correspo
 > `docs/research/speaker-diarization-frontier-2026-06.md` and
 > `docs/plans/2026-06-14-002-speaker-diarization-world-class-architecture.md`.
 
+> **Amendment (2026-09-05):** Automatic diarization is now an immutable
+> baseline beneath a transcript-scoped speaker-correction layer. Add, rename,
+> assign, split, merge, remove, reset, Undo, and Redo operations are persisted
+> separately and resolved into one effective attribution; they never rewrite
+> raw word/source evidence. Effective attribution is the contract for the app,
+> search, exports, meeting artifacts, cards, LLM context, and CLI. A successful
+> retranscription starts a new fingerprint and resets the effective correction
+> cursor; failed retranscription leaves the prior transcript and corrections
+> intact. See
+> `plans/active/2026-09-05-speaker-attribution-editing.md` and
+> `spec/01-data-model.md` for the command and persistence contracts.
+
 ## Rationale
 
 ### Why the offline pipeline, not Sortformer

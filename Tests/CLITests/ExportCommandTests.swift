@@ -94,6 +94,54 @@ final class ExportCommandTests: XCTestCase {
         XCTAssertTrue(output.contains("<p>CLI DAPT transcript.</p>"))
     }
 
+    func testJSONStdoutUsesEffectiveSpeakerProjectionAndMetadata() async throws {
+        let dbURL = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+        let manager = try DatabaseManager(path: dbURL.path)
+        let repository = TranscriptionRepository(dbQueue: manager.dbQueue)
+        let transcription = Transcription(
+            fileName: "corrected.mp3",
+            rawTranscript: "Hello.",
+            wordTimestamps: [
+                WordTimestamp(word: "Hello.", startMs: 0, endMs: 500, confidence: 1, speakerId: "S1")
+            ],
+            speakerCount: 1,
+            speakers: [SpeakerInfo(id: "S1", label: "Speaker 1")],
+            transcriptSegments: [TranscriptSegmentRecord(
+                startMs: 0,
+                endMs: 500,
+                speakerId: "S1",
+                speakerLabel: "Speaker 1",
+                text: "Hello.",
+                wordRange: .init(startIndex: 0, endIndexExclusive: 1)
+            )],
+            status: .completed
+        )
+        try repository.save(transcription)
+        let fingerprint = SpeakerAttributionResolver.fingerprint(for: transcription)
+        _ = try await SpeakerCorrectionService(dbQueue: manager.dbQueue).apply(
+            transcriptionId: transcription.id,
+            command: .rename(speakerID: "S1", label: "Dana"),
+            expectedFingerprint: fingerprint,
+            expectedRevision: 0
+        )
+        let command = try ExportCommand.parse([
+            transcription.id.uuidString,
+            "--format", "json",
+            "--stdout",
+            "--database", dbURL.path,
+        ])
+
+        let output = try await captureStandardOutput { try await command.run() }
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any]
+        )
+        let speakers = try XCTUnwrap(payload["speakers"] as? [[String: Any]])
+        XCTAssertEqual(speakers.first?["label"] as? String, "Dana")
+        XCTAssertEqual(payload["speakerCorrectionsApplied"] as? Bool, true)
+        XCTAssertEqual(payload["speakerCorrectionRevision"] as? Int, 1)
+    }
+
     func testJSONStdoutEmitsFailureEnvelopeForLookupMiss() async throws {
         let dbURL = temporaryDatabaseURL()
         defer { try? FileManager.default.removeItem(at: dbURL) }

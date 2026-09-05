@@ -137,6 +137,7 @@ struct CardsGenerateCommand: AsyncParsableCommand {
                 transcriptionRepository: transcriptions,
                 segmentRepository: segmentRepository,
                 cardRepository: cardRepository,
+                speakerAttributionReader: SpeakerAttributionReadService(dbQueue: db.dbQueue),
                 completionProvider: LLMService()
             )
             var report = CardsGenerationReport(selection: selection, selected: selectedIDs.count)

@@ -30,6 +30,26 @@ public protocol ExportServiceProtocol: Sendable {
 }
 
 public extension ExportServiceProtocol {
+    func formatSRT(projection: SpeakerAttributionProjection) -> String {
+        formatSRT(transcription: projection.effectiveTranscription)
+    }
+
+    func formatVTT(projection: SpeakerAttributionProjection) -> String {
+        formatVTT(transcription: projection.effectiveTranscription)
+    }
+
+    func formatDAPT(projection: SpeakerAttributionProjection) -> String {
+        formatDAPT(transcription: projection.effectiveTranscription)
+    }
+
+    func formatMarkdown(projection: SpeakerAttributionProjection) -> String {
+        formatMarkdown(transcription: projection.effectiveTranscription)
+    }
+
+    func formatForClipboard(projection: SpeakerAttributionProjection) -> String {
+        formatForClipboard(transcription: projection.effectiveTranscription)
+    }
+
     /// Compatibility fallback so existing protocol conformers automatically
     /// gain the additive DAPT export surface.
     func formatDAPT(transcription: Transcription) -> String {
@@ -100,6 +120,26 @@ public struct TranscriptExportOptions: Sendable, Equatable {
 /// (AppKit, not thread-safe). Text, subtitle, and JSON exports are safe off-main.
 public final class ExportService: ExportServiceProtocol, Sendable {
     public init() {}
+
+    public func formatMarkdown(
+        projection: SpeakerAttributionProjection,
+        options: TranscriptExportOptions
+    ) -> String {
+        formatMarkdown(
+            transcription: projection.effectiveTranscription,
+            options: options
+        )
+    }
+
+    public func formatPlainText(
+        projection: SpeakerAttributionProjection,
+        options: TranscriptExportOptions = .default
+    ) -> String {
+        formatPlainText(
+            transcription: projection.effectiveTranscription,
+            options: options
+        )
+    }
 
     private func preferredText(transcription: Transcription) -> String {
         transcription.cleanTranscript ?? transcription.rawTranscript ?? ""

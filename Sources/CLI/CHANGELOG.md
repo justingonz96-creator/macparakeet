@@ -50,6 +50,19 @@ truth for branching.
 The canonical automation contract for stdout/stderr, envelopes, exit codes,
 and `spec --json` lives in `spec/contracts/cli-json-v1.md`.
 
+## Unreleased
+
+### Added
+
+- Speaker-aware export and meeting JSON now include additive
+  `speakerCorrectionsApplied` and `speakerCorrectionRevision` metadata.
+
+### Fixed
+
+- `export`, `meetings show`, `meetings transcript`, `meetings export`, and
+  meeting-artifact refreshes now render the active speaker corrections instead
+  of silently falling back to automatic diarization.
+
 ### `--json` failure envelope
 
 Any command that accepts `--json` emits this envelope on stdout when the

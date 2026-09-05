@@ -6,6 +6,24 @@ public protocol MeetingArtifactStoring: Sendable {
         transcription: Transcription,
         promptResults: [PromptResult]
     ) async throws -> MeetingArtifactSnapshot
+
+    @discardableResult
+    func materialize(
+        projection: SpeakerAttributionProjection,
+        promptResults: [PromptResult]
+    ) async throws -> MeetingArtifactSnapshot
+}
+
+public extension MeetingArtifactStoring {
+    func materialize(
+        projection: SpeakerAttributionProjection,
+        promptResults: [PromptResult]
+    ) async throws -> MeetingArtifactSnapshot {
+        try await materialize(
+            transcription: projection.effectiveTranscription,
+            promptResults: promptResults
+        )
+    }
 }
 
 public enum MeetingArtifactError: Error, LocalizedError, Sendable {
@@ -40,6 +58,8 @@ public struct MeetingArtifactSnapshot: Codable, Sendable, Equatable {
     public let promptResultsPath: String
     public let promptResultsDirectoryPath: String
     public let promptResultCount: Int
+    public let speakerCorrectionsApplied: Bool
+    public let speakerCorrectionRevision: Int
     public let calendarEventSnapshot: MeetingCalendarSnapshot?
     public let meetingCaptureReport: MeetingCaptureReport?
 
@@ -61,6 +81,8 @@ public struct MeetingArtifactSnapshot: Codable, Sendable, Equatable {
         promptResultsPath: String,
         promptResultsDirectoryPath: String,
         promptResultCount: Int,
+        speakerCorrectionsApplied: Bool = false,
+        speakerCorrectionRevision: Int = 0,
         calendarEventSnapshot: MeetingCalendarSnapshot? = nil,
         meetingCaptureReport: MeetingCaptureReport? = nil
     ) {
@@ -81,6 +103,8 @@ public struct MeetingArtifactSnapshot: Codable, Sendable, Equatable {
         self.promptResultsPath = promptResultsPath
         self.promptResultsDirectoryPath = promptResultsDirectoryPath
         self.promptResultCount = promptResultCount
+        self.speakerCorrectionsApplied = speakerCorrectionsApplied
+        self.speakerCorrectionRevision = speakerCorrectionRevision
         self.calendarEventSnapshot = calendarEventSnapshot
         self.meetingCaptureReport = meetingCaptureReport
     }
@@ -97,9 +121,14 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
 
     private let fileManager: FileManager
     private let markdownWriter: @Sendable (String, String) throws -> Void
+    private let speakerAttributionReader: SpeakerAttributionReading?
 
-    public init(fileManager: FileManager = .default) {
+    public init(
+        fileManager: FileManager = .default,
+        speakerAttributionReader: SpeakerAttributionReading? = nil
+    ) {
         self.fileManager = fileManager
+        self.speakerAttributionReader = speakerAttributionReader
         markdownWriter = { content, path in
             try content.write(
                 toFile: path,
@@ -111,9 +140,11 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
 
     init(
         fileManager: FileManager = .default,
+        speakerAttributionReader: SpeakerAttributionReading? = nil,
         markdownWriter: @escaping @Sendable (String, String) throws -> Void
     ) {
         self.fileManager = fileManager
+        self.speakerAttributionReader = speakerAttributionReader
         self.markdownWriter = markdownWriter
     }
 
@@ -122,12 +153,40 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
         transcription: Transcription,
         promptResults: [PromptResult] = []
     ) async throws -> MeetingArtifactSnapshot {
+        let projection = try speakerAttributionReader?.resolve(transcription: transcription)
+        if let projection {
+            return try await materialize(projection: projection, promptResults: promptResults)
+        }
+        return try await materializeResolved(
+            transcription: transcription,
+            projection: nil,
+            promptResults: promptResults
+        )
+    }
+
+    public func materialize(
+        projection: SpeakerAttributionProjection,
+        promptResults: [PromptResult] = []
+    ) async throws -> MeetingArtifactSnapshot {
+        try await materializeResolved(
+            transcription: projection.effectiveTranscription,
+            projection: projection,
+            promptResults: promptResults
+        )
+    }
+
+    private func materializeResolved(
+        transcription: Transcription,
+        projection: SpeakerAttributionProjection?,
+        promptResults: [PromptResult]
+    ) async throws -> MeetingArtifactSnapshot {
         guard transcription.sourceType == .meeting else {
             throw MeetingArtifactError.notMeeting
         }
         guard let folderURL = Self.sessionFolderURL(for: transcription) else {
             throw MeetingArtifactError.missingSessionFolder
         }
+        let effectiveTranscription = transcription
 
         try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
 
@@ -139,8 +198,8 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
 
         let notesPath: String?
         try await MeetingNotesFile.write(
-            notes: transcription.userNotes,
-            displayName: transcription.fileName,
+            notes: effectiveTranscription.userNotes,
+            displayName: effectiveTranscription.fileName,
             to: folderURL,
             fileManager: MeetingNotesFile.SendableFileManager(fileManager)
         )
@@ -148,19 +207,19 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
 
         let resultFiles = try writePromptResults(
             promptResults,
-            meeting: transcription,
+            meeting: effectiveTranscription,
             jsonURL: promptResultsURL,
             directoryURL: promptResultsDirectoryURL
         )
 
         try writeJSON(
-            MeetingArtifactTranscript(transcription),
+            MeetingArtifactTranscript(effectiveTranscription, projection: projection),
             to: transcriptURL
         )
 
         let manifestURL = folderURL.appendingPathComponent(Self.manifestFileName)
         let artifactPaths = MeetingMarkdownArtifactPaths.resolve(
-            transcription: transcription,
+            transcription: effectiveTranscription,
             promptResults: promptResults,
             fileManager: fileManager
         )
@@ -180,21 +239,25 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
             promptResultsPath: promptResultsURL.path,
             promptResultsDirectoryPath: promptResultsDirectoryURL.path,
             promptResultCount: promptResults.count,
-            calendarEventSnapshot: transcription.calendarEventSnapshot,
-            meetingCaptureReport: transcription.meetingCaptureReport
+            speakerCorrectionsApplied: projection?.correctionsApplied ?? false,
+            speakerCorrectionRevision: projection?.correctionRevision ?? 0,
+            calendarEventSnapshot: effectiveTranscription.calendarEventSnapshot,
+            meetingCaptureReport: effectiveTranscription.meetingCaptureReport
         )
         if let markdownPath = artifactPaths.markdownPath {
             let markdown = MeetingMarkdownRenderer().render(
-                transcription: transcription,
+                transcription: effectiveTranscription,
                 promptResults: promptResults,
-                artifactPaths: artifactPaths
+                artifactPaths: artifactPaths,
+                speakerCorrectionsApplied: projection?.correctionsApplied ?? false,
+                speakerCorrectionRevision: projection?.correctionRevision ?? 0
             )
             try markdownWriter(markdown, markdownPath)
         }
         try writeJSON(
             MeetingArtifactManifest(
                 snapshot: snapshot,
-                transcription: transcription,
+                transcription: effectiveTranscription,
                 artifactPaths: artifactPaths,
                 promptResultFiles: resultFiles
             ),
@@ -391,7 +454,9 @@ private struct MeetingArtifactTranscript: Codable {
     let speakerCount: Int?
     let speakers: [SpeakerInfo]?
     let diarizationSegments: [DiarizationSegmentRecord]?
-    let transcriptSegments: [TranscriptSegmentRecord]?
+    let transcriptSegments: [MeetingArtifactTranscriptSegment]?
+    let speakerCorrectionsApplied: Bool
+    let speakerCorrectionRevision: Int
     let userNotes: String?
     let language: String?
     let engine: String?
@@ -404,7 +469,7 @@ private struct MeetingArtifactTranscript: Codable {
     let isTranscriptEdited: Bool
     let startContext: MeetingStartContext?
 
-    init(_ transcription: Transcription) {
+    init(_ transcription: Transcription, projection: SpeakerAttributionProjection?) {
         id = transcription.id
         title = transcription.fileName
         createdAt = transcription.createdAt
@@ -418,7 +483,25 @@ private struct MeetingArtifactTranscript: Codable {
         speakerCount = transcription.speakerCount
         speakers = transcription.speakers
         diarizationSegments = transcription.diarizationSegments
-        transcriptSegments = transcription.transcriptSegments
+        let runsBySegmentID = Dictionary(
+            uniqueKeysWithValues: (projection?.attribution.durableSegments ?? []).map {
+                ($0.base.id, $0.speakerRuns)
+            }
+        )
+        let labelsBySpeakerID = Dictionary(
+            uniqueKeysWithValues: (projection?.attribution.speakers ?? transcription.speakers ?? []).map {
+                ($0.id, $0.label)
+            }
+        )
+        transcriptSegments = transcription.transcriptSegments?.map {
+            MeetingArtifactTranscriptSegment(
+                $0,
+                speakerRuns: runsBySegmentID[$0.id],
+                labelsBySpeakerID: labelsBySpeakerID
+            )
+        }
+        speakerCorrectionsApplied = projection?.correctionsApplied ?? false
+        speakerCorrectionRevision = projection?.correctionRevision ?? 0
         userNotes = transcription.userNotes
         language = transcription.language
         engine = transcription.engine
@@ -430,6 +513,55 @@ private struct MeetingArtifactTranscript: Codable {
         recoveredFromCrash = transcription.recoveredFromCrash
         isTranscriptEdited = transcription.isTranscriptEdited
         startContext = transcription.meetingStartContext
+    }
+}
+
+private struct MeetingArtifactTranscriptSegment: Codable {
+    let id: UUID
+    let startMs: Int
+    let endMs: Int
+    let text: String
+    let speakerId: String?
+    let speakerLabel: String?
+    let wordRange: TranscriptSegmentWordRange
+    let speakerSpans: [MeetingArtifactSpeakerSpan]?
+
+    init(
+        _ segment: TranscriptSegmentRecord,
+        speakerRuns: [EffectiveSpeakerRun]?,
+        labelsBySpeakerID: [String: String]
+    ) {
+        id = segment.id
+        startMs = segment.startMs
+        endMs = segment.endMs
+        text = segment.text
+        speakerId = segment.speakerId
+        speakerLabel = segment.speakerLabel
+        wordRange = segment.wordRange
+        speakerSpans = speakerRuns?.map {
+            MeetingArtifactSpeakerSpan(
+                run: $0,
+                labelsBySpeakerID: labelsBySpeakerID
+            )
+        }
+    }
+}
+
+private struct MeetingArtifactSpeakerSpan: Codable {
+    let wordRange: TranscriptSegmentWordRange
+    let speakerId: String?
+    let speakerLabel: String
+
+    init(run: EffectiveSpeakerRun, labelsBySpeakerID: [String: String]) {
+        wordRange = run.wordRange
+        switch run.assignment {
+        case .speaker(let id):
+            speakerId = id
+            speakerLabel = labelsBySpeakerID[id] ?? id
+        case .unassigned:
+            speakerId = nil
+            speakerLabel = "Unassigned"
+        }
     }
 }
 
