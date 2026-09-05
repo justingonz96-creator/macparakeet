@@ -136,14 +136,14 @@ Add `PromptInferenceSettings.swift` in `MacParakeetCore/Models` with:
   controls without parsing strings.
 
 Use the proposal's limits: temperature `0...2`, top-p `0...1`, top-k
-`0...1000`, maximum tokens `1...131072`, and a signed integer seed. Validate
+`0...1000`, and maximum tokens `1...131072`. Validate
 non-finite floating-point values explicitly; `NaN` and infinity must fail.
 
 Extend `Prompt` with `inferenceSettings` and `PromptResult` with
 `inferenceSettingsSnapshot`. Keep the database column names explicit in each
 record's `Columns` enum.
 
-Extend `ChatCompletionOptions` with transport-neutral `topP`, `topK`, `seed`,
+Extend `ChatCompletionOptions` with transport-neutral `topP`, `topK`,
 `thinkingMode`, and optional `reasoningEffort`. Keep an explicit merge function
 that overlays prompt
 settings on `.default`; do not spread fallback rules across call sites.
@@ -165,12 +165,12 @@ must never maintain a second provider support table.
 Initial capability policy:
 
 - OpenAI native: temperature/top-p only when model policy allows them; output
-  budget through existing token-key selection; omit top-k, seed, and thinking.
+  budget through existing token-key selection; omit top-k and thinking.
 - Anthropic native: temperature/top-p/max-tokens when accepted by the current
-  model policy; omit top-k, seed, and thinking.
-- Ollama native: temperature/top-p/top-k/num-predict/seed in `options`, plus
+  model policy; omit top-k and thinking.
+- Ollama native: temperature/top-p/top-k/num-predict in `options`, plus
   top-level `think` when explicitly enabled/disabled; retain `num_ctx`.
-- Custom OpenAI-compatible: temperature/top-p/top-k/max-tokens/seed plus
+- Custom OpenAI-compatible: temperature/top-p/top-k/max-tokens plus
   `chat_template_kwargs.enable_thinking` and optional nested
   `reasoning_effort`. Keep this scoped to the custom
   endpoint path; do not send non-standard keys to OpenAI, Gemini, OpenRouter,
@@ -254,7 +254,7 @@ operations.
 
 ### Prompt Library UI
 
-Introduce a small value-type draft for the seven fields rather than loosely
+Introduce a small value-type draft for the six fields rather than loosely
 coupled strings in `PromptLibraryView`.
 
 - Create/edit sheets get a collapsed `DisclosureGroup("Generation settings")`.

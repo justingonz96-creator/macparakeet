@@ -90,8 +90,8 @@ with human progress/status kept off stdout.
   camelCase.
 - `prompts list/show --json` prompt objects, and prompt objects returned by
   `prompts set --json`, include additive optional `inferenceSettings`. When
-  present it is an object with optional `temperature`, `topP`, `topK`,
-  `maxTokens`, and `seed`, plus `thinkingMode` (`providerDefault`, `enabled`,
+  present it is an object with optional `temperature`, `topP`, `topK`, and
+  `maxTokens`, plus `thinkingMode` (`providerDefault`, `enabled`,
   or `disabled`) and optional `reasoningEffort` (`low`, `medium`, `high`, or
   `xhigh`). Reasoning effort is normalized away unless thinking is enabled.
   This value records the prompt's request; it does not prove

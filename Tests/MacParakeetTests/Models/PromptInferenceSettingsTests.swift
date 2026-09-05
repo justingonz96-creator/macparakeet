@@ -15,7 +15,6 @@ final class PromptInferenceSettingsTests: XCTestCase {
                 topP: 1,
                 topK: 0,
                 maxTokens: 131_072,
-                seed: Int.min,
                 thinkingMode: .disabled
             ).validated())
     }
@@ -36,7 +35,6 @@ final class PromptInferenceSettingsTests: XCTestCase {
             topP: 0.9,
             topK: 20,
             maxTokens: 4096,
-            seed: 42,
             thinkingMode: .enabled,
             reasoningEffort: .xhigh
         )
@@ -73,6 +71,15 @@ final class PromptInferenceSettingsTests: XCTestCase {
             from: Data(#"{"temperature":0.2}"#.utf8)
         )
         XCTAssertEqual(partial, PromptInferenceSettings(temperature: 0.2))
+    }
+
+    func testDecodingLegacySeedIgnoresRemovedField() throws {
+        let decoded = try JSONDecoder().decode(
+            PromptInferenceSettings.self,
+            from: Data(#"{"seed":42,"thinkingMode":"enabled"}"#.utf8)
+        )
+
+        XCTAssertEqual(decoded, PromptInferenceSettings(thinkingMode: .enabled))
     }
 
     func testReasoningEffortIsEffectiveOnlyWhenThinkingIsEnabled() throws {
@@ -144,7 +151,6 @@ final class PromptInferenceSettingsTests: XCTestCase {
             topP: 0.9,
             topK: 20,
             maxTokens: 4096,
-            seed: 42,
             thinkingMode: .enabled,
             reasoningEffort: .xhigh
         )
@@ -171,7 +177,6 @@ final class PromptInferenceSettingsTests: XCTestCase {
                 topP: 0.9,
                 topK: 20,
                 maxTokens: 4096,
-                seed: 42,
                 thinkingMode: .enabled,
                 reasoningEffort: .medium
             )
@@ -181,7 +186,7 @@ final class PromptInferenceSettingsTests: XCTestCase {
         XCTAssertNil(resolution.options.temperature)
         XCTAssertEqual(
             resolution.unsupportedSettings,
-            [.temperature, .topP, .topK, .seed, .thinkingMode, .reasoningEffort]
+            [.temperature, .topP, .topK, .thinkingMode, .reasoningEffort]
         )
         XCTAssertEqual(
             resolution.effectiveSettings,

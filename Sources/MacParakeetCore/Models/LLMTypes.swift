@@ -134,7 +134,6 @@ public struct ChatCompletionOptions: Sendable, Equatable {
     public let topP: Double?
     public let topK: Int?
     public let maxTokens: Int?
-    public let seed: Int?
     public let thinkingMode: PromptInferenceSettings.ThinkingMode
     public let reasoningEffort: PromptInferenceSettings.ReasoningEffort?
     public let usesPromptInferenceSettings: Bool
@@ -149,7 +148,6 @@ public struct ChatCompletionOptions: Sendable, Equatable {
         topP: Double? = nil,
         topK: Int? = nil,
         maxTokens: Int? = nil,
-        seed: Int? = nil,
         thinkingMode: PromptInferenceSettings.ThinkingMode = .providerDefault,
         reasoningEffort: PromptInferenceSettings.ReasoningEffort? = nil,
         usesPromptInferenceSettings: Bool = false,
@@ -161,7 +159,6 @@ public struct ChatCompletionOptions: Sendable, Equatable {
         self.topP = topP
         self.topK = topK
         self.maxTokens = maxTokens
-        self.seed = seed
         self.thinkingMode = thinkingMode
         self.reasoningEffort = reasoningEffort
         self.usesPromptInferenceSettings = usesPromptInferenceSettings
@@ -191,7 +188,6 @@ public struct ChatCompletionOptions: Sendable, Equatable {
             topP: settings.topP ?? topP,
             topK: settings.topK ?? topK,
             maxTokens: settings.maxTokens ?? maxTokens,
-            seed: settings.seed ?? seed,
             thinkingMode: resolvedThinkingMode,
             reasoningEffort: resolvedReasoningEffort,
             usesPromptInferenceSettings: usesPromptInferenceSettings,
@@ -209,7 +205,6 @@ public struct ChatCompletionOptions: Sendable, Equatable {
             topP: topP,
             topK: topK,
             maxTokens: maxTokens,
-            seed: seed,
             thinkingMode: thinkingMode,
             reasoningEffort: reasoningEffort,
             usesPromptInferenceSettings: usesPromptInferenceSettings,

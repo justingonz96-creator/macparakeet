@@ -526,21 +526,18 @@ struct OllamaRequestOptions: Encodable {
     let top_p: Double?
     let top_k: Int?
     let num_predict: Int?
-    let seed: Int?
 
     init(
         num_ctx: Int,
         temperature: Double? = nil,
         top_p: Double? = nil,
         top_k: Int? = nil,
-        num_predict: Int? = nil,
-        seed: Int? = nil
+        num_predict: Int? = nil
     ) {
         self.num_ctx = num_ctx
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
         self.num_predict = num_predict
-        self.seed = seed
     }
 }

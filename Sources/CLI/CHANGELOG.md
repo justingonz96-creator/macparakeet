@@ -103,7 +103,7 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 - Prompt JSON gains additive optional inference metadata. `prompts list/show`
   (and prompt objects returned by `prompts set`) expose `inferenceSettings`
-  with optional `temperature`, `topP`, `topK`, `maxTokens`, `seed`, and a
+  with optional `temperature`, `topP`, `topK`, `maxTokens`, and a
   `thinkingMode` value, plus optional `reasoningEffort` (`low`, `medium`,
   `high`, or `xhigh`) when thinking is enabled. LLM result envelopes,
   including `prompts run --json`,

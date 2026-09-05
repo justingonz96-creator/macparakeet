@@ -68,7 +68,6 @@ final class PromptResultsViewModelTests: XCTestCase {
             inferenceSettings: PromptInferenceSettings(
                 temperature: 0.3,
                 maxTokens: 500,
-                seed: 42,
                 thinkingMode: .enabled,
                 reasoningEffort: .xhigh
             )
@@ -84,11 +83,11 @@ final class PromptResultsViewModelTests: XCTestCase {
 
         XCTAssertEqual(
             viewModel.selectedPromptInferenceSummary,
-            "Temp 0.3 · Max 500 · Seed 42 · Thinking on · Effort Extra high"
+            "Temp 0.3 · Max 500 · Thinking on · Effort Extra high"
         )
         XCTAssertEqual(
             viewModel.selectedPromptInferenceCompatibilityMessage,
-            "Not supported by this provider/model: Temperature, Seed, Thinking, Reasoning effort."
+            "Not supported by this provider/model: Temperature, Thinking, Reasoning effort."
         )
     }
 

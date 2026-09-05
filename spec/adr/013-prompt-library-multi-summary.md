@@ -57,7 +57,7 @@ Zero auto-run prompt cards is a valid state. In that configuration, transcriptio
 ### 7. Per-prompt inference settings use typed snapshots
 
 A custom result prompt may store optional `temperature`, `topP`, `topK`,
-`maxTokens`, `seed`, thinking mode, and reasoning effort values. Reasoning
+`maxTokens`, thinking mode, and reasoning effort values. Reasoning
 effort is retained only while thinking is explicitly enabled. This is a typed domain model,
 not an arbitrary request-body editor. Built-in prompts and Transform prompts
 keep these settings unset in the initial contract.

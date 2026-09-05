@@ -20,7 +20,6 @@ The first implementation supports:
 - `topP`
 - `topK`
 - `maxTokens`
-- `seed`
 - `thinkingMode`: default, enabled, or disabled
 - `reasoningEffort`: default, low, medium, high, or extra high; only effective
   when thinking is enabled
@@ -58,7 +57,6 @@ Controls:
 | Top P | Optional number | `0...1` |
 | Top K | Optional integer | `0...1000`; `0` means disabled where supported |
 | Maximum output tokens | Optional integer | `1...131072` |
-| Seed | Optional signed integer | Provider-defined semantics |
 | Thinking | Picker | Default / Enabled / Disabled |
 | Reasoning effort | Conditional picker | Default / Low / Medium / High / Extra high; shown only when Thinking is Enabled |
 
@@ -102,7 +100,6 @@ public struct PromptInferenceSettings: Codable, Sendable, Equatable {
     public var topP: Double?
     public var topK: Int?
     public var maxTokens: Int?
-    public var seed: Int?
     public var thinkingMode: ThinkingMode
     public var reasoningEffort: ReasoningEffort?
 }
@@ -183,10 +180,10 @@ configured value when a model rejects it.
 
 | Provider path | Mapping |
 | --- | --- |
-| Custom OpenAI-compatible, including llama.cpp | `temperature`, `top_p`, `top_k`, `max_tokens`, `seed`; thinking and optional effort map to `chat_template_kwargs.enable_thinking` and `chat_template_kwargs.reasoning_effort` |
-| Native Ollama | `temperature`, `top_p`, `top_k`, `num_predict`, `seed` inside `options`; thinking maps to top-level `think`; reasoning effort is initially unsupported |
-| Native OpenAI | `temperature` and `top_p` when model-compatible; output budget uses the adapter's existing `max_tokens` / `max_completion_tokens` policy; omit `top_k`, `seed`, and thinking |
-| Native Anthropic | `temperature`, `top_p`, and `max_tokens` when model-compatible; omit `top_k`, `seed`, and thinking |
+| Custom OpenAI-compatible, including llama.cpp | `temperature`, `top_p`, `top_k`, `max_tokens`; thinking and optional effort map to `chat_template_kwargs.enable_thinking` and `chat_template_kwargs.reasoning_effort` |
+| Native Ollama | `temperature`, `top_p`, `top_k`, `num_predict` inside `options`; thinking maps to top-level `think`; reasoning effort is initially unsupported |
+| Native OpenAI | `temperature` and `top_p` when model-compatible; output budget uses the adapter's existing `max_tokens` / `max_completion_tokens` policy; omit `top_k` and thinking |
+| Native Anthropic | `temperature`, `top_p`, and `max_tokens` when model-compatible; omit `top_k` and thinking |
 | Gemini / OpenRouter / LM Studio | Map fields explicitly supported by the existing endpoint contract; omit the rest |
 | In-process MLX / local CLI | Apply only fields supported by the runtime/CLI contract; report the rest as unsupported |
 
@@ -198,7 +195,6 @@ For a model served through an OpenAI-compatible llama.cpp endpoint:
   "top_p": 0.9,
   "top_k": 20,
   "max_tokens": 4096,
-  "seed": 42,
   "chat_template_kwargs": {
     "enable_thinking": false
   }

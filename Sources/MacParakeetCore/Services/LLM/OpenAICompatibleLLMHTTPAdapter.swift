@@ -341,7 +341,6 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
             top_k: supportsCustomOpenAICompatibleOptions ? options.topK : nil,
             max_tokens: maxTokens,
             max_completion_tokens: maxCompletionTokens,
-            seed: supportsCustomOpenAICompatibleOptions ? options.seed : nil,
             chat_template_kwargs: supportsCustomOpenAICompatibleOptions
                 ? Self.chatTemplateKwargs(
                     for: options.thinkingMode,
@@ -533,7 +532,6 @@ struct OpenAIRequestBody: Encodable {
     let top_k: Int?
     let max_tokens: Int?
     let max_completion_tokens: Int?
-    let seed: Int?
     let chat_template_kwargs: OpenAIChatTemplateKwargs?
     let response_format: OpenAIResponseFormat?
     let options: OllamaRequestOptions?  // Ollama-specific: num_ctx etc.

@@ -646,13 +646,6 @@ private struct GenerationSettingsEditor: View {
                         text: $draft.maxTokens,
                         field: .maxTokens
                     )
-                    numberField(
-                        title: "Seed",
-                        placeholder: "Default",
-                        text: $draft.seed,
-                        field: .seed
-                    )
-
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Thinking")
                             .font(DesignSystem.Typography.caption.weight(.medium))
@@ -761,7 +754,6 @@ private struct GenerationSettingsEditor: View {
             topP: Double(draft.topP.trimmingCharacters(in: .whitespacesAndNewlines)),
             topK: Int(draft.topK.trimmingCharacters(in: .whitespacesAndNewlines)),
             maxTokens: Int(draft.maxTokens.trimmingCharacters(in: .whitespacesAndNewlines)),
-            seed: Int(draft.seed.trimmingCharacters(in: .whitespacesAndNewlines)),
             thinkingMode: draft.thinkingMode,
             reasoningEffort: draft.reasoningEffort
         )

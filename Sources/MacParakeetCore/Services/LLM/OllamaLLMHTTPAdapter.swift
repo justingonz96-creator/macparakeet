@@ -256,8 +256,7 @@ struct OllamaLLMHTTPAdapter: LLMHTTPAdapter {
                 temperature: usesPromptInferenceSettings ? options.temperature : nil,
                 top_p: usesPromptInferenceSettings ? options.topP : nil,
                 top_k: usesPromptInferenceSettings ? options.topK : nil,
-                num_predict: usesPromptInferenceSettings ? options.maxTokens : nil,
-                seed: usesPromptInferenceSettings ? options.seed : nil
+                num_predict: usesPromptInferenceSettings ? options.maxTokens : nil
             )
         )
 

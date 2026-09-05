@@ -55,7 +55,6 @@ final class PromptResultRepositoryTests: XCTestCase {
                 topP: 0.9,
                 topK: 20,
                 maxTokens: 4096,
-                seed: 42,
                 thinkingMode: .enabled,
                 reasoningEffort: .medium
             )

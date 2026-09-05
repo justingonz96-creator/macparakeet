@@ -476,7 +476,7 @@ macparakeet-cli prompts run "Action items" \
 ```
 
 Prompt objects returned by `prompts list/show --json` include additive optional
-`inferenceSettings` (`temperature`, `topP`, `topK`, `maxTokens`, `seed`, and
+`inferenceSettings` (`temperature`, `topP`, `topK`, `maxTokens`, and
 `thinkingMode`, plus optional `reasoningEffort`: `low`, `medium`, `high`, or
 `xhigh`). Reasoning effort applies only when thinking is enabled. A blank value
 means the prompt inherits MacParakeet's current

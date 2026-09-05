@@ -40,7 +40,6 @@ final class PromptsViewModelTests: XCTestCase {
             topP: "0.9",
             topK: "20",
             maxTokens: "4096",
-            seed: "-42",
             thinkingMode: .enabled,
             reasoningEffort: .medium
         )
@@ -55,7 +54,6 @@ final class PromptsViewModelTests: XCTestCase {
                 topP: 0.9,
                 topK: 20,
                 maxTokens: 4096,
-                seed: -42,
                 thinkingMode: .enabled,
                 reasoningEffort: .medium
             )
@@ -71,8 +69,7 @@ final class PromptsViewModelTests: XCTestCase {
             temperature: "  ",
             topP: "",
             topK: "\n",
-            maxTokens: "",
-            seed: "\t"
+            maxTokens: ""
         )
 
         viewModel.addPrompt()
@@ -88,8 +85,7 @@ final class PromptsViewModelTests: XCTestCase {
             temperature: "NaN",
             topP: "1.1",
             topK: "2.5",
-            maxTokens: "0",
-            seed: "not-an-int"
+            maxTokens: "0"
         )
 
         viewModel.addPrompt()
@@ -99,7 +95,6 @@ final class PromptsViewModelTests: XCTestCase {
         XCTAssertNotNil(viewModel.newInferenceValidationErrors[.topP])
         XCTAssertNotNil(viewModel.newInferenceValidationErrors[.topK])
         XCTAssertNotNil(viewModel.newInferenceValidationErrors[.maxTokens])
-        XCTAssertNotNil(viewModel.newInferenceValidationErrors[.seed])
     }
 
     func testChangingInferenceDraftClearsItsValidationErrors() {
@@ -224,7 +219,6 @@ final class PromptsViewModelTests: XCTestCase {
             topP: "0.9",
             topK: "20",
             maxTokens: "4096",
-            seed: "42",
             thinkingMode: .enabled,
             reasoningEffort: .high
         )
@@ -252,7 +246,6 @@ final class PromptsViewModelTests: XCTestCase {
                 topP: 0.9,
                 topK: 20,
                 maxTokens: 4096,
-                seed: 42,
                 thinkingMode: .enabled,
                 reasoningEffort: .medium
             )
@@ -260,7 +253,7 @@ final class PromptsViewModelTests: XCTestCase {
 
         XCTAssertEqual(
             summary,
-            "Temp 0.2 · Top P 0.9 · Top K 20 · Max 4096 · Seed 42 · Thinking on · Effort Medium"
+            "Temp 0.2 · Top P 0.9 · Top K 20 · Max 4096 · Thinking on · Effort Medium"
         )
         XCTAssertNil(PromptsViewModel.compactInferenceSummary(nil))
     }

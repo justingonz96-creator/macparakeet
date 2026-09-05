@@ -9,7 +9,6 @@ public final class PromptsViewModel {
         public var topP: String
         public var topK: String
         public var maxTokens: String
-        public var seed: String
         public var thinkingMode: PromptInferenceSettings.ThinkingMode
         public var reasoningEffort: PromptInferenceSettings.ReasoningEffort?
 
@@ -18,7 +17,6 @@ public final class PromptsViewModel {
             topP: String = "",
             topK: String = "",
             maxTokens: String = "",
-            seed: String = "",
             thinkingMode: PromptInferenceSettings.ThinkingMode = .providerDefault,
             reasoningEffort: PromptInferenceSettings.ReasoningEffort? = nil
         ) {
@@ -26,7 +24,6 @@ public final class PromptsViewModel {
             self.topP = topP
             self.topK = topK
             self.maxTokens = maxTokens
-            self.seed = seed
             self.thinkingMode = thinkingMode
             self.reasoningEffort = thinkingMode == .enabled ? reasoningEffort : nil
         }
@@ -36,7 +33,6 @@ public final class PromptsViewModel {
             topP = settings?.topP.map(Self.renderNumber) ?? ""
             topK = settings?.topK.map(String.init) ?? ""
             maxTokens = settings?.maxTokens.map(String.init) ?? ""
-            seed = settings?.seed.map(String.init) ?? ""
             thinkingMode = settings?.thinkingMode ?? .providerDefault
             reasoningEffort = thinkingMode == .enabled ? settings?.reasoningEffort : nil
         }
@@ -46,7 +42,6 @@ public final class PromptsViewModel {
                 && topP.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && topK.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && maxTokens.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && seed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && thinkingMode == .providerDefault
                 && reasoningEffort == nil
         }
@@ -241,7 +236,6 @@ public final class PromptsViewModel {
         }
         if let topK = settings.topK { parts.append("Top K \(topK)") }
         if let maxTokens = settings.maxTokens { parts.append("Max \(maxTokens)") }
-        if let seed = settings.seed { parts.append("Seed \(seed)") }
         switch settings.thinkingMode {
         case .providerDefault: break
         case .enabled:
@@ -386,14 +380,6 @@ public final class PromptsViewModel {
             message: "Enter a whole number from 1 to 131072.",
             errors: &nextErrors
         )
-        let seed = parseInt(
-            draft.seed,
-            field: .seed,
-            range: nil,
-            message: "Enter a signed whole number.",
-            errors: &nextErrors
-        )
-
         if nextErrors.isEmpty {
             do {
                 let settings = PromptInferenceSettings(
@@ -401,7 +387,6 @@ public final class PromptsViewModel {
                     topP: topP,
                     topK: topK,
                     maxTokens: maxTokens,
-                    seed: seed,
                     thinkingMode: draft.thinkingMode,
                     reasoningEffort: draft.reasoningEffort
                 )
@@ -458,7 +443,6 @@ public final class PromptsViewModel {
         case .topP: return "Enter a number from 0 to 1."
         case .topK: return "Enter a whole number from 0 to 1000."
         case .maxTokens: return "Enter a whole number from 1 to 131072."
-        case .seed: return "Enter a signed whole number."
         case .thinkingMode: return "Choose a valid thinking mode."
         case .reasoningEffort: return "Choose a valid reasoning effort."
         }
@@ -470,7 +454,6 @@ public final class PromptsViewModel {
         case .topP: return "Top P"
         case .topK: return "Top K"
         case .maxTokens: return "Maximum output tokens"
-        case .seed: return "Seed"
         case .thinkingMode: return "Thinking"
         case .reasoningEffort: return "Reasoning effort"
         }
