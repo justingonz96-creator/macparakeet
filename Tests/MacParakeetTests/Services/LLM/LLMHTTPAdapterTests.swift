@@ -69,8 +69,12 @@ final class LLMHTTPAdapterTests: XCTestCase {
         XCTAssertEqual(sessionIDs, [conversationID.uuidString, conversationID.uuidString])
     }
 
-    func testOpenCodeRedirectsStripSessionOutsideAllowedEndpoints() async throws {
+    func testOpenCodeRedirectsRefuseUnapprovedDestinations() async throws {
         var original = URLRequest(url: URL(string: "https://opencode.ai/zen/go/v1/chat/completions")!)
+        original.httpMethod = "POST"
+        original.httpBody = Data("Private synthetic prompt".utf8)
+        original.setValue("Bearer synthetic-key", forHTTPHeaderField: "Authorization")
+        original.setValue("synthetic-api-key", forHTTPHeaderField: "x-api-key")
         let conversationID = UUID()
         OpenCodeRequestHeaders.apply(to: &original, conversationID: conversationID)
         let delegate = try XCTUnwrap(OpenCodeRequestHeaders.redirectDelegate(for: original))
@@ -92,11 +96,15 @@ final class LLMHTTPAdapterTests: XCTestCase {
                 )!,
                 newRequest: proposed
             ) { result in
-                XCTAssertEqual(result?.url?.absoluteString, destination)
-                XCTAssertEqual(
-                    result?.value(forHTTPHeaderField: "x-opencode-session"),
-                    destination == "https://opencode.ai/zen/go/v1/messages" ? conversationID.uuidString : nil
-                )
+                if destination == "https://opencode.ai/zen/go/v1/messages" {
+                    XCTAssertEqual(result?.url?.absoluteString, destination)
+                    XCTAssertEqual(result?.value(forHTTPHeaderField: "x-opencode-session"), conversationID.uuidString)
+                    XCTAssertEqual(result?.value(forHTTPHeaderField: "Authorization"), "Bearer synthetic-key")
+                    XCTAssertEqual(result?.value(forHTTPHeaderField: "x-api-key"), "synthetic-api-key")
+                    XCTAssertEqual(result?.httpBody, Data("Private synthetic prompt".utf8))
+                } else {
+                    XCTAssertNil(result, "Neither credentials nor prompt content may follow an unapproved redirect")
+                }
                 completed.fulfill()
             }
             await fulfillment(of: [completed], timeout: 2)

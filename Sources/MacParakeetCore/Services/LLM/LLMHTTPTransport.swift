@@ -93,11 +93,8 @@ enum OpenCodeRequestHeaders {
             newRequest request: URLRequest,
             completionHandler: @escaping @Sendable (URLRequest?) -> Void
         ) {
-            var redirected = request
-            if !OpenCodeRequestHeaders.isOpenCodeGoURL(request.url) {
-                redirected.setValue(nil, forHTTPHeaderField: "x-opencode-session")
-            }
-            completionHandler(redirected)
+            // Refuse the redirect entirely: stripping headers would still forward the prompt body.
+            completionHandler(OpenCodeRequestHeaders.isOpenCodeGoURL(request.url) ? request : nil)
         }
     }
 }

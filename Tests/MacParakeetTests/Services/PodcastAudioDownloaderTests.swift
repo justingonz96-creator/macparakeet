@@ -113,7 +113,7 @@ final class PodcastAudioDownloaderTests: XCTestCase {
         }
 
         let fullLog = try String(contentsOf: logURL, encoding: .utf8)
-        let appendedLog = String(fullLog.dropFirst(existingLog.count))
+        let appendedLog = fullLog.hasPrefix(existingLog) ? String(fullLog.dropFirst(existingLog.count)) : fullLog
         XCTAssertTrue(appendedLog.contains("podcast_audio_fetch_failed status=403"))
         XCTAssertTrue(appendedLog.contains("server=\"cloudflare\""))
         XCTAssertTrue(appendedLog.contains("retry_after=\"120\""))

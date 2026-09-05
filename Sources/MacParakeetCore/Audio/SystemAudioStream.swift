@@ -475,7 +475,7 @@ public final class SystemAudioStream: NSObject, @unchecked Sendable {
         }
         guard action == .firstBuffer else { return }
         logger.info("system_audio_stream_first_buffer_received")
-        AudioCaptureDiagnostics.append(
+        AudioCaptureDiagnostics.appendAsync(
             "system_audio_stream_first_buffer sr=\(Self.sampleRate) ch=\(Self.channelCount)"
         )
         startHeartbeatTimer()
