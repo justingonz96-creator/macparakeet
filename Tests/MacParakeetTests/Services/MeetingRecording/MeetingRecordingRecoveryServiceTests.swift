@@ -1521,7 +1521,8 @@ private final class RecordingTranscriptionRepository: TranscriptionRepositoryPro
     }
     func deleteAll() throws {}
     func updateStatus(id: UUID, status: Transcription.TranscriptionStatus, errorMessage: String?) throws {}
-    func updateFileName(id: UUID, fileName: String) throws {}
+    @discardableResult
+    func updateFileName(id: UUID, fileName: String) throws -> Transcription? { nil }
     func updateChatMessages(id: UUID, chatMessages: [ChatMessage]?) throws {}
     func updateSpeakers(id: UUID, speakers: [SpeakerInfo]?) throws {}
     func clearStoredAudioPathsForURLTranscriptions() throws {}

@@ -141,6 +141,7 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
     var fetchMeetingsWithStatusCalls: [Transcription.TranscriptionStatus] = []
     var fetchAllCalls: [Int?] = []
     var fetchAllError: Error?
+    var fetchError: Error?
     var fetchAllHandler: (@Sendable (Int?) throws -> [Transcription])?
     var fetchMeetingsWithStatusHandler: (@Sendable (Transcription.TranscriptionStatus) throws -> [Transcription])?
     var updateTitleOverrideError: Error?
@@ -162,7 +163,8 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
     }
 
     func fetch(id: UUID) throws -> Transcription? {
-        transcriptions.first(where: { $0.id == id })
+        if let fetchError { throw fetchError }
+        return transcriptions.first(where: { $0.id == id })
     }
 
     func fetchAll(limit: Int?) throws -> [Transcription] {
@@ -221,16 +223,17 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
         }
     }
 
-    func updateFileName(id: UUID, fileName: String) throws {
+    @discardableResult
+    func updateFileName(id: UUID, fileName: String) throws -> Transcription? {
         updateFileNameCalls.append((id: id, fileName: fileName))
         if let updateFileNameError {
             throw updateFileNameError
         }
-        if let idx = transcriptions.firstIndex(where: { $0.id == id }) {
-            transcriptions[idx].fileName = fileName
-            transcriptions[idx].derivedTitle = fileName
-            transcriptions[idx].updatedAt = Date()
-        }
+        guard let idx = transcriptions.firstIndex(where: { $0.id == id }) else { return nil }
+        transcriptions[idx].fileName = fileName
+        transcriptions[idx].derivedTitle = fileName
+        transcriptions[idx].updatedAt = Date()
+        return transcriptions[idx]
     }
 
     func updateTitleOverride(id: UUID, titleOverride: String?) throws {

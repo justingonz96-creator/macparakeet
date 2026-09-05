@@ -1801,8 +1801,13 @@ public final class TranscriptionViewModel {
         guard !trimmed.isEmpty, trimmed != transcription.fileName else { return }
 
         clearError()
+        let persistedTranscription: Transcription
         do {
-            try transcriptionRepo.updateFileName(id: transcription.id, fileName: trimmed)
+            guard let updated = try transcriptionRepo.updateFileName(id: transcription.id, fileName: trimmed) else {
+                setError(message: "Failed to rename transcription: the meeting no longer exists.")
+                return
+            }
+            persistedTranscription = updated
         } catch {
             logger.error(
                 "Failed to persist transcription rename error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
@@ -1811,12 +1816,6 @@ public final class TranscriptionViewModel {
             return
         }
 
-        // The write already committed the rename; publish the requested title
-        // directly instead of making a second read part of rename success.
-        var persistedTranscription = transcription
-        persistedTranscription.fileName = trimmed
-        persistedTranscription.derivedTitle = trimmed
-        persistedTranscription.updatedAt = Date()
         currentTranscription = persistedTranscription
         if let index = transcriptions.firstIndex(where: { $0.id == transcription.id }) {
             transcriptions[index] = persistedTranscription

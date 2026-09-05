@@ -480,6 +480,134 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
         )
     }
 
+    func testApplyMeetingRenameRejectsStaleUnloadedLibrarySnapshot() async throws {
+        try await assertMeetingRenameRejectsStaleDateWindow(scope: .all, loadMore: false)
+    }
+
+    func testApplyMeetingRenameRejectsStaleUnloadedRecentMeetingsSnapshot() async throws {
+        try await assertMeetingRenameRejectsStaleDateWindow(scope: .meetings, loadMore: false)
+    }
+
+    func testApplyMeetingRenamePreservesInFlightLibraryPagination() async throws {
+        try await assertMeetingRenameRejectsStaleDateWindow(scope: .all, loadMore: true)
+    }
+
+    func testApplyMeetingRenamePreservesInFlightRecentMeetingsPagination() async throws {
+        try await assertMeetingRenameRejectsStaleDateWindow(scope: .meetings, loadMore: true)
+    }
+
+    func testApplyMeetingRenameUpdatesIdleDateWindowWithoutRequery() async throws {
+        let mockRepo = MockTranscriptionRepository()
+        let meeting = Transcription(fileName: "Old meeting", status: .completed, sourceType: .meeting)
+        mockRepo.transcriptions = [meeting]
+        vm.configure(transcriptionRepo: mockRepo)
+        await load()
+        mockRepo.fetchAllError = LibraryRenameTestError.reloadFailed
+
+        try mockRepo.updateFileName(id: meeting.id, fileName: "Renamed meeting")
+        vm.applyMeetingRename(MeetingRename(id: meeting.id, title: "Renamed meeting"))
+
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertEqual(vm.filteredTranscriptions.first?.fileName, "Renamed meeting")
+        XCTAssertEqual(vm.groupedTranscriptions.first?.items.first?.fileName, "Renamed meeting")
+    }
+
+    func testApplyMeetingRenameLeavesNonMeetingQueryLoadActive() async throws {
+        let mockRepo = MockTranscriptionRepository()
+        let local = Transcription(fileName: "Local recording", status: .completed, sourceType: .file)
+        let gate = StaleFetchGate()
+        mockRepo.fetchAllHandler = { _ in
+            guard gate.nextCallNumber() == 1 else { throw LibraryRenameTestError.reloadFailed }
+            gate.blockFirstFetchUntilAllowed()
+            return [local]
+        }
+        let viewModel = TranscriptionLibraryViewModel()
+        viewModel.filter = .local
+        viewModel.sortOrder = .titleAscending
+        viewModel.configure(transcriptionRepo: mockRepo)
+        let activeLoad = viewModel.loadTranscriptions()
+        defer { gate.allowFirstFetchToFinish() }
+        await Task.detached { gate.waitForFirstFetchStarted() }.value
+
+        viewModel.applyMeetingRename(MeetingRename(id: UUID(), title: "Renamed meeting"))
+
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertTrue(viewModel.isLoading)
+        gate.allowFirstFetchToFinish()
+        await activeLoad.value
+        XCTAssertEqual(viewModel.filteredTranscriptions.map(\.id), [local.id])
+        XCTAssertFalse(viewModel.isLoading)
+    }
+
+    private func assertMeetingRenameRejectsStaleDateWindow(
+        scope: TranscriptionLibraryScope,
+        loadMore: Bool
+    ) async throws {
+        let repository = try XCTUnwrap(repo)
+        let meetings = (0..<3).map { index in
+            Transcription(
+                createdAt: Date(timeIntervalSince1970: Double(3 - index)),
+                fileName: "Meeting \(index)",
+                status: .completed,
+                sourceType: .meeting
+            )
+        }
+        for meeting in meetings {
+            try repository.save(meeting)
+        }
+        let mockRepo = MockTranscriptionRepository()
+        mockRepo.fetchAllHandler = { try repository.fetchAll(limit: $0) }
+        let viewModel = TranscriptionLibraryViewModel(scope: scope)
+        viewModel.pageSize = 1
+        viewModel.configure(transcriptionRepo: mockRepo)
+        if loadMore {
+            await viewModel.loadTranscriptions().value
+            XCTAssertEqual(viewModel.transcriptions.map(\.id), [meetings[0].id])
+        }
+
+        let gate = StaleFetchGate()
+        mockRepo.fetchAllHandler = { limit in
+            let callNumber = gate.nextCallNumber()
+            let snapshot = try repository.fetchAll(limit: limit)
+            if callNumber == 1 {
+                gate.blockFirstFetchUntilAllowed()
+            }
+            return snapshot
+        }
+        let staleLoad: Task<Void, Never>
+        if loadMore {
+            staleLoad = try XCTUnwrap(viewModel.loadMoreTranscriptions())
+        } else {
+            staleLoad = viewModel.loadTranscriptions()
+        }
+        defer { gate.allowFirstFetchToFinish() }
+        await Task.detached { gate.waitForFirstFetchStarted() }.value
+        let renamed = meetings[loadMore ? 1 : 0]
+        XCTAssertFalse(viewModel.transcriptions.contains { $0.id == renamed.id })
+
+        try repository.updateFileName(id: renamed.id, fileName: "Renamed meeting")
+        viewModel.applyMeetingRename(MeetingRename(id: renamed.id, title: "Renamed meeting"))
+
+        let expectedIDs = Array(meetings.prefix(loadMore ? 2 : 1)).map(\.id)
+        XCTAssertEqual(viewModel.transcriptions.map(\.id), expectedIDs)
+        XCTAssertEqual(viewModel.transcriptions.last?.fileName, "Renamed meeting")
+        XCTAssertTrue(viewModel.hasMore)
+        XCTAssertFalse(viewModel.isLoading)
+        gate.allowFirstFetchToFinish()
+        await staleLoad.value
+        XCTAssertEqual(viewModel.transcriptions.map(\.id), expectedIDs)
+        XCTAssertEqual(viewModel.transcriptions.last?.fileName, "Renamed meeting")
+
+        let nextPage = try XCTUnwrap(viewModel.loadMoreTranscriptions())
+        await nextPage.value
+        XCTAssertEqual(
+            viewModel.transcriptions.map(\.id),
+            Array(meetings.prefix(loadMore ? 3 : 2)).map(\.id)
+        )
+        XCTAssertEqual(viewModel.transcriptions.first { $0.id == renamed.id }?.fileName, "Renamed meeting")
+        XCTAssertEqual(viewModel.hasMore, !loadMore)
+    }
+
     // MARK: - Favorites
 
     func testToggleFavorite() async throws {

@@ -15,7 +15,8 @@ public protocol TranscriptionRepositoryProtocol: Sendable {
     func delete(id: UUID) throws -> Bool
     func deleteAll() throws
     func updateStatus(id: UUID, status: Transcription.TranscriptionStatus, errorMessage: String?) throws
-    func updateFileName(id: UUID, fileName: String) throws
+    @discardableResult
+    func updateFileName(id: UUID, fileName: String) throws -> Transcription?
     func updateTitleOverride(id: UUID, titleOverride: String?) throws
     func updateChatMessages(id: UUID, chatMessages: [ChatMessage]?) throws
     func updateSpeakers(id: UUID, speakers: [SpeakerInfo]?) throws
@@ -110,7 +111,8 @@ extension TranscriptionRepositoryProtocol {
     public func clearStoredAudioPathsForURLTranscriptions() throws {}
     @discardableResult
     public func clearStoredAudioPathsForMeetingTranscriptions(under directoryPath: String) throws -> [UUID] { [] }
-    public func updateFileName(id: UUID, fileName: String) throws {}
+    @discardableResult
+    public func updateFileName(id: UUID, fileName: String) throws -> Transcription? { nil }
     public func updateTitleOverride(id: UUID, titleOverride: String?) throws {}
     public func updateChatMessages(id: UUID, chatMessages: [ChatMessage]?) throws {}
     public func updateSpeakers(id: UUID, speakers: [SpeakerInfo]?) throws {}
@@ -130,21 +132,21 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
     static func effectiveDisplayTitleExpression(tableAlias: String? = nil) -> String {
         let prefix = tableAlias.map { "\($0)." } ?? ""
         return """
-        COALESCE(
-            CASE
-                WHEN \(prefix)sourceType = 'meeting' THEN NULL
-                ELSE NULLIF(TRIM(\(prefix)titleOverride), '')
-            END,
-            CASE
-                WHEN \(prefix)sourceType = 'meeting' THEN COALESCE(
-                    NULLIF(TRIM(\(prefix)fileName), ''),
-                    \(prefix)fileName
-                )
-                WHEN \(prefix)sourceType = 'file' THEN \(prefix)fileName
-                ELSE COALESCE(NULLIF(TRIM(\(prefix)derivedTitle), ''), \(prefix)fileName)
-            END
-        )
-        """
+            COALESCE(
+                CASE
+                    WHEN \(prefix)sourceType = 'meeting' THEN NULL
+                    ELSE NULLIF(TRIM(\(prefix)titleOverride), '')
+                END,
+                CASE
+                    WHEN \(prefix)sourceType = 'meeting' THEN COALESCE(
+                        NULLIF(TRIM(\(prefix)fileName), ''),
+                        \(prefix)fileName
+                    )
+                    WHEN \(prefix)sourceType = 'file' THEN \(prefix)fileName
+                    ELSE COALESCE(NULLIF(TRIM(\(prefix)derivedTitle), ''), \(prefix)fileName)
+                END
+            )
+            """
     }
 
     public init(dbQueue: DatabaseQueue) {
@@ -478,7 +480,8 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
     ) throws -> Bool {
         try dbQueue.write { db in
             guard var transcription = try Transcription.fetchOne(db, key: id),
-                  transcription.status == expectedStatus else {
+                transcription.status == expectedStatus
+            else {
                 return false
             }
             transcription.status = status
@@ -489,9 +492,10 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
         }
     }
 
-    public func updateFileName(id: UUID, fileName: String) throws {
+    @discardableResult
+    public func updateFileName(id: UUID, fileName: String) throws -> Transcription? {
         try dbQueue.write { db in
-            guard var transcription = try Transcription.fetchOne(db, key: id) else { return }
+            guard var transcription = try Transcription.fetchOne(db, key: id) else { return nil }
             transcription.fileName = fileName
             // A user-driven rename (meetings only) is the source of truth for
             // the meeting's name. The Library rows already read `fileName` for
@@ -502,6 +506,7 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
             transcription.derivedTitle = fileName
             transcription.updatedAt = Date()
             try transcription.update(db)
+            return transcription
         }
     }
 

@@ -143,6 +143,7 @@ public final class TranscriptionLibraryViewModel {
     private var loadTask: Task<Void, Never>?
     private var searchDebounceTask: Task<Void, Never>?
     private var loadGeneration = 0
+    private var requestedWindowSize = 0
     private var bulkSelectionGeneration = 0
     public let scope: TranscriptionLibraryScope
 
@@ -490,17 +491,19 @@ public final class TranscriptionLibraryViewModel {
         }
     }
 
-    /// Applies a persisted meeting rename, requerying when titles affect ordering or membership.
+    /// Applies a persisted meeting rename, replacing any stale query snapshot before it can publish.
     public func applyMeetingRename(_ rename: MeetingRename) {
-        if let query = makeQuery(offset: 0),
-            query.sortOrder == .titleAscending || query.searchText != nil
-        {
+        guard let query = makeQuery(offset: 0),
+            query.sourceType == nil || query.sourceType == .meeting
+        else { return }
+        if isLoading || query.sortOrder == .titleAscending || query.searchText != nil {
             // The renamed meeting may not be loaded yet, or may no longer match.
             // Invalidate old snapshots before replacing the active query's window.
+            let windowSize = isLoading ? requestedWindowSize : max(pageSize, transcriptions.count)
             cancelActiveLoad()
             errorMessage = nil
             do {
-                try reloadLoadedWindow()
+                try reloadLoadedWindow(limit: windowSize)
             } catch {
                 logger.error(
                     "Renamed meeting but failed to refresh Library: \(error.localizedDescription, privacy: .private)"
@@ -514,9 +517,6 @@ public final class TranscriptionLibraryViewModel {
             transcriptions[index].sourceType == .meeting
         else {
             return
-        }
-        if loadTask != nil {
-            cancelActiveLoad()
         }
 
         transcriptions[index].fileName = rename.title
@@ -562,13 +562,13 @@ public final class TranscriptionLibraryViewModel {
         loadTranscriptions()
     }
 
-    private func reloadLoadedWindow() throws {
+    private func reloadLoadedWindow(limit: Int? = nil) throws {
         guard let repo = transcriptionRepo else { return }
         guard var query = makeQuery(offset: 0) else {
             publishLoadedItems([], hasMore: false)
             return
         }
-        query.limit = max(pageSize, transcriptions.count)
+        query.limit = limit ?? max(pageSize, transcriptions.count)
         let page = try repo.fetchLibraryPage(query: query)
         publishLoadedItems(page.items, hasMore: page.hasMore)
     }
@@ -628,6 +628,7 @@ public final class TranscriptionLibraryViewModel {
             return Task {}
         }
 
+        requestedWindowSize = query.offset + query.limit
         isLoading = true
         errorMessage = nil
 
