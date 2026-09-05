@@ -1803,20 +1803,27 @@ public final class TranscriptionViewModel {
         clearError()
         do {
             try transcriptionRepo.updateFileName(id: transcription.id, fileName: trimmed)
-            let persistedTranscription = (try transcriptionRepo.fetch(id: transcription.id)) ?? transcription
-            currentTranscription = persistedTranscription
-            if let index = transcriptions.firstIndex(where: { $0.id == transcription.id }) {
-                transcriptions[index] = persistedTranscription
-            }
-            onMeetingRenamed?(MeetingRename(id: persistedTranscription.id, title: persistedTranscription.fileName))
-            Task { [weak self, persistedTranscription] in
-                await self?.refreshMeetingArtifacts(transcription: persistedTranscription)
-            }
         } catch {
             logger.error(
                 "Failed to persist transcription rename error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
             )
             setError(message: "Failed to rename transcription: \(error.localizedDescription)")
+            return
+        }
+
+        // The write already committed the rename; publish the requested title
+        // directly instead of making a second read part of rename success.
+        var persistedTranscription = transcription
+        persistedTranscription.fileName = trimmed
+        persistedTranscription.derivedTitle = trimmed
+        persistedTranscription.updatedAt = Date()
+        currentTranscription = persistedTranscription
+        if let index = transcriptions.firstIndex(where: { $0.id == transcription.id }) {
+            transcriptions[index] = persistedTranscription
+        }
+        onMeetingRenamed?(MeetingRename(id: persistedTranscription.id, title: persistedTranscription.fileName))
+        Task { [weak self, persistedTranscription] in
+            await self?.refreshMeetingArtifacts(transcription: persistedTranscription)
         }
     }
 
