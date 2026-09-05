@@ -122,6 +122,10 @@ final class AppEnvironmentConfigurer {
             quickPromptRepo: env.quickPromptRepo,
             promptRepo: env.promptRepo
         )
+        transcriptionViewModel.onMeetingRenamed = { [weak self] rename in
+            self?.libraryViewModel.applyMeetingRename(rename)
+            self?.meetingsWorkspaceViewModel.recentMeetingsViewModel.applyMeetingRename(rename)
+        }
         settingsViewModel.configure(
             permissionService: env.permissionService,
             dictationRepo: env.dictationRepo,

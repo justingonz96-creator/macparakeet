@@ -16,6 +16,9 @@ import MacParakeetCore
 /// manual check.
 @MainActor
 final class TranscriptTimestampedLayoutSmokeTests: XCTestCase {
+    private final class AppearanceCounter {
+        var count = 0
+    }
 
     private final class CountingHostingView<Content: View>: NSHostingView<Content> {
         var layoutCount = 0
@@ -63,12 +66,13 @@ final class TranscriptTimestampedLayoutSmokeTests: XCTestCase {
         return String(format: "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
     }
 
-    /// Mirrors `TranscriptResultView.transcriptPane`: the lazy/non-lazy choice
-    /// comes from the same decision the product uses.
+    /// Mirrors `TranscriptResultView.transcriptPane`: bounded header content is
+    /// eager, while the timed view directly owns either its lazy or plain rows.
     private func host(
         hasSpeakers: Bool,
         cards: [IdentifiedSpeakerTurn],
-        segments: [TranscriptSegment]
+        segments: [TranscriptSegment],
+        onRenderedChildAppear: @escaping () -> Void = {}
     ) -> CountingHostingView<AnyView> {
         let rowCount = hasSpeakers ? cards.reduce(0) { $0 + $1.turn.segments.count } : segments.count
         let body = TranscriptTimestampedContentView(
@@ -83,18 +87,17 @@ final class TranscriptTimestampedLayoutSmokeTests: XCTestCase {
             isSegmentActive: { $0 == 1 },
             timestampLabel: { self.timestampLabel(ms: $0) },
             isTimestampSeekable: true,
-            onTimestampTap: { _ in }
+            onTimestampTap: { _ in },
+            usesLazyStack: TranscriptBodyLayout.usesLazyStack(
+                rowCount: rowCount,
+                environment: [:]
+            ),
+            onRenderedChildAppear: onRenderedChildAppear
         )
         let content = ScrollViewReader { _ in
             ScrollView {
-                Group {
-                    if TranscriptBodyLayout.usesLazyStack(rowCount: rowCount, environment: [:]) {
-                        LazyVStack(alignment: .leading, spacing: DesignSystem.Spacing.md) { body }
-                    } else {
-                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) { body }
-                    }
-                }
-                .padding(DesignSystem.Spacing.lg)
+                body
+                    .padding(DesignSystem.Spacing.lg)
             }
         }
         let view = CountingHostingView(rootView: AnyView(content))
@@ -218,5 +221,45 @@ final class TranscriptTimestampedLayoutSmokeTests: XCTestCase {
         let view = host(hasSpeakers: true, cards: cards, segments: [])
 
         assertLayoutSettles(view)
+    }
+
+    /// A ten-thousand-word flat transcript must not realize ten thousand row
+    /// subtrees on first layout. Counting actual appearances makes this fail if
+    /// the `ForEach` is moved back under one eager transcript child, without
+    /// relying on a timing threshold.
+    func testTenThousandWordTranscriptRealizesOnlyLazyChildren() {
+        let segments = (0..<10_000).map { index in
+            TranscriptSegment(
+                startMs: index * 1_000,
+                text: "word\(index)",
+                speakerId: nil
+            )
+        }
+        let appearances = AppearanceCounter()
+        let view = host(
+            hasSpeakers: false,
+            cards: [],
+            segments: segments,
+            onRenderedChildAppear: { appearances.count += 1 }
+        )
+
+        let window = NSWindow(
+            contentRect: NSRect(x: -20_000, y: -20_000, width: 800, height: 600),
+            styleMask: [.titled, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        view.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+
+        XCTAssertGreaterThan(appearances.count, 0)
+        XCTAssertLessThan(
+            appearances.count,
+            segments.count,
+            "The lazy stack eagerly realized every 10k-word transcript row"
+        )
     }
 }

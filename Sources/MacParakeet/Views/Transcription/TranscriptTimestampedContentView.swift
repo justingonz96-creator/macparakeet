@@ -106,7 +106,8 @@ func speakerTurnCardScrollTarget(
 ) -> Int? {
     for card in cards.reversed() {
         if let firstStartMs = card.turn.segments.first?.startMs,
-           firstStartMs <= currentMs {
+            firstStartMs <= currentMs
+        {
             return firstStartMs
         }
     }
@@ -144,6 +145,10 @@ struct TranscriptTimestampedContentView<SpeakerLabelContent: View>: View {
     let timestampLabel: (Int) -> String
     let isTimestampSeekable: Bool
     let onTimestampTap: (Int) -> Void
+    /// Long transcripts put the `ForEach` directly inside this lazy stack.
+    /// Callers must not wrap this view in another lazy transcript container:
+    /// that would make the entire transcript one eager child again.
+    var usesLazyStack: Bool = false
     /// User-adjustable reading size for the transcript body (U4). Defaults to the
     /// design-system `bodyLarge` so existing call sites are unaffected.
     var bodyFont: Font = DesignSystem.Typography.bodyLarge
@@ -155,59 +160,89 @@ struct TranscriptTimestampedContentView<SpeakerLabelContent: View>: View {
     /// platform overlay; `TranscriptBodyLayout.rowTextSelectionEnabled` lets a
     /// DEBUG launch turn them off to bisect the transcript freeze.
     var textSelectionEnabled: Bool = true
+    /// Observes realized direct children in layout smoke tests. Production uses
+    /// the no-op default, so it does not own a second loading or layout path.
+    var onRenderedChildAppear: () -> Void = {}
 
+    @ViewBuilder
     var body: some View {
-        if hasSpeakers {
-            ForEach(identifiedTurnCards) { identified in
-                let turn = identified.turn
-                let speakerLabel = speakerLabelForID(turn.speakerId)
-                let speakerColor = speakerColorMap[turn.speakerId] ?? DesignSystem.Colors.textTertiary
-                let renameContextID = SpeakerRenameAccessibility.turnRenameContextIdentifier(
-                    speakerID: turn.speakerId,
-                    firstStartMs: identified.identity.firstStartMs,
-                    duplicateOrdinal: identified.identity.duplicateOrdinal
-                )
-                TranscriptTurnCardView(
-                    speakerID: turn.speakerId,
-                    speakerLabel: speakerLabel,
-                    renameContextID: renameContextID,
-                    speakerLabelContent: speakerLabelContent,
-                    speakerColor: speakerColor,
-                    segments: turn.segments,
-                    timestampLabel: timestampLabel,
-                    isTimestampSeekable: isTimestampSeekable,
-                    bodyFont: bodyFont,
-                    highlightRangesByStartMs: highlightRangesByStartMs,
-                    currentHighlight: currentHighlight,
-                    onTimestampTap: onTimestampTap,
-                    textSelectionEnabled: textSelectionEnabled
-                )
-                // Preserve the existing first-segment/card scroll target while
-                // later rows expose their own anchors for mid-turn find results.
-                .id(turn.segments.first?.startMs ?? 0)
+        if usesLazyStack {
+            LazyVStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                if hasSpeakers {
+                    ForEach(identifiedTurnCards) { identified in
+                        speakerTurnCard(identified)
+                    }
+                } else {
+                    ForEach(indexedSegments(segments)) { indexed in
+                        segmentRow(indexed)
+                    }
+                }
             }
         } else {
-            ForEach(indexedSegments(segments)) { indexed in
-                let index = indexed.index
-                let segment = indexed.segment
-                ZStack(alignment: .topLeading) {
-                    timestampScrollAnchor(startMs: segment.startMs)
-                    TranscriptSegmentRow(
-                        startMs: segment.startMs,
-                        text: segment.text,
-                        timestampText: timestampLabel(segment.startMs),
-                        isActive: isSegmentActive(index),
-                        isSeekable: isTimestampSeekable,
-                        bodyFont: bodyFont,
-                        showRowBackground: true,
-                        highlightRanges: highlightRangesByStartMs[segment.startMs] ?? [],
-                        currentRange: currentHighlight?.id == segment.startMs ? currentHighlight?.range : nil,
-                        onPlayFromHere: { onTimestampTap(segment.startMs) },
-                        textSelectionEnabled: textSelectionEnabled
-                    )
+            VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                if hasSpeakers {
+                    ForEach(identifiedTurnCards) { identified in
+                        speakerTurnCard(identified)
+                    }
+                } else {
+                    ForEach(indexedSegments(segments)) { indexed in
+                        segmentRow(indexed)
+                    }
                 }
             }
         }
+    }
+
+    private func speakerTurnCard(_ identified: IdentifiedSpeakerTurn) -> some View {
+        let turn = identified.turn
+        let speakerLabel = speakerLabelForID(turn.speakerId)
+        let speakerColor = speakerColorMap[turn.speakerId] ?? DesignSystem.Colors.textTertiary
+        let renameContextID = SpeakerRenameAccessibility.turnRenameContextIdentifier(
+            speakerID: turn.speakerId,
+            firstStartMs: identified.identity.firstStartMs,
+            duplicateOrdinal: identified.identity.duplicateOrdinal
+        )
+        return TranscriptTurnCardView(
+            speakerID: turn.speakerId,
+            speakerLabel: speakerLabel,
+            renameContextID: renameContextID,
+            speakerLabelContent: speakerLabelContent,
+            speakerColor: speakerColor,
+            segments: turn.segments,
+            timestampLabel: timestampLabel,
+            isTimestampSeekable: isTimestampSeekable,
+            bodyFont: bodyFont,
+            highlightRangesByStartMs: highlightRangesByStartMs,
+            currentHighlight: currentHighlight,
+            onTimestampTap: onTimestampTap,
+            textSelectionEnabled: textSelectionEnabled
+        )
+        // Preserve the existing first-segment/card scroll target while later
+        // rows expose their own anchors for mid-turn find results.
+        .id(turn.segments.first?.startMs ?? 0)
+        .onAppear(perform: onRenderedChildAppear)
+    }
+
+    private func segmentRow(_ indexed: IndexedTranscriptSegment) -> some View {
+        let index = indexed.index
+        let segment = indexed.segment
+        return ZStack(alignment: .topLeading) {
+            timestampScrollAnchor(startMs: segment.startMs)
+            TranscriptSegmentRow(
+                startMs: segment.startMs,
+                text: segment.text,
+                timestampText: timestampLabel(segment.startMs),
+                isActive: isSegmentActive(index),
+                isSeekable: isTimestampSeekable,
+                bodyFont: bodyFont,
+                showRowBackground: true,
+                highlightRanges: highlightRangesByStartMs[segment.startMs] ?? [],
+                currentRange: currentHighlight?.id == segment.startMs ? currentHighlight?.range : nil,
+                onPlayFromHere: { onTimestampTap(segment.startMs) },
+                textSelectionEnabled: textSelectionEnabled
+            )
+        }
+        .onAppear(perform: onRenderedChildAppear)
     }
 }
 
@@ -362,9 +397,10 @@ private struct TranscriptSegmentRow: View {
         .background {
             if showRowBackground {
                 RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
-                    .fill(isActive
-                          ? DesignSystem.Colors.accent.opacity(0.12)
-                          : DesignSystem.Colors.surfaceElevated.opacity(0.45))
+                    .fill(
+                        isActive
+                            ? DesignSystem.Colors.accent.opacity(0.12)
+                            : DesignSystem.Colors.surfaceElevated.opacity(0.45))
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -399,12 +435,13 @@ private struct TranscriptSegmentRow: View {
         guard !highlightRanges.isEmpty else {
             return Text(text).font(bodyFont)
         }
-        return Text(TranscriptFindHighlight.attributed(
-            text,
-            ranges: highlightRanges,
-            current: currentRange,
-            baseFont: bodyFont
-        ))
+        return Text(
+            TranscriptFindHighlight.attributed(
+                text,
+                ranges: highlightRanges,
+                current: currentRange,
+                baseFont: bodyFont
+            ))
     }
 
     private var hoverActions: some View {

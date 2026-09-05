@@ -490,6 +490,22 @@ public final class TranscriptionLibraryViewModel {
         }
     }
 
+    /// Applies a persisted meeting rename to a loaded row without requerying the repository.
+    public func applyMeetingRename(_ rename: MeetingRename) {
+        guard let index = transcriptions.firstIndex(where: { $0.id == rename.id }),
+            transcriptions[index].sourceType == .meeting
+        else {
+            return
+        }
+        if loadTask != nil {
+            cancelActiveLoad()
+        }
+
+        transcriptions[index].fileName = rename.title
+        transcriptions[index].derivedTitle = rename.title
+        publishLoadedItems(transcriptions, hasMore: hasMore)
+    }
+
     @discardableResult
     public func renameTranscriptionTitle(_ transcription: Transcription, to title: String) -> Bool {
         guard transcription.sourceType == .file else { return false }

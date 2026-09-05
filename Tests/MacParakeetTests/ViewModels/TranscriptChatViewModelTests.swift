@@ -281,6 +281,78 @@ final class TranscriptChatViewModelTests: XCTestCase {
         XCTAssertEqual(applied, ["reverted context"])
     }
 
+    func testPromptActionWaitsForPreparedContextBeforeSubmitting() async {
+        let builder = ControlledRichContextBuilder()
+        let loader = TranscriptRichContextLoader { transcription, mode in
+            await builder.build(transcription, mode)
+        }
+        let transcription = Transcription(
+            fileName: "large.mp3",
+            rawTranscript: "ten-thousand-word transcript",
+            status: .completed
+        )
+        var submitted: [String] = []
+
+        let action = Task {
+            guard
+                let prepared = await loader.prepare(
+                    transcription: transcription,
+                    mode: .richTranscript,
+                    contentRevision: 8
+                )
+            else { return }
+            submitted.append(prepared.text)
+        }
+
+        await builder.waitUntilStarted("ten-thousand-word transcript")
+        XCTAssertTrue(
+            submitted.isEmpty,
+            "Generate/Regenerate must not submit while rich context is still being prepared."
+        )
+
+        await builder.finish("ten-thousand-word transcript", with: "prepared rich context")
+        await action.value
+        XCTAssertEqual(submitted, ["prepared rich context"])
+    }
+
+    func testPromptActionCannotSubmitWhenRevisionChangesDuringFormatting() async {
+        let builder = ControlledRichContextBuilder()
+        let loader = TranscriptRichContextLoader { transcription, mode in
+            await builder.build(transcription, mode)
+        }
+        let transcription = Transcription(
+            fileName: "meeting.mp3",
+            rawTranscript: "original revision",
+            status: .completed
+        )
+        var currentRevision: UInt64 = 20
+        var submitted: [String] = []
+
+        let action = Task {
+            guard
+                let prepared = await loader.prepare(
+                    transcription: transcription,
+                    mode: .richTranscript,
+                    contentRevision: 20,
+                    isCurrent: { request in
+                        request.contentRevision == currentRevision
+                    }
+                )
+            else { return }
+            submitted.append(prepared.text)
+        }
+        await builder.waitUntilStarted("original revision")
+
+        currentRevision = 21
+        await builder.finish("original revision", with: "stale context")
+        await action.value
+
+        XCTAssertTrue(
+            submitted.isEmpty,
+            "A transcript changed during formatting must never submit stale context."
+        )
+    }
+
     // MARK: - Cancel Streaming
 
     func testCancelStreaming() {
@@ -338,7 +410,9 @@ final class TranscriptChatViewModelTests: XCTestCase {
 
     func testConfigureWithNilServiceStartsDisabled() {
         let vm = TranscriptChatViewModel()
-        vm.configure(llmService: nil, transcriptText: "Transcript", transcriptionRepo: mockRepo, conversationRepo: mockConversationRepo)
+        vm.configure(
+            llmService: nil, transcriptText: "Transcript", transcriptionRepo: mockRepo,
+            conversationRepo: mockConversationRepo)
         XCTAssertFalse(vm.canSendMessage)
     }
 
@@ -572,7 +646,8 @@ final class TranscriptChatViewModelTests: XCTestCase {
         try await Task.sleep(nanoseconds: 200_000_000)
 
         let historyUserMessages = mockService.lastChatHistory?.filter { $0.role == .user } ?? []
-        XCTAssertTrue(historyUserMessages.isEmpty, "First message history should be empty — question is passed separately")
+        XCTAssertTrue(
+            historyUserMessages.isEmpty, "First message history should be empty — question is passed separately")
         XCTAssertEqual(mockService.lastChatQuestion, "What happened?")
     }
 
@@ -1124,7 +1199,9 @@ final class TranscriptChatViewModelTests: XCTestCase {
         viewModel.regenerateLastResponse()
         try await Task.sleep(nanoseconds: 100_000_000)
 
-        XCTAssertEqual(mockService.chatCallCount, chatCallsBefore, "Regenerate must not re-issue when tail isn't an assistant turn")
+        XCTAssertEqual(
+            mockService.chatCallCount, chatCallsBefore, "Regenerate must not re-issue when tail isn't an assistant turn"
+        )
         XCTAssertEqual(viewModel.messages.count, 1)
     }
 
