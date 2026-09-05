@@ -148,11 +148,11 @@ final class AppEnvironmentConfigurer {
         let meetingPill = meetingPillViewModel
         settingsViewModel.meetingRecordingActiveProvider = { [weak meetingPill] in
             // A session is live (its folder is in use) for any non-terminal
-            // pill state: capturing, paused, finalizing the writer, or
+            // pill state: starting, capturing, paused, finalizing the writer, or
             // transcribing the source audio. Only idle/completed/error are safe
             // to clear. Keeps clear-all from deleting an in-progress meeting.
             switch meetingPill?.state {
-            case .recording, .paused, .completing, .transcribing:
+            case .starting, .recording, .paused, .completing, .transcribing:
                 return true
             case .idle, .completed, .error, nil:
                 return false

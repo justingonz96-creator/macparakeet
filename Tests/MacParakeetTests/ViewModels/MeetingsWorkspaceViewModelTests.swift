@@ -195,6 +195,10 @@ final class MeetingsWorkspaceViewModelTests: XCTestCase {
         let pill = MeetingRecordingPillViewModel()
         let viewModel = makeViewModel(meetingPillViewModel: pill)
 
+        pill.state = .starting
+        XCTAssertEqual(viewModel.recordingStatus, .starting)
+        XCTAssertTrue(viewModel.hasActiveRecording)
+
         pill.state = .recording
         XCTAssertEqual(viewModel.recordingStatus, .recording)
         XCTAssertTrue(viewModel.hasActiveRecording)

@@ -1187,6 +1187,7 @@ private struct MeetingsLiveStatusChip: View {
 
     private var icon: String {
         switch viewModel.recordingStatus {
+        case .starting: return "hourglass"
         case .recording: return "record.circle.fill"
         case .paused: return "pause.fill"
         case .finishing, .transcribing: return "waveform"
@@ -1198,6 +1199,7 @@ private struct MeetingsLiveStatusChip: View {
     private var title: String {
         switch viewModel.recordingStatus {
         case .ready: return "Ready"
+        case .starting: return "Starting…"
         case .recording: return "Recording \(viewModel.meetingPillViewModel.formattedElapsed)"
         case .paused: return "Paused \(viewModel.meetingPillViewModel.formattedElapsed)"
         case .finishing: return "Finishing"
@@ -1208,6 +1210,7 @@ private struct MeetingsLiveStatusChip: View {
 
     private var tint: Color {
         switch viewModel.recordingStatus {
+        case .starting: return DesignSystem.Colors.textTertiary
         case .recording: return DesignSystem.Colors.recordingRed
         case .paused, .finishing, .transcribing: return DesignSystem.Colors.warningAmber
         case .error: return DesignSystem.Colors.errorRed

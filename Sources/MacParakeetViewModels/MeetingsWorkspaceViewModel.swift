@@ -6,6 +6,7 @@ import MacParakeetCore
 public final class MeetingsWorkspaceViewModel {
     public enum RecordingStatus: Equatable {
         case ready
+        case starting
         case recording
         case paused
         case finishing
@@ -242,6 +243,8 @@ public final class MeetingsWorkspaceViewModel {
         switch meetingPillViewModel.state {
         case .idle, .completed:
             return .ready
+        case .starting:
+            return .starting
         case .recording:
             return .recording
         case .paused:
@@ -257,7 +260,7 @@ public final class MeetingsWorkspaceViewModel {
 
     public var hasActiveRecording: Bool {
         switch recordingStatus {
-        case .recording, .paused, .finishing, .transcribing:
+        case .starting, .recording, .paused, .finishing, .transcribing:
             return true
         case .ready, .error:
             return false
@@ -299,36 +302,39 @@ public final class MeetingsWorkspaceViewModel {
 
         if settingsViewModel.pendingMeetingRecoveryCount > 0 {
             let count = settingsViewModel.pendingMeetingRecoveryCount
-            items.append(AttentionItem(
-                id: "meeting-recovery",
-                severity: .required,
-                title: "Interrupted recording",
-                detail: "\(count) partial recording\(count == 1 ? "" : "s") can be recovered.",
-                actionTitle: "Recover",
-                action: .recoverMeetings
-            ))
+            items.append(
+                AttentionItem(
+                    id: "meeting-recovery",
+                    severity: .required,
+                    title: "Interrupted recording",
+                    detail: "\(count) partial recording\(count == 1 ? "" : "s") can be recovered.",
+                    actionTitle: "Recover",
+                    action: .recoverMeetings
+                ))
         }
 
         if case .error(let message) = recordingStatus {
-            items.append(AttentionItem(
-                id: "recording-error",
-                severity: .required,
-                title: "Recording stopped",
-                detail: message,
-                actionTitle: "Record Again",
-                action: .recordMeeting
-            ))
+            items.append(
+                AttentionItem(
+                    id: "recording-error",
+                    severity: .required,
+                    title: "Recording stopped",
+                    detail: message,
+                    actionTitle: "Record Again",
+                    action: .recordMeeting
+                ))
         }
 
         if case .cannotConnect(let displayName, let message) = intelligenceStatus {
-            items.append(AttentionItem(
-                id: "ai-unavailable",
-                severity: .recommended,
-                title: "\(displayName) unavailable",
-                detail: message,
-                actionTitle: "Open AI Settings",
-                action: .openAISettings
-            ))
+            items.append(
+                AttentionItem(
+                    id: "ai-unavailable",
+                    severity: .recommended,
+                    title: "\(displayName) unavailable",
+                    detail: message,
+                    actionTitle: "Open AI Settings",
+                    action: .openAISettings
+                ))
         }
 
         return items
@@ -361,7 +367,8 @@ public final class MeetingsWorkspaceViewModel {
         guard !event.isAllDay, !event.userDeclined else { return false }
 
         if let calendarIdentifier = event.calendarIdentifier,
-           settingsViewModel.calendarExcludedIdentifiers.contains(calendarIdentifier) {
+            settingsViewModel.calendarExcludedIdentifiers.contains(calendarIdentifier)
+        {
             return false
         }
 

@@ -6,6 +6,7 @@ import SwiftUI
 public final class MeetingRecordingPanelViewModel {
     public enum PanelState: Equatable {
         case hidden
+        case starting
         case recording
         case transcribing
         case error(String)
@@ -115,10 +116,12 @@ public final class MeetingRecordingPanelViewModel {
             oldLines: previewLines,
             newLines: lines
         ) {
-            let removedWordCount = firstChangedIndex < previewLineWordCounts.count
+            let removedWordCount =
+                firstChangedIndex < previewLineWordCounts.count
                 ? previewLineWordCounts[firstChangedIndex...].reduce(0, +)
                 : 0
-            let addedWordCounts = firstChangedIndex < lines.count
+            let addedWordCounts =
+                firstChangedIndex < lines.count
                 ? lines[firstChangedIndex...].map { Self.wordCount(for: $0.text) }
                 : []
             wordCount += addedWordCounts.reduce(0, +) - removedWordCount
@@ -188,20 +191,19 @@ public final class MeetingRecordingPanelViewModel {
     }
 
     public var canStop: Bool {
-        if case .recording = state {
-            return true
-        }
-        return false
+        state == .starting || state == .recording
     }
 
     /// Header Pause/Resume button is only meaningful while the meeting is
     /// in `.recording` panel state. Hidden during transcribing / error.
     public var canTogglePause: Bool {
-        canStop
+        state == .recording
     }
 
     public var statusTitle: String {
         switch state {
+        case .starting:
+            return "Starting…"
         case .hidden, .recording:
             return isPaused ? "Paused" : "Recording"
         case .transcribing:
@@ -213,9 +215,12 @@ public final class MeetingRecordingPanelViewModel {
 
     public var statusMessage: String {
         switch state {
+        case .starting:
+            return "Starting audio capture. Recording has not started yet."
         case .hidden, .recording:
             if isTranscriptionLagging {
-                return "Live transcript preview is catching up. The final transcript will still include the full meeting."
+                return
+                    "Live transcript preview is catching up. The final transcript will still include the full meeting."
             }
             if let livePreviewStatusMessage {
                 return livePreviewStatusMessage
@@ -235,7 +240,8 @@ public final class MeetingRecordingPanelViewModel {
             // single recoverable surface for either failure mode.
             let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
             let detail = trimmed.isEmpty ? "An unexpected error occurred." : trimmed
-            return "\(detail)\n\nIf any audio was captured it's in your Library, where you can retry transcription or export the audio."
+            return
+                "\(detail)\n\nIf any audio was captured it's in your Library, where you can retry transcription or export the audio."
         }
     }
 
@@ -252,6 +258,9 @@ public final class MeetingRecordingPanelViewModel {
     }
 
     public var showsElapsedTime: Bool {
+        if case .starting = state {
+            return false
+        }
         if case .error = state {
             return false
         }
@@ -354,7 +363,8 @@ public final class MeetingRecordingPanelViewModel {
         case .previewUnsupported:
             return "Audio will be transcribed after you stop recording."
         case .previewUnavailable:
-            return "Audio is still recording. If preview does not recover, retry transcription from Library after the meeting."
+            return
+                "Audio is still recording. If preview does not recover, retry transcription from Library after the meeting."
         }
     }
 

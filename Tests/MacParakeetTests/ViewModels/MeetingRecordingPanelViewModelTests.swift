@@ -150,7 +150,7 @@ final class MeetingRecordingPanelViewModelTests: XCTestCase {
                 speakerLabel: "Them",
                 text: "Reply",
                 source: .system
-            )
+            ),
         ]
 
         viewModel.updatePreviewLines(initialLines)
@@ -179,7 +179,7 @@ final class MeetingRecordingPanelViewModelTests: XCTestCase {
                 speakerLabel: "Others",
                 text: "Reply from the call",
                 source: .system
-            )
+            ),
         ])
 
         XCTAssertEqual(
@@ -209,7 +209,7 @@ final class MeetingRecordingPanelViewModelTests: XCTestCase {
                 speakerLabel: "Others",
                 text: "Reply from the call",
                 source: .system
-            )
+            ),
         ])
 
         XCTAssertEqual(
@@ -242,7 +242,7 @@ final class MeetingRecordingPanelViewModelTests: XCTestCase {
                 speakerLabel: "Others",
                 text: "Reply from the call",
                 source: .system
-            )
+            ),
         ])
 
         mode = .plainTranscript
@@ -269,9 +269,12 @@ final class MeetingRecordingPanelViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.showsElapsedTime)
 
         viewModel.state = .error("Boom")
-        XCTAssertEqual(viewModel.statusTitle, "Meeting interrupted", "Phase 4 copy refinement: 'Recording Error' → 'Meeting interrupted'")
+        XCTAssertEqual(
+            viewModel.statusTitle, "Meeting interrupted",
+            "Phase 4 copy refinement: 'Recording Error' → 'Meeting interrupted'")
         XCTAssertTrue(viewModel.statusMessage.hasPrefix("Boom"), "Detail leads")
-        XCTAssertTrue(viewModel.statusMessage.contains("Library"), "Wrapper points the user at the Library for recovery")
+        XCTAssertTrue(
+            viewModel.statusMessage.contains("Library"), "Wrapper points the user at the Library for recovery")
         XCTAssertEqual(
             viewModel.compactErrorRecoveryMessage,
             "Meeting interrupted. Open Library to retry transcription or export captured audio."
@@ -323,7 +326,8 @@ final class MeetingRecordingPanelViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.transcriptEmptyStateTitle, "Starting audio...")
         XCTAssertNil(viewModel.transcriptEmptyStateDetail)
 
-        viewModel.updateLiveTranscriptStatus(.preparingSpeechModel(message: "Speech model: Loading model into memory..."))
+        viewModel.updateLiveTranscriptStatus(
+            .preparingSpeechModel(message: "Speech model: Loading model into memory..."))
         XCTAssertEqual(viewModel.transcriptEmptyStateTitle, "Preparing speech model...")
         XCTAssertEqual(viewModel.transcriptEmptyStateDetail, "Loading model into memory...")
 
@@ -535,7 +539,7 @@ final class MeetingRecordingPanelViewModelTests: XCTestCase {
         // by the panel header (orb / "Recording" / elapsed timer / transcript
         // word count / Stop).
         let states: [MeetingRecordingPanelViewModel.PanelState] = [
-            .hidden, .recording, .transcribing, .error("test")
+            .hidden, .starting, .recording, .transcribing, .error("test"),
         ]
         for state in states {
             viewModel.state = state
@@ -599,6 +603,12 @@ final class MeetingRecordingPanelViewModelTests: XCTestCase {
     func testCanTogglePauseTracksRecordingPanelState() {
         let viewModel = MeetingRecordingPanelViewModel()
         XCTAssertFalse(viewModel.canTogglePause, "No toggle from .hidden")
+
+        viewModel.state = .starting
+        XCTAssertTrue(viewModel.canStop)
+        XCTAssertFalse(viewModel.canTogglePause)
+        XCTAssertFalse(viewModel.showsAudioLevels)
+        XCTAssertFalse(viewModel.showsElapsedTime)
 
         viewModel.state = .recording
         XCTAssertTrue(viewModel.canTogglePause)

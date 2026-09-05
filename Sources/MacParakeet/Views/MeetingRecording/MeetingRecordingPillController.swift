@@ -186,7 +186,7 @@ final class MeetingRecordingPillController {
         case .completed, .error, .idle:
             showInertContextMenu(with: event, for: contentView)
             return
-        case .recording, .paused:
+        case .starting, .recording, .paused:
             break
         }
 
@@ -214,7 +214,10 @@ final class MeetingRecordingPillController {
         // completing); a paused recording is still "the leaf, dormant".
         let isPaused = pillViewModel.isPaused
         let elapsed = pillViewModel.formattedElapsed
-        let headerTitle = isPaused ? "Paused — \(elapsed)" : "Listening — \(elapsed)"
+        let headerTitle =
+            pillViewModel.state == .starting
+            ? "Starting audio capture…"
+            : (isPaused ? "Paused — \(elapsed)" : "Listening — \(elapsed)")
         let headerSymbol = "leaf"
         let headerItem = NSMenuItem(title: headerTitle, action: nil, keyEquivalent: "")
         headerItem.isEnabled = false
@@ -635,6 +638,8 @@ private final class MeetingRecordingAppKitPillView: NSView {
         let state = viewModel.state
         let active: Bool
         switch state {
+        case .starting:
+            active = true
         case .recording, .paused:
             active = isHovered && viewModel.elapsedSeconds > 0
         default:
@@ -648,14 +653,16 @@ private final class MeetingRecordingAppKitPillView: NSView {
             return
         }
 
-        let text = viewModel.formattedElapsed
+        let isStarting = state == .starting
+        let text = isStarting ? "Starting…" : viewModel.formattedElapsed
         let isPaused = (state == .paused)
 
         // Disable implicit animations for the per-second text/relayout so the
         // digits update crisply; the fade-in is driven separately by opacity.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        timeDotLayer.fillColor = (isPaused ? NSColor.systemOrange : NSColor.systemRed).cgColor
+        timeDotLayer.fillColor =
+            (isStarting ? NSColor.secondaryLabelColor : (isPaused ? NSColor.systemOrange : NSColor.systemRed)).cgColor
         if (timeTextLayer.string as? String) != text {
             timeTextLayer.string = text
         }
@@ -731,8 +738,16 @@ private final class MeetingRecordingAppKitPillView: NSView {
 
         renderedState = state
         renderedReduceMotion = reduceMotion
+        setAccessibilityLabel(state == .starting ? "Starting meeting audio capture" : nil)
 
         switch state {
+        case .starting:
+            completionCallbackScheduled = false
+            pauseLayer.isHidden = true
+            iconView.alphaValue = 0.45
+            setCompactIcon(false)
+            applyContainer(compact: false, animated: false)
+            iconView.update(isAnimating: false, audioLevel: 0)
         case .recording:
             // Re-arm the one-shot collapse callback for a fresh recording cycle.
             // A back-to-back meeting can reuse this pill view if the previous
