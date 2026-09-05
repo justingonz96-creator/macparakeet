@@ -158,8 +158,14 @@ public final class TranscriptionLibraryViewModel {
         speakerAttributionReader: SpeakerAttributionReading? = nil
     ) {
         self.transcriptionRepo = transcriptionRepo
-        speakerAttributionProjectionProvider = speakerAttributionReader.map { reader in
-            { transcription in try reader.resolve(transcription: transcription) }
+        if let speakerAttributionReader {
+            let projectionProvider:
+                @Sendable (Transcription) throws -> SpeakerAttributionProjection = { transcription in
+                    try speakerAttributionReader.resolve(transcription: transcription)
+                }
+            speakerAttributionProjectionProvider = projectionProvider
+        } else {
+            speakerAttributionProjectionProvider = nil
         }
     }
 
