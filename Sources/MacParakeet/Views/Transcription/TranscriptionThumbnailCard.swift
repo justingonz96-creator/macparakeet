@@ -147,15 +147,6 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
                         .padding(8)
                 }
             }
-            .overlay(alignment: .bottomLeading) {
-                if transcription.sourceType == .meeting {
-                    let state = MeetingAudioFile.state(for: transcription)
-                    if state != .notMeeting {
-                        MeetingAudioStateChip(state: state)
-                            .padding(8)
-                    }
-                }
-            }
             .clipShape(Rectangle())
     }
 
@@ -218,7 +209,7 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
     }
 
     private var sourceIcon: String {
-        if transcription.sourceURL != nil {
+        if transcription.sourceType != .file {
             return sourceDisplay.systemImage
         }
         let ext = transcription.filePath.map { URL(fileURLWithPath: $0).pathExtension.lowercased() } ?? ""
@@ -245,15 +236,39 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(DesignSystem.Colors.textTertiary)
                     .lineLimit(1)
+            }
+
+            HStack(spacing: 6) {
+                Label(sourceDisplay.collapsedText, systemImage: sourceDisplay.systemImage)
+                    .foregroundStyle(sourceDisplay.tint)
+                    .fixedSize()
 
                 Text(transcription.createdAt.relativeFormatted)
-                    .font(DesignSystem.Typography.caption)
-                    .foregroundStyle(DesignSystem.Colors.textTertiary)
-            } else {
-                Text(transcription.createdAt.relativeFormatted)
-                    .font(DesignSystem.Typography.caption)
                     .foregroundStyle(DesignSystem.Colors.textTertiary)
                     .lineLimit(1)
+            }
+            .font(DesignSystem.Typography.caption)
+
+            transcriptionStatus
+
+            if transcription.sourceType == .meeting {
+                MeetingAudioStateChip(state: MeetingAudioFile.state(for: transcription))
+            }
+
+            if let partialCapture = MeetingPartialCapturePresentation.make(for: transcription) {
+                Text(partialCapture.badgeText)
+                    .font(DesignSystem.Typography.micro.weight(.semibold))
+                    .foregroundStyle(DesignSystem.Colors.warningAmber)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(DesignSystem.Colors.warningAmber.opacity(0.10))
+                    )
+                    .fixedSize()
+                    .help(partialCapture.message)
+                    .accessibilityLabel(partialCapture.badgeText)
+                    .accessibilityHint(partialCapture.message)
             }
 
             if transcription.recoveredFromCrash {
@@ -265,7 +280,39 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
         }
         .padding(DesignSystem.Spacing.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 80, alignment: .top)
+        .frame(minHeight: 80, alignment: .top)
+    }
+
+    @ViewBuilder
+    private var transcriptionStatus: some View {
+        switch transcription.status {
+        case .processing:
+            HStack(spacing: 5) {
+                ParakeetSpinner(.inline)
+                    .scaleEffect(0.85)
+                    .frame(width: 12, height: 12)
+                Text("Transcribing")
+                    .font(DesignSystem.Typography.bodySmall)
+                    .foregroundStyle(DesignSystem.Colors.textTertiary)
+            }
+        case .error:
+            HStack(spacing: 5) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(DesignSystem.Colors.warningAmber)
+                Text("Transcription failed")
+                    .font(DesignSystem.Typography.bodySmall)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+            }
+            .help(transcription.errorMessage ?? "Transcription failed")
+            .accessibilityHint(transcription.errorMessage ?? "Transcription failed")
+        case .cancelled:
+            Text("Transcription stopped")
+                .font(DesignSystem.Typography.bodySmall)
+                .foregroundStyle(DesignSystem.Colors.textTertiary)
+        case .completed:
+            EmptyView()
+        }
     }
 
     // MARK: - Search Highlighting
