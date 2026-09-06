@@ -31,6 +31,30 @@ public struct PromptResult: Codable, Identifiable, Sendable {
     public var createdAt: Date
     public var updatedAt: Date
 
+    /// Legacy JSON predates the meeting-notes preference. Only an absent key
+    /// defaults to false; malformed or null values remain decoding errors.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        transcriptionId = try container.decode(UUID.self, forKey: .transcriptionId)
+        promptId = try container.decodeIfPresent(UUID.self, forKey: .promptId)
+        promptVersionId = try container.decodeIfPresent(UUID.self, forKey: .promptVersionId)
+        promptName = try container.decode(String.self, forKey: .promptName)
+        promptContent = try container.decode(String.self, forKey: .promptContent)
+        extraInstructions = try container.decodeIfPresent(String.self, forKey: .extraInstructions)
+        content = try container.decode(String.self, forKey: .content)
+        userNotesSnapshot = try container.decodeIfPresent(String.self, forKey: .userNotesSnapshot)
+        includeMeetingNotesSnapshot =
+            container.contains(.includeMeetingNotesSnapshot)
+            ? try container.decode(Bool.self, forKey: .includeMeetingNotesSnapshot) : false
+        inferenceSettingsSnapshot = try container.decodeIfPresent(
+            PromptInferenceSettings.self, forKey: .inferenceSettingsSnapshot)
+        providerSnapshot = try container.decodeIfPresent(String.self, forKey: .providerSnapshot)
+        modelSnapshot = try container.decodeIfPresent(String.self, forKey: .modelSnapshot)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    }
+
     public init(
         id: UUID = UUID(),
         transcriptionId: UUID,

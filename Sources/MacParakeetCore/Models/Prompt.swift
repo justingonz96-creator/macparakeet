@@ -76,6 +76,36 @@ public struct Prompt: Codable, Identifiable, Sendable {
         case transform
     }
 
+    /// Legacy JSON predates the meeting-notes preference. Only an absent key
+    /// defaults to false; malformed or null values remain decoding errors.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        content = try container.decode(String.self, forKey: .content)
+        category = try container.decode(Category.self, forKey: .category)
+        isBuiltIn = try container.decode(Bool.self, forKey: .isBuiltIn)
+        isVisible = try container.decode(Bool.self, forKey: .isVisible)
+        isAutoRun = try container.decode(Bool.self, forKey: .isAutoRun)
+        sortOrder = try container.decode(Int.self, forKey: .sortOrder)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        keyboardShortcut = try container.decodeIfPresent(String.self, forKey: .keyboardShortcut)
+        runningLabel = try container.decodeIfPresent(String.self, forKey: .runningLabel)
+        appliesToSources = try container.decodeIfPresent(Set<Transcription.SourceType>.self, forKey: .appliesToSources)
+        inferenceSettings = try container.decodeIfPresent(PromptInferenceSettings.self, forKey: .inferenceSettings)
+        includeMeetingNotes =
+            container.contains(.includeMeetingNotes)
+            ? try container.decode(Bool.self, forKey: .includeMeetingNotes) : false
+        activeVersionId = try container.decodeIfPresent(UUID.self, forKey: .activeVersionId)
+        modelOverride = try container.decodeIfPresent(String.self, forKey: .modelOverride)
+        canonicalKey = try container.decodeIfPresent(String.self, forKey: .canonicalKey)
+        lastAppliedCanonicalRevision = try container.decodeIfPresent(Int.self, forKey: .lastAppliedCanonicalRevision)
+        userCustomizedAt = try container.decodeIfPresent(Date.self, forKey: .userCustomizedAt)
+        deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
+        collectionId = try container.decodeIfPresent(UUID.self, forKey: .collectionId)
+    }
+
     public init(
         id: UUID = UUID(),
         name: String,

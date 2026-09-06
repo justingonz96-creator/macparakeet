@@ -196,7 +196,8 @@ Every saved meeting detail exposes a dedicated `Notes` tab immediately after
 is still processing. Notes are an editorial layer and never appear inside the
 factual transcript pane. The tab always shows an editable plaintext
 `TextEditor`, including when notes are empty, with Copy, word count, and the
-existing 8,000-word soft-cap warning.
+existing 7,500-word soft-cap warning. The separate 8,000-word cap bounds notes
+sent to prompt assembly; it does not truncate stored notes.
 
 Changes auto-save after a 500 ms idle debounce. A quiet status reports Saving,
 Saved, or a retryable failure; the editor stays writable during persistence.
@@ -657,7 +658,7 @@ Floating panel opened from the meeting recording pill. Shows live notes, live tr
 - **Elapsed timer** — updates every second
 - **Dual audio level meters** — mic and system audio levels (visual feedback that both streams are capturing)
 - **Tabs** — Notes / Transcript / Ask, with ⌘1 / ⌘2 / ⌘3 shortcuts; Notes and Transcript are plain labels, Ask adds a streaming dot while `chatViewModel.isStreaming` and collapses that dot into the tooltip at narrow width
-- **Notes pane** — plaintext editor with slash commands, debounced auto-save through `MeetingRecordingService.updateNotes(_:)`, soft-cap warning near 8,000 words, and lock-file crash recovery
+- **Notes pane** — plaintext editor with slash commands, debounced auto-save through `MeetingRecordingService.updateNotes(_:)`, soft-cap warning at 7,500 words, and lock-file crash recovery
 - **Transcript pane** — scrolling live preview grouped into reading paragraphs, with one source label and timestamp per paragraph ([Me] = mic, [Them] = system audio); lag notice appears when preview chunks fall behind or are dropped
 - **Ask pane** — live chat against the rolling transcript using the configured LLM provider; follow-up state is handed off after finalization
 - **Stop button** — stops recording, triggers batch transcription, navigates to result

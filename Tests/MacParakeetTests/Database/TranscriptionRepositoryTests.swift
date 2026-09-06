@@ -29,6 +29,29 @@ final class TranscriptionRepositoryTests: XCTestCase {
         XCTAssertEqual(fetched?.language, "en")
     }
 
+    func testCompletionDoesNotRecreateDeletedRecording() throws {
+        let original = Transcription(fileName: "Deleted meeting", sourceType: .meeting)
+        try repo.save(original)
+        XCTAssertTrue(try repo.delete(id: original.id))
+        XCTAssertThrowsError(try repo.savePreservingUserMetadata(original, originalFileName: original.fileName)) {
+            XCTAssertEqual($0 as? TranscriptionCompletionError, .recordingDeleted)
+        }
+        XCTAssertNil(try repo.fetch(id: original.id))
+    }
+
+    func testCompletionPreservesClearedAndReplacedAudioPaths() throws {
+        for currentPath in [nil, "/tmp/relocated/audio.m4a"] as [String?] {
+            let original = Transcription(
+                fileName: "Meeting", filePath: "/tmp/old/audio.m4a", sourceType: .meeting
+            )
+            try repo.save(original)
+            try repo.updateFilePath(id: original.id, filePath: currentPath)
+            let saved = try repo.savePreservingUserMetadata(original, originalFileName: original.fileName)
+            XCTAssertEqual(saved.filePath, currentPath)
+            XCTAssertEqual(try repo.fetch(id: original.id)?.filePath, currentPath)
+        }
+    }
+
     func testCompletionMergePreservesClearedMetadataAndReturnsCommittedRow() throws {
         let type = MeetingType(name: "Customer")
         try MeetingTypeRepository(dbQueue: dbQueue).save(type)

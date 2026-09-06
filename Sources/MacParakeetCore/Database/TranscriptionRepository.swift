@@ -1,6 +1,14 @@
 import Foundation
 import GRDB
 
+public enum TranscriptionCompletionError: Error, Equatable, LocalizedError {
+    case recordingDeleted
+
+    public var errorDescription: String? {
+        "This recording was deleted before transcription completed."
+    }
+}
+
 public protocol TranscriptionRepositoryProtocol: Sendable {
     func save(_ transcription: Transcription) throws
     /// Persists a meeting transcription completed from a potentially stale
@@ -41,16 +49,6 @@ public protocol TranscriptionRepositoryProtocol: Sendable {
 extension TranscriptionRepositoryProtocol {
     public func savePreservingMeetingClassification(_ transcription: Transcription) throws {
         try save(transcription)
-    }
-
-    public func savePreservingUserMetadata(
-        _ transcription: Transcription, originalFileName: String
-    ) throws -> Transcription {
-        let merged = transcription.preservingUserMetadata(
-            from: try fetch(id: transcription.id), originalFileName: originalFileName
-        )
-        try save(merged)
-        return merged
     }
 
     public func fetchByFilePath(
@@ -215,9 +213,11 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
         _ transcription: Transcription, originalFileName: String
     ) throws -> Transcription {
         try dbQueue.write { db in
+            guard let current = try Transcription.fetchOne(db, key: transcription.id) else {
+                throw TranscriptionCompletionError.recordingDeleted
+            }
             let merged = transcription.preservingUserMetadata(
-                from: try Transcription.fetchOne(db, key: transcription.id),
-                originalFileName: originalFileName
+                from: current, originalFileName: originalFileName
             )
             try merged.save(db)
             return merged
@@ -611,7 +611,7 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
     public func updateMeetingType(id: UUID, meetingTypeId: UUID?) throws {
         try dbQueue.write { db in
             guard var transcription = try Transcription.fetchOne(db, key: id),
-                  transcription.sourceType == .meeting
+                transcription.sourceType == .meeting
             else { return }
             guard transcription.meetingTypeId != meetingTypeId else { return }
             transcription.meetingTypeId = meetingTypeId
@@ -791,8 +791,7 @@ private func transcriptionMatchesLibrarySearch(
 
 private extension Transcription {
     /// STT owns transcript output, not metadata edited while processing is suspended.
-    func preservingUserMetadata(from current: Transcription?, originalFileName: String) -> Transcription {
-        guard let current else { return self }
+    func preservingUserMetadata(from current: Transcription, originalFileName: String) -> Transcription {
         var merged = self
         merged.updatedAt = max(updatedAt, current.updatedAt)
         merged.userNotes = current.userNotes
@@ -801,6 +800,7 @@ private extension Transcription {
         merged.titleOverride = current.titleOverride
         merged.chatMessages = current.chatMessages
         merged.meetingArtifactFolderPath = current.meetingArtifactFolderPath
+        merged.filePath = current.filePath
         // Allow an automatically generated meeting title only if the user has
         // not renamed the row since the processing snapshot was captured.
         if current.fileName != originalFileName {

@@ -73,7 +73,7 @@ final class SegmentRepositoryTests: XCTestCase {
     }
 
     func testWordTimestampMaterializationHandlesBothWhitespaceTokenStyles() {
-        XCTAssertEqual(KnowledgeSegmenter.currentVersion, 3)
+        XCTAssertEqual(KnowledgeSegmenter.currentVersion, 4)
         let wordStyle = ["That's", "incredible.", "I", "will", "be", "honest"]
         let tokenizerStyle = ["That's", " incredible", ".", " I", " will", " be", "honest"]
 

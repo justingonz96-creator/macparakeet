@@ -812,7 +812,7 @@ extension PromptsCommand {
                     throw PromptCLIError.promptUnavailable(prompt.name, resolution.reason.rawValue)
                 }
 
-                let transcriptText = transcript.cleanTranscript ?? transcript.rawTranscript ?? ""
+                let transcriptText = TranscriptAIContextFormatter.format(projection: projection)
                 guard !transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw PromptCLIError.emptyTranscript(transcript.fileName)
                 }

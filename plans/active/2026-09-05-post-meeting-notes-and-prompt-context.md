@@ -1,12 +1,13 @@
 # Post-Meeting Notes and Opt-In Prompt Context
 
-> **Status:** IMPLEMENTED — VISUAL QA FOUND ACCESSIBILITY BLOCKERS. Saved-meeting
-> notes, opt-in prompt context, and the shared rich Markdown renderer are
-> implemented and locally verified on 2026-09-05. Real-app QA passed the visual
-> rendering paths but found the table-selection and table-action-label gaps
-> recorded below. Those gaps and a release-bundle size comparison remain before
-> PR/release. Saved notes now live in their own detail tab, separate from the
-> transcript.
+> **Status:** IMPLEMENTED / QA REMAINDER. Saved notes live in their own detail
+> tab, separate from the transcript. This plan retains the combined fork's
+> implementation and dated QA history. Upstream [#959](https://github.com/moona3k/macparakeet/pull/959)
+> contains saved notes and opt-in context; the renderer is separately proposed
+> in [#957](https://github.com/moona3k/macparakeet/pull/957). Renderer evidence
+> below does not certify a renderer in the isolated notes branch. The recorded
+> 2026-09-05 failures and subsequent remediation are distinct from the remaining
+> manual accessibility, visual and release checks.
 > **Priority:** P2
 > **Date:** 2026-09-05
 > **Issues:** [#889](https://github.com/moona3k/macparakeet/issues/889),
@@ -350,11 +351,13 @@ assembly remains unchanged.
 
 ## Follow-up Workstream — Rich Markdown Prompt Results
 
-> **Status:** IMPLEMENTED / LOCALLY VERIFIED on 2026-09-05 — added during
-> implementation of the notes slice and explicitly approved in the same plan.
-> Its implementation remains separate from Phases 1–5 above.
+> **Historical fork workstream — 2026-09-05:** Renderer code was implemented and
+> locally exercised alongside the notes work, but acceptance QA remained
+> partial: real-app checks found the accessibility blockers recorded below.
+> This separate workstream was approved in the same plan and is outside
+> Phases 1–5. Its upstream extraction is #957, not the notes-only #959.
 
-### Goal and current gap
+### Original goal and gap — 2026-09-05
 
 Render Prompt Results such as Summary as structured GitHub-Flavored Markdown,
 including real tables and visual task lists, instead of exposing Markdown
@@ -521,7 +524,7 @@ Passed in the real app:
 - accessibility exposure for headings, links, and checked/unchecked task state;
 - pointer reveal of table Copy and Download actions.
 
-Blocking findings:
+Blocking findings at that commit:
 
 - Direct table-cell selection is unavailable on macOS: the upstream table is
   exposed as a non-selectable accessibility text element even though the outer
@@ -530,7 +533,7 @@ Blocking findings:
   user-facing label such as “Download table”. This fails the table-action
   VoiceOver gate. The Copy action is labelled correctly.
 
-Still to run after those blockers are fixed:
+Checks outstanding at that QA snapshot (see subsequent remediation below):
 
 - live partial/streaming Prompt Result and live Ask visual smoke tests;
 - keyboard activation of an allowed link;

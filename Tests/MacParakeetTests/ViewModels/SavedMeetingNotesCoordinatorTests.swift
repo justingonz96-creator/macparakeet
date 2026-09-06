@@ -115,6 +115,7 @@ final class SavedMeetingNotesCoordinatorTests: XCTestCase {
             })
         await fulfillment(of: [saveStarted], timeout: 1)
         XCTAssertTrue(replies.isEmpty)
+        XCTAssertTrue(coordinator.isPreparingToQuit)
         XCTAssertTrue(
             coordinator.prepareToQuit { _ in
                 XCTFail("A duplicate quit request must not schedule another reply")
@@ -123,6 +124,7 @@ final class SavedMeetingNotesCoordinatorTests: XCTestCase {
         await fulfillment(of: [quitReplied], timeout: 1)
 
         XCTAssertEqual(replies, [true])
+        XCTAssertFalse(coordinator.isPreparingToQuit)
         XCTAssertEqual(writes, ["Last keystroke before quit"])
         XCTAssertFalse(coordinator.hasUnsavedChanges)
     }
@@ -146,6 +148,7 @@ final class SavedMeetingNotesCoordinatorTests: XCTestCase {
             })
         await fulfillment(of: [firstReply], timeout: 1)
         XCTAssertTrue(coordinator.hasUnsavedChanges)
+        XCTAssertFalse(coordinator.isPreparingToQuit)
 
         canSave = true
         let retryReply = expectation(description: "Quit allowed after retry")

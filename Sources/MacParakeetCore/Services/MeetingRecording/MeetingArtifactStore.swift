@@ -153,6 +153,59 @@ public struct MeetingArtifactSnapshot: Codable, Sendable, Equatable {
     public let calendarEventSnapshot: MeetingCalendarSnapshot?
     public let meetingCaptureReport: MeetingCaptureReport?
 
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case schemaVersion
+        case generatedAt
+        case meetingID
+        case title
+        case folderPath
+        case manifestPath
+        case markdownPath
+        case rawMicrophoneAudioPath
+        case cleanedMicrophoneAudioPath
+        case rawSystemAudioPath
+        case playbackAudioPath
+        case transcriptPath
+        case notesPath
+        case promptResultsPath
+        case promptResultsDirectoryPath
+        case promptResultCount
+        case speakerCorrectionsApplied
+        case speakerCorrectionRevision
+        case meetingType
+        case meetingLabels
+        case calendarEventSnapshot
+        case meetingCaptureReport
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try values.decode(String.self, forKey: .schema)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        generatedAt = try values.decode(Date.self, forKey: .generatedAt)
+        meetingID = try values.decode(UUID.self, forKey: .meetingID)
+        title = try values.decode(String.self, forKey: .title)
+        folderPath = try values.decode(String.self, forKey: .folderPath)
+        manifestPath = try values.decode(String.self, forKey: .manifestPath)
+        markdownPath = try values.decodeIfPresent(String.self, forKey: .markdownPath)
+        rawMicrophoneAudioPath = try values.decodeIfPresent(String.self, forKey: .rawMicrophoneAudioPath)
+        cleanedMicrophoneAudioPath = try values.decodeIfPresent(String.self, forKey: .cleanedMicrophoneAudioPath)
+        rawSystemAudioPath = try values.decodeIfPresent(String.self, forKey: .rawSystemAudioPath)
+        playbackAudioPath = try values.decodeIfPresent(String.self, forKey: .playbackAudioPath)
+        transcriptPath = try values.decode(String.self, forKey: .transcriptPath)
+        notesPath = try values.decodeIfPresent(String.self, forKey: .notesPath)
+        promptResultsPath = try values.decode(String.self, forKey: .promptResultsPath)
+        promptResultsDirectoryPath = try values.decode(String.self, forKey: .promptResultsDirectoryPath)
+        promptResultCount = try values.decode(Int.self, forKey: .promptResultCount)
+        speakerCorrectionsApplied = try values.decodeIfPresent(Bool.self, forKey: .speakerCorrectionsApplied) ?? false
+        speakerCorrectionRevision = try values.decodeIfPresent(Int.self, forKey: .speakerCorrectionRevision) ?? 0
+        meetingType = try values.decodeIfPresent(MeetingArtifactClassificationSnapshot.Value.self, forKey: .meetingType)
+        meetingLabels = try values.decodeIfPresent([MeetingArtifactClassificationSnapshot.Value].self, forKey: .meetingLabels)
+        calendarEventSnapshot = try values.decodeIfPresent(MeetingCalendarSnapshot.self, forKey: .calendarEventSnapshot)
+        meetingCaptureReport = try values.decodeIfPresent(MeetingCaptureReport.self, forKey: .meetingCaptureReport)
+    }
+
     public init(
         schema: String = MeetingArtifactStore.schema,
         schemaVersion: Int = MeetingArtifactStore.schemaVersion,
@@ -636,14 +689,16 @@ private struct MeetingArtifactTranscript: Codable {
         speakers = transcription.speakers
         diarizationSegments = transcription.diarizationSegments
         let runsBySegmentID = Dictionary(
-            uniqueKeysWithValues: (projection?.attribution.durableSegments ?? []).map {
+            (projection?.attribution.durableSegments ?? []).map {
                 ($0.base.id, $0.speakerRuns)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
         let labelsBySpeakerID = Dictionary(
-            uniqueKeysWithValues: (projection?.attribution.speakers ?? transcription.speakers ?? []).map {
+            (projection?.attribution.speakers ?? transcription.speakers ?? []).map {
                 ($0.id, $0.label)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
         transcriptSegments = transcription.transcriptSegments?.map {
             MeetingArtifactTranscriptSegment(

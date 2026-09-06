@@ -109,6 +109,25 @@ final class PromptsViewModelTests: XCTestCase {
         }
     }
 
+    func testUpdatingOtherPromptWithInvalidLegacySettingsPreservesEditorErrors() throws {
+        let editing = Prompt(name: "Editing", content: "Content", category: .result, isBuiltIn: false)
+        let invalid = Prompt(
+            name: "Legacy invalid", content: "Old", category: .result, isBuiltIn: false,
+            inferenceSettings: PromptInferenceSettings(temperature: 99))
+        try repo.save(editing)
+        try repo.save(invalid)
+        viewModel.beginEditing(editing)
+        viewModel.editingInferenceSettings.temperature = "bad"
+        viewModel.updatePrompt(editing, name: editing.name, content: editing.content)
+        let editorErrors = viewModel.editingInferenceValidationErrors
+        XCTAssertFalse(editorErrors.isEmpty)
+        viewModel.updatePrompt(invalid, name: "Renamed", content: "New")
+        XCTAssertEqual(viewModel.editingInferenceValidationErrors, editorErrors)
+        XCTAssertEqual(viewModel.editingPrompt?.id, editing.id)
+        XCTAssertNotNil(viewModel.errorMessage)
+        XCTAssertEqual(try repo.fetch(id: invalid.id)?.content, "Old")
+    }
+
     func testAddPromptCreatesCustomSummaryPrompt() {
         viewModel.newName = "Standup Notes"
         viewModel.newContent = "Summarize as a daily standup."

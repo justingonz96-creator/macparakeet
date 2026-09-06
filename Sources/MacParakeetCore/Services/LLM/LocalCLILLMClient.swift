@@ -27,7 +27,7 @@ public final class LocalCLILLMClient: LLMClientProtocol, Sendable {
             return ChatCompletionResponse(
                 content: output,
                 model: "cli",
-                effectiveInferenceSettings: options.effectiveInferenceSettings
+                effectiveInferenceSettings: nil
             )
         } catch let error as LLMError {
             throw error
@@ -76,7 +76,7 @@ public final class LocalCLILLMClient: LLMClientProtocol, Sendable {
                         model: response.model,
                         usage: response.usage.map(LLMUsage.init),
                         stopReason: response.finishReason,
-                        effectiveSettings: options.effectiveInferenceSettings
+                        effectiveSettings: response.effectiveInferenceSettings
                     )))
                     continuation.finish()
                 } catch {

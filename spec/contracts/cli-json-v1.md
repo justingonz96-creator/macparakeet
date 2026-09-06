@@ -102,9 +102,7 @@ with human progress/status kept off stdout.
   `prompts set <prompt>` enables it and `--no-include-meeting-notes` disables
   it; the flags are mutually exclusive and rejected for Transform prompts.
   Explicit `{{userNotes}}` custom-template substitution remains
-  independent of this preference. This additive surface was implemented and
-  locally verified on 2026-09-05; release availability follows the normal
-  channel process.
+  independent of this preference.
 - Version-aware prompt JSON adds `activeVersionId`, `activeVersionNumber`, optional `modelOverride`,
   optional canonical provenance, and optional
   deletion metadata without removing existing prompt fields. `prompts history
@@ -147,6 +145,12 @@ with human progress/status kept off stdout.
   effective receipt is available; callers must not reinterpret it as raw
   upstream-provider defaults. Other LLM commands omit it because per-prompt
   settings do not apply to them.
+- LLM receipts never infer a normal `stopReason` when the runtime supplies no
+  finish reason. Local CLI omits `effectiveSettings`, because inference options
+  are not passed to its command. Token usage may derive `totalTokens` from both
+  component counts when the provider omits the total. Explicit streaming
+  provider errors fail the operation even after partial text; they do not
+  produce a successful result receipt.
 - `meetings results list|add --json` prompt-result objects include additive
   optional `inferenceSettingsSnapshot` with the same settings shape. When
   present it is the effective receipt stored with the result; imported results
@@ -156,7 +160,6 @@ with human progress/status kept off stdout.
   that generation. `false` covers migrated and externally imported results.
   Nullable `userNotesSnapshot` contains the exact normalized, bounded notes
   value supplied to prompt assembly, not necessarily the full canonical note.
-  This field has the same pending-validation status as the CLI flags above.
 - Prompt-result objects may additionally include nullable `promptId`,
   `promptVersionId`, `providerSnapshot`, and `modelSnapshot`. Library-driven
   CLI/app generation populates those execution receipts. Historical and

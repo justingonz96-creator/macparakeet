@@ -422,6 +422,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Repeated Quit commands share the original deferred decision. Do not
+        // replace its completion or cancel it while notes are being saved.
+        if savedMeetingNotesCoordinator.isPreparingToQuit { return .terminateLater }
         guard !isPresentingQuitAlert else { return .terminateCancel }
         if savedMeetingNotesCoordinator.prepareToQuit(completion: { [weak self, weak sender] saved in
             guard let sender else { return }

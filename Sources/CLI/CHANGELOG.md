@@ -50,35 +50,6 @@ truth for branching.
 The canonical automation contract for stdout/stderr, envelopes, exit codes,
 and `spec --json` lives in `spec/contracts/cli-json-v1.md`.
 
-## Unreleased
-
-- Prompt availability can be updated with `prompts set --label LABEL` or
-  `--all-labels`, plus `--available`/`--unavailable`. Writes now affect the same
-  label rules used by execution and preserve existing exceptions. JSON returns
-  the saved label policy. Source auto-run remains a separate setting.
-- The obsolete fork-only `--meeting-type`/`--all-meeting-types` policy flags
-  fail with migration guidance instead of successfully writing inactive rules.
-
-### Added
-
-- Speaker-aware export and meeting JSON now include additive
-  `speakerCorrectionsApplied` and `speakerCorrectionRevision` metadata.
-
-### Fixed
-
-- `prompts run` now applies the same label availability rules as the app for
-  every transcription source. A matching target label is sufficient; legacy
-  meeting-type policies no longer override label availability.
-- Prompt restoration timestamps now record the restoration time on the new
-  version and the active prompt.
-- Provider model aliases are validated by the provider during generation,
-  instead of being rejected when absent from model discovery results. Local
-  CLI rejects a prompt model override that differs from the configured model
-  because its command template cannot apply that override.
-- `export`, `meetings show`, `meetings transcript`, `meetings export`, and
-  meeting-artifact refreshes now render the active speaker corrections instead
-  of silently falling back to automatic diarization.
-
 ### `--json` failure envelope
 
 Any command that accepts `--json` emits this envelope on stdout when the
@@ -118,38 +89,26 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ## [Unreleased]
 
-### Fixed
+### Changed
 
-- Local CLI output normalizes line endings: CRLF collapses to a single LF and
-  a bare CR is rewritten to LF instead of passing through unsanitized. This
-  closes a terminal-overwrite gap in the existing sanitizer (a wrapped CLI
-  could no longer emit a bare CR to visually overwrite prior sanitized
-  output); readable content, including intentional newlines, is preserved.
-
-## [3.2.0] — 2026-09-04
+- Prompt availability can be updated with `prompts set --label LABEL` or
+  `--all-labels`, plus `--available`/`--unavailable`. Writes now affect the same
+  label rules used by execution and preserve existing exceptions. JSON returns
+  the saved label policy. Source auto-run remains a separate setting.
+- The obsolete fork-only `--meeting-type`/`--all-meeting-types` policy flags
+  fail with migration guidance instead of successfully writing inactive rules.
 
 ### Added
 
-- In progress, pending final validation: `prompts set <prompt>` gains mutually
-  exclusive `--include-meeting-notes` and `--no-include-meeting-notes` flags
-  for result prompts. Prompt JSON gains additive Boolean
-  `includeMeetingNotes`, and saved PromptResult JSON gains additive Boolean
-  `includeMeetingNotesSnapshot`. Both default to `false`; Transform prompts
-  reject the setting. Advanced custom prompts may still use `{{userNotes}}`
-  independently, and `prompts run` avoids duplicating notes when both the token
-  and checkbox are present.
-- Versioned Prompt Library commands: `prompts history`, version-aware `prompts
-  show`, `prompts diff`, restore-as-new-version, soft delete/restore, optional
-  model selection, and meeting-type availability policies. Built-in prompts use
-  the same CLI mutation rights as user-created prompts. Existing prompt JSON is
-  extended additively with version and provenance metadata.
-- Meeting classification commands: `meetings types`, `meetings labels`, and
-  `meetings classify`, plus SQL-backed `meetings list --type`, `--label`, and
-  `--unclassified` filters. Meeting list/show/export JSON and materialized
-  meeting artifacts gain additive optional type and label snapshots.
-- Stored prompt-result JSON gains optional `promptId`, `promptVersionId`,
-  `providerSnapshot`, and `modelSnapshot` execution receipts. Historical and
-  externally imported results may omit them.
+- Speaker-aware export and meeting JSON now include additive
+  `speakerCorrectionsApplied` and `speakerCorrectionRevision` metadata.
+- `prompts set <prompt>` gains mutually exclusive `--include-meeting-notes`
+  and `--no-include-meeting-notes` flags for result prompts. Prompt JSON gains
+  additive Boolean `includeMeetingNotes`, and saved PromptResult JSON gains
+  additive Boolean `includeMeetingNotesSnapshot`. Both default to `false`;
+  Transform prompts reject the setting. Advanced custom prompts may still use
+  `{{userNotes}}` independently, and `prompts run` avoids duplicating notes
+  when both the token and checkbox are present.
 - Prompt JSON gains additive optional inference metadata. `prompts list/show`
   (and prompt objects returned by `prompts set`) expose `inferenceSettings`
   with optional `temperature`, `topP`, `topK`, `maxTokens`, and a
@@ -161,6 +120,43 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
   ignore both fields, and unset/legacy values omit them. Meeting result
   JSON and materialized `prompt-results.json` also preserve that receipt as
   additive optional `inferenceSettingsSnapshot`.
+- Versioned Prompt Library commands: `prompts history`, version-aware `prompts
+  show`, `prompts diff`, restore-as-new-version, soft delete/restore, optional
+  model selection, and label availability policies. Built-in prompts use
+  the same CLI mutation rights as user-created prompts. Existing prompt JSON is
+  extended additively with version and provenance metadata.
+- Meeting classification commands: `meetings types`, `meetings labels`, and
+  `meetings classify`, plus SQL-backed `meetings list --type`, `--label`, and
+  `--unclassified` filters. Meeting list/show/export JSON and materialized
+  meeting artifacts gain additive optional type and label snapshots.
+- Stored prompt-result JSON gains optional `promptId`, `promptVersionId`,
+  `providerSnapshot`, and `modelSnapshot` execution receipts. Historical and
+  externally imported results may omit them.
+
+### Fixed
+
+- `prompts run` now applies the same label availability rules as the app for
+  every transcription source. A matching target label is sufficient; legacy
+  meeting-type policies no longer override label availability.
+- Prompt restoration timestamps now record the restoration time on the new
+  version and the active prompt.
+- Provider model aliases are validated by the provider during generation,
+  instead of being rejected when absent from model discovery results. Local
+  CLI rejects a prompt model override that differs from the configured model
+  because its command template cannot apply that override.
+- `export`, `meetings show`, `meetings transcript`, `meetings export`, and
+  meeting-artifact refreshes now render the active speaker corrections instead
+  of silently falling back to automatic diarization.
+- Local CLI output normalizes line endings: CRLF collapses to a single LF and
+  a bare CR is rewritten to LF instead of passing through unsanitized. This
+  closes a terminal-overwrite gap in the existing sanitizer (a wrapped CLI
+  could no longer emit a bare CR to visually overwrite prior sanitized
+  output); readable content, including intentional newlines, is preserved.
+
+## [3.2.0] — 2026-09-04
+
+### Added
+
 - `meetings artifact --json` and envelope output may now include the additive
   optional `meetingCaptureReport` field with frame-derived meeting capture
   quality, elapsed/playable durations, and per-source coverage. Legacy meetings

@@ -166,8 +166,10 @@ Initial capability policy:
 
 - OpenAI native: temperature/top-p only when model policy allows them; output
   budget through existing token-key selection; omit top-k and thinking.
-- Anthropic native: temperature/top-p/max-tokens when accepted by the current
-  model policy; omit top-k and thinking.
+- Anthropic native: max-tokens is always supported; temperature/top-p depend
+  on the current model's sampling policy. The implemented adapter gives top-p
+  precedence: when it is set, omit temperature, including inherited temperature.
+  Omit top-k and thinking.
 - Ollama native: temperature/top-p/top-k/num-predict in `options`, plus
   top-level `think` when explicitly enabled/disabled; retain `num_ctx`.
 - Custom OpenAI-compatible: temperature/top-p/top-k/max-tokens plus

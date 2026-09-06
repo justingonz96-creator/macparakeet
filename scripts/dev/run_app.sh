@@ -88,7 +88,6 @@ source "$ROOT_DIR/scripts/dev/stop_app_processes.sh"
 stop_app_processes 10 \
   "/Applications/MacParakeet.app/Contents/MacOS/MacParakeet" \
   "$ROOT_DIR/dist/MacParakeet.app/Contents/MacOS/MacParakeet" \
-  "MacParakeet-Dev.app/Contents/MacOS/MacParakeet" \
   "$PRODUCT_DIR/MacParakeet" \
   "$ROOT_DIR/.build/debug/MacParakeet" \
   "$ROOT_DIR/.build/arm64-apple-macosx/debug/MacParakeet"

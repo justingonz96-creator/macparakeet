@@ -156,7 +156,10 @@ public extension LLMServiceProtocol {
         systemPrompt: String?,
         inferenceSettings: PromptInferenceSettings?
     ) async throws -> LLMResult {
-        try await generatePromptResultDetailed(transcript: transcript, systemPrompt: systemPrompt)
+        guard inferenceSettings?.normalized == nil else {
+            throw UnsupportedPromptInferenceSettingsError()
+        }
+        return try await generatePromptResultDetailed(transcript: transcript, systemPrompt: systemPrompt)
     }
 
     func generatePromptResultDetailedStream(
@@ -164,6 +167,9 @@ public extension LLMServiceProtocol {
         systemPrompt: String?,
         inferenceSettings: PromptInferenceSettings?
     ) -> AsyncThrowingStream<LLMStreamEvent, Error> {
+        guard inferenceSettings?.normalized == nil else {
+            return AsyncThrowingStream { $0.finish(throwing: UnsupportedPromptInferenceSettingsError()) }
+        }
         let source = generatePromptResultStream(transcript: transcript, systemPrompt: systemPrompt)
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -579,18 +585,20 @@ public final class LLMService: LLMServiceProtocol, Sendable {
             config: config,
             requested: inferenceSettings
         )
-        let inputBudget = try promptResultInputBudget(
-            for: config,
-            maxOutputTokens: resolution.options.maxTokens
-        )
-        let assembly = buildPromptResultMessages(
-            transcript: transcript,
-            systemPrompt: systemPrompt,
-            config: config,
-            inputBudget: inputBudget
-        )
-        let messages = assembly.messages
+        var inputTruncated: Bool?
         do {
+            let inputBudget = try promptResultInputBudget(
+                for: config,
+                maxOutputTokens: resolution.effectiveSettings?.maxTokens
+            )
+            let assembly = buildPromptResultMessages(
+                transcript: transcript,
+                systemPrompt: systemPrompt,
+                config: config,
+                inputBudget: inputBudget
+            )
+            inputTruncated = assembly.inputTruncated
+            let messages = assembly.messages
             let response = try await client.chatCompletion(
                 messages: messages,
                 context: context,
@@ -626,9 +634,9 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                     outcome: .cancelled,
                     startedAt: startedAt,
                     inputChars: transcript.count,
-                    inputTruncated: assembly.inputTruncated,
+                    inputTruncated: inputTruncated,
                     promptDefaultUsed: promptDefaultUsed,
-                    messageCount: messages.count
+                    messageCount: 2
                 )
             } else {
                 let kind = Self.errorType(for: error)
@@ -651,9 +659,9 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                     outcome: Self.outcomeForLLMError(error),
                     startedAt: startedAt,
                     inputChars: transcript.count,
-                    inputTruncated: assembly.inputTruncated,
+                    inputTruncated: inputTruncated,
                     promptDefaultUsed: promptDefaultUsed,
-                    messageCount: messages.count,
+                    messageCount: 2,
                     errorType: kind
                 )
             }
@@ -1109,7 +1117,7 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                     )
                     let inputBudget = try self.promptResultInputBudget(
                         for: config,
-                        maxOutputTokens: resolution.options.maxTokens
+                        maxOutputTokens: resolution.effectiveSettings?.maxTokens
                     )
                     let assembly = self.buildPromptResultMessages(
                         transcript: transcript,
@@ -1886,5 +1894,12 @@ public final class LLMService: LLMServiceProtocol, Sendable {
 
     private struct FormatterStructuredOutput: Decodable {
         let cleaned_text: String
+    }
+}
+
+/// Legacy service conformers must not silently discard explicitly requested settings.
+struct UnsupportedPromptInferenceSettingsError: LocalizedError {
+    var errorDescription: String? {
+        "This LLM service does not support per-prompt inference settings. Use a settings-aware service or clear the prompt overrides."
     }
 }
