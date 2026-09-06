@@ -243,7 +243,10 @@ temperature behavior is unchanged.
    serializes the request.
 5. Completion returns the effective settings alongside terminal metadata so
    `PromptResult` can snapshot them. Streaming must expose a terminal envelope
-   rather than losing this metadata after yielding text.
+   rather than losing this metadata after yielding text. Ollama retains its
+   existing lenient EOF policy: after non-empty output, an EOF without
+   `done:true` emits a receipt using the last observed chunk. Missing stop
+   reason or incomplete usage remains unknown; no-content streams still fail.
 
 That final point is load-bearing: do not guess effective settings in the view
 model, because provider/model filtering belongs in the adapter layer.

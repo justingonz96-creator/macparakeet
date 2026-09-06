@@ -59,7 +59,9 @@ The script also stops every existing MacParakeet process **before** rebuilding
 or re-signing the Dev bundle. Never reorder that shutdown after bundle wrapping:
 modifying a signed executable while macOS is running it can terminate the app
 later with `SIGKILL (Code Signature Invalid)`, often when the next menu or sheet
-loads code from the changed page.
+loads code from the changed page. Shutdown waits up to ten seconds for the
+matched processes to exit. If process inspection fails or an app stays alive,
+the build aborts before modifying the bundle; it does not force-kill the app.
 
 **Or** QA the Sparkle release candidate DMG — closest to what users receive. Use this
 for release-gating checks (signing, notarization, first-run onboarding, auto-update).
@@ -81,14 +83,17 @@ for release-gating checks (signing, notarization, first-run onboarding, auto-upd
   “Copy table” and “Download table” and can activate both. The automated native
   selection regression passes, but the XCTest host does not expose the SwiftUI
   accessibility tree, so the VoiceOver check must run in the app.
-- While a result or chat response is streaming, leave its pane and return. The
-  latest text must appear and later chunks must continue to render. Repeat after
+- While a result, saved chat response, or live Ask response is streaming, leave
+  its pane and return. Existing text must remain visible and later chunks must
+  continue to render. Repeat after
   a completed result starts streaming again.
 - In a rendered table, select text in a header and a body cell, then copy it.
   Selection must remain usable without a table-wide click action consuming it.
 - Navigate the table actions with VoiceOver. Both **Copy table** and **Download
   table** must be named and reachable before clicking the table; downloading must
-  open the existing save dialog and export the original Markdown source.
+  open the existing save dialog and export the original Markdown source. Cancel
+  the dialog to confirm no file is written. If the destination becomes
+  unwritable, the app must show **Export Failed** instead of silently closing.
 
 ## Writing a QA checklist (for PR authors / agents)
 

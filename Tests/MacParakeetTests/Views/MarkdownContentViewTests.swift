@@ -27,7 +27,7 @@ final class MarkdownContentViewTests: XCTestCase {
         }
         await fulfillment(of: [subscribed], timeout: 2)
 
-        // Match StreamedMarkdownController.end() when the pane disappears.
+        // Match SwiftStreamingMarkdown's StreamedMarkdownController.end() on disappearance.
         firstRenderer.cancel()
         let cancelledValue = await firstRenderer.value
         XCTAssertNil(cancelledValue)
@@ -62,6 +62,36 @@ final class MarkdownContentViewTests: XCTestCase {
         source.send("Replacement remains live")
         let next = await replacement.next()
         XCTAssertEqual(next, "Replacement remains live")
+    }
+
+    func testTableExportPreservesMarkdownSource() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let destination = directory.appendingPathComponent("table.md")
+        let content = "| Owner | Action |\n| --- | --- |\n| Élodie | Review **today** |\n"
+
+        try await MarkdownTableExporter.write(content, to: destination)
+
+        XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), content)
+    }
+
+    func testTableExportPropagatesDestinationWriteFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A regular file cannot contain an exported table, regardless of the
+        // current user's filesystem permissions or whether tests run as root.
+        let parentFile = directory.appendingPathComponent("not-a-directory")
+        try "Keep this existing file".write(to: parentFile, atomically: true, encoding: .utf8)
+
+        do {
+            try await MarkdownTableExporter.write("| Table |", to: parentFile.appendingPathComponent("table.md"))
+            XCTFail("The UI must receive the write error to present Export Failed")
+        } catch {
+            XCTAssertEqual((error as NSError).domain, NSCocoaErrorDomain)
+        }
+        XCTAssertEqual(try String(contentsOf: parentFile, encoding: .utf8), "Keep this existing file")
     }
 
     func testKitchenSinkAndIncompleteSnapshotsProduceRenderableContent() async {
