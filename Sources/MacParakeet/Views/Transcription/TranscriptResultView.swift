@@ -99,6 +99,8 @@ final class TranscriptRichContextLoader {
     struct Request: Equatable, Sendable {
         let transcriptionID: UUID
         let contentRevision: UInt64
+        // nil identifies the automatic snapshot while persisted attribution is loading.
+        let speakerCorrectionRevision: Int?
         let mode: TranscriptAIContextMode
     }
 
@@ -132,11 +134,13 @@ final class TranscriptRichContextLoader {
         transcription: Transcription,
         mode: TranscriptAIContextMode,
         contentRevision: UInt64,
+        speakerCorrectionRevision: Int? = nil,
         isCurrent: @escaping @MainActor (Request) -> Bool = { _ in true }
     ) async -> Prepared? {
         let request = Request(
             transcriptionID: transcription.id,
             contentRevision: contentRevision,
+            speakerCorrectionRevision: speakerCorrectionRevision,
             mode: mode
         )
         if let cached, cached.request == request {
@@ -177,6 +181,7 @@ final class TranscriptRichContextLoader {
         transcription: Transcription,
         mode: TranscriptAIContextMode,
         contentRevision: UInt64,
+        speakerCorrectionRevision: Int? = nil,
         apply: @escaping @MainActor (Request, String) -> Void
     ) -> Task<Void, Never> {
         let applyID = UUID()
@@ -186,7 +191,8 @@ final class TranscriptRichContextLoader {
                 let prepared = await self.prepare(
                     transcription: transcription,
                     mode: mode,
-                    contentRevision: contentRevision
+                    contentRevision: contentRevision,
+                    speakerCorrectionRevision: speakerCorrectionRevision
                 ),
                 !Task.isCancelled,
                 self.latestScheduledApplyID == applyID
@@ -202,6 +208,7 @@ final class TranscriptRichContextLoader {
         transcription: Transcription,
         mode: TranscriptAIContextMode,
         contentRevision: UInt64,
+        speakerCorrectionRevision: Int? = nil,
         isCurrent: @escaping @MainActor (Request) -> Bool = { _ in true },
         onStale: @escaping @MainActor () -> Void,
         action: @escaping @MainActor (String) -> Void
@@ -220,6 +227,7 @@ final class TranscriptRichContextLoader {
                 transcription: transcription,
                 mode: mode,
                 contentRevision: contentRevision,
+                speakerCorrectionRevision: speakerCorrectionRevision,
                 isCurrent: isCurrent
             )
             guard !Task.isCancelled, self.latestPromptActionID == actionID else { return }
@@ -1301,8 +1309,10 @@ struct TranscriptResultView: View {
                 transcription: transcription,
                 mode: mode,
                 contentRevision: revision,
+                speakerCorrectionRevision: viewModel.speakerAttribution?.correctionRevision,
                 isCurrent: { request in
                     viewModel.currentTranscriptionRevision == request.contentRevision
+                        && viewModel.speakerAttribution?.correctionRevision == request.speakerCorrectionRevision
                         && viewModel.currentTranscription?.id == request.transcriptionID
                         && currentAIContextMode == request.mode
                 },
@@ -4385,9 +4395,12 @@ struct TranscriptResultView: View {
         richContextLoader.schedule(
             transcription: transcription,
             mode: mode,
-            contentRevision: revision
+            contentRevision: revision,
+            speakerCorrectionRevision: viewModel.speakerAttribution?.correctionRevision
         ) { request, text in
-            guard viewModel.currentTranscriptionRevision == request.contentRevision else { return }
+            guard viewModel.currentTranscriptionRevision == request.contentRevision,
+                  viewModel.speakerAttribution?.correctionRevision == request.speakerCorrectionRevision
+            else { return }
             guard (viewModel.currentTranscription?.id ?? transcription.id) == request.transcriptionID else {
                 return
             }
