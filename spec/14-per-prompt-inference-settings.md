@@ -250,6 +250,12 @@ temperature behavior is unchanged.
    explicit provider error always fails the stream, including after partial
    output; it never produces a successful terminal receipt.
 
+Legacy `LLMServiceProtocol` conformers can keep the default detailed methods
+for nil/default settings. A normalized non-default override is rejected before
+legacy dispatch unless the conformer implements the settings-aware method;
+defaults must never silently ignore an explicit override. Legacy terminal
+provider/model identifiers remain unknown instead of being invented.
+
 Native OpenAI streaming requests opt into the terminal usage chunk; compatible
 third-party endpoints keep their existing request shape. A missing total is
 derived only when both input and output counts are available. In-process

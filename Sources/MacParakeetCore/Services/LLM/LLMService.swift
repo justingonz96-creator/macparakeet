@@ -88,7 +88,10 @@ public extension LLMServiceProtocol {
         systemPrompt: String?,
         inferenceSettings: PromptInferenceSettings?
     ) async throws -> LLMResult {
-        try await generatePromptResultDetailed(transcript: transcript, systemPrompt: systemPrompt)
+        guard inferenceSettings?.normalized == nil else {
+            throw UnsupportedPromptInferenceSettingsError()
+        }
+        return try await generatePromptResultDetailed(transcript: transcript, systemPrompt: systemPrompt)
     }
 
     func generatePromptResultDetailedStream(
@@ -96,6 +99,9 @@ public extension LLMServiceProtocol {
         systemPrompt: String?,
         inferenceSettings: PromptInferenceSettings?
     ) -> AsyncThrowingStream<LLMStreamEvent, Error> {
+        guard inferenceSettings?.normalized == nil else {
+            return AsyncThrowingStream { $0.finish(throwing: UnsupportedPromptInferenceSettingsError()) }
+        }
         let source = generatePromptResultStream(transcript: transcript, systemPrompt: systemPrompt)
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -1678,5 +1684,12 @@ public final class LLMService: LLMServiceProtocol, Sendable {
 
     private struct FormatterStructuredOutput: Decodable {
         let cleaned_text: String
+    }
+}
+
+/// Legacy service conformers must not silently discard explicitly requested settings.
+struct UnsupportedPromptInferenceSettingsError: LocalizedError {
+    var errorDescription: String? {
+        "This LLM service does not support per-prompt inference settings. Use a settings-aware service or clear the prompt overrides."
     }
 }
