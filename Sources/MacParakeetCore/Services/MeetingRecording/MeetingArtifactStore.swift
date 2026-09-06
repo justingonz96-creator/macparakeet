@@ -83,8 +83,6 @@ public struct MeetingArtifactSnapshot: Codable, Sendable, Equatable {
         case promptResultCount
         case speakerCorrectionsApplied
         case speakerCorrectionRevision
-        case meetingType
-        case meetingLabels
         case calendarEventSnapshot
         case meetingCaptureReport
     }
@@ -110,8 +108,6 @@ public struct MeetingArtifactSnapshot: Codable, Sendable, Equatable {
         promptResultCount = try values.decode(Int.self, forKey: .promptResultCount)
         speakerCorrectionsApplied = try values.decodeIfPresent(Bool.self, forKey: .speakerCorrectionsApplied) ?? false
         speakerCorrectionRevision = try values.decodeIfPresent(Int.self, forKey: .speakerCorrectionRevision) ?? 0
-        meetingType = try values.decodeIfPresent(MeetingArtifactClassificationSnapshot.Value.self, forKey: .meetingType)
-        meetingLabels = try values.decodeIfPresent([MeetingArtifactClassificationSnapshot.Value].self, forKey: .meetingLabels)
         calendarEventSnapshot = try values.decodeIfPresent(MeetingCalendarSnapshot.self, forKey: .calendarEventSnapshot)
         meetingCaptureReport = try values.decodeIfPresent(MeetingCaptureReport.self, forKey: .meetingCaptureReport)
     }
