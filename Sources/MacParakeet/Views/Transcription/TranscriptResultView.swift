@@ -2672,7 +2672,7 @@ struct TranscriptResultView: View {
                     currentModel: promptResultsViewModel.currentModelName,
                     displayName: promptResultsViewModel.modelDisplayName,
                     availableModels: promptResultsViewModel.availableModels,
-                    disabled: promptResultsViewModel.hasActiveGenerations,
+                    disabled: !promptResultsViewModel.canSelectModel,
                     onSelect: { promptResultsViewModel.selectModel($0) }
                 )
             }

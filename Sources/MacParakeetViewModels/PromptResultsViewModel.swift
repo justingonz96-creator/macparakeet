@@ -118,35 +118,42 @@ public final class PromptResultsViewModel {
         llmService != nil
     }
 
-    public var hasPendingGenerations: Bool {
-        !pendingGenerations.isEmpty
+    /// Model changes affect every queued generation, not just the visible meeting.
+    public var canSelectModel: Bool {
+        configStore != nil && currentProviderID != .localCLI && !hasAnyActiveGenerations
     }
 
-    /// Queued or streaming — excludes failed entries, which only wait for
-    /// the user to retry or dismiss and should not block model switching
-    /// or read as in-flight work.
+    /// Status shown by the current transcript's controls excludes other meetings.
+    public var hasPendingGenerations: Bool {
+        pendingGenerations.contains { $0.transcriptionId == currentTranscriptionID }
+    }
+
+    /// Queued or streaming work for the displayed transcript, excluding failed
+    /// entries that only wait for the user to retry or dismiss.
     public var hasActiveGenerations: Bool {
-        pendingGenerations.contains { $0.state.isActive }
+        pendingGenerations.contains { $0.transcriptionId == currentTranscriptionID && $0.state.isActive }
     }
 
     public var isStreaming: Bool {
-        activeStreamingGeneration != nil
+        displayedStreamingGeneration != nil
     }
 
     public var queuedGenerationCount: Int {
-        pendingGenerations.filter { $0.state == .queued }.count
+        pendingGenerations.reduce(0) {
+            $0 + ($1.transcriptionId == currentTranscriptionID && $1.state == .queued ? 1 : 0)
+        }
     }
 
     public var streamingContent: String {
-        activeStreamingGeneration?.content ?? ""
+        displayedStreamingGeneration?.content ?? ""
     }
 
     public var streamingPromptResultID: UUID? {
-        activeStreamingGeneration?.id
+        displayedStreamingGeneration?.id
     }
 
     public var streamingPromptName: String {
-        activeStreamingGeneration?.promptName ?? ""
+        displayedStreamingGeneration?.promptName ?? ""
     }
 
     public var modelDisplayName: String {
@@ -155,6 +162,18 @@ public final class PromptResultsViewModel {
             return String(currentModelName[currentModelName.index(after: slashIndex)...])
         }
         return currentModelName
+    }
+
+    /// Provider/model configuration is shared by the entire single-worker queue.
+    private var hasAnyActiveGenerations: Bool {
+        pendingGenerations.contains { $0.state.isActive }
+    }
+
+    private var displayedStreamingGeneration: PendingGeneration? {
+        guard let generation = activeStreamingGeneration,
+              generation.transcriptionId == currentTranscriptionID
+        else { return nil }
+        return generation
     }
 
     private var activeStreamingGeneration: PendingGeneration? {
@@ -222,7 +241,7 @@ public final class PromptResultsViewModel {
     }
 
     public func selectModel(_ modelName: String) {
-        guard let configStore, currentProviderID != .localCLI, !hasActiveGenerations else { return }
+        guard let configStore, canSelectModel else { return }
         do {
             try configStore.updateModelName(modelName)
             currentModelName = modelName

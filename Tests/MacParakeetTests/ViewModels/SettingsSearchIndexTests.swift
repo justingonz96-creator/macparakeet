@@ -321,6 +321,8 @@ final class SettingsSearchIndexTests: XCTestCase {
             "meeting",
             "meeting.hotkey",
             "meeting.floatingControls",
+            "meeting.openAppAfterEnd",
+            "meeting.notifyOnEnd",
             "meeting.speakerDetection",
             "meeting.autoStop",
             "meeting.calendar",

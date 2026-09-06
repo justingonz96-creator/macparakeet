@@ -1337,7 +1337,10 @@ final class TranscriptionViewModelTests: XCTestCase {
             status: .completed,
             sourceType: .meeting
         )
-        mockRepo.transcriptions = [displayed, completed]
+        var processing = completed
+        processing.status = .processing
+        processing.rawTranscript = nil
+        mockRepo.transcriptions = [displayed, processing]
         let existingResult = PromptResult(
             transcriptionId: displayed.id,
             promptName: "Summary",
@@ -1361,11 +1364,14 @@ final class TranscriptionViewModelTests: XCTestCase {
             promptResultRepo: mockPromptResultRepo,
             promptResultsViewModel: results
         )
+        XCTAssertEqual(viewModel.transcriptions.first { $0.id == completed.id }?.status, .processing)
         viewModel.currentTranscription = displayed
         viewModel.selectedTab = .result(id: existingResult.id)
         let exportURL = AutoSaveService(defaults: defaults)
             .buildFileURL(for: completed, format: .txt, in: folder)
 
+        // The queue's durable completion arrives after the initial library load.
+        mockRepo.transcriptions = [displayed, completed]
         viewModel.presentCompletedTranscription(
             completed,
             autoSave: true,
@@ -1373,7 +1379,7 @@ final class TranscriptionViewModelTests: XCTestCase {
             applyMeetingRetention: false,
             selectTranscription: false
         )
-        try await waitUntil { !results.hasActiveGenerations }
+        try await waitUntil { !results.pendingGenerations.contains { $0.state.isActive } }
 
         XCTAssertEqual(viewModel.currentTranscription?.id, displayed.id)
         XCTAssertEqual(viewModel.selectedTab, .result(id: existingResult.id))
