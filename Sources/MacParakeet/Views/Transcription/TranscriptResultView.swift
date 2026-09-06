@@ -4186,6 +4186,8 @@ struct TranscriptResultView: View {
                                 color: colorMap[speaker.id] ?? DesignSystem.Colors.textSecondary,
                                 contextID: SpeakerRenameAccessibility.overviewRenameContextIdentifier(for: speaker.id)
                             )
+                            .disabled(mutationsDisabled)
+                            .allowsHitTesting(!mutationsDisabled)
 
                             if let stats {
                                 HStack(spacing: DesignSystem.Spacing.sm) {
