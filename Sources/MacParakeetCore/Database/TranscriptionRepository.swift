@@ -3,6 +3,8 @@ import GRDB
 
 public protocol TranscriptionRepositoryProtocol: Sendable {
     func save(_ transcription: Transcription) throws
+    /// Merge current user-owned metadata and return the row from the same write transaction.
+    func savePreservingUserMetadata(_ transcription: Transcription, originalFileName: String) throws -> Transcription
     func fetch(id: UUID) throws -> Transcription?
     func fetchAll(limit: Int?) throws -> [Transcription]
     func fetchLibraryPage(query: TranscriptionLibraryQuery) throws -> TranscriptionLibraryPage
@@ -32,6 +34,16 @@ public protocol TranscriptionRepositoryProtocol: Sendable {
 }
 
 extension TranscriptionRepositoryProtocol {
+    public func savePreservingUserMetadata(
+        _ transcription: Transcription, originalFileName: String
+    ) throws -> Transcription {
+        let merged = transcription.preservingUserMetadata(
+            from: try fetch(id: transcription.id), originalFileName: originalFileName
+        )
+        try save(merged)
+        return merged
+    }
+
     public func fetchByFilePath(
         _ filePath: String,
         sourceType: Transcription.SourceType? = nil
@@ -166,6 +178,19 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
     public func save(_ transcription: Transcription) throws {
         try dbQueue.write { db in
             try transcription.save(db)
+        }
+    }
+
+    public func savePreservingUserMetadata(
+        _ transcription: Transcription, originalFileName: String
+    ) throws -> Transcription {
+        try dbQueue.write { db in
+            let merged = transcription.preservingUserMetadata(
+                from: try Transcription.fetchOne(db, key: transcription.id),
+                originalFileName: originalFileName
+            )
+            try merged.save(db)
+            return merged
         }
     }
 
@@ -699,4 +724,27 @@ private func transcriptionMatchesLibrarySearch(
         || (transcription.rawTranscript.map { UnicodeSearch.contains($0, normalizedQuery: normalizedQuery) } ?? false)
         || (transcription.cleanTranscript.map { UnicodeSearch.contains($0, normalizedQuery: normalizedQuery) } ?? false)
         || (transcription.channelName.map { UnicodeSearch.contains($0, normalizedQuery: normalizedQuery) } ?? false)
+}
+
+private extension Transcription {
+    /// STT owns transcript output, not metadata edited while processing is suspended.
+    func preservingUserMetadata(from current: Transcription?, originalFileName: String) -> Transcription {
+        guard let current else { return self }
+        var merged = self
+        merged.updatedAt = max(updatedAt, current.updatedAt)
+        merged.userNotes = current.userNotes
+        merged.isFavorite = current.isFavorite
+        merged.titleOverride = current.titleOverride
+        merged.chatMessages = current.chatMessages
+        merged.meetingArtifactFolderPath = current.meetingArtifactFolderPath
+        // Allow an automatically generated meeting title only if the user has
+        // not renamed the row since the processing snapshot was captured.
+        if current.fileName != originalFileName {
+            merged.fileName = current.fileName
+            if current.sourceType == .meeting {
+                merged.derivedTitle = current.derivedTitle
+            }
+        }
+        return merged
+    }
 }

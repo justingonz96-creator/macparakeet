@@ -932,7 +932,11 @@ public final class TranscriptionViewModel {
                 updatedResult.userNotes = original.userNotes
                 updatedResult.updatedAt = Date()
                 do {
-                    try transcriptionRepo?.save(updatedResult)
+                    if let transcriptionRepo {
+                        updatedResult = try transcriptionRepo.savePreservingUserMetadata(
+                            updatedResult, originalFileName: original.fileName
+                        )
+                    }
                     promptResultsViewModel?.generateKnowledgeCard(
                         transcriptionId: updatedResult.id
                     )

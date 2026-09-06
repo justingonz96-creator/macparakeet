@@ -2920,6 +2920,47 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(lastSource, .youtube, "Retranscribe should preserve original telemetry source")
     }
 
+    func testRetranscribePublishesMetadataEditedWhileServiceIsSuspended() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        try Data().write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let original = Transcription(
+            fileName: "Original meeting", filePath: file.path,
+            rawTranscript: "Old transcript", status: .completed,
+            sourceType: .meeting, userNotes: "Old notes"
+        )
+        mockRepo.transcriptions = [original]
+        await mockService.configure(
+            result: Transcription(
+                fileName: "Stale result", rawTranscript: "New transcript", status: .completed
+            ))
+        let started = expectation(description: "Service suspended")
+        let (release, continuation) = AsyncStream<Void>.makeStream()
+        defer { continuation.finish() }
+        await mockService.setTranscribeHook {
+            started.fulfill()
+            for await _ in release { break }
+        }
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.retranscribe(original)
+        await fulfillment(of: [started], timeout: 2)
+        var edited = original
+        edited.userNotes = "Notes saved during STT"
+        edited.fileName = "Renamed during STT"
+        edited.isFavorite = true
+        try mockRepo.save(edited)
+        continuation.yield(())
+        try await waitUntil { !self.viewModel.isTranscribing }
+        let persisted = try XCTUnwrap(mockRepo.fetch(id: original.id))
+        let published = try XCTUnwrap(viewModel.currentTranscription)
+        for snapshot in [persisted, published] {
+            XCTAssertEqual(snapshot.userNotes, edited.userNotes)
+            XCTAssertEqual(snapshot.fileName, edited.fileName)
+            XCTAssertTrue(snapshot.isFavorite)
+            XCTAssertEqual(snapshot.rawTranscript, "New transcript")
+        }
+    }
+
     func testRetranscribePreservesMeetingSourceType() async throws {
         let archivedMeeting = try makeArchivedMeetingRecording()
         defer { try? FileManager.default.removeItem(at: archivedMeeting.folderURL) }
