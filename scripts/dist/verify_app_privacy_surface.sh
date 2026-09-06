@@ -68,6 +68,7 @@ require_entitlement_true() {
 }
 
 require_info_value "CFBundleIdentifier" "$EXPECTED_BUNDLE_ID"
+require_info_value "NSAppTransportSecurity:NSAllowsLocalNetworking" "true"
 
 require_info_string "NSMicrophoneUsageDescription"
 require_info_string "NSAudioCaptureUsageDescription"

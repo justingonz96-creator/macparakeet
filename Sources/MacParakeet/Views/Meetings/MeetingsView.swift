@@ -24,6 +24,10 @@ struct MeetingsView: View {
     private static let twoColumnMinimumWidth: CGFloat = 1_100
 
     var body: some View {
+        sheetContent
+    }
+
+    private var layoutContent: some View {
         GeometryReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
@@ -43,136 +47,153 @@ struct MeetingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(DesignSystem.Colors.contentBackground)
         }
-        .onAppear {
-            viewModel.refreshIfNeeded()
-        }
-        .focusable(viewModel.recentMeetingsViewModel.isBulkSelectionModeEnabled)
-        .focused($recentMeetingsSelectionFocused)
-        // Keep keyboard focus (for ⌘A / Delete) but suppress the system focus
-        // ring so entering selection mode doesn't flash a blue focus line.
-        .focusEffectDisabled(viewModel.recentMeetingsViewModel.isBulkSelectionModeEnabled)
-        .onChange(of: viewModel.recentMeetingsViewModel.isBulkSelectionModeEnabled) { _, enabled in
-            if enabled {
-                recentMeetingsSelectionFocused = true
+    }
+
+    private var interactionContent: some View {
+        layoutContent
+            .onAppear {
+                viewModel.refreshIfNeeded()
             }
-        }
-        .animation(.easeInOut(duration: 0.16), value: viewModel.recentMeetingsViewModel.isBulkSelectionModeEnabled)
-        .onKeyPress(keys: ["a", "A", .delete, .deleteForward]) { press in
-            handleRecentMeetingsSelectionKeyPress(press)
-        }
-        .onChange(of: viewModel.settingsViewModel.calendarAutoStartMode) { _, _ in
-            viewModel.refreshUpcomingEvents()
-        }
-        .onChange(of: viewModel.settingsViewModel.calendarPermissionStatus) { _, _ in
-            viewModel.refreshUpcomingEvents()
-        }
-        .onChange(of: viewModel.settingsViewModel.meetingTriggerFilter) { _, _ in
-            viewModel.refreshUpcomingEvents()
-        }
-        .onChange(of: viewModel.settingsViewModel.calendarExcludedIdentifiers) { _, _ in
-            viewModel.refreshUpcomingEvents()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in
-            viewModel.refreshUpcomingEvents()
-        }
-        .alert(
-            "Save Failed",
-            isPresented: Binding(
-                get: { audioSaveErrorMessage != nil },
-                set: { if !$0 { audioSaveErrorMessage = nil } }
+            .focusable(viewModel.recentMeetingsViewModel.isBulkSelectionModeEnabled)
+            .focused($recentMeetingsSelectionFocused)
+            // Keep keyboard focus (for ⌘A / Delete) but suppress the system
+            // focus ring when entering selection mode.
+            .focusEffectDisabled(viewModel.recentMeetingsViewModel.isBulkSelectionModeEnabled)
+            .onChange(of: viewModel.recentMeetingsViewModel.isBulkSelectionModeEnabled) { _, enabled in
+                if enabled {
+                    recentMeetingsSelectionFocused = true
+                }
+            }
+            .animation(
+                .easeInOut(duration: 0.16),
+                value: viewModel.recentMeetingsViewModel.isBulkSelectionModeEnabled
             )
-        ) {
-            Button("OK", role: .cancel) {
-                audioSaveErrorMessage = nil
+            .onKeyPress(keys: ["a", "A", .delete, .deleteForward]) { press in
+                handleRecentMeetingsSelectionKeyPress(press)
             }
-        } message: {
-            Text(audioSaveErrorMessage ?? "Unable to save meeting audio.")
-        }
-        .alert(
-            MeetingDeletionCopy.audioOnlyAlertTitle,
-            isPresented: Binding(
-                get: { pendingDeleteAudio != nil },
-                set: { if !$0 { pendingDeleteAudio = nil } }
-            )
-        ) {
-            Button("Cancel", role: .cancel) {
-                pendingDeleteAudio = nil
+            .onChange(of: viewModel.settingsViewModel.calendarAutoStartMode) { _, _ in
+                viewModel.refreshUpcomingEvents()
             }
-            Button(MeetingDeletionCopy.audioOnlyConfirmTitle, role: .destructive) {
-                if let transcription = pendingDeleteAudio {
-                    viewModel.recentMeetingsViewModel.deleteMeetingAudio(transcription)
+            .onChange(of: viewModel.settingsViewModel.calendarPermissionStatus) { _, _ in
+                viewModel.refreshUpcomingEvents()
+            }
+            .onChange(of: viewModel.settingsViewModel.meetingTriggerFilter) { _, _ in
+                viewModel.refreshUpcomingEvents()
+            }
+            .onChange(of: viewModel.settingsViewModel.calendarExcludedIdentifiers) { _, _ in
+                viewModel.refreshUpcomingEvents()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in
+                viewModel.refreshUpcomingEvents()
+            }
+    }
+
+    private var alertContent: some View {
+        interactionContent
+            .alert(
+                "Save Failed",
+                isPresented: Binding(
+                    get: { audioSaveErrorMessage != nil },
+                    set: { if !$0 { audioSaveErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {
+                    audioSaveErrorMessage = nil
+                }
+            } message: {
+                Text(audioSaveErrorMessage ?? "Unable to save meeting audio.")
+            }
+            .alert(
+                MeetingDeletionCopy.audioOnlyAlertTitle,
+                isPresented: Binding(
+                    get: { pendingDeleteAudio != nil },
+                    set: { if !$0 { pendingDeleteAudio = nil } }
+                )
+            ) {
+                Button("Cancel", role: .cancel) {
                     pendingDeleteAudio = nil
                 }
-            }
-        } message: {
-            Text(
-                MeetingDeletionCopy.singleAudioOnlyMessage(
-                    surface: .meetings,
-                    status: pendingDeleteAudio?.status ?? .completed
+                Button(MeetingDeletionCopy.audioOnlyConfirmTitle, role: .destructive) {
+                    if let transcription = pendingDeleteAudio {
+                        viewModel.recentMeetingsViewModel.deleteMeetingAudio(transcription)
+                        pendingDeleteAudio = nil
+                    }
+                }
+            } message: {
+                Text(
+                    MeetingDeletionCopy.singleAudioOnlyMessage(
+                        surface: .meetings,
+                        status: pendingDeleteAudio?.status ?? .completed
+                    )
                 )
-            )
-        }
-        .alert(
-            MeetingDeletionCopy.fullDeleteAlertTitle,
-            isPresented: Binding(
-                get: { pendingDeleteMeeting != nil },
-                set: { if !$0 { pendingDeleteMeeting = nil } }
-            )
-        ) {
-            Button("Cancel", role: .cancel) {
-                pendingDeleteMeeting = nil
             }
-            Button(MeetingDeletionCopy.fullDeleteConfirmTitle, role: .destructive) {
-                if let transcription = pendingDeleteMeeting {
-                    viewModel.recentMeetingsViewModel.deleteTranscription(transcription)
+            .alert(
+                MeetingDeletionCopy.fullDeleteAlertTitle,
+                isPresented: Binding(
+                    get: { pendingDeleteMeeting != nil },
+                    set: { if !$0 { pendingDeleteMeeting = nil } }
+                )
+            ) {
+                Button("Cancel", role: .cancel) {
                     pendingDeleteMeeting = nil
                 }
-            }
-        } message: {
-            if let pendingDeleteMeeting {
-                Text(MeetingDeletionCopy.singleFullDeleteMessage(for: pendingDeleteMeeting))
-            }
-        }
-        .alert(
-            recentMeetingsBulkOperationTitle,
-            isPresented: Binding(
-                get: { viewModel.recentMeetingsViewModel.pendingBulkOperation != nil },
-                set: { if !$0 { viewModel.recentMeetingsViewModel.cancelPendingBulkOperation() } }
-            )
-        ) {
-            Button("Cancel", role: .cancel) {
-                viewModel.recentMeetingsViewModel.cancelPendingBulkOperation()
-            }
-            Button(recentMeetingsBulkOperationConfirmTitle, role: .destructive) {
-                // Capture the operation synchronously. Tapping this button also
-                // dismisses the alert, whose isPresented setter runs
-                // cancelPendingBulkOperation() and nils pendingBulkOperation —
-                // and that dismissal fires before the deferred Task body. Reading
-                // the VM state inside the Task would therefore see nil and
-                // silently no-op (the "delete does nothing" bug). Snapshot here.
-                guard let operation = viewModel.recentMeetingsViewModel.pendingBulkOperation else { return }
-                Task {
-                    await viewModel.recentMeetingsViewModel.confirmBulkOperation(operation)
+                Button(MeetingDeletionCopy.fullDeleteConfirmTitle, role: .destructive) {
+                    if let transcription = pendingDeleteMeeting {
+                        viewModel.recentMeetingsViewModel.deleteTranscription(transcription)
+                        pendingDeleteMeeting = nil
+                    }
+                }
+            } message: {
+                if let pendingDeleteMeeting {
+                    Text(MeetingDeletionCopy.singleFullDeleteMessage(for: pendingDeleteMeeting))
                 }
             }
-        } message: {
-            if let operation = viewModel.recentMeetingsViewModel.pendingBulkOperation {
-                Text(recentMeetingsBulkOperationMessage(for: operation))
+            .alert(
+                recentMeetingsBulkOperationTitle,
+                isPresented: Binding(
+                    get: { viewModel.recentMeetingsViewModel.pendingBulkOperation != nil },
+                    set: { if !$0 { viewModel.recentMeetingsViewModel.cancelPendingBulkOperation() } }
+                )
+            ) {
+                Button("Cancel", role: .cancel) {
+                    viewModel.recentMeetingsViewModel.cancelPendingBulkOperation()
+                }
+                Button(recentMeetingsBulkOperationConfirmTitle, role: .destructive) {
+                    // Alert dismissal clears pending state before a deferred
+                    // task runs, so snapshot the operation synchronously.
+                    guard let operation = viewModel.recentMeetingsViewModel.pendingBulkOperation else { return }
+                    Task {
+                        await viewModel.recentMeetingsViewModel.confirmBulkOperation(operation)
+                    }
+                }
+            } message: {
+                if let operation = viewModel.recentMeetingsViewModel.pendingBulkOperation {
+                    Text(recentMeetingsBulkOperationMessage(for: operation))
+                }
             }
-        }
-        .sheet(isPresented: $showingAskPromptsSheet, onDismiss: {
-            viewModel.quickPromptsViewModel.cancelCreating()
-            viewModel.quickPromptsViewModel.editingPrompt = nil
-            viewModel.refreshQuickPrompts()
-        }) {
-            AskPromptsSheet(viewModel: viewModel.quickPromptsViewModel)
-        }
-        .sheet(isPresented: $showingPromptLibrary, onDismiss: {
-            viewModel.promptsViewModel.editingPrompt = nil
-            viewModel.refreshAutoNotes()
-        }) {
-            PromptLibraryView(viewModel: viewModel.promptsViewModel)
-        }
+    }
+
+    private var sheetContent: some View {
+        alertContent
+            .sheet(
+                isPresented: $showingAskPromptsSheet,
+                onDismiss: {
+                    viewModel.quickPromptsViewModel.cancelCreating()
+                    viewModel.quickPromptsViewModel.editingPrompt = nil
+                    viewModel.refreshQuickPrompts()
+                }
+            ) {
+                AskPromptsSheet(viewModel: viewModel.quickPromptsViewModel)
+            }
+            .sheet(
+                isPresented: $showingPromptLibrary,
+                onDismiss: {
+                    viewModel.promptsViewModel.editingPrompt = nil
+                    viewModel.refreshAutoNotes()
+                }
+            ) {
+                PromptLibraryView(viewModel: viewModel.promptsViewModel)
+            }
     }
 
     private var header: some View {
@@ -398,7 +419,8 @@ struct MeetingsView: View {
                 MeetingsInlineState(
                     icon: "sparkles",
                     title: "Set up AI for auto-notes",
-                    detail: "Choose an AI provider and MacParakeet will write notes for you automatically when a meeting ends.",
+                    detail:
+                        "Choose an AI provider and MacParakeet will write notes for you automatically when a meeting ends.",
                     actionTitle: "Set Up AI",
                     actionIcon: "gearshape",
                     action: onOpenAISettings
@@ -491,7 +513,8 @@ struct MeetingsView: View {
                 }
 
                 if viewModel.recentMeetingsViewModel.isLoading
-                    && viewModel.recentMeetingsViewModel.filteredTranscriptions.isEmpty {
+                    && viewModel.recentMeetingsViewModel.filteredTranscriptions.isEmpty
+                {
                     MeetingsLoadingRow(title: "Loading meetings")
                 } else if viewModel.recentMeetingsViewModel.filteredTranscriptions.isEmpty {
                     MeetingsInlineState(
@@ -591,7 +614,8 @@ struct MeetingsView: View {
             } label: {
                 Label("Retry Transcription", systemImage: "arrow.clockwise")
             }
-            .disabled(viewModel.recentMeetingsViewModel.isRetryingMeetingTranscription(transcription) || audioState != .saved)
+            .disabled(
+                viewModel.recentMeetingsViewModel.isRetryingMeetingTranscription(transcription) || audioState != .saved)
 
             Divider()
         }
@@ -618,9 +642,10 @@ struct MeetingsView: View {
             Label("Show Audio in Finder", systemImage: "waveform")
         }
         .disabled(!audioAvailable)
-        .help(audioAvailable
-              ? "Reveal the meeting audio file in Finder"
-              : MeetingDeletionCopy.audioUnavailableHelp(for: audioState))
+        .help(
+            audioAvailable
+                ? "Reveal the meeting audio file in Finder"
+                : MeetingDeletionCopy.audioUnavailableHelp(for: audioState))
 
         Button {
             saveMeetingAudio(transcription)
@@ -628,9 +653,10 @@ struct MeetingsView: View {
             Label("Save Audio As…", systemImage: "square.and.arrow.down")
         }
         .disabled(!audioAvailable)
-        .help(audioAvailable
-              ? "Save a copy of the meeting audio to a chosen location"
-              : MeetingDeletionCopy.audioUnavailableHelp(for: audioState))
+        .help(
+            audioAvailable
+                ? "Save a copy of the meeting audio to a chosen location"
+                : MeetingDeletionCopy.audioUnavailableHelp(for: audioState))
 
         Button(role: .destructive) {
             pendingDeleteAudio = transcription
@@ -638,12 +664,13 @@ struct MeetingsView: View {
             Label(MeetingDeletionCopy.audioOnlyMenuTitle, systemImage: "waveform.slash")
         }
         .disabled(!audioRemovable)
-        .help(audioRemovable
-              ? "Remove the saved meeting audio while keeping the meeting"
-              : MeetingDeletionCopy.audioRemovalUnavailableHelp(
-                  for: transcription,
-                  state: audioState
-              ))
+        .help(
+            audioRemovable
+                ? "Remove the saved meeting audio while keeping the meeting"
+                : MeetingDeletionCopy.audioRemovalUnavailableHelp(
+                    for: transcription,
+                    state: audioState
+                ))
 
         Divider()
 
@@ -736,7 +763,6 @@ struct MeetingsView: View {
             sourceMode: viewModel.settingsViewModel.meetingAudioSourceMode
         )
     }
-
 
     private var recentMeetingsSearchText: String {
         viewModel.recentMeetingsViewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1161,6 +1187,7 @@ private struct MeetingsLiveStatusChip: View {
 
     private var icon: String {
         switch viewModel.recordingStatus {
+        case .starting: return "hourglass"
         case .recording: return "record.circle.fill"
         case .paused: return "pause.fill"
         case .finishing, .transcribing: return "waveform"
@@ -1172,6 +1199,7 @@ private struct MeetingsLiveStatusChip: View {
     private var title: String {
         switch viewModel.recordingStatus {
         case .ready: return "Ready"
+        case .starting: return "Starting…"
         case .recording: return "Recording \(viewModel.meetingPillViewModel.formattedElapsed)"
         case .paused: return "Paused \(viewModel.meetingPillViewModel.formattedElapsed)"
         case .finishing: return "Finishing"
@@ -1182,6 +1210,7 @@ private struct MeetingsLiveStatusChip: View {
 
     private var tint: Color {
         switch viewModel.recordingStatus {
+        case .starting: return DesignSystem.Colors.textTertiary
         case .recording: return DesignSystem.Colors.recordingRed
         case .paused, .finishing, .transcribing: return DesignSystem.Colors.warningAmber
         case .error: return DesignSystem.Colors.errorRed
@@ -1578,9 +1607,10 @@ private struct AutoNoteChip: View {
             .padding(.vertical, 5)
             .background(
                 Capsule()
-                    .fill(isOn
-                          ? DesignSystem.Colors.accent.opacity(0.12)
-                          : DesignSystem.Colors.surfaceElevated.opacity(0.72))
+                    .fill(
+                        isOn
+                            ? DesignSystem.Colors.accent.opacity(0.12)
+                            : DesignSystem.Colors.surfaceElevated.opacity(0.72))
             )
             .overlay(
                 Capsule()
@@ -1596,6 +1626,9 @@ private struct AutoNoteChip: View {
         .accessibilityLabel("\(title) auto-note")
         .accessibilityValue(isOn ? "On" : "Off")
         .accessibilityAddTraits(isOn ? [.isButton, .isSelected] : .isButton)
-        .help(isOn ? "Generated automatically after meetings — click to turn off" : "Click to generate this automatically after meetings")
+        .help(
+            isOn
+                ? "Generated automatically after meetings — click to turn off"
+                : "Click to generate this automatically after meetings")
     }
 }

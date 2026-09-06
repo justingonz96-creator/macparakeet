@@ -25,6 +25,13 @@ public final class DatabaseManager: Sendable {
         }
     }
 
+    /// Open an existing database without initializing or migrating its schema.
+    public init(readOnlyPath path: String) throws {
+        var config = Self.makeConfiguration()
+        config.readonly = true
+        dbQueue = try DatabaseQueue(path: path, configuration: config)
+    }
+
     /// Create a DatabaseManager with an in-memory database (for tests)
     public init() throws {
         let config = Self.makeConfiguration()
@@ -1158,160 +1165,172 @@ public final class DatabaseManager: Sendable {
         // external-content FTS5 index. Raw SQL is intentional: historical
         // migrations must never depend on the evolving Codable row models.
         migrator.registerMigration("v0.27-segments-fts") { db in
-            try db.execute(sql: """
-                CREATE TABLE segments (
-                    id INTEGER PRIMARY KEY,
-                    transcriptionId TEXT NOT NULL
-                        REFERENCES transcriptions(id) ON DELETE CASCADE,
-                    seq INTEGER NOT NULL,
-                    startMs INTEGER,
-                    endMs INTEGER,
-                    speaker TEXT,
-                    text TEXT NOT NULL,
-                    segmenterVersion INTEGER NOT NULL,
-                    UNIQUE(transcriptionId, seq)
-                )
-                """)
-            try db.execute(sql: """
-                CREATE INDEX idx_segments_transcription
-                ON segments(transcriptionId, seq)
-                """)
-            try db.execute(sql: """
-                CREATE VIRTUAL TABLE segments_fts USING fts5(
-                    text, speaker UNINDEXED,
-                    content='segments', content_rowid='id',
-                    tokenize='unicode61 remove_diacritics 2'
-                )
-                """)
-            try db.execute(sql: """
-                CREATE TRIGGER segments_ai AFTER INSERT ON segments BEGIN
-                    INSERT INTO segments_fts(rowid, text, speaker)
-                    VALUES (new.id, new.text, new.speaker);
-                END
-                """)
-            try db.execute(sql: """
-                CREATE TRIGGER segments_ad AFTER DELETE ON segments BEGIN
-                    INSERT INTO segments_fts(segments_fts, rowid, text, speaker)
-                    VALUES ('delete', old.id, old.text, old.speaker);
-                END
-                """)
-            try db.execute(sql: """
-                CREATE TRIGGER segments_au AFTER UPDATE ON segments BEGIN
-                    INSERT INTO segments_fts(segments_fts, rowid, text, speaker)
-                    VALUES ('delete', old.id, old.text, old.speaker);
-                    INSERT INTO segments_fts(rowid, text, speaker)
-                    VALUES (new.id, new.text, new.speaker);
-                END
-                """)
+            try db.execute(
+                sql: """
+                    CREATE TABLE segments (
+                        id INTEGER PRIMARY KEY,
+                        transcriptionId TEXT NOT NULL
+                            REFERENCES transcriptions(id) ON DELETE CASCADE,
+                        seq INTEGER NOT NULL,
+                        startMs INTEGER,
+                        endMs INTEGER,
+                        speaker TEXT,
+                        text TEXT NOT NULL,
+                        segmenterVersion INTEGER NOT NULL,
+                        UNIQUE(transcriptionId, seq)
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE INDEX idx_segments_transcription
+                    ON segments(transcriptionId, seq)
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE VIRTUAL TABLE segments_fts USING fts5(
+                        text, speaker UNINDEXED,
+                        content='segments', content_rowid='id',
+                        tokenize='unicode61 remove_diacritics 2'
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER segments_ai AFTER INSERT ON segments BEGIN
+                        INSERT INTO segments_fts(rowid, text, speaker)
+                        VALUES (new.id, new.text, new.speaker);
+                    END
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER segments_ad AFTER DELETE ON segments BEGIN
+                        INSERT INTO segments_fts(segments_fts, rowid, text, speaker)
+                        VALUES ('delete', old.id, old.text, old.speaker);
+                    END
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER segments_au AFTER UPDATE ON segments BEGIN
+                        INSERT INTO segments_fts(segments_fts, rowid, text, speaker)
+                        VALUES ('delete', old.id, old.text, old.speaker);
+                        INSERT INTO segments_fts(rowid, text, speaker)
+                        VALUES (new.id, new.text, new.speaker);
+                    END
+                    """)
         }
 
         // v0.28 — Derived per-recording knowledge cards and their small
         // external-content FTS5 index. Raw SQL is intentional: historical
         // migrations must never depend on evolving Codable card models.
         migrator.registerMigration("v0.28-cards") { db in
-            try db.execute(sql: """
-                CREATE TABLE cards (
-                    transcriptionId TEXT PRIMARY KEY
-                        REFERENCES transcriptions(id) ON DELETE CASCADE,
-                    cardSchemaVersion INTEGER NOT NULL,
-                    transcriptHash TEXT NOT NULL,
-                    segmenterVersion INTEGER NOT NULL,
-                    promptVersion TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    generatedAt TEXT NOT NULL,
-                    synopsis TEXT NOT NULL,
-                    topics TEXT NOT NULL,
-                    decisions TEXT NOT NULL,
-                    actions TEXT NOT NULL
-                )
-                """)
-            try db.execute(sql: """
-                CREATE TABLE cards_search_content (
-                    rowid INTEGER PRIMARY KEY,
-                    synopsis TEXT NOT NULL,
-                    topics TEXT NOT NULL
-                )
-                """)
-            try db.execute(sql: """
-                CREATE VIRTUAL TABLE cards_fts USING fts5(
-                    synopsis, topics,
-                    content='cards_search_content', content_rowid='rowid',
-                    tokenize='unicode61 remove_diacritics 2'
-                )
-                """)
-            try db.execute(sql: """
-                CREATE TRIGGER cards_ai AFTER INSERT ON cards BEGIN
-                    INSERT INTO cards_search_content(rowid, synopsis, topics)
-                    VALUES (
-                        new.rowid,
-                        new.synopsis,
-                        COALESCE(
-                            (SELECT group_concat(CAST(value AS TEXT), ' ')
-                             FROM json_each(new.topics)),
-                            ''
-                        )
-                    );
-                    INSERT INTO cards_fts(rowid, synopsis, topics)
-                    VALUES (
-                        new.rowid,
-                        new.synopsis,
-                        COALESCE(
-                            (SELECT group_concat(CAST(value AS TEXT), ' ')
-                             FROM json_each(new.topics)),
-                            ''
-                        )
-                    );
-                END
-                """)
-            try db.execute(sql: """
-                CREATE TRIGGER cards_ad AFTER DELETE ON cards BEGIN
-                    INSERT INTO cards_fts(cards_fts, rowid, synopsis, topics)
-                    VALUES (
-                        'delete',
-                        old.rowid,
-                        old.synopsis,
-                        COALESCE(
-                            (SELECT group_concat(CAST(value AS TEXT), ' ')
-                             FROM json_each(old.topics)),
-                            ''
-                        )
-                    );
-                    DELETE FROM cards_search_content WHERE rowid = old.rowid;
-                END
-                """)
-            try db.execute(sql: """
-                CREATE TRIGGER cards_au AFTER UPDATE ON cards BEGIN
-                    INSERT INTO cards_fts(cards_fts, rowid, synopsis, topics)
-                    VALUES (
-                        'delete',
-                        old.rowid,
-                        old.synopsis,
-                        COALESCE(
-                            (SELECT group_concat(CAST(value AS TEXT), ' ')
-                             FROM json_each(old.topics)),
-                            ''
-                        )
-                    );
-                    UPDATE cards_search_content
-                    SET synopsis = new.synopsis,
-                        topics = COALESCE(
-                            (SELECT group_concat(CAST(value AS TEXT), ' ')
-                             FROM json_each(new.topics)),
-                            ''
-                        )
-                    WHERE rowid = new.rowid;
-                    INSERT INTO cards_fts(rowid, synopsis, topics)
-                    VALUES (
-                        new.rowid,
-                        new.synopsis,
-                        COALESCE(
-                            (SELECT group_concat(CAST(value AS TEXT), ' ')
-                             FROM json_each(new.topics)),
-                            ''
-                        )
-                    );
-                END
-                """)
+            try db.execute(
+                sql: """
+                    CREATE TABLE cards (
+                        transcriptionId TEXT PRIMARY KEY
+                            REFERENCES transcriptions(id) ON DELETE CASCADE,
+                        cardSchemaVersion INTEGER NOT NULL,
+                        transcriptHash TEXT NOT NULL,
+                        segmenterVersion INTEGER NOT NULL,
+                        promptVersion TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        generatedAt TEXT NOT NULL,
+                        synopsis TEXT NOT NULL,
+                        topics TEXT NOT NULL,
+                        decisions TEXT NOT NULL,
+                        actions TEXT NOT NULL
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TABLE cards_search_content (
+                        rowid INTEGER PRIMARY KEY,
+                        synopsis TEXT NOT NULL,
+                        topics TEXT NOT NULL
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE VIRTUAL TABLE cards_fts USING fts5(
+                        synopsis, topics,
+                        content='cards_search_content', content_rowid='rowid',
+                        tokenize='unicode61 remove_diacritics 2'
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER cards_ai AFTER INSERT ON cards BEGIN
+                        INSERT INTO cards_search_content(rowid, synopsis, topics)
+                        VALUES (
+                            new.rowid,
+                            new.synopsis,
+                            COALESCE(
+                                (SELECT group_concat(CAST(value AS TEXT), ' ')
+                                 FROM json_each(new.topics)),
+                                ''
+                            )
+                        );
+                        INSERT INTO cards_fts(rowid, synopsis, topics)
+                        VALUES (
+                            new.rowid,
+                            new.synopsis,
+                            COALESCE(
+                                (SELECT group_concat(CAST(value AS TEXT), ' ')
+                                 FROM json_each(new.topics)),
+                                ''
+                            )
+                        );
+                    END
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER cards_ad AFTER DELETE ON cards BEGIN
+                        INSERT INTO cards_fts(cards_fts, rowid, synopsis, topics)
+                        VALUES (
+                            'delete',
+                            old.rowid,
+                            old.synopsis,
+                            COALESCE(
+                                (SELECT group_concat(CAST(value AS TEXT), ' ')
+                                 FROM json_each(old.topics)),
+                                ''
+                            )
+                        );
+                        DELETE FROM cards_search_content WHERE rowid = old.rowid;
+                    END
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER cards_au AFTER UPDATE ON cards BEGIN
+                        INSERT INTO cards_fts(cards_fts, rowid, synopsis, topics)
+                        VALUES (
+                            'delete',
+                            old.rowid,
+                            old.synopsis,
+                            COALESCE(
+                                (SELECT group_concat(CAST(value AS TEXT), ' ')
+                                 FROM json_each(old.topics)),
+                                ''
+                            )
+                        );
+                        UPDATE cards_search_content
+                        SET synopsis = new.synopsis,
+                            topics = COALESCE(
+                                (SELECT group_concat(CAST(value AS TEXT), ' ')
+                                 FROM json_each(new.topics)),
+                                ''
+                            )
+                        WHERE rowid = new.rowid;
+                        INSERT INTO cards_fts(rowid, synopsis, topics)
+                        VALUES (
+                            new.rowid,
+                            new.synopsis,
+                            COALESCE(
+                                (SELECT group_concat(CAST(value AS TEXT), ' ')
+                                 FROM json_each(new.topics)),
+                                ''
+                            )
+                        );
+                    END
+                    """)
         }
 
         // v0.29 — Remember which embedded audio stream a user explicitly

@@ -21,6 +21,38 @@ import XCTest
 /// returns.
 final class MicrophoneEnginePlatformConfigChangeRecoveryTests: XCTestCase {
 
+    func testDefaultInputChangeBurstSchedulesOneBoundedDelivery() {
+        var coalescer = DefaultInputChangeBurstCoalescer()
+        let generation = coalescer.generation
+
+        XCTAssertTrue(coalescer.observeChange(generation: generation))
+        for _ in 1..<100 {
+            XCTAssertFalse(coalescer.observeChange(generation: generation))
+        }
+
+        XCTAssertEqual(coalescer.takePendingCount(generation: generation), 100)
+        XCTAssertNil(coalescer.takePendingCount(generation: generation))
+        XCTAssertTrue(coalescer.observeChange(generation: generation))
+    }
+
+    func testRetiredDefaultInputListenerAndDeliveryCannotConsumeReplacementBurst() {
+        var coalescer = DefaultInputChangeBurstCoalescer()
+        let retired = coalescer.generation
+        XCTAssertTrue(coalescer.observeChange(generation: retired))
+
+        coalescer.invalidate()
+        XCTAssertFalse(coalescer.observeChange(generation: retired))
+        XCTAssertNil(coalescer.takePendingCount(generation: retired))
+
+        let replacement = coalescer.generation
+        XCTAssertTrue(coalescer.observeChange(generation: replacement))
+        XCTAssertFalse(coalescer.observeChange(generation: retired))
+        XCTAssertNil(coalescer.takePendingCount(generation: retired))
+        XCTAssertFalse(coalescer.observeChange(generation: replacement))
+        XCTAssertEqual(coalescer.takePendingCount(generation: replacement), 2)
+        XCTAssertNil(coalescer.takePendingCount(generation: replacement))
+    }
+
     /// Device selection and `AVAudioEngine.prepare()` can enqueue their own
     /// configuration notification after preparation has already been marked.
     /// When the resolved route and input format are unchanged, that delayed

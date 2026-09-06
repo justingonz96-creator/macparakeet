@@ -1,11 +1,11 @@
 import Foundation
 
-/// Durable, content-free truth about how much of a meeting reached disk.
+/// Durable, content-free truth about the quality of a meeting capture.
 ///
 /// Live source health is intentionally ephemeral: silence, mute state, and
 /// recent levels can change from second to second. This report is computed
-/// once from finalized writer frames and records only facts that remain useful
-/// after the recording has stopped.
+/// once after capture stops and records only finalized coverage, terminal
+/// failures, and actionable whole-track silence.
 public struct MeetingCaptureReport: Codable, Sendable, Equatable {
     public enum Quality: String, Codable, Sendable, Equatable {
         case healthy
@@ -39,6 +39,7 @@ public struct MeetingCaptureReport: Codable, Sendable, Equatable {
         public enum Status: String, Codable, Sendable, Equatable {
             case complete
             case coverageShortfall = "coverage_shortfall"
+            case silent
             case interrupted
             case unavailable
             case captureFailed = "capture_failed"
@@ -85,6 +86,7 @@ public struct MeetingCaptureReport: Codable, Sendable, Equatable {
         sourceAlignment: MeetingSourceAlignment,
         elapsedDurationMs: Int,
         interruptedSources: Set<AudioSource> = [],
+        silentSources: Set<AudioSource> = [],
         captureFailed: Bool = false,
         playbackFallbackSource: AudioSource? = nil,
         policy: Policy = .production
@@ -111,6 +113,8 @@ public struct MeetingCaptureReport: Codable, Sendable, Equatable {
                 status = .captureFailed
             } else if track == nil {
                 status = .unavailable
+            } else if silentSources.contains(source) {
+                status = .silent
             } else if policy.hasCoverageShortfall(
                 writtenDurationMs: writtenDurationMs,
                 elapsedDurationMs: clampedElapsedDurationMs

@@ -144,6 +144,37 @@ pre-claim lock, so repeated fail/retry cycles cannot restore an abandoned lease
 or wedge the next retry. A relinquished token is not a live owner and remains
 visible to recovery discovery even while its former process PID is alive.
 
+## Source Writer Finalization Ownership
+
+The release-readiness candidate gives source-writer finalization one aggregate
+five-second deadline and completes the caller exactly once. A writer that
+accepted real frames but misses that deadline fails settlement; this is not
+successful stop or permission to discard the source files. Never call
+`AVAssetWriter.cancelWriting()` to handle the timeout: it can block and remove
+recoverable output.
+
+The finalization report retains **every** timed-out source identity separately
+from failed captured sources. Stop must not inspect a pending source, including
+an inactive zero-frame writer; a healthy completed source can still produce
+playback and an awaiting-transcription result. Cancellation, empty Stop, and
+failed-start cleanup retain the folder and lock whenever any source timed out.
+This deliberately defers discard rather than deleting files AVFoundation still
+owns. The bounded result does not transfer ownership; late callbacks alone clear
+the process-local registry.
+
+The process-local `MeetingAudioWriterFinalizationRegistry` retains the folder
+until **all** writer callbacks return, even after the caller has timed out.
+Same-process recovery discovery, recovery, and discard must skip/refuse that
+folder while AVFoundation can still write it. A late callback cannot complete
+the stop a second time. If callbacks never return, restarting the process
+releases file ownership before normal recovery can proceed. `recording.lock`
+continues to protect the files across that boundary.
+
+When recovery reconciles a persisted capture report against surviving media,
+it preserves known silence as well as elapsed/interruption history. It does
+not synthesize a healthy verdict merely because repaired files decode; see
+the [capture-report contract](meeting-artifacts-v1.md#stable-json-fields).
+
 ## Retention Rule
 
 Automatic retention-like deletion must skip a meeting folder whenever
@@ -183,10 +214,11 @@ The non-settlement deletion paths are intentionally limited to flows that are
 not final-transcription completion:
 
 - `MeetingRecordingService.cancelRecording()`: user cancel deletes the lock
-  and session folder because the user explicitly discarded the active capture.
-- Failed-start / failed-capture cleanup in `MeetingRecordingService`: startup
-  or no-audio failures delete the lock while also removing the unusable session
-  folder before any stopped recording is offered for transcription.
+  and session folder after writer ownership has ended. A timed-out source
+  defers discard and preserves both.
+- Failed-start / no-audio cleanup in `MeetingRecordingService`: remove the
+  unusable session folder and lock only when no source finalization timed out.
+  Pending writers retain both for safe later recovery or discard.
 - `MeetingRecordingRecoveryService.discard(_:)`: user discard of an incomplete
   recovery removes the session folder. If a completed transcription already
   exists, discard preserves the folder/audio and uses settlement to delete only

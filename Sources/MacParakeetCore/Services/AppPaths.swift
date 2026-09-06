@@ -230,13 +230,18 @@ public enum AppPaths {
         "\(NSTemporaryDirectory())macparakeet"
     }
 
+    /// Runtime directories shared by initialization and non-mutating health checks.
+    public static var requiredDirectories: [String] {
+        [
+            appSupportDir, dictationsDir, youtubeDownloadsDir, meetingRecordingsDir, binDir, whisperModelsDir,
+            thumbnailsDir, logsDir, tempDir,
+        ]
+    }
+
     /// Ensure all required directories exist
     public static func ensureDirectories() throws {
         let fm = FileManager.default
-        for dir in [
-            appSupportDir, dictationsDir, youtubeDownloadsDir, meetingRecordingsDir, binDir, whisperModelsDir,
-            thumbnailsDir, logsDir, tempDir,
-        ] {
+        for dir in requiredDirectories {
             if !fm.fileExists(atPath: dir) {
                 try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
             }

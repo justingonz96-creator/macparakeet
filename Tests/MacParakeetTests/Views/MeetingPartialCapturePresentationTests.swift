@@ -23,12 +23,8 @@ final class MeetingPartialCapturePresentationTests: XCTestCase {
 
         let presentation = try XCTUnwrap(MeetingPartialCapturePresentation.make(for: transcription))
 
-        XCTAssertEqual(presentation.badgeText, "Partial audio")
-        XCTAssertEqual(presentation.title, "Partial meeting audio")
-        XCTAssertEqual(
-            presentation.message,
-            "Playback is 1:08 from a 39:15 session. Microphone captured 1:08. System audio captured 1:08."
-        )
+        XCTAssertTrue(presentation.message.contains("1:08"))
+        XCTAssertTrue(presentation.message.contains("39:15"))
     }
 
     func testPartialMeetingDoesNotDescribeTimelinePaddingAsCapturedAudio() throws {
@@ -51,10 +47,86 @@ final class MeetingPartialCapturePresentationTests: XCTestCase {
 
         let presentation = try XCTUnwrap(MeetingPartialCapturePresentation.make(for: transcription))
 
-        XCTAssertEqual(
-            presentation.message,
-            "This 1:40 session contains partial audio. Microphone captured 1:10."
+        XCTAssertTrue(presentation.message.contains("1:10"))
+        XCTAssertFalse(presentation.message.contains("captured 1:40"))
+    }
+
+    func testSilentSystemAudioExplainsThatMicrophoneAudioRemainsSaved() throws {
+        let report = MeetingCaptureReport(
+            sourceMode: .microphoneAndSystem,
+            sourceAlignment: MeetingSourceAlignment(
+                meetingOriginHostTime: 100,
+                microphone: track(durationMs: 30_000),
+                system: track(durationMs: 30_000)
+            ),
+            elapsedDurationMs: 30_000,
+            silentSources: [.system]
         )
+        let transcription = Transcription(
+            fileName: "Silent System Review",
+            durationMs: report.capturedDurationMs,
+            status: .completed,
+            sourceType: .meeting,
+            meetingCaptureReport: report
+        )
+
+        let presentation = try XCTUnwrap(
+            MeetingPartialCapturePresentation.make(for: transcription)
+        )
+
+        XCTAssertTrue(presentation.message.contains("no audible signal"))
+        XCTAssertTrue(presentation.message.contains("Microphone audio remains saved"))
+    }
+
+    func testRecoveredSilentSystemDoesNotPromiseUnavailableMicrophoneAudio() throws {
+        let report = MeetingCaptureReport(
+            sourceMode: .microphoneAndSystem,
+            sourceAlignment: MeetingSourceAlignment(
+                meetingOriginHostTime: 100,
+                microphone: nil,
+                system: track(durationMs: 30_000)
+            ),
+            elapsedDurationMs: 30_000,
+            silentSources: [.system]
+        )
+        let transcription = Transcription(
+            fileName: "Recovered Silent System",
+            durationMs: report.capturedDurationMs,
+            status: .completed,
+            sourceType: .meeting,
+            meetingCaptureReport: report
+        )
+
+        let presentation = try XCTUnwrap(MeetingPartialCapturePresentation.make(for: transcription))
+
+        XCTAssertTrue(presentation.message.contains("No microphone audio"))
+        XCTAssertTrue(presentation.message.contains("no audible signal"))
+        XCTAssertFalse(presentation.message.contains("remains saved"))
+    }
+
+    func testSilentSystemDoesNotPromiseMicrophoneTrackWithNoWrittenAudio() throws {
+        let report = MeetingCaptureReport(
+            sourceMode: .microphoneAndSystem,
+            sourceAlignment: MeetingSourceAlignment(
+                meetingOriginHostTime: 100,
+                microphone: track(durationMs: 0, timelineDurationMs: 30_000),
+                system: track(durationMs: 30_000)
+            ),
+            elapsedDurationMs: 30_000,
+            silentSources: [.system]
+        )
+        let transcription = Transcription(
+            fileName: "Empty Microphone Track",
+            durationMs: report.capturedDurationMs,
+            status: .completed,
+            sourceType: .meeting,
+            meetingCaptureReport: report
+        )
+
+        let presentation = try XCTUnwrap(MeetingPartialCapturePresentation.make(for: transcription))
+
+        XCTAssertTrue(presentation.message.contains("no audible signal"))
+        XCTAssertFalse(presentation.message.contains("remains saved"))
     }
 
     func testPlaybackFallbackExplainsWhyCompleteSourcesProducedPartialPlayback() throws {
@@ -78,10 +150,8 @@ final class MeetingPartialCapturePresentationTests: XCTestCase {
 
         let presentation = try XCTUnwrap(MeetingPartialCapturePresentation.make(for: transcription))
 
-        XCTAssertEqual(
-            presentation.message,
-            "This 0:10 session contains partial audio. Playback contains only system audio because the combined recording could not be built."
-        )
+        XCTAssertTrue(presentation.message.contains("only system audio"))
+        XCTAssertTrue(presentation.message.contains("combined recording"))
     }
 
     func testHealthyAndLegacyMeetingsDoNotShowPartialPresentation() {

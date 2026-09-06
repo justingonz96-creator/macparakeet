@@ -5,6 +5,16 @@
 
 This document captures the future design space that was split out of `spec/12`: typed actions, workflows, agent profiles, voice control, and Apple Shortcuts / App Intents integration. It is a roadmap and architecture exploration, not a locked implementation contract.
 
+This proposal is not the agent operator guide. Existing automation already
+includes CLI discovery, local history/segment search, cited transcript slices,
+knowledge-card reads/generation, saved meeting notes/results/artifacts/exports,
+and the disabled-by-default post-meeting executable hook. Use
+[`integrations/README.md`](../integrations/README.md) and the installed
+`macparakeet-cli spec --json` for those contracts and their I/O boundaries.
+Generalized workflows, agent profiles, autonomous desktop actions, and App
+Intents below remain proposals; no MCP service or GUI-mirroring requirement is
+introduced by this document.
+
 ---
 
 ## Purpose
@@ -21,7 +31,10 @@ This doc exists to:
 
 1. Defining an implementation-ready schema for actions, workflows, or agent profiles.
 2. Committing to a shipping order beyond rough sequencing.
-3. Claiming that desktop context, voice control, or agent handoff are available today.
+3. Claiming that generalized desktop control, spoken commands, or autonomous
+   agent handoff are available today. Existing selected-text Transforms and
+   the one-shot meeting start-context snapshot are narrower implemented uses
+   of desktop context, not that proposed system.
 
 ---
 

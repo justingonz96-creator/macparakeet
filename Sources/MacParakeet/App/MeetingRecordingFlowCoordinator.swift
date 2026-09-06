@@ -263,13 +263,15 @@ final class MeetingRecordingFlowCoordinator {
     }
 
     func toggleMicrophoneMute() {
-        guard panelViewModel?.canToggleMicrophoneMute == true else { return }
+        guard stateMachine.state == .recording, panelViewModel?.canToggleMicrophoneMute == true else { return }
         let wantMuted = !(panelViewModel?.isMicrophoneMuted ?? false)
+        let generation = stateMachine.generation
         microphoneMuteToggleTask?.cancel()
         microphoneMuteToggleTask = Task { @MainActor [meetingRecordingService, weak self] in
             let microphoneMuteState = await meetingRecordingService.setMicrophoneMuted(wantMuted)
             let captureHealth = await meetingRecordingService.captureHealth
             guard !Task.isCancelled, let self else { return }
+            guard self.stateMachine.generation == generation, self.stateMachine.state == .recording else { return }
             self.panelViewModel?.isMicrophoneMuted = microphoneMuteState.isMuted
             self.panelViewModel?.canToggleMicrophoneMute = microphoneMuteState.canMute
             self.panelViewModel?.captureHealth = captureHealth
@@ -582,16 +584,16 @@ final class MeetingRecordingFlowCoordinator {
             vm.micLevel = 0
             vm.systemLevel = 0
             vm.captureHealth = initialCaptureHealth
-            vm.state = .recording
+            vm.state = .starting
             let panelVM = panelViewModel ?? MeetingRecordingPanelViewModel()
-            panelVM.state = .recording
+            panelVM.state = .starting
             panelVM.elapsedSeconds = 0
             panelVM.micLevel = 0
             panelVM.systemLevel = 0
             panelVM.captureHealth = initialCaptureHealth
             panelVM.isPaused = false
             panelVM.isMicrophoneMuted = false
-            panelVM.canToggleMicrophoneMute = initialSourceMode.capturesMicrophone
+            panelVM.canToggleMicrophoneMute = false
             panelVM.updateLiveTranscriptStatus(.startingAudio)
             panelVM.updatePreviewLines([], isTranscriptionLagging: false)
             panelVM.onStop = { [weak self] in self?.toggleRecording() }
@@ -652,8 +654,6 @@ final class MeetingRecordingFlowCoordinator {
                 showMeetingPanel()
             }
             refreshFloatingPillVisibility()
-            startPillPolling()
-            startPillGlowPolling()
             startTranscriptObservation()
 
         case .startRecording:
@@ -750,7 +750,20 @@ final class MeetingRecordingFlowCoordinator {
                     case .some(.preparingSpeechModel):
                         break
                     }
+                    let microphoneMuteState = await meetingRecordingService.microphoneMuteState
+                    guard self.ownsPendingStart(generation: gen) else {
+                        self.recordIgnoredStartResult(generation: gen, outcome: "success")
+                        return
+                    }
                     self.sendEvent(.recordingStarted(generation: gen))
+                    self.pillViewModel.state = .recording
+                    self.panelViewModel?.state = .recording
+                    self.panelViewModel?.isMicrophoneMuted = microphoneMuteState.isMuted
+                    self.panelViewModel?.canToggleMicrophoneMute = microphoneMuteState.canMute
+                    self.pillController?.refreshState()
+                    self.onMenuBarIconUpdate(.recording)
+                    self.startPillPolling()
+                    self.startPillGlowPolling()
                     self.startCaptureFailureObservation(generation: gen)
                     Telemetry.send(.meetingRecordingStarted(trigger: trigger))
                     self.onRecordingBegan()
@@ -804,6 +817,7 @@ final class MeetingRecordingFlowCoordinator {
                 self.startMetatronMinimumDisplay()
             }
             panelViewModel?.state = .transcribing
+            panelViewModel?.canToggleMicrophoneMute = false
             panelViewModel?.micLevel = 0
             panelViewModel?.systemLevel = 0
             panelViewModel?.captureHealth = .notRecording
@@ -949,6 +963,15 @@ final class MeetingRecordingFlowCoordinator {
                             liveWordCount: liveWordCount,
                             liveTranscriptLagged: liveTranscriptLagged
                         )
+                        let message =
+                            stoppedOutput == nil
+                            ? "Meeting stop was cancelled"
+                            : "Meeting processing was interrupted and will be retried automatically."
+                        self.sendEvent(
+                            .transcriptionFailed(
+                                generation: gen,
+                                message: message
+                            ))
                         self.currentMeetingOperationContext = nil
                         self.currentMeetingTrigger = nil
                     } else {
@@ -1010,6 +1033,7 @@ final class MeetingRecordingFlowCoordinator {
             stopTranscriptObservation()
             stopSpeechWarmUpObservation()
             panelViewModel?.state = .error(message)
+            panelViewModel?.canToggleMicrophoneMute = false
             pillViewModel.state = .error(
                 panelViewModel?.compactErrorRecoveryMessage
                     ?? "Meeting interrupted. Open Library to retry transcription or export captured audio."
@@ -1037,7 +1061,7 @@ final class MeetingRecordingFlowCoordinator {
             let iconState: BreathWaveIcon.MenuBarState =
                 switch state {
                 case .idle: .idle
-                case .recording: .recording
+                case .recording: stateMachine.state == .starting ? .processing : .recording
                 case .processing: .processing
                 }
             onMenuBarIconUpdate(iconState)
@@ -1728,6 +1752,10 @@ extension MeetingRecordingFlowCoordinator {
 
     func testHook_waitForActionTask() async {
         await actionTask?.value
+    }
+
+    var testHook_actionTask: Task<Void, Never>? {
+        actionTask
     }
 
     func testHook_startCaptureFailureObservation(generation: Int) {

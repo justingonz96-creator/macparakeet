@@ -118,6 +118,6 @@ The three-layer architecture (Prompts → Actions → Workflows) is the long-ter
 └─────────────────────────────────────────────────┘
 
 Database:
-  prompts     ←  community (from JSON) + user custom
+  prompts     ←  built-in/community Swift seeds + user custom
   summaries   ←  0-N per transcription (cascade delete)
 ```

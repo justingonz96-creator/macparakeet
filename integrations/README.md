@@ -5,6 +5,11 @@
 > people running them) that want to *call* `macparakeet-cli` to add local STT
 > to their stack.
 
+Examples describe the current development contract (CLI 3.2), not a
+promise about an older stable or Homebrew binary. Check `--version` and
+`spec --json` first; [release channels](../spec/README.md#release-channels-and-feature-flags)
+distinguish published binaries from the development source.
+
 ## Scope of the CLI
 
 The CLI is a first-class automation surface, **not a GUI mirror.** It intentionally
@@ -23,11 +28,14 @@ testing.
 - **Stable JSON / read surfaces** -- every read-only command emits JSON with
   schemas pinned to the major CLI version. Failure envelopes carry a stable
   `errorType` so agents can branch deterministically.
-- **Model and binary health** -- `health --json` probes Parakeet / Nemotron /
-  Cohere / Whisper model readiness, database accessibility, FFmpeg, and yt-dlp
-  without mutating state. Repair flags explicitly warm/download local caches.
-- **Persisted history** -- list, search, and inspect prior dictations and
-  transcriptions via the shared SQLite database.
+- **Model and binary health** -- `health --json` reports model readiness,
+  database accessibility, FFmpeg, and yt-dlp without mutating state. Repair
+  flags explicitly warm/download local caches; missing application directories
+  are reported rather than created by the probe.
+- **Persisted history and knowledge retrieval** -- list/search prior
+  dictations and transcriptions, retrieve cited transcript segments, and
+  inspect current knowledge cards from the shared SQLite database. Card
+  generation is a separate, provider-backed write.
 - **Prompt and meeting inspection** -- list and run prompt library entries
   against transcriptions; list, show, transcript, notes append, prompt-result
   write-back, and export meeting recordings.
@@ -65,8 +73,9 @@ sitting at a keyboard, it lives in the .app.
   `transcribe --podcast`. The standalone Homebrew install uses Homebrew's
   `yt-dlp`; the app bundle can seed a signed helper into MacParakeet's
   Application Support folder before first media URL use.
-- **Persistent SQLite memory layer** -- everything transcribed is queryable
-  later: dictation history, transcriptions, prompt outputs.
+- **Persistent SQLite memory layer** -- saved transcriptions, dictations, and
+  prompt outputs remain queryable; private/no-history operations deliberately
+  do not retain transcript content.
 - **Shared app/CLI preferences** -- agents can set speech engine, processing
   mode, speaker detection, audio retention, YouTube audio quality, and
   telemetry without driving the GUI.
@@ -120,13 +129,11 @@ not replace a Homebrew-managed link with an app-managed link.
 
 ## Why Apple Silicon specifically
 
-Parakeet TDT runs on the Apple Neural Engine via CoreML. That is the entire
-performance story: fast local transcription without GPU rental, API keys, or
-per-minute charges. On VPS hosts without Apple Silicon (typical for
-cloud-deployed agent daemons), Parakeet falls back to CPU and Whisper.cpp is
-competitive. **The compelling deployment target is a Mac mini (M1+) running
-headless** as a personal AI compute box -- unified memory, ANE, ~8W idle,
-silent.
+The supported runtime is macOS 14.2+ on Apple Silicon (M1 or newer), where
+Parakeet uses CoreML/Apple Neural Engine. The CLI does not support Linux/x86
+VPS deployment or offer a CPU fallback there. A headless Apple Silicon Mac is
+the deployment target; it still needs local model setup and any selected
+external provider/helper configuration.
 
 ## Common commands (the agent vocabulary)
 
@@ -135,9 +142,12 @@ The commands below show the machine-readable flag each command expects:
 format-selecting commands. Schemas are stable per
 [`../Sources/CLI/CHANGELOG.md`](../Sources/CLI/CHANGELOG.md).
 
-Agents can discover the curated core automation surface at runtime. This spec
-is intentionally agent-facing and does not list every setup/helper command in
-this README:
+Discover the installed command catalog before constructing an invocation.
+Each entry describes its path, arguments/options, `jsonMode`, `readOnly`
+classification, and output summary. It is not a JSON Schema for every payload
+or a sandbox: a command family may be marked mutating because some options
+write, and query startup can still create directories or migrate supported
+database schemas. Use `--help` for additional setup/helper details:
 
 ```bash
 macparakeet-cli spec --json
@@ -149,17 +159,51 @@ macparakeet-cli spec --json
 macparakeet-cli health --json
 ```
 
-Reports model readiness, database accessibility, and binary deps (FFmpeg,
-yt-dlp). This is a non-mutating probe; it reports missing helper binaries but
-does not install or update them. App-bundled CLI installs include a signed
-yt-dlp helper seed for YouTube transcription; use
-`macparakeet-cli health --repair-binaries` when you explicitly want to fetch
-the latest managed helper binary.
+Reports model readiness, database accessibility, and binary dependencies
+(FFmpeg, yt-dlp). Without repair flags it does not install/update helpers,
+download models, migrate/create the database, or create application
+directories. Inspect the report's component statuses and `paths`,
+not only its exit code: an uninstalled optional model does not block a local
+database search. Repair only a prerequisite for the requested operation, with
+user authorization; `health --repair-binaries` can fetch a managed helper.
 
 `database.status` is one of `ok`, `missing`, `schema_skew`, or `error`.
 `schema_skew` means the shared database was migrated by a newer MacParakeet
 app than this CLI build understands; upgrade `macparakeet-cli` and retry
 rather than treating it as a database fault.
+
+### Safe automation and isolation
+
+- Start with `--version`, `spec --json`, then the health report and the
+  narrowest relevant read. Never repair, regenerate, clear, or delete merely
+  because a component is missing.
+- Normal CLI calls share the user's database, preferences, model caches, and
+  artifact paths with the app. `config set` and `models select` change shared
+  defaults; prefer per-invocation flags for reproducible work.
+- `--database PATH` selects a database only where advertised. It does not
+  isolate preferences, Keychain, models, downloads, or the audio/artifact paths
+  stored in copied rows. Never run destructive commands against a copied
+  production database that still points to original user files.
+- For source-build smoke work, a **DEBUG** binary with
+  `MACPARAKEET_DEBUG_APP_STATE_DIR` set to an absolute test-owned directory
+  redirects app-support/artifact paths and speech/speaker model caches.
+  Release binaries ignore this override. It does **not** redirect the shared
+  UserDefaults suite or Keychain; avoid configuration writes, or use a
+  disposable macOS account when full user-state isolation is required.
+- `--no-history` avoids completed transcript retention, not all I/O. Transcribe
+  can still initialize a database, use models/helpers, and emit telemetry.
+  `MACPARAKEET_TELEMETRY=0` disables telemetry for one invocation without
+  changing shared preferences; it is not a network sandbox.
+- `search-reindex` writes derived indexes; `cards generate` additionally calls
+  the configured LLM. `meetings artifact` refreshes files from SQLite, while
+  notes/results commands modify user-visible records. Treat these as writes,
+  not read-only inspection. Do not manually edit generated sidecars as though
+  they were canonical database records.
+- Query classification does not guarantee zero writes: database startup can
+  initialize/migrate supported storage, and `cards list` can refresh outdated
+  derived transcript segments before checking card freshness. It does not
+  generate cards or call an LLM. Use the non-mutating default health probe
+  when deciding whether it is safe to open a database.
 
 ### Transcribe a file
 
@@ -358,7 +402,8 @@ Bare `yyyy-MM-dd` values use the user's local day (`--since` at its start,
 `--until` through its end); timestamps with `Z` or an explicit offset retain
 that zone.
 
-Existing libraries need one deterministic local rebuild after upgrading:
+If an upgraded library lacks the segment index, explicitly authorize one
+deterministic local rebuild (a database write, not a provider call):
 
 ```bash
 macparakeet-cli search-reindex --json
@@ -395,6 +440,11 @@ decisions/actions. File and URL cards always return empty decision/action
 arrays. Stale cards are suppressed rather than returned with obsolete citation
 ranges. Treat extracted decisions/actions as routing hints and verify them with
 `transcript --around-seq` before asserting them as facts.
+
+Use `cards list` to route across recordings, `search` for concrete phrases, and
+`transcript` for evidence. Include the recording ID/title and segment sequence
+(plus timestamp when available) in citations. Dictations use the separate
+`history search` path; segment/card retrieval is not a cross-mode Ask endpoint.
 
 Card generation uses the provider already opted into in MacParakeet Settings.
 Progress and per-recording token counts go to stderr. JSON stdout reports
@@ -487,6 +537,14 @@ It refreshes the session folder from SQLite and returns paths to:
 - `notes.md` — user-authored notes when present
 - `prompt-results.json` and `prompt-results/*.md` — saved generated outputs
 
+The snapshot, `manifest.meeting`, and `transcript.json` can carry
+`meetingCaptureReport`. `quality: "partial"` describes retained audio, not a
+failed transcription: partial audio can have `status: "completed"`. An absent
+legacy report means unknown, not healthy. The candidate's `silent` system
+status survives recovery and means exact-zero written system signal under the
+qualified conditions in the [artifact contract](../spec/contracts/meeting-artifacts-v1.md);
+it is not a quiet-audio threshold or evidence that no remote speaker spoke.
+
 `meetings export <id> --format md --stdout` uses the same Markdown shape as
 `meeting.md` without refreshing unrelated files. For machine-readable paths,
 use `meetings artifact <id> --json` (`markdownPath`) or
@@ -547,11 +605,13 @@ structured failure envelope instead of the success shape:
 }
 ```
 
-`errorType` is a stable low-cardinality string; `fix` and `meta` are optional
-fields. Branch on the exit code, then use `errorType` to differentiate
-retryable failures (`rate_limit`, `connection`, `streaming`) from permanent
-ones (`auth`, `model`, `input_empty`, `lookup`, `validation`). Full taxonomy in
-`Sources/CLI/CHANGELOG.md`.
+`errorType` is a stable low-cardinality string; `fix` and `meta` are optional.
+Branch on the exit code, then classify the error with
+`Sources/CLI/CHANGELOG.md`. A potentially transient provider error
+(`rate_limit`, `connection`, `streaming`) does not by itself authorize replaying
+a mutating command. Check whether partial output or saved results already
+exist before retrying; fix `auth`, `model`, input, lookup, and validation
+problems rather than retrying them unchanged.
 
 Parse-time failures (unknown flags, missing required flags,
 mutually-exclusive combos like `--json` with `--stream`) surface through
@@ -606,12 +666,16 @@ OpenClaw, Hermes, or another local agent framework.
 - **Lookups:** records that take an `<id-or-name>` argument accept full UUID,
   UUID prefix (>= 4 chars), or case-insensitive name. Ambiguous prefixes
   produce a `.ambiguous` error; missing records produce `.notFound`.
-- **Privacy:** STT and database access never touch the network. Network
-  egress paths are: explicit helper repair (`health --repair-binaries`),
-  media URL downloads (yt-dlp), optional LLM provider calls (only when
-  `prompts run` or `llm` targets a hosted provider, or when a configured
-  Local CLI command contacts its own service), Sparkle update checks (app,
-  not CLI), and a single privacy-safe
+- **Privacy:** speech inference and database queries run locally, but an entire
+  CLI invocation is not necessarily network-free. Network paths include model
+  downloads/warm-up/repair, helper repair, media URL and podcast directory/RSS/
+  enclosure downloads, explicitly configured LLM calls (including
+  `cards generate`, prompt/Transform execution, and cloud-backed Local CLI
+  commands), explicit feedback submission, and CLI telemetry below.
+  The app also checks Sparkle updates and unconditionally refreshes Discover's
+  public feed at launch, independently of telemetry; the CLI does not launch
+  that feed refresh. No captured audio is sent to an LLM by MacParakeet.
+  CLI telemetry emits a single privacy-safe
   `cli_operation` event per successfully parsed CLI invocation, posted to the
   self-hosted endpoint at `https://macparakeet.com/api/telemetry`. The telemetry event
   ships only allowlisted invocation metadata (`operation_id`, `workflow_id`,
@@ -631,10 +695,11 @@ OpenClaw, Hermes, or another local agent framework.
   `TEAMCITY_VERSION` — any one set to a truthy value). Override CI auto-
   disable with `MACPARAKEET_TELEMETRY=1`. See `docs/telemetry.md` for the
   full event catalog and the Worker-side PII redaction policy.
-- **Concurrency:** the STT scheduler reserves one slot for dictation and
-  shares a second slot for meeting / batch work (ADR-016). Multiple
-  concurrent CLI calls share the background slot; expect serial transcription
-  of multi-file batches.
+- **Concurrency:** the STT scheduler reserves one slot for dictation and shares
+  a second slot for meeting/batch work **within a process** (ADR-016).
+  Multi-file batches are sequential. Separate CLI processes do not share that
+  in-memory scheduler or a cross-process model lock; callers must bound their
+  own concurrency rather than assuming the app serializes separate binaries.
 
 ## Per-ecosystem entry points
 

@@ -22,6 +22,31 @@ final class MeetingRecordingRecoveryServiceTests: XCTestCase {
         try? FileManager.default.removeItem(at: tempRoot)
     }
 
+    func testActiveWriterFinalizationIsNeitherOfferedRecoveredNorDiscarded() async throws {
+        let fixture = try makeRecoverableSession()
+        MeetingAudioWriterFinalizationRegistry.begin(folderURL: fixture.folderURL)
+        defer {
+            MeetingAudioWriterFinalizationRegistry.end(folderURL: fixture.folderURL)
+        }
+
+        let recoveries = try await recoveryService.discoverPendingRecoveries()
+
+        XCTAssertFalse(recoveries.contains { $0.sessionId == fixture.lock.sessionId })
+        do {
+            _ = try await recoveryService.recover(fixture.lock)
+            XCTFail("Recovery must not read a source file while its writer is finalizing")
+        } catch MeetingRecordingRecoveryError.writerFinalizationInProgress {
+            // Expected.
+        }
+        do {
+            try await recoveryService.discard(fixture.lock)
+            XCTFail("Discard must not delete a source file while its writer is finalizing")
+        } catch MeetingRecordingRecoveryError.writerFinalizationInProgress {
+            // Expected.
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.folderURL.path))
+    }
+
     func testRecoverSynthesizesMetadataAndPersistsRecoveredTranscription() async throws {
         let fixture = try makeRecoverableSession()
 
@@ -44,7 +69,7 @@ final class MeetingRecordingRecoveryServiceTests: XCTestCase {
     }
 
     func testRecoverPreservesExistingTimelineAndProvenanceWhileRefreshingMediaFacts() async throws {
-        let fixture = try makeRecoverableSession()
+        let fixture = try makeRecoverableSession(systemAudio: .silent)
         let finalizedAlignment = MeetingSourceAlignment(
             meetingOriginHostTime: 42,
             microphone: MeetingSourceAlignment.Track(
@@ -68,7 +93,8 @@ final class MeetingRecordingRecoveryServiceTests: XCTestCase {
             sourceMode: .microphoneAndSystem,
             sourceAlignment: finalizedAlignment,
             elapsedDurationMs: 20_000,
-            interruptedSources: [.system]
+            interruptedSources: [.microphone],
+            silentSources: [.system]
         )
         let finalSpeechEngine = SpeechEngineSelection(engine: .whisper, language: "ko")
         let previewSpeechEngine = SpeechEngineSelection(engine: .parakeet)
@@ -155,6 +181,8 @@ final class MeetingRecordingRecoveryServiceTests: XCTestCase {
         XCTAssertEqual(reconciledReport.interruptedSources, captureReport.interruptedSources)
         XCTAssertEqual(reconciledReport.captureFailed, captureReport.captureFailed)
         XCTAssertEqual(reconciledReport.quality, .partial)
+        XCTAssertEqual(reconciledReport.source(for: .microphone)?.status, .interrupted)
+        XCTAssertEqual(reconciledReport.source(for: .system)?.status, .silent)
         XCTAssertEqual(
             reconciledReport.source(for: .microphone)?.writtenDurationMs,
             captureReport.source(for: .microphone)?.writtenDurationMs
@@ -188,6 +216,45 @@ final class MeetingRecordingRecoveryServiceTests: XCTestCase {
             Int((playbackDuration * 1_000).rounded()),
             accuracy: 100
         )
+    }
+
+    func testRecoverMissingPreviouslySilentSystemTrackBecomesUnavailable() async throws {
+        let fixture = try makeRecoverableSession(systemAudio: .silent)
+        let track = MeetingSourceAlignment.Track(
+            firstHostTime: nil,
+            lastHostTime: nil,
+            startOffsetMs: 0,
+            writtenFrameCount: 48_000,
+            sampleRate: 48_000
+        )
+        let alignment = MeetingSourceAlignment(
+            meetingOriginHostTime: nil,
+            microphone: track,
+            system: track
+        )
+        let report = MeetingCaptureReport(
+            sourceMode: .microphoneAndSystem,
+            sourceAlignment: alignment,
+            elapsedDurationMs: 30_000,
+            silentSources: [.system]
+        )
+        try MeetingRecordingMetadataStore.save(
+            MeetingRecordingMetadata(sourceAlignment: alignment, captureReport: report),
+            folderURL: fixture.folderURL
+        )
+        try FileManager.default.removeItem(
+            at: fixture.folderURL.appendingPathComponent("system-raw.m4a")
+        )
+
+        let recovered = try await recoveryService.recover(fixture.lock)
+
+        let rewrittenMetadata = try MeetingRecordingMetadataStore.load(from: fixture.folderURL)
+        let reconciledReport = try XCTUnwrap(rewrittenMetadata.captureReport)
+        XCTAssertNil(rewrittenMetadata.sourceAlignment.system)
+        XCTAssertEqual(reconciledReport.source(for: .system)?.status, .unavailable)
+        XCTAssertEqual(reconciledReport.quality, .partial)
+        XCTAssertEqual(recovered.meetingCaptureReport, reconciledReport)
+        XCTAssertEqual(transcriptionRepo.saved.last?.meetingCaptureReport, reconciledReport)
     }
 
     func testRecoverMissingMicrophoneMaterializesDelayedSystemTimeline() async throws {
@@ -1454,7 +1521,8 @@ private final class RecordingTranscriptionRepository: TranscriptionRepositoryPro
     }
     func deleteAll() throws {}
     func updateStatus(id: UUID, status: Transcription.TranscriptionStatus, errorMessage: String?) throws {}
-    func updateFileName(id: UUID, fileName: String) throws {}
+    @discardableResult
+    func updateFileName(id: UUID, fileName: String) throws -> Transcription? { nil }
     func updateChatMessages(id: UUID, chatMessages: [ChatMessage]?) throws {}
     func updateSpeakers(id: UUID, speakers: [SpeakerInfo]?) throws {}
     func clearStoredAudioPathsForURLTranscriptions() throws {}

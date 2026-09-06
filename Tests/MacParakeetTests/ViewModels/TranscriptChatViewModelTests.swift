@@ -281,6 +281,292 @@ final class TranscriptChatViewModelTests: XCTestCase {
         XCTAssertEqual(applied, ["reverted context"])
     }
 
+    func testPromptActionWaitsForPreparedContextBeforeSubmitting() async {
+        let builder = ControlledRichContextBuilder()
+        let loader = TranscriptRichContextLoader { transcription, mode in
+            await builder.build(transcription, mode)
+        }
+        let transcription = Transcription(
+            fileName: "large.mp3",
+            rawTranscript: "ten-thousand-word transcript",
+            status: .completed
+        )
+        var submitted: [String] = []
+
+        let action = loader.startPromptAction(
+            transcription: transcription,
+            mode: .richTranscript,
+            contentRevision: 8,
+            onStale: { XCTFail("An unchanged prompt must not request a retry.") }
+        ) { context in
+            submitted.append(context)
+        }
+
+        await builder.waitUntilStarted("ten-thousand-word transcript")
+        XCTAssertTrue(
+            submitted.isEmpty,
+            "Generate/Regenerate must not submit while rich context is still being prepared."
+        )
+
+        await builder.finish("ten-thousand-word transcript", with: "prepared rich context")
+        await action?.value
+        XCTAssertEqual(submitted, ["prepared rich context"])
+    }
+
+    func testPromptActionCannotSubmitWhenRevisionChangesDuringFormatting() async {
+        let builder = ControlledRichContextBuilder()
+        let loader = TranscriptRichContextLoader { transcription, mode in
+            await builder.build(transcription, mode)
+        }
+        let transcription = Transcription(
+            fileName: "meeting.mp3",
+            rawTranscript: "original revision",
+            status: .completed
+        )
+        var currentRevision: UInt64 = 20
+        var submitted: [String] = []
+        var retryNotices = 0
+
+        let action = loader.startPromptAction(
+            transcription: transcription,
+            mode: .richTranscript,
+            contentRevision: 20,
+            isCurrent: { request in
+                request.contentRevision == currentRevision
+            },
+            onStale: { retryNotices += 1 }
+        ) { context in
+            submitted.append(context)
+        }
+        await builder.waitUntilStarted("original revision")
+
+        currentRevision = 21
+        await builder.finish("original revision", with: "stale context")
+        await action?.value
+
+        XCTAssertTrue(
+            submitted.isEmpty,
+            "A transcript changed during formatting must never submit stale context."
+        )
+        XCTAssertEqual(retryNotices, 1)
+        XCTAssertFalse(loader.preparingPromptContext)
+    }
+
+    func testNavigationAllowsNewPromptActionBeforeOldFormatterFinishes() async {
+        let builder = ControlledRichContextBuilder()
+        let loader = TranscriptRichContextLoader { transcription, mode in
+            await builder.build(transcription, mode)
+        }
+        let oldTranscription = Transcription(
+            fileName: "old.mp3",
+            rawTranscript: "old transcript",
+            status: .completed
+        )
+        let newTranscription = Transcription(
+            fileName: "new.mp3",
+            rawTranscript: "new transcript",
+            status: .completed
+        )
+        var submitted: [String] = []
+        var retryNotices = 0
+        let oldAction = loader.startPromptAction(
+            transcription: oldTranscription,
+            mode: .richTranscript,
+            contentRevision: 1,
+            onStale: { retryNotices += 1 }
+        ) { submitted.append($0) }
+        await builder.waitUntilStarted("old transcript")
+
+        // Navigation/disappearance releases action ownership even if the
+        // detached formatter does not cooperate with cancellation.
+        loader.invalidate()
+        XCTAssertFalse(loader.preparingPromptContext)
+        let newAction = loader.startPromptAction(
+            transcription: newTranscription,
+            mode: .richTranscript,
+            contentRevision: 2,
+            onStale: { retryNotices += 1 }
+        ) { submitted.append($0) }
+        guard newAction != nil else {
+            XCTFail("Navigation must admit a prompt action before old formatting completes.")
+            await builder.finish("old transcript", with: "stale context")
+            await oldAction?.value
+            return
+        }
+        await builder.waitUntilStarted("new transcript")
+
+        await builder.finish("old transcript", with: "stale context")
+        await oldAction?.value
+        XCTAssertTrue(submitted.isEmpty, "The old action must not submit after navigation.")
+        XCTAssertTrue(loader.preparingPromptContext, "Old completion must not clear the new action's busy state.")
+        let duplicate = loader.startPromptAction(
+            transcription: newTranscription,
+            mode: .richTranscript,
+            contentRevision: 2,
+            onStale: { retryNotices += 1 }
+        ) { submitted.append($0) }
+        XCTAssertNil(duplicate, "The new action must retain exclusive submission ownership.")
+
+        await builder.finish("new transcript", with: "new context")
+        await newAction?.value
+        await duplicate?.value
+        XCTAssertEqual(submitted, ["new context"])
+        XCTAssertFalse(loader.preparingPromptContext)
+        XCTAssertEqual(retryNotices, 0, "Navigation must not notify the newly selected transcript.")
+    }
+
+    func testDisappearanceRejectsPromptCompletionWithoutReplacementAction() async {
+        let builder = ControlledRichContextBuilder()
+        let loader = TranscriptRichContextLoader { transcription, mode in
+            await builder.build(transcription, mode)
+        }
+        let transcription = Transcription(
+            fileName: "closed.mp3",
+            rawTranscript: "closed transcript",
+            status: .completed
+        )
+        var submitted: [String] = []
+        var retryNotices = 0
+        let action = loader.startPromptAction(
+            transcription: transcription,
+            mode: .richTranscript,
+            contentRevision: 1,
+            onStale: { retryNotices += 1 }
+        ) { submitted.append($0) }
+        await builder.waitUntilStarted("closed transcript")
+
+        loader.invalidate()
+        XCTAssertFalse(loader.preparingPromptContext)
+        await builder.finish("closed transcript", with: "stale context")
+        await action?.value
+        XCTAssertTrue(submitted.isEmpty)
+        XCTAssertFalse(loader.preparingPromptContext)
+        XCTAssertEqual(retryNotices, 0)
+    }
+
+    func testPromptModeChangeRejectsInvalidatedPreparationWithRetryNotice() async {
+        let builder = ControlledRichContextBuilder()
+        let plainBuilder = ControlledRichContextBuilder()
+        let loader = TranscriptRichContextLoader { transcription, mode in
+            if mode == .plainTranscript {
+                return await plainBuilder.build(transcription, mode)
+            }
+            return await builder.build(transcription, mode)
+        }
+        let transcription = Transcription(
+            fileName: "meeting.mp3",
+            rawTranscript: "mode change",
+            status: .completed
+        )
+        var currentMode = TranscriptAIContextMode.richTranscript
+        var submitted: [String] = []
+        var retryNotices = 0
+        let action = loader.startPromptAction(
+            transcription: transcription,
+            mode: currentMode,
+            contentRevision: 1,
+            isCurrent: { $0.mode == currentMode },
+            onStale: { retryNotices += 1 }
+        ) { submitted.append($0) }
+        await builder.waitUntilStarted("mode change")
+
+        currentMode = .plainTranscript
+        // A chat refresh supersedes shared formatting, but not prompt ownership.
+        let refresh = loader.schedule(
+            transcription: transcription,
+            mode: currentMode,
+            contentRevision: 1
+        ) { _, _ in }
+        await plainBuilder.waitUntilStarted("mode change")
+        await builder.finish("mode change", with: "old rich context")
+        await action?.value
+        await plainBuilder.finish("mode change", with: "plain context")
+        await refresh.value
+
+        XCTAssertTrue(submitted.isEmpty)
+        XCTAssertEqual(retryNotices, 1)
+        XCTAssertFalse(loader.preparingPromptContext)
+    }
+
+    func testCancelledPromptPreparationDoesNotShowRetryNotice() async {
+        let builder = ControlledRichContextBuilder()
+        let loader = TranscriptRichContextLoader { transcription, mode in
+            await builder.build(transcription, mode)
+        }
+        let transcription = Transcription(
+            fileName: "cancelled.mp3",
+            rawTranscript: "cancelled preparation",
+            status: .completed
+        )
+        var currentRevision: UInt64 = 1
+        var submitted: [String] = []
+        var retryNotices = 0
+        let action = loader.startPromptAction(
+            transcription: transcription,
+            mode: .richTranscript,
+            contentRevision: 1,
+            isCurrent: { $0.contentRevision == currentRevision },
+            onStale: { retryNotices += 1 }
+        ) { submitted.append($0) }
+        await builder.waitUntilStarted("cancelled preparation")
+
+        action?.cancel()
+        currentRevision = 2
+        await builder.finish("cancelled preparation", with: "stale context")
+        await action?.value
+
+        XCTAssertTrue(submitted.isEmpty)
+        XCTAssertEqual(retryNotices, 0)
+        XCTAssertFalse(loader.preparingPromptContext)
+    }
+
+    func testReplacementPromptOwnsRetryNoticeOnSameTranscript() async {
+        let builder = ControlledRichContextBuilder()
+        let loader = TranscriptRichContextLoader { transcription, mode in
+            await builder.build(transcription, mode)
+        }
+        var transcription = Transcription(
+            fileName: "replacement.mp3",
+            rawTranscript: "old action",
+            status: .completed
+        )
+        var currentRevision: UInt64 = 1
+        var submitted: [String] = []
+        var retryNotices: [String] = []
+        let oldAction = loader.startPromptAction(
+            transcription: transcription,
+            mode: .richTranscript,
+            contentRevision: 1,
+            isCurrent: { $0.contentRevision == currentRevision },
+            onStale: { retryNotices.append("old") }
+        ) { submitted.append($0) }
+        await builder.waitUntilStarted("old action")
+
+        loader.invalidate()
+        currentRevision = 2
+        transcription.rawTranscript = "replacement action"
+        let replacement = loader.startPromptAction(
+            transcription: transcription,
+            mode: .richTranscript,
+            contentRevision: 2,
+            isCurrent: { $0.contentRevision == currentRevision },
+            onStale: { retryNotices.append("replacement") }
+        ) { submitted.append($0) }
+        await builder.waitUntilStarted("replacement action")
+
+        await builder.finish("old action", with: "old context")
+        await oldAction?.value
+        XCTAssertTrue(retryNotices.isEmpty)
+        XCTAssertTrue(loader.preparingPromptContext)
+
+        currentRevision = 3
+        await builder.finish("replacement action", with: "replacement context")
+        await replacement?.value
+        XCTAssertTrue(submitted.isEmpty)
+        XCTAssertEqual(retryNotices, ["replacement"])
+        XCTAssertFalse(loader.preparingPromptContext)
+    }
+
     // MARK: - Cancel Streaming
 
     func testCancelStreaming() {
@@ -338,7 +624,9 @@ final class TranscriptChatViewModelTests: XCTestCase {
 
     func testConfigureWithNilServiceStartsDisabled() {
         let vm = TranscriptChatViewModel()
-        vm.configure(llmService: nil, transcriptText: "Transcript", transcriptionRepo: mockRepo, conversationRepo: mockConversationRepo)
+        vm.configure(
+            llmService: nil, transcriptText: "Transcript", transcriptionRepo: mockRepo,
+            conversationRepo: mockConversationRepo)
         XCTAssertFalse(vm.canSendMessage)
     }
 
@@ -572,7 +860,8 @@ final class TranscriptChatViewModelTests: XCTestCase {
         try await Task.sleep(nanoseconds: 200_000_000)
 
         let historyUserMessages = mockService.lastChatHistory?.filter { $0.role == .user } ?? []
-        XCTAssertTrue(historyUserMessages.isEmpty, "First message history should be empty — question is passed separately")
+        XCTAssertTrue(
+            historyUserMessages.isEmpty, "First message history should be empty — question is passed separately")
         XCTAssertEqual(mockService.lastChatQuestion, "What happened?")
     }
 
@@ -1124,7 +1413,9 @@ final class TranscriptChatViewModelTests: XCTestCase {
         viewModel.regenerateLastResponse()
         try await Task.sleep(nanoseconds: 100_000_000)
 
-        XCTAssertEqual(mockService.chatCallCount, chatCallsBefore, "Regenerate must not re-issue when tail isn't an assistant turn")
+        XCTAssertEqual(
+            mockService.chatCallCount, chatCallsBefore, "Regenerate must not re-issue when tail isn't an assistant turn"
+        )
         XCTAssertEqual(viewModel.messages.count, 1)
     }
 

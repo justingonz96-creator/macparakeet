@@ -141,9 +141,11 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
     var fetchMeetingsWithStatusCalls: [Transcription.TranscriptionStatus] = []
     var fetchAllCalls: [Int?] = []
     var fetchAllError: Error?
+    var fetchError: Error?
     var fetchAllHandler: (@Sendable (Int?) throws -> [Transcription])?
     var fetchMeetingsWithStatusHandler: (@Sendable (Transcription.TranscriptionStatus) throws -> [Transcription])?
     var updateTitleOverrideError: Error?
+    var updateFileNameError: Error?
     var updateFilePathError: Error?
     var updateSpeakersError: Error?
     var updateSpeakersHandler: (@Sendable (UUID, [SpeakerInfo]?) throws -> Void)?
@@ -161,7 +163,8 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
     }
 
     func fetch(id: UUID) throws -> Transcription? {
-        transcriptions.first(where: { $0.id == id })
+        if let fetchError { throw fetchError }
+        return transcriptions.first(where: { $0.id == id })
     }
 
     func fetchAll(limit: Int?) throws -> [Transcription] {
@@ -220,13 +223,17 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
         }
     }
 
-    func updateFileName(id: UUID, fileName: String) throws {
+    @discardableResult
+    func updateFileName(id: UUID, fileName: String) throws -> Transcription? {
         updateFileNameCalls.append((id: id, fileName: fileName))
-        if let idx = transcriptions.firstIndex(where: { $0.id == id }) {
-            transcriptions[idx].fileName = fileName
-            transcriptions[idx].derivedTitle = fileName
-            transcriptions[idx].updatedAt = Date()
+        if let updateFileNameError {
+            throw updateFileNameError
         }
+        guard let idx = transcriptions.firstIndex(where: { $0.id == id }) else { return nil }
+        transcriptions[idx].fileName = fileName
+        transcriptions[idx].derivedTitle = fileName
+        transcriptions[idx].updatedAt = Date()
+        return transcriptions[idx]
     }
 
     func updateTitleOverride(id: UUID, titleOverride: String?) throws {
@@ -825,7 +832,8 @@ final class MockLLMService: LLMServiceProtocol, @unchecked Sendable {
     }
 
     func chat(
-        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource
+        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource,
+        conversationID: UUID
     ) async throws -> String {
         chatCallCount += 1
         lastChatQuestion = question
@@ -848,10 +856,12 @@ final class MockLLMService: LLMServiceProtocol, @unchecked Sendable {
     }
 
     func chatDetailed(
-        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource
+        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource,
+        conversationID: UUID
     ) async throws -> LLMResult {
         let output = try await chat(
-            question: question, transcript: transcript, userNotes: userNotes, history: history, source: source)
+            question: question, transcript: transcript, userNotes: userNotes, history: history, source: source,
+            conversationID: conversationID)
         return LLMResult(output: output, provider: "mock", model: "mock-model", latencyMs: 0)
     }
 
@@ -936,7 +946,8 @@ final class MockLLMService: LLMServiceProtocol, @unchecked Sendable {
     }
 
     func chatStream(
-        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource
+        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource,
+        conversationID: UUID
     ) -> AsyncThrowingStream<String, Error> {
         chatCallCount += 1
         lastChatQuestion = question

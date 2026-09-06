@@ -123,6 +123,15 @@ The tile body is informational. Only the visible Start and Stop capsules are rea
 
 When `Library.filter == .meeting`, the view renders a date-grouped list (`Today` / `Yesterday` / `Previous 7 Days` / `Previous 30 Days` / `{Month Year}`) using `MeetingDateGroupHeader` + `MeetingRowCard` instead of the thumbnail grid the other filters use. Meeting rows surface saved-audio state directly (`Audio saved`, `Audio removed`, or `Audio missing`) so playback/retranscription expectations are visible before the user opens a menu.
 
+A finalized meeting whose `meetingCaptureReport.quality` is `partial` shows the
+existing **Partial audio** badge in its Library meeting row and the existing
+**Partial meeting audio** banner in transcript detail. The shared presentation
+explains elapsed versus captured duration and each degraded source. When the
+system source status is `silent`, its message is: “System audio contained no
+audible signal. Microphone audio remains saved.” This state is durable and
+appears after finalization; it does not add a live alert or automatically
+restart ScreenCaptureKit during a meeting.
+
 Opening an empty processing meeting row must preserve that same lifecycle
 truth. The transcript pane shows an indeterminate "Transcribing meeting"
 surface, states that the audio is saved and final transcription continues in
@@ -143,6 +152,12 @@ queued-completion behavior.
 Local transcription rows expose `Rename...` with a `pencil` symbol in the same Library card/context menu as `Open`, placed before selection and destructive actions. The dialog is compact, prefilled with the effective display title, and rejects blank titles. Until the user explicitly renames it, a Local row's effective title is its original media filename rather than transcript-derived opening words. Rename is a display-metadata operation only: the original source filename/path remain unchanged, and copy-on-import/media-retention behavior is not implied.
 
 The transcript detail header uses the same effective title as the Library. The pencil affordance is available for supported title-editing sources: meetings through the existing meeting title path, and local file transcriptions through the persisted title override path.
+
+Meeting rename publishes the row returned by its database write; a missing
+record is an error, not a successful local rename. Library and Recent Meetings
+replace any in-flight meeting-capable query snapshot while preserving its
+requested page window. Idle date-sorted windows update in place; title sorting
+and search membership are re-evaluated. Non-meeting-only queries are unaffected.
 
 ### Library Multi-Select Cleanup
 
@@ -738,11 +753,12 @@ and re-instantiating rows after a scroll, each row's `.textSelection(.enabled)`
 platform overlay requesting another update, and hover re-dispatch after every
 update keeping it alive. Rules that follow from it:
 
-- Small transcripts render in a plain `VStack`; only transcripts above
-  `TranscriptBodyLayout.nonLazyRowLimit` rows use `LazyVStack` (issue #848
-  still needs bounded cards there). The decision lives in
-  `TranscriptBodyLayout.usesLazyStack(rowCount:)`; DEBUG launches can flip it
-  and per-row text selection with `MACPARAKEET_DEBUG_TRANSCRIPT_LAZY` and
+- Small transcripts render in a plain `VStack`; transcripts above the 400-row
+  `TranscriptBodyLayout.nonLazyRowLimit` use `LazyVStack`. An unknown count
+  stays lazy while the detached cache builds, avoiding an eager long-transcript
+  first-open. Speaker turns are split into cards of at most 24 segments so a
+  long single-speaker turn cannot defeat laziness. DEBUG launches can flip
+  layout and row selection with `MACPARAKEET_DEBUG_TRANSCRIPT_LAZY` and
   `MACPARAKEET_DEBUG_TRANSCRIPT_SELECTION` to bisect a recurrence.
 - Do not put more AppKit platform views (representables, selectable text
   overlays) inside lazily measured rows than the row already has.
@@ -750,6 +766,26 @@ update keeping it alive. Rules that follow from it:
   hosts the real view offscreen, scrolls it down and back, and fails if layout
   keeps re-running; hover itself cannot be simulated offscreen and stays a
   manual check.
+
+### Transcript AI Context Lifecycle
+
+The release-readiness candidate prepares rich AI context off the main actor
+from one immutable transcript revision and context mode. The view shares
+in-flight preparation and cached results for that revision; send, quick prompt,
+summary generation, and regeneration await valid context rather than sending
+an empty/loading placeholder. Before provider submission, the request must
+still match the active transcription ID, content revision, and mode.
+
+Edits, reverts, metadata/content refreshes, transcription switches, and mode
+changes invalidate stale prepared context; disappearing invalidates owned
+context work. Late completion cannot replace current chat context or submit
+the previous transcript. This is the context-loader contract, not a claim that
+every media task is cancelled or that long-transcript hardware/UI QA has passed.
+If the same transcript's revision or context mode changes while a prompt is
+being prepared, the still-current action shows a retry notice without submitting
+stale context. Navigation, disappearance, explicit cancellation, and replacement
+actions remain silent. The notice uses the existing result-header error surface;
+there is no automatic resubmission.
 
 ### Recent Transcriptions List
 
@@ -1057,6 +1093,12 @@ Button to re-run onboarding flow: "Run Onboarding Again..."
 ## Discover (v0.4)
 
 A curated content feed displayed as a sidebar item with a full-page content view. Discover surfaces tips, quotes, affirmations, and sponsored items fetched from a remote JSON feed (`macparakeet.com/api/discover.json`) with local cache fallback and a bundled default.
+
+The refresh is started unconditionally by app launch, not by selecting this
+page, and is independent of the telemetry setting. The app does not provide a
+Discover visibility/network toggle; release-readiness work leaves that product
+behavior unchanged. Cached/bundled content supports offline display, not an
+opt-out from the launch request.
 
 ### Sidebar Card
 

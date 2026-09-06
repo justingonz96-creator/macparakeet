@@ -2596,14 +2596,16 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertTrue(FileManager.default.createFile(atPath: microphoneURL.path, contents: Data("microphone".utf8)))
         XCTAssertTrue(FileManager.default.createFile(atPath: systemURL.path, contents: Data("system".utf8)))
 
+        // Distinct overlapping speech must survive. Exact simultaneous phrases
+        // of three or more words are instead subject to system-echo reconciliation.
         await mockSTT.configureSequence(results: [
             STTResult(
-                text: "Can you hear me",
+                text: "Yes I can now",
                 words: [
-                    TimestampedWord(word: "Can", startMs: 120, endMs: 220, confidence: 0.9),
-                    TimestampedWord(word: "you", startMs: 240, endMs: 320, confidence: 0.9),
-                    TimestampedWord(word: "hear", startMs: 340, endMs: 450, confidence: 0.9),
-                    TimestampedWord(word: "me", startMs: 470, endMs: 540, confidence: 0.9),
+                    TimestampedWord(word: "Yes", startMs: 120, endMs: 220, confidence: 0.9),
+                    TimestampedWord(word: "I", startMs: 240, endMs: 320, confidence: 0.9),
+                    TimestampedWord(word: "can", startMs: 340, endMs: 450, confidence: 0.9),
+                    TimestampedWord(word: "now", startMs: 470, endMs: 540, confidence: 0.9),
                 ]
             ),
             STTResult(
@@ -2634,7 +2636,7 @@ final class TranscriptionServiceTests: XCTestCase {
 
         let result = try await service.transcribeMeeting(recording: recording)
 
-        XCTAssertEqual(result.rawTranscript, "Can Can you hear you hear me me")
+        XCTAssertEqual(result.rawTranscript, "Can Yes you hear I can me now")
         XCTAssertEqual(result.wordTimestamps?.map(\.speakerId), [
             "system", "microphone", "system", "system", "microphone", "microphone", "system", "microphone",
         ])

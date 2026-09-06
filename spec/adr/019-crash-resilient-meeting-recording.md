@@ -154,9 +154,13 @@ post-stop pipeline:
    (`microphone-raw.m4a`, `system-raw.m4a`, or both depending on source mode; no-op
    for fragmented MP4 — they're already valid up to the last fragment; just
    verify with `AVAsset.tracks` loadability).
-2. Synthesize `meeting-recording-metadata.json` from the audio file durations
-   (`startOffsetMs = 0` for both since we don't have the original
-   alignment; acceptable degradation — user knows recording was recovered).
+2. Reconcile `meeting-recording-metadata.json` against surviving source media.
+   Preserve existing host times/start offsets and real written duration where
+   known; only missing alignment defaults to zero offset. Refresh playable
+   timeline duration and drop tracks whose media cannot be recovered. Preserve
+   a prior capture report's elapsed/interruption history and, in the
+   release-readiness candidate, its `silent` source verdicts; unavailable or
+   interrupted media still takes precedence over silence.
    Use the final-transcription route captured by schema v2 when the
    `speechEngine` field is present. For schema v1 locks, whose `speechEngine`
    belonged to the former shared route, and schema v2 locks missing the field,
@@ -193,6 +197,16 @@ peeked PID is still alive is left alone. Claiming
 and reconciliation share a per-folder advisory mutex; only one can win, and
 failed finalization restores the prior lock only if the same lease still owns
 it.
+
+**Release-readiness candidate amendment (2026-09-04):** Writer-finalization
+timeouts are bounded for the caller, not destructive cancellation. One
+aggregate five-second deadline settles once; a source with written frames
+that does not finish fails the stop while retaining its files and lock.
+AVAssetWriter keeps ownership until its callbacks return, guarded by
+`MeetingAudioWriterFinalizationRegistry`. Same-process recovery/discard must
+not race that writer; a process restart releases ownership if callbacks never
+return. Never cancel the writer as a timeout workaround. This behavior is
+development work, not evidence of a shipped or hardware-verified fix.
 
 ### 3. Schema version on the lock file
 

@@ -161,12 +161,26 @@ final class MeetingTranscriptionQueue {
     }
 
     private func process(_ originalItem: Item) async {
+        let preparationStartedAt = Date()
+        appendDiagnostic(originalItem, stage: "prepare_row", outcome: "started")
         let item: Item
         do {
             switch try await ensureProcessingRow(for: originalItem) {
             case .admitted(let admittedItem):
                 item = admittedItem
+                appendDiagnostic(
+                    admittedItem,
+                    stage: "prepare_row",
+                    outcome: "success",
+                    startedAt: preparationStartedAt
+                )
             case .alreadyCompleted(let transcription):
+                appendDiagnostic(
+                    originalItem,
+                    stage: "prepare_row",
+                    outcome: "already_completed",
+                    startedAt: preparationStartedAt
+                )
                 logger.info(
                     "queued_meeting_transcription_already_completed id=\(transcription.id.uuidString, privacy: .public)"
                 )
@@ -179,6 +193,13 @@ final class MeetingTranscriptionQueue {
                 notifyStateChanged()
             }
         } catch {
+            appendDiagnostic(
+                originalItem,
+                stage: "prepare_row",
+                outcome: "failure",
+                startedAt: preparationStartedAt,
+                error: error
+            )
             logger.error(
                 "queued_meeting_transcription_prepare_failed session=\(originalItem.recording.sessionID.uuidString, privacy: .public) error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public) error_detail=\(error.localizedDescription, privacy: .private)"
             )
@@ -187,6 +208,8 @@ final class MeetingTranscriptionQueue {
             return
         }
 
+        let finalizationStartedAt = Date()
+        appendDiagnostic(item, stage: "finalize_transcript", outcome: "started")
         let transcription: Transcription
         do {
             transcription = try await Observability.withOperationContext(item.operationContext) {
@@ -196,7 +219,20 @@ final class MeetingTranscriptionQueue {
                     onProgress: nil
                 )
             }
+            appendDiagnostic(
+                item,
+                stage: "finalize_transcript",
+                outcome: "success",
+                startedAt: finalizationStartedAt
+            )
         } catch {
+            appendDiagnostic(
+                item,
+                stage: "finalize_transcript",
+                outcome: error is CancellationError ? "cancelled" : "failure",
+                startedAt: finalizationStartedAt,
+                error: error
+            )
             logger.error(
                 "queued_meeting_transcription_failed session=\(item.recording.sessionID.uuidString, privacy: .public) error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public) error_detail=\(error.localizedDescription, privacy: .private)"
             )
@@ -206,13 +242,28 @@ final class MeetingTranscriptionQueue {
             return
         }
 
+        let settlementStartedAt = Date()
+        appendDiagnostic(item, stage: "settle_artifacts", outcome: "started")
         do {
             try await meetingRecordingSettlement.settleCompletedTranscription(
                 folderURL: item.recording.folderURL,
                 transcriptionID: transcription.id,
                 sessionID: item.recording.sessionID
             )
+            appendDiagnostic(
+                item,
+                stage: "settle_artifacts",
+                outcome: "success",
+                startedAt: settlementStartedAt
+            )
         } catch {
+            appendDiagnostic(
+                item,
+                stage: "settle_artifacts",
+                outcome: "failure",
+                startedAt: settlementStartedAt,
+                error: error
+            )
             logger.error(
                 "queued_meeting_settlement_failed_lock_retained_for_recovery session=\(item.recording.sessionID.uuidString, privacy: .public) error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public) error_detail=\(error.localizedDescription, privacy: .private)"
             )
@@ -300,6 +351,24 @@ final class MeetingTranscriptionQueue {
                 "queued_meeting_ownership_release_failed id=\(item.transcriptionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .private)"
             )
         }
+    }
+
+    private func appendDiagnostic(
+        _ item: Item,
+        stage: String,
+        outcome: String,
+        startedAt: Date? = nil,
+        error: Error? = nil
+    ) {
+        var fields =
+            "meeting_transcription_queue_stage session=\(item.recording.sessionID.uuidString) transcription=\(item.transcriptionID.uuidString) stage=\(stage) outcome=\(outcome)"
+        if let startedAt {
+            fields += " duration_s=\(String(format: "%.3f", Date().timeIntervalSince(startedAt)))"
+        }
+        if let error {
+            fields += " error_type=\(TelemetryErrorClassifier.classify(error))"
+        }
+        AudioCaptureDiagnostics.appendAsync(fields)
     }
 
     private func finishActiveItem(_ completion: Completion?) {

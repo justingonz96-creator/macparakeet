@@ -67,6 +67,15 @@ corpus via `macparakeet-cli` (search/ask surfaces), governed by the existing
 CLI contract discipline (`spec/contracts/`, CLI CHANGELOG). MCP or deeper
 integrations remain demand-driven, not speculative.
 
+**Implementation clarification (2026-09-04):** Current development supplies
+segment search, bounded transcript context, current knowledge cards, and saved
+meeting notes/results/artifact/export commands. Dictations use separate
+history search; corpus-wide Ask and semantic retrieval are not implied.
+The [integration scope](../../integrations/README.md#scope-of-the-cli) governs:
+first-class automation does not require mirroring live recording controls,
+hotkeys, overlays, or every GUI affordance. Reuse the CLI before adding a
+service or protocol.
+
 ### 4. Ambient capture is parked, not rejected
 
 Unlike cloud STT — which [ADR-002](002-local-only.md) and the

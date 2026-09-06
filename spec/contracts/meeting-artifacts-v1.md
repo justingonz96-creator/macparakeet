@@ -14,6 +14,11 @@ For meeting rows, `transcriptions.meetingArtifactFolderPath` is the durable
 folder locator. `transcriptions.filePath` is only the mixed-audio
 playback/export path and may be cleared by user deletion or retention.
 
+Meeting rename refreshes artifacts from the row returned by the rename's
+database transaction, preserving its current transcript, notes, and folder
+metadata. A missing row is not a successful rename and starts no artifact
+refresh.
+
 ## Producers
 
 - `MeetingRecordingService`: creates session folders and source audio.
@@ -65,9 +70,9 @@ The v1 folder can contain these stable filenames:
   may also include additive `startContext` with the one-shot local start
   snapshot. `calendarEventSnapshot`, when present, is local EventKit context
   and can include attendee/organizer names and emails. New finalized recordings
-  also include additive `captureReport`, the frame-derived recording coverage
-  report described below; legacy sidecars may omit it. An unreadable optional
-  report is treated as unknown without invalidating the remaining sidecar.
+  also include additive `captureReport`, the finalized capture-quality report
+  described below; legacy sidecars may omit it. An unreadable optional report
+  is treated as unknown without invalidating the remaining sidecar.
   Each source-alignment track keeps `writtenFrameCount` as real captured frames
   and may include `timelineFrameCount` for its playable end after inserting
   silence across capture-recovery gaps. Legacy tracks omit the latter and use
@@ -148,21 +153,45 @@ the same additive shape as `transcriptions.meetingCaptureReport`:
 - `capturedDurationMs`: end of the longest selected playable source timeline,
   including silence inserted to preserve capture-recovery gaps
 - `sources`: stable microphone/system-order records with `source`,
-  `writtenDurationMs`, `coverageRatio`, and `status` (`complete`,
+  `writtenDurationMs`, `coverageRatio`, and `status` (`complete`, `silent`,
   `coverage_shortfall`, `interrupted`, `unavailable`, or `capture_failed`)
 - `interruptedSources`: terminally interrupted selected sources
 - `captureFailed`: runtime capture-control failure, kept separate from final
-  frame-derived quality
+  source quality
 - `playbackFallbackSource`: optional `microphone` or `system` marker when both
   selected source files were decodable but canonical playback had to use only
   the named source because combining them failed; its presence makes `quality`
   partial without changing otherwise-complete source capture statuses
 
+In the release-readiness candidate, `silent` is written only for a selected
+system source when its finalized signal verdict is actionable: system buffers
+arrived, the peak absolute sample in successfully appended converted PCM stayed
+at exact zero, the microphone had nonzero signal, and pause-adjusted capture
+lasted at least 30 seconds. Interrupted system sources do not produce a new
+silent verdict or silence warning. The source writer normally averages input
+channels before converting system input to 48 kHz mono; severe destructive
+cancellation instead retains one dominant-energy channel for the whole buffer.
+Right-channel-only and inverse stereo retain signal. This measures retained PCM,
+not channel 0 of the input or the UI RMS meter.
+Preserved pre-pause buffers count; buffers dropped for an
+intentional pause do not. Short recordings, wholly silent sessions, and quiet
+system tracks with any nonzero written sample do not receive `silent`.
+
+A silent selected source makes `quality` partial. Source status precedence is
+`interrupted`, `capture_failed`, `unavailable`, `silent`, `coverage_shortfall`,
+then `complete`, so terminal failures remain more informative and silence is
+not hidden by otherwise-complete duration coverage.
+Presentation promises preserved microphone audio only when that source has
+positive `writtenDurationMs`; an unavailable or padding-only microphone does
+not justify that promise.
+
 Meeting `durationMs` is the probed duration of the decodable
 `meeting-playback.m4a` artifact. Normal finalization keeps it equal to
 `capturedDurationMs`. Crash recovery refreshes surviving source media facts and
-rebuilds `capturedDurationMs`, while preserving elapsed/interruption history,
-so both values remain coherent even when a damaged source must be dropped. A
+rebuilds `capturedDurationMs`, while preserving elapsed/interruption history
+and prior `silent` source verdicts. A missing or interrupted recovered source
+takes the more informative status above. Both duration values remain coherent
+even when a damaged source must be dropped. A
 partial report does not change transcription `status`: successfully processed
 partial audio remains `completed`. Archived reconstruction re-probes the
 resolved canonical playback file and uses a supplied stored duration only when

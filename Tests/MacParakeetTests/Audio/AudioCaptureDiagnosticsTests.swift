@@ -42,4 +42,22 @@ final class AudioCaptureDiagnosticsTests: XCTestCase {
         XCTAssertFalse(sanitized.contains("\r"))
         XCTAssertEqual(sanitized, "first line second line third line")
     }
+
+    func testRetainedLogSuffixKeepsNewestCompleteLines() throws {
+        let original = try XCTUnwrap(
+            "first line\nmiddle line\nlatest one\nlatest two\n".data(using: .utf8)
+        )
+
+        let retained = AudioCaptureDiagnostics.retainedLogSuffix(original, maxBytes: 25)
+
+        XCTAssertEqual(String(data: retained, encoding: .utf8), "latest one\nlatest two\n")
+    }
+
+    func testRetainedLogSuffixDropsAnOversizedIncompleteLine() throws {
+        let original = try XCTUnwrap(String(repeating: "é", count: 32).data(using: .utf8))
+
+        let retained = AudioCaptureDiagnostics.retainedLogSuffix(original, maxBytes: 17)
+
+        XCTAssertTrue(retained.isEmpty)
+    }
 }

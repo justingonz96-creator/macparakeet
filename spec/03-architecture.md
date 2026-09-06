@@ -1041,6 +1041,13 @@ tables own their full content, while `llm_runs` stores metadata-only source
 links for durable LLM operations and cascades away when its source row is
 deleted.
 
+Current development also persists derived `segments` / `segments_fts` and
+`cards` / `cards_fts` for knowledge retrieval. This is separate from the
+historical FTS removal and existing LIKE history search. Segment reindexing is
+deterministic local work; card generation uses the configured LLM, while card
+reads suppress stale provenance. The CLI exposes search, cited context slices,
+and cards without a separate service or cross-process STT scheduler.
+
 ---
 
 ## File Locations
@@ -1149,11 +1156,11 @@ same required permission checks in context.
 
 ### Privacy Guarantees
 
-1. **No cloud STT** — Speech recognition stays local. Network is used only for explicit surfaces such as model downloads, update checks, optional LLM providers, optional telemetry/crash reporting, retained purchase activation endpoints if explicitly invoked, and user-initiated YouTube downloads.
+1. **No cloud STT** — Speech recognition stays local. Other network surfaces include model/helper setup, media/podcast imports, updates, configured LLM features, opt-out telemetry/crash reporting, explicit feedback/Discover submissions, and retained activation when invoked. Discover separately requests its public feed at app launch even when telemetry is disabled; it is not opt-in or gated by opening its page.
 2. **Managed temporary files** — Owning flows clean their temporary working files; persisted dictation/meeting audio follows the user's explicit storage and retention settings
 3. **No required product account** — No login or email is required; optional telemetry/crash reporting is described separately
 4. **Telemetry is opt-out** — Self-hosted usage analytics and crash reporting run only while telemetry is enabled
-5. **Audio storage is opt-in** — Dictation audio only saved if user enables "Keep audio" in settings
+5. **User-controlled audio retention** — Saved dictation/file/media audio follows the relevant preference. Meeting audio is kept by default and supports explicit deletion or time-based retention; temporary processing files have separate owning-flow cleanup.
 6. **Local speech inference** — STT runs on-device. Optional LLM features may use a local runtime, local CLI, or user-configured remote provider; those text-only boundaries are documented separately.
 
 ### Runtime Permissions

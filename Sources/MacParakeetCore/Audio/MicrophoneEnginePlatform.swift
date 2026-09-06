@@ -314,6 +314,36 @@ final class MutableMicrophoneTapHandler: @unchecked Sendable {
     }
 }
 
+/// Generation-scoped state for collapsing Core Audio notification storms.
+/// Retired listeners and delayed deliveries cannot consume a replacement burst.
+struct DefaultInputChangeBurstCoalescer {
+    private(set) var pendingCount = 0
+    private(set) var deliveryScheduled = false
+    private(set) var generation: UInt64 = 0
+
+    mutating func invalidate() {
+        generation &+= 1
+        pendingCount = 0
+        deliveryScheduled = false
+    }
+
+    mutating func observeChange(generation: UInt64) -> Bool {
+        guard generation == self.generation else { return false }
+        pendingCount += 1
+        guard !deliveryScheduled else { return false }
+        deliveryScheduled = true
+        return true
+    }
+
+    mutating func takePendingCount(generation: UInt64) -> Int? {
+        guard generation == self.generation, deliveryScheduled else { return nil }
+        let count = pendingCount
+        pendingCount = 0
+        deliveryScheduled = false
+        return count
+    }
+}
+
 /// Production adapter that drives a real `AVAudioEngine`. Mirrors the
 /// engine-lifecycle invariants from `MicrophoneCapture` (PR #186):
 ///
@@ -394,6 +424,9 @@ public final class AVAudioEngineMicrophonePlatform: MicrophoneEnginePlatform, @u
     /// change, format change, sample-rate change).
     private var configurationChangeObserver: NSObjectProtocol?
     private var defaultInputChangeObserver: AudioObjectPropertyListenerBlock?
+    private let defaultInputChangeCoalescer = OSAllocatedUnfairLock(
+        initialState: DefaultInputChangeBurstCoalescer()
+    )
     /// Parameters for the capture the caller still wants active. This desired
     /// state is deliberately separate from `running`, which reflects the actual
     /// AVAudioEngine state and becomes false during a recovery attempt. External
@@ -1377,8 +1410,14 @@ public final class AVAudioEngineMicrophonePlatform: MicrophoneEnginePlatform, @u
             self.queue.async { [weak self, engineBox] in
                 guard let self else { return }
                 guard engineBox.wraps(self.audioEngine) else { return }
-                let format = engineBox.inputFormat()
                 let engineIsRunning = engineBox.isEngineRunning()
+                // A stopped engine is normally the recovery case, where asking
+                // the input node for a format can block on Core Audio's failed
+                // reconfiguration. A deliberately prepared engine is also
+                // stopped, but its format is required to distinguish its own
+                // delayed setup notification from a real route mutation.
+                let shouldReadFormat = self.prepared || engineIsRunning
+                let format = shouldReadFormat ? engineBox.inputFormat() : nil
                 let snapshot = (
                     sr: format?.sampleRate ?? 0,
                     ch: format?.channelCount ?? 0,
@@ -1857,15 +1896,43 @@ public final class AVAudioEngineMicrophonePlatform: MicrophoneEnginePlatform, @u
                 mScope: kAudioObjectPropertyScopeGlobal,
                 mElement: kAudioObjectPropertyElementMain
             )
+            let generation = defaultInputChangeCoalescer.withLock { $0.generation }
             let inputBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-                self?.defaultInputChangeGeneration.withLock { $0 &+= 1 }
-                AudioCaptureDiagnostics.append(
-                    "audio_default_input_changed \(AudioCaptureDiagnostics.defaultInputDeviceSummary())"
-                )
-                NotificationCenter.default.post(name: .macParakeetMicrophoneSelectionDidChange, object: nil)
-                self?.queue.async { [weak self] in
-                    self?.refreshActiveTapSignalPolicyLocked()
-                    self?.rescheduleRecoveryAfterRouteChangeLocked()
+                guard let self else { return }
+                let shouldSchedule = self.defaultInputChangeCoalescer.withLock { coalescer in
+                    guard coalescer.generation == generation else { return false }
+                    self.defaultInputChangeGeneration.withLock { $0 &+= 1 }
+                    return coalescer.observeChange(generation: generation)
+                }
+                guard shouldSchedule else { return }
+
+                // Core Audio can emit hundreds of callbacks for one unstable
+                // route transition. Collapse the burst before querying Core
+                // Audio, writing diagnostics, notifying the app, or scheduling
+                // recovery work. The generation above still invalidates any
+                // startup attempt immediately.
+                let delay = min(self.recoveryRouteChangeDebounce, 0.1)
+                self.routeListenerQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self,
+                        let notificationCount = self.defaultInputChangeCoalescer.withLock({
+                            $0.takePendingCount(generation: generation)
+                        })
+                    else { return }
+                    let summary = AudioCaptureDiagnostics.defaultInputDeviceSummary()
+                    AudioCaptureDiagnostics.appendAsync(
+                        "audio_default_input_changed notifications=\(notificationCount) \(summary)"
+                    )
+                    NotificationCenter.default.post(
+                        name: .macParakeetMicrophoneSelectionDidChange,
+                        object: nil
+                    )
+                    self.queue.async { [weak self] in
+                        guard let self,
+                            self.defaultInputChangeCoalescer.withLock({ $0.generation == generation })
+                        else { return }
+                        self.refreshActiveTapSignalPolicyLocked()
+                        self.rescheduleRecoveryAfterRouteChangeLocked()
+                    }
                 }
             }
             let inputStatus = AudioObjectAddPropertyListenerBlock(
@@ -1877,6 +1944,7 @@ public final class AVAudioEngineMicrophonePlatform: MicrophoneEnginePlatform, @u
             if inputStatus == noErr {
                 defaultInputChangeObserver = inputBlock
             } else {
+                defaultInputChangeCoalescer.withLock { $0.invalidate() }
                 AudioCaptureDiagnostics.append(
                     "audio_default_input_listener_failed status=\(inputStatus)"
                 )
@@ -1886,6 +1954,7 @@ public final class AVAudioEngineMicrophonePlatform: MicrophoneEnginePlatform, @u
     }
 
     private func removeRouteChangeObserversLocked() {
+        defaultInputChangeCoalescer.withLock { $0.invalidate() }
         if let inputBlock = defaultInputChangeObserver {
             var inputAddress = AudioObjectPropertyAddress(
                 mSelector: kAudioHardwarePropertyDefaultInputDevice,

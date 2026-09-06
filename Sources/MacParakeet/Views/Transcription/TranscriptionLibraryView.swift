@@ -42,8 +42,11 @@ struct TranscriptionLibraryView: View {
     }
 
     var body: some View {
+        presentationContent
+    }
+
+    private var libraryContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header
             HStack {
                 Text(title)
                     .font(DesignSystem.Typography.pageTitle)
@@ -65,7 +68,6 @@ struct TranscriptionLibraryView: View {
             .padding(.top, DesignSystem.Spacing.lg)
             .padding(.bottom, DesignSystem.Spacing.sm)
 
-            // Filter bar
             if showsFilterBar {
                 HStack(spacing: 0) {
                     ForEach(visibleLibraryFilters, id: \.self) { filter in
@@ -94,10 +96,6 @@ struct TranscriptionLibraryView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            // Content — date-grouped list for meetings, thumbnail grid otherwise.
-            // Reason: meetings have no thumbnail-worthy visual asset, so a list with
-            // preview text + speaker count is denser and more useful than a wall of
-            // waveform placeholders.
             if viewModel.isLoading && viewModel.filteredTranscriptions.isEmpty {
                 loadingState
             } else if viewModel.filteredTranscriptions.isEmpty {
@@ -108,153 +106,167 @@ struct TranscriptionLibraryView: View {
                 thumbnailGrid
             }
         }
-        .searchable(text: $viewModel.searchText, prompt: "Search transcriptions")
-        .focusable(viewModel.isBulkSelectionModeEnabled)
-        .focused($selectionKeyboardFocused)
-        // Keep keyboard focus (for ⌘A / Delete) but suppress the system focus
-        // ring. The ring is drawn in the system accent (blue), reads as a
-        // full-width line across the content's top edge on entering selection
-        // mode, and its first-responder draw is the hitch felt as "jank".
-        .focusEffectDisabled(viewModel.isBulkSelectionModeEnabled)
-        .onChange(of: viewModel.isBulkSelectionModeEnabled) { _, enabled in
-            if enabled {
-                selectionKeyboardFocused = true
+    }
+
+    private var interactionContent: some View {
+        libraryContent
+            .searchable(text: $viewModel.searchText, prompt: "Search transcriptions")
+            .focusable(viewModel.isBulkSelectionModeEnabled)
+            .focused($selectionKeyboardFocused)
+            // Retain keyboard focus without drawing the full-width system
+            // focus ring when bulk selection begins.
+            .focusEffectDisabled(viewModel.isBulkSelectionModeEnabled)
+            .onChange(of: viewModel.isBulkSelectionModeEnabled) { _, enabled in
+                if enabled {
+                    selectionKeyboardFocused = true
+                }
             }
-        }
-        .animation(.easeInOut(duration: 0.16), value: viewModel.isBulkSelectionModeEnabled)
-        .onKeyPress(keys: ["a", "A", .delete, .deleteForward]) { press in
-            handleSelectionKeyPress(press)
-        }
-        .onAppear {
-            viewModel.loadTranscriptions()
-        }
-        .alert(
-            pendingDelete.map(singleDeleteTitle) ?? "Delete Transcription?",
-            isPresented: Binding(
-                get: { pendingDelete != nil },
-                set: { if !$0 { pendingDelete = nil } }
-            )
-        ) {
-            Button("Cancel", role: .cancel) {
-                pendingDelete = nil
+            .animation(.easeInOut(duration: 0.16), value: viewModel.isBulkSelectionModeEnabled)
+            .onKeyPress(keys: ["a", "A", .delete, .deleteForward]) { press in
+                handleSelectionKeyPress(press)
             }
-            Button(pendingDelete.map(singleDeleteConfirmTitle) ?? "Delete", role: .destructive) {
-                if let transcription = pendingDelete {
-                    viewModel.deleteTranscription(transcription)
+            .onAppear {
+                viewModel.loadTranscriptions()
+            }
+    }
+
+    private var primaryAlertsContent: some View {
+        interactionContent
+            .alert(
+                pendingDelete.map(singleDeleteTitle) ?? "Delete Transcription?",
+                isPresented: Binding(
+                    get: { pendingDelete != nil },
+                    set: { if !$0 { pendingDelete = nil } }
+                )
+            ) {
+                Button("Cancel", role: .cancel) {
                     pendingDelete = nil
                 }
+                Button(pendingDelete.map(singleDeleteConfirmTitle) ?? "Delete", role: .destructive) {
+                    if let transcription = pendingDelete {
+                        viewModel.deleteTranscription(transcription)
+                        pendingDelete = nil
+                    }
+                }
+            } message: {
+                if let pending = pendingDelete {
+                    Text(singleDeleteMessage(for: pending))
+                }
             }
-        } message: {
-            if let pending = pendingDelete {
-                Text(singleDeleteMessage(for: pending))
+            .alert(
+                "Rename Transcription",
+                isPresented: Binding(
+                    get: { pendingRename != nil },
+                    set: { if !$0 { cancelRename() } }
+                )
+            ) {
+                TextField("Title", text: $renameTitleDraft)
+                Button("Cancel", role: .cancel) {
+                    cancelRename()
+                }
+                Button("Rename") {
+                    commitRename()
+                }
+                .disabled(isRenameDisabled)
             }
-        }
-        .alert(
-            "Rename Transcription",
-            isPresented: Binding(
-                get: { pendingRename != nil },
-                set: { if !$0 { cancelRename() } }
-            )
-        ) {
-            TextField("Title", text: $renameTitleDraft)
-            Button("Cancel", role: .cancel) {
-                cancelRename()
-            }
-            Button("Rename") {
-                commitRename()
-            }
-            .disabled(isRenameDisabled)
-        }
-        .alert(
-            MeetingDeletionCopy.audioOnlyAlertTitle,
-            isPresented: Binding(
-                get: { pendingDeleteAudio != nil },
-                set: { if !$0 { pendingDeleteAudio = nil } }
-            )
-        ) {
-            Button("Cancel", role: .cancel) {
-                pendingDeleteAudio = nil
-            }
-            Button(MeetingDeletionCopy.audioOnlyConfirmTitle, role: .destructive) {
-                if let transcription = pendingDeleteAudio {
-                    viewModel.deleteMeetingAudio(transcription)
+            .alert(
+                MeetingDeletionCopy.audioOnlyAlertTitle,
+                isPresented: Binding(
+                    get: { pendingDeleteAudio != nil },
+                    set: { if !$0 { pendingDeleteAudio = nil } }
+                )
+            ) {
+                Button("Cancel", role: .cancel) {
                     pendingDeleteAudio = nil
                 }
-            }
-        } message: {
-            Text(
-                MeetingDeletionCopy.singleAudioOnlyMessage(
-                    surface: .library,
-                    status: pendingDeleteAudio?.status ?? .completed
+                Button(MeetingDeletionCopy.audioOnlyConfirmTitle, role: .destructive) {
+                    if let transcription = pendingDeleteAudio {
+                        viewModel.deleteMeetingAudio(transcription)
+                        pendingDeleteAudio = nil
+                    }
+                }
+            } message: {
+                Text(
+                    MeetingDeletionCopy.singleAudioOnlyMessage(
+                        surface: .library,
+                        status: pendingDeleteAudio?.status ?? .completed
+                    )
                 )
-            )
-        }
-        .alert(
-            bulkOperationTitle,
-            isPresented: Binding(
-                get: { viewModel.pendingBulkOperation != nil },
-                set: { if !$0 { viewModel.cancelPendingBulkOperation() } }
-            )
-        ) {
-            Button("Cancel", role: .cancel) {
-                viewModel.cancelPendingBulkOperation()
             }
-            Button(bulkOperationConfirmTitle, role: .destructive) {
-                // Capture the operation synchronously. Tapping this button also
-                // dismisses the alert, whose isPresented setter runs
-                // cancelPendingBulkOperation() and nils pendingBulkOperation —
-                // and that dismissal fires before the deferred Task body. Reading
-                // the VM state inside the Task would therefore see nil and
-                // silently no-op (the "delete does nothing" bug). Snapshot here.
-                guard let operation = viewModel.pendingBulkOperation else { return }
-                Task {
-                    await viewModel.confirmBulkOperation(operation)
+    }
+
+    private var secondaryAlertsContent: some View {
+        primaryAlertsContent
+            .alert(
+                bulkOperationTitle,
+                isPresented: Binding(
+                    get: { viewModel.pendingBulkOperation != nil },
+                    set: { if !$0 { viewModel.cancelPendingBulkOperation() } }
+                )
+            ) {
+                Button("Cancel", role: .cancel) {
+                    viewModel.cancelPendingBulkOperation()
+                }
+                Button(bulkOperationConfirmTitle, role: .destructive) {
+                    // Alert dismissal clears pending state before a deferred
+                    // task runs, so snapshot the operation synchronously.
+                    guard let operation = viewModel.pendingBulkOperation else { return }
+                    Task {
+                        await viewModel.confirmBulkOperation(operation)
+                    }
+                }
+            } message: {
+                if let operation = viewModel.pendingBulkOperation {
+                    Text(bulkOperationMessage(for: operation))
                 }
             }
-        } message: {
-            if let operation = viewModel.pendingBulkOperation {
-                Text(bulkOperationMessage(for: operation))
+            .alert(
+                "Save Failed",
+                isPresented: Binding(
+                    get: { audioSaveErrorMessage != nil },
+                    set: { if !$0 { audioSaveErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {
+                    audioSaveErrorMessage = nil
+                }
+            } message: {
+                Text(audioSaveErrorMessage ?? "Unable to save meeting audio.")
             }
-        }
-        .alert(
-            "Save Failed",
-            isPresented: Binding(
-                get: { audioSaveErrorMessage != nil },
-                set: { if !$0 { audioSaveErrorMessage = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) {
-                audioSaveErrorMessage = nil
+            .alert(
+                "Export Failed",
+                isPresented: Binding(
+                    get: { bulkExportErrorMessage != nil },
+                    set: { if !$0 { bulkExportErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {
+                    bulkExportErrorMessage = nil
+                }
+            } message: {
+                Text(bulkExportErrorMessage ?? "Unable to export selected transcripts.")
             }
-        } message: {
-            Text(audioSaveErrorMessage ?? "Unable to save meeting audio.")
-        }
-        .alert(
-            "Export Failed",
-            isPresented: Binding(
-                get: { bulkExportErrorMessage != nil },
-                set: { if !$0 { bulkExportErrorMessage = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) {
-                bulkExportErrorMessage = nil
+    }
+
+    private var presentationContent: some View {
+        secondaryAlertsContent
+            .popover(item: $bulkExportResult, arrowEdge: .top) { result in
+                bulkExportConfirmationPopover(result)
             }
-        } message: {
-            Text(bulkExportErrorMessage ?? "Unable to export selected transcripts.")
-        }
-        .popover(item: $bulkExportResult, arrowEdge: .top) { result in
-            bulkExportConfirmationPopover(result)
-        }
-        .onDisappear {
-            cancelBulkExport()
-        }
+            .onDisappear {
+                cancelBulkExport()
+            }
     }
 
     private var thumbnailGrid: some View {
         ScrollView {
             VStack(spacing: DesignSystem.Spacing.md) {
                 LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: DesignSystem.Layout.thumbnailCardMinWidth), spacing: DesignSystem.Spacing.md)],
+                    columns: [
+                        GridItem(
+                            .adaptive(minimum: DesignSystem.Layout.thumbnailCardMinWidth),
+                            spacing: DesignSystem.Spacing.md)
+                    ],
                     spacing: DesignSystem.Spacing.md
                 ) {
                     ForEach(viewModel.filteredTranscriptions) { transcription in
@@ -377,9 +389,10 @@ struct TranscriptionLibraryView: View {
                 Label("Open Meeting Folder", systemImage: "folder")
             }
             .disabled(!artifactAvailable)
-            .help(artifactAvailable
-                  ? "Open the meeting artifact folder in Finder"
-                  : "Meeting artifact folder is not available")
+            .help(
+                artifactAvailable
+                    ? "Open the meeting artifact folder in Finder"
+                    : "Meeting artifact folder is not available")
 
             Button {
                 MeetingArtifactActions.copyFolderPath(for: transcription)
@@ -387,9 +400,10 @@ struct TranscriptionLibraryView: View {
                 Label("Copy Artifact Folder Path", systemImage: "doc.on.doc")
             }
             .disabled(!artifactAvailable)
-            .help(artifactAvailable
-                  ? "Copy the meeting artifact folder path"
-                  : "Meeting artifact folder is not available")
+            .help(
+                artifactAvailable
+                    ? "Copy the meeting artifact folder path"
+                    : "Meeting artifact folder is not available")
 
             Divider()
 
@@ -399,9 +413,10 @@ struct TranscriptionLibraryView: View {
                 Label("Show Audio in Finder", systemImage: "waveform")
             }
             .disabled(!audioAvailable)
-            .help(audioAvailable
-                  ? "Reveal the meeting audio file in Finder"
-                  : MeetingDeletionCopy.audioUnavailableHelp(for: audioState))
+            .help(
+                audioAvailable
+                    ? "Reveal the meeting audio file in Finder"
+                    : MeetingDeletionCopy.audioUnavailableHelp(for: audioState))
 
             Button {
                 saveMeetingAudio(transcription)
@@ -409,9 +424,10 @@ struct TranscriptionLibraryView: View {
                 Label("Save Audio As…", systemImage: "square.and.arrow.down")
             }
             .disabled(!audioAvailable)
-            .help(audioAvailable
-                  ? "Save a copy of the meeting audio to a chosen location"
-                  : MeetingDeletionCopy.audioUnavailableHelp(for: audioState))
+            .help(
+                audioAvailable
+                    ? "Save a copy of the meeting audio to a chosen location"
+                    : MeetingDeletionCopy.audioUnavailableHelp(for: audioState))
 
             Button(role: .destructive) {
                 pendingDeleteAudio = transcription
@@ -419,12 +435,13 @@ struct TranscriptionLibraryView: View {
                 Label(MeetingDeletionCopy.audioOnlyMenuTitle, systemImage: "waveform.slash")
             }
             .disabled(!audioRemovable)
-            .help(audioRemovable
-                  ? "Remove the saved meeting audio while keeping the meeting"
-                  : MeetingDeletionCopy.audioRemovalUnavailableHelp(
-                      for: transcription,
-                      state: audioState
-                  ))
+            .help(
+                audioRemovable
+                    ? "Remove the saved meeting audio while keeping the meeting"
+                    : MeetingDeletionCopy.audioRemovalUnavailableHelp(
+                        for: transcription,
+                        state: audioState
+                    ))
         }
 
         Divider()
@@ -443,7 +460,9 @@ struct TranscriptionLibraryView: View {
         Button(role: .destructive) {
             pendingDelete = transcription
         } label: {
-            Label(transcription.sourceType == .meeting ? MeetingDeletionCopy.fullDeleteMenuTitle : "Delete", systemImage: "trash")
+            Label(
+                transcription.sourceType == .meeting ? MeetingDeletionCopy.fullDeleteMenuTitle : "Delete",
+                systemImage: "trash")
         }
     }
 
@@ -524,8 +543,8 @@ struct TranscriptionLibraryView: View {
     private static let bulkExportFormatOrder: [TranscriptExportFormat] = {
         let preferredOrder: [TranscriptExportFormat] = [.txt, .md, .srt, .vtt, .dapt, .json, .pdf, .docx]
         precondition(
-            preferredOrder.count == TranscriptExportFormat.allCases.count &&
-                Set(preferredOrder) == Set(TranscriptExportFormat.allCases),
+            preferredOrder.count == TranscriptExportFormat.allCases.count
+                && Set(preferredOrder) == Set(TranscriptExportFormat.allCases),
             "Bulk export format order must include every TranscriptExportFormat case"
         )
         return preferredOrder
@@ -553,9 +572,7 @@ struct TranscriptionLibraryView: View {
     }
 
     private var isBulkExportActionDisabled: Bool {
-        selectedBulkExportTargets.isEmpty ||
-            bulkExportInProgress ||
-            viewModel.isBulkOperationInProgress
+        selectedBulkExportTargets.isEmpty || bulkExportInProgress || viewModel.isBulkOperationInProgress
     }
 
     private var bulkExportOptionsPopover: some View {
@@ -837,17 +854,21 @@ struct TranscriptionLibraryView: View {
             Image(systemName: emptyStateIcon)
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(DesignSystem.Colors.textTertiary)
-            Text(viewModel.searchText.isEmpty
-                 ? emptyStateTitle
-                 : "No matching transcriptions")
-                .font(DesignSystem.Typography.body)
-                .foregroundStyle(DesignSystem.Colors.textSecondary)
-            Text(viewModel.searchText.isEmpty
-                 ? emptyStateMessage
-                 : "Try different words or clear your search.")
-                .font(DesignSystem.Typography.bodySmall)
-                .foregroundStyle(DesignSystem.Colors.textTertiary)
-                .multilineTextAlignment(.center)
+            Text(
+                viewModel.searchText.isEmpty
+                    ? emptyStateTitle
+                    : "No matching transcriptions"
+            )
+            .font(DesignSystem.Typography.body)
+            .foregroundStyle(DesignSystem.Colors.textSecondary)
+            Text(
+                viewModel.searchText.isEmpty
+                    ? emptyStateMessage
+                    : "Try different words or clear your search."
+            )
+            .font(DesignSystem.Typography.bodySmall)
+            .foregroundStyle(DesignSystem.Colors.textTertiary)
+            .multilineTextAlignment(.center)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -935,7 +956,8 @@ struct TranscriptionLibraryView: View {
             )
         }
 
-        return "Delete \(operation.targetCount) \(operation.targetCount == 1 ? "item" : "items")? This permanently deletes the Library rows and app-owned files. Original local source files are not removed."
+        return
+            "Delete \(operation.targetCount) \(operation.targetCount == 1 ? "item" : "items")? This permanently deletes the Library rows and app-owned files. Original local source files are not removed."
     }
 
     private func singleDeleteTitle(for transcription: Transcription) -> String {

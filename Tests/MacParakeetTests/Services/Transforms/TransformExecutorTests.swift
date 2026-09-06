@@ -264,9 +264,10 @@ final class TransformExecutorTests: XCTestCase {
         let names = events.map { eventName($0) }
         XCTAssertEqual(names.first, "capturing")
         guard let llmStartedIdx = names.firstIndex(of: "llmStarted"),
-              let pastingIdx = names.firstIndex(of: "pasting"),
-              let doneIdx = names.firstIndex(of: "done"),
-              let completedIdx = names.firstIndex(of: "llmCompleted") else {
+            let pastingIdx = names.firstIndex(of: "pasting"),
+            let doneIdx = names.firstIndex(of: "done"),
+            let completedIdx = names.firstIndex(of: "llmCompleted")
+        else {
             XCTFail("Missing expected progress events: \(names)")
             return
         }
@@ -397,10 +398,17 @@ final class MockTransformLLMService: LLMServiceProtocol, @unchecked Sendable {
     }
 
     func generatePromptResult(transcript: String, systemPrompt: String?) async throws -> String { "" }
-    func chat(question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource) async throws -> String { "" }
+    func chat(
+        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource,
+        conversationID: UUID
+    ) async throws -> String { "" }
     func transform(text: String, prompt: String) async throws -> String { "" }
-    func formatTranscript(transcript: String, promptTemplate: String, source: TelemetryFormatterSource, defaultPromptUsed: Bool) async throws -> String { "" }
-    func formatTranscriptDetailed(transcript: String, promptTemplate: String, source: TelemetryFormatterSource, defaultPromptUsed: Bool) async throws -> LLMFormatterResult {
+    func formatTranscript(
+        transcript: String, promptTemplate: String, source: TelemetryFormatterSource, defaultPromptUsed: Bool
+    ) async throws -> String { "" }
+    func formatTranscriptDetailed(
+        transcript: String, promptTemplate: String, source: TelemetryFormatterSource, defaultPromptUsed: Bool
+    ) async throws -> LLMFormatterResult {
         LLMFormatterResult(
             result: LLMResult(output: "", provider: "mock", model: "mock", latencyMs: 0),
             operationID: "mock",
@@ -414,7 +422,10 @@ final class MockTransformLLMService: LLMServiceProtocol, @unchecked Sendable {
     func generatePromptResultStream(transcript: String, systemPrompt: String?) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { $0.finish() }
     }
-    func chatStream(question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource) -> AsyncThrowingStream<String, Error> {
+    func chatStream(
+        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource,
+        conversationID: UUID
+    ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { $0.finish() }
     }
     func transformStream(text: String, prompt: String) -> AsyncThrowingStream<String, Error> {
@@ -433,7 +444,10 @@ final class MockTransformLLMService: LLMServiceProtocol, @unchecked Sendable {
     func generatePromptResultDetailed(transcript: String, systemPrompt: String?) async throws -> LLMResult {
         LLMResult(output: "", provider: "mock", model: "mock", latencyMs: 0)
     }
-    func chatDetailed(question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource) async throws -> LLMResult {
+    func chatDetailed(
+        question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource,
+        conversationID: UUID
+    ) async throws -> LLMResult {
         LLMResult(output: "", provider: "mock", model: "mock", latencyMs: 0)
     }
     func transformDetailed(text: String, prompt: String) async throws -> LLMResult {

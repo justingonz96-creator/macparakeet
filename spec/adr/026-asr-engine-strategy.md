@@ -80,10 +80,11 @@ models join as variants within an existing family (as Parakeet
 v2/v3/Unified already do). Near-term roadmap, all within FluidAudio,
 in priority order:
 
-1. **Custom-vocabulary Parakeet CTC** — Phase 1 ships this as a
+1. **Custom-vocabulary Parakeet CTC** — Phase 1 is implemented as an opt-in
    recognition-time CTC sidecar for Parakeet TDT v2/v3 enabled anchors.
-   Future work is chunked long-audio sidecar rescoring and any support
-   FluidAudio exposes for non-TDT engines.
+   `customVocabularyRecognitionBoostingEnabled` defaults off; anchors alone do
+   not activate it. Future work is chunked long-audio sidecar rescoring and
+   any support FluidAudio exposes for non-TDT engines.
 2. **CJK coverage: Parakeet Japanese + SenseVoiceSmall** — closes the
    gap that currently forces Korean/Japanese/Chinese users onto Whisper
    (and that Parakeet v3 fails outright, per the ADR-001 amendment).
@@ -143,8 +144,8 @@ families rather than a new runtime.
 - Engine proposals get a fast, cheap test: *is it in FluidAudio (or
   WhisperKit)? Is it a variant or a family? Did it pass the benchmark
   harness?* Most proposals resolve without design meetings.
-- The capability registry becomes the standing prerequisite for engine-
-  family growth; its plan is the next STT foundation work item.
+- The capability registry is the implemented standing prerequisite for engine-
+  family growth; extend it rather than reimplementing its archived Phase A.
 - The Settings UI stays comprehensible (four-ish cards) even as the
   model count grows underneath.
 - We accept a real dependency concentration risk on FluidAudio. Partial

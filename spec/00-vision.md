@@ -1,7 +1,7 @@
 # MacParakeet: Vision & Philosophy
 
 > Status: **ACTIVE** - Authoritative, current
-> Fast, private, local-first voice app for Mac. Fully local speech, optional networked features, free and open-source (GPL-3.0).
+> Fast, private, local-first voice app for Mac. Fully local speech with separately documented network surfaces, free and open-source (GPL-3.0).
 > Pricing amendment: The current public build is free, GPL-3.0, and fully unlocked. Older "$49 one-time purchase" and trial-tier language is historical, but GPL-compatible official paid distribution, support, hosted services, or future paid builds remain valid options. The retained purchase activation plumbing must not be removed as dead code without explicit owner direction and an ADR/spec update.
 
 ---
@@ -53,9 +53,9 @@ compounds in value the longer you use the app.
 - **The Library becomes the center of gravity** — unified search across all
   three modes, question-answering over your own corpus, and export. Scope
   guard: search + QA + export, not a PKM.
-- **Agents are first-class consumers** — anything you can do with your
-  corpus, your local agents can do through `macparakeet-cli` and its
-  versioned contract.
+- **Agents are first-class consumers** — scriptable corpus operations belong
+  in `macparakeet-cli`'s versioned contract, not a mirror of every GUI affordance.
+  Current retrieval capabilities and limits live in the [integration guide](../integrations/README.md).
 - **Session-based, by design** — every capture is explicitly started by you.
   Ambient/always-on capture is deliberately parked
   ([ADR-027](adr/027-product-north-star.md) §4); cloud STT remains
@@ -93,14 +93,22 @@ Speed changes behavior. When a short dictation returns quickly and predictably, 
 
 ### 2. Privacy Is the Brand
 
-Fully local speech is a core product property, and the app can stay fully local when configured that way.
+Fully local speech is a core product property. Core workflows can run offline
+after model setup; this is not a guarantee that a connected app makes no
+network requests.
 
 - Local STT. No cloud speech processing, no accounts, no required backend for core speech.
 - Audio never leaves your Mac for dictation or transcription.
 - No email signup. No login. Optional self-hosted telemetry can be disabled in Settings.
-- Core capture and local-file speech workflows work in airplane-mode or air-gapped environments after the required models are installed. Media imports, updates, telemetry, and remote AI providers are separate network surfaces.
+- Core capture and local-file speech workflows work in airplane-mode or air-gapped environments after the required models are installed. Media imports, models, updates, telemetry, and remote AI providers are separate network surfaces.
+- Discover requests its public feed at app launch even with telemetry disabled
+  and without opening the Discover page. It has cached/bundled offline content,
+  not a no-network toggle. Explicit feedback/thought submissions also use the network.
 
-This is privacy by architecture: speech recognition has no server path. Optional transcript-AI, media-download, update, and telemetry surfaces remain explicit and separately documented.
+This is privacy by architecture at the speech boundary: recognition has no
+server path. [ADR-002](adr/002-local-only.md) documents the distinct provider,
+telemetry, media, and app-content I/O boundaries; disabling one is not a global
+network opt-out.
 
 ### 3. Simplicity Over Features
 
@@ -123,7 +131,10 @@ Simple does not mean basic. MacParakeet includes modern capabilities that cloud 
 
 ### 5. Free and Open-Source, Monetizable Official Distribution
 
-The current public build has no price tags, subscriptions, or feature gates. MacParakeet is free and open-source (GPL-3.0), and every core feature is available in the current official build.
+The current public build has no paid feature limits or required subscription.
+MacParakeet is free and open-source (GPL-3.0). Development feature gates still
+keep unfinished or unreleased capabilities out of normal builds; see the
+[release/flag status](README.md#release-channels-and-feature-flags).
 
 That does not mean monetization is permanently forbidden. GPL permits charging for distribution, and MacParakeet may later sell official signed/notarized builds, support, hosted services, team features, or paid official distribution while preserving recipients' GPL rights. The old LemonSqueezy/trial entitlement plumbing is intentionally retained for that future option and must not be removed as dead code without explicit owner direction and an ADR/spec update.
 
@@ -323,7 +334,7 @@ MacParakeet optimizes the default pipeline for Parakeet while routing optional N
 
 This is not "cloud by default with a local mode." Core speech recognition runs entirely on-device. There is no cloud STT path, no account system, and no requirement to send audio anywhere.
 
-Optional network features exist, but they are explicit and separate: transcript text can be sent to user-configured LLM providers, Sparkle checks for updates, YouTube imports download media, and self-hosted telemetry can be disabled. The privacy boundary is simple: speech stays local.
+Network surfaces remain separate from speech inference: configured LLM providers can receive text, models/media download assets, Sparkle checks updates, and self-hosted telemetry is opt-out. Discover refreshes its public feed at launch independently of telemetry. The privacy boundary is local speech, not a claim that all other app I/O is opt-in.
 
 ### 3. Free and Open-Source
 

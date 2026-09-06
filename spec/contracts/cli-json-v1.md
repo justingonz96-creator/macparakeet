@@ -37,7 +37,13 @@ with human progress/status kept off stdout.
 - Human progress/status is written to stderr.
 - JSON uses ISO-8601 dates, sorted keys, and pretty printing through the shared
   encoder.
-- `macparakeet-cli spec --json` is the machine-readable command catalog.
+- `macparakeet-cli spec --json` is the installed binary's machine-readable
+  command catalog, with `cliVersion`, per-command `readOnly`/`jsonMode`,
+  arguments, options, output summaries, and supported config keys. It is not
+  a JSON Schema for each payload or a side-effect sandbox. Family-level
+  `readOnly: false` can include a non-repairing default invocation (`health`);
+  read commands may still initialize directories or migrate an older supported
+  schema when opening the database.
 - `search --json` returns an array of segment hits with `transcriptionId`,
   `title`, ISO-8601 `recordedAt`, `source`, `seq`, nullable `startMs` and
   `speaker`, `snippet`, and nullable `rank`. CJK substring-fallback hits use
@@ -66,6 +72,9 @@ with human progress/status kept off stdout.
   whose transcript hash, segmenter version, prompt version, or card schema
   version is stale are suppressed; list output contains current cards only.
   Local-file card titles follow the same override-then-original-filename rule.
+  Listing may refresh outdated derived transcript segments before checking
+  card freshness; it does not generate cards or call an LLM. The catalog's
+  read classification is not a guarantee of zero database writes.
 - `cards generate --json` returns selection and progress counts, nullable
   prompt/completion/total token totals, explicit `estimatedCostUSD: null`, and
   per-recording failures. Human progress remains on stderr. Any failed item
@@ -106,15 +115,17 @@ with human progress/status kept off stdout.
   `meetingCaptureReport`. An absent report, including on legacy recordings,
   means capture quality is unknown rather than healthy. The same refresh also
   writes `meeting.md`.
+  Materialization is a write to generated views, not read-only inspection.
 - `meetings export --format md --stdout` emits the same Markdown shape as the
   materialized `meeting.md`; use `--stdout --format json` when the caller needs
   parseable JSON on stdout.
 - Recognition-time custom vocabulary boosting does not add JSON fields in v1.
   For Parakeet TDT `v3` and `v2`, enabled `vocab words` entries with no
   replacement text may improve the returned transcript text before downstream
-  processing. Unsupported engines and empty vocabularies keep the previous
-  unboosted path; human `vocab words list` support text is not a JSON
-  contract.
+  processing **when recognition boosting is enabled**. Its shared preference
+  defaults to off; adding vocabulary alone does not enable it. Unsupported
+  engines and empty vocabularies keep the unboosted path; human
+  `vocab words list` support text is not a JSON contract.
 - Destructive local mutators that advertise `--json` return a single success
   object with `ok: true` plus affected IDs, counts, or model/cache names. Use
   `macparakeet-cli spec --json` for each command's documented JSON mode and
@@ -145,6 +156,16 @@ Parse-time and `validate()` failures happen before command `run()` and may
 surface through ArgumentParser's plain-text stderr path. Downstream automation
 must check the exit code first and not require a JSON envelope for parse-time
 misuse.
+
+`health --json` is a component report, not a single readiness verdict or a
+failure envelope for each missing dependency. Inspect its statuses and paths.
+Its database probe does not create/migrate the database; `schema_skew` calls
+for upgrading the CLI, never resetting user data. Without repair flags it
+does not download models/helpers or create application directories.
+
+For the boundaries of `--database`, DEBUG state-root overrides, shared
+preferences, and artifact mutations, use the
+[integration isolation rules](../../integrations/README.md#safe-automation-and-isolation).
 
 ## Non-Stable Fields
 

@@ -3,6 +3,7 @@
 > Status: **Accepted** (Amended 2026-03-11)
 > Date: 2026-02-08
 > Amended: 2026-03-11 — Refined scope from "no cloud processing" to local processing with optional external AI/telemetry surfaces (ADR-011)
+> Implementation clarification (2026-09-04): local speech is not a global no-network mode. Discover's public feed refresh remains unconditional at app launch, independent of telemetry consent; the release-readiness work deliberately leaves Discover unchanged.
 
 ## Context
 
@@ -26,21 +27,36 @@ LLM-powered features (summaries, chat/Meeting Ask, AI Formatter, and Transforms)
 - **Audio capture**: All microphone and file audio stays on-device
 - **Text processing**: Deterministic pipeline runs locally (ADR-004)
 - **Database**: All dictations, transcriptions, history stored locally (SQLite/GRDB)
-- **Analytics**: Non-identifying, opt-out telemetry via Cloudflare (ADR-012). No persistent IDs, no IP storage, no content transmitted.
+- **Derived retrieval**: Segment search, transcript context reads, and existing
+  knowledge-card reads are local. Generating cards is a separate LLM operation.
 
 ### What uses external providers (opt-in, user-configured)
 
-- **LLM features**: Summaries, transcript/meeting chat, AI Formatter, and custom transforms (ADR-011)
-  - Transcript *text* (not audio) is sent to the user's chosen provider
+- **LLM features**: Summaries, transcript/meeting chat, AI Formatter, Transforms,
+  automatic titles, and knowledge-card generation (ADR-011)
+  - Text context (transcripts, notes, selected text, or conversation as needed),
+    never captured audio, is sent to the user's chosen provider
   - User configures their own API key, Ollama runtime, or Local CLI tool
   - No default provider — user must explicitly opt in
   - Features work without any provider configured (they're just unavailable)
 
-### What uses the network (user-initiated)
+### Other network surfaces
 
-- **YouTube downloads**: Fetches public videos for transcription (user-initiated)
-- **License activation**: One-time LemonSqueezy API call (user-initiated)
-- **yt-dlp updates**: Optional self-update check (non-blocking)
+- **Media imports**: User-requested public media downloads through yt-dlp and
+  Apple Podcasts directory/RSS/enclosure requests.
+- **Model/helper setup**: Required model downloads, explicitly requested local
+  model preparation, and helper installation/update paths.
+- **App updates**: Sparkle update checks.
+- **Analytics**: Non-identifying, opt-out telemetry/crash reporting via the
+  self-hosted endpoint (ADR-012); no transcript/audio content or persistent IDs.
+- **Discover**: An unconditional launch-time GET of
+  `https://macparakeet.com/api/discover.json`, with cached/bundled offline
+  fallback. It is independent of telemetry and does not require opening the
+  Discover page. Disabling telemetry does not disable this request.
+- **Explicit submissions**: Feedback and Discover thoughts send the user's
+  submitted content and associated diagnostics; these are not STT uploads.
+- **Dormant activation**: Retained LemonSqueezy activation endpoints are used
+  only when explicitly invoked; free public builds do not require activation.
 
 ## Rationale
 
@@ -63,7 +79,10 @@ A local 8B model produces mediocre summaries. Cloud models (Claude, GPT-4) produ
 
 Users make an informed choice. The UI makes the tradeoff explicit. Apple Intelligence follows the same pattern — on-device by default, cloud with user consent for complex tasks.
 
-MacParakeet can still be used in a fully local configuration: no cloud STT, no cloud AI, telemetry disabled, and only local features/providers enabled.
+Core capture, local-file transcription, and local retrieval remain usable
+offline after model setup. Local LLM servers can keep generated text on-device,
+and telemetry can be disabled. Those choices do not prevent Discover's
+launch-time request or constitute a global network opt-out.
 
 ### Official paid distribution still works
 
@@ -90,7 +109,7 @@ Cloud LLM costs are paid directly by the user to their provider (Anthropic, Open
 
 ### Negative
 
-- **Messaging complexity**: "100% local" was simpler than "can be fully local, with optional external features." Must be communicated clearly and honestly.
+- **Messaging complexity**: Local speech and offline core operation are narrower than a no-network app. Discover, updates, opted-in providers, and opt-out telemetry must be described independently.
 - **Cloud LLM features require internet**: Summaries, chat/Meeting Ask, AI Formatter, and Transforms won't work offline unless user runs a local provider. Transcription still works offline.
 - **Transcript text exposure**: When using cloud providers or cloud-backed CLI tools, transcript text is sent to third-party services. Must be clear in UI. Users with sensitive content should use Ollama or skip LLM features.
 - **No cloud backup or sync**: User data stays on-device. If the Mac is lost, dictation history is lost. This is intentional.

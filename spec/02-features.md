@@ -648,7 +648,7 @@ CREATE TABLE dictations (
     pastedToApp TEXT,                 -- "Slack", "Chrome", etc. (if detectable)
 
     -- Settings at time of dictation
-    processingMode TEXT NOT NULL DEFAULT 'raw',  -- 'raw' in v0.1, 'clean' default in v0.2
+    processingMode TEXT NOT NULL DEFAULT 'raw',  -- 'raw' or 'clean'; current default is 'raw'
 
     -- Status
     status TEXT NOT NULL DEFAULT 'completed',     -- recording | processing | completed | error
@@ -916,7 +916,7 @@ CREATE TABLE text_snippets (
 - [x] Whitespace normalized and punctuation fixed
 - [x] Processing completes in sub-millisecond
 - [x] Raw mode bypasses full cleanup but still supports terminal action extraction
-- [x] Clean mode is the default for new dictations
+- [x] Raw mode is the default when no processing preference is saved; Clean is opt-in
 
 ---
 
@@ -1154,7 +1154,7 @@ Overlay shows selected text preview (truncated) so the user confirms the right t
 
 ### F10c: Transcript Chat (GUI MVP)
 
-> Status: **IMPLEMENTED ON CURRENT BRANCH** — Transcript chat is available from the transcript detail screen through the configured LLM provider or local CLI.
+> Status: **IMPLEMENTED** — Transcript chat is available from the transcript detail screen through the configured LLM provider or local CLI; it is not a new candidate-only capability.
 
 **What:** Ask questions about the currently selected transcript from the transcript detail screen using the shared provider-based LLM service.
 
@@ -1765,7 +1765,7 @@ final transcripts remain plain text without word timestamps or speaker labels.
 
 ### F43: VAD-Guided Meeting Live Chunking
 
-> Status: **IMPLEMENTED; FLAG-ON RELEASE CANDIDATE**
+> Status: **IMPLEMENTED; SHIPPING SINCE v0.6.24** — `AppFeatures.meetingVadLiveChunkingEnabled = true`.
 
 **What:** Meeting live-preview audio can be chunked at speech boundaries instead
 of rigid fixed windows. The final post-stop meeting transcript remains the
@@ -1786,9 +1786,9 @@ authoritative transcript and is unchanged by this live-preview strategy.
   Silero model for flag-on builds after speech warm-up, emits
   `vad_model_prep` only for `prepared` / `failed`, and swallows failures so the
   meeting path falls back to fixed
-- [x] The release-candidate flag is on in `AppFeatures` after offline corpus
-  replay showed clean inline performance; real-call cadence smoke remains the
-  last human QA gate before tagging a shipped flag-on build
+- [x] The feature flag is on after the original offline corpus/performance
+  evaluation. That historical rollout does not establish hardware-capture
+  verification for a later release candidate.
 
 ### F41: Ask Quick Prompts
 
@@ -1835,11 +1835,11 @@ authoritative transcript and is unchanged by this live-preview strategy.
 
 ## v0.7 Features (Meeting Reliability & Detection)
 
-> Status: **MIXED** — F44 / ADR-023 auto-stop Phases A+B are implemented behind a default-off flag. F45 / ADR-024 detection Phases A+B are implemented behind a default-off flag with no UI/coordinator wiring. F46 / ADR-025 implements direct source-lifecycle recovery, including callback-stall recovery, actionable warnings, and frame-derived capture reports; amplitude-inferred mic restart and VAD transcript-gap repair remain proposed. User-visible meeting automation stays opt-in / flag-gated.
+> Status: **MIXED** — F44 / ADR-023 auto-stop Phases A+B are enabled in the v0.7 release train, with the per-user setting defaulting off. F45 / ADR-024 detection Phases A+B remain behind a default-off flag with no UI/coordinator wiring. F46 / ADR-025 implements direct source-lifecycle recovery, actionable warnings, and frame-derived capture reports; VAD transcript-gap repair remains proposed. See the canonical [release/flag status](README.md#release-channels-and-feature-flags) rather than inferring stable availability from implementation.
 
 ### F44: Activity-Based Meeting Auto-Stop
 
-> Status: **IMPLEMENTED BEHIND DEFAULT-OFF FLAG** — ADR-023 Phases A+B, REQ-MEET-015. Phase C remains deferred until ADR-024 attribution exists.
+> Status: **IMPLEMENTED; ENABLED, PER-USER OPT-IN DEFAULT OFF** — ADR-023 Phases A+B. Phase C remains deferred until ADR-024 attribution exists.
 
 **What:** Stop an active meeting recording when the meeting *actually ends*, never on a scheduled clock (calendar-driven auto-stop was withdrawn in the ADR-017 §5 amendment). The primary signal is sustained dual-channel silence — engine-agnostic across the Zoom app, a browser Meet/Teams tab, and in-person recordings; a recognized-meeting-app quit is a fast path. A stop is always preceded by a veto-able countdown ("stopping in 15s · Keep recording") and runs the identical finalize/transcribe path as a manual stop, so audio and transcript are never lost or truncated by surprise. Opt-in, default off, gated by `AppFeatures.meetingAutoStopEnabled`. Reuses the existing meeting VAD/level signal and the auto-start countdown toast.
 
@@ -1856,6 +1856,28 @@ authoritative transcript and is unchanged by this live-preview strategy.
 **Implemented:** A stopped AVAudioEngine configuration-change episode rebuilds against the current route and format with bounded retries, and succeeds only after a replacement microphone buffer arrives. After the first input buffer, a five-second absence of further tap callbacks uses that same recovery even when AVAudioEngine still reports itself running; ordinary acoustic silence remains healthy because buffers continue. Typed ScreenCaptureKit first-buffer, heartbeat, and unexpected delegate failures similarly retry with fresh system streams while preserving the other source. Confirmed recovering, interrupted, stalled, or unavailable states surface non-blocking warnings. Finalization persists per-source written-frame coverage and partial-capture status in the meeting artifact; missing legacy reports mean unknown, not healthy.
 
 **Still proposed:** The metadata-only mic-health monitor emits privacy-safe `mic_stall_detected` telemetry, but signal amplitude alone does not restart the microphone. The separately proposed offline VAD pass would find transcript gaps and re-transcribe missed speech; the implemented frame report measures recorded media coverage, not transcript completeness.
+
+**Release-readiness candidate:** A finalized selected system source is `silent`
+only after at least 30 seconds of pause-adjusted capture with delivered system
+buffers, exact-zero successfully written system PCM, and nonzero microphone
+signal. The writer's converted/downmixed signal is authoritative, not a
+channel-0 UI meter. Short, wholly silent, or merely quiet recordings are not
+classified this way. The partial report survives recovery reconciliation;
+interruption, capture failure, and unavailable media retain precedence. This
+does not add live silence alerts, amplitude-triggered restarts, or transcript
+repair. Writer-finalization timeouts preserve recoverable files and ownership
+rather than cancelling AVAssetWriter or reporting success.
+
+### Local knowledge retrieval and agent automation
+
+Current development exposes segment FTS search, bounded transcript context,
+current knowledge-card reads/backfill, and saved meeting artifacts through
+`macparakeet-cli`. Cards are derived routing hints: verify candidate actions and
+decisions against cited transcript segments. Dictations retain their separate
+history search; a unified corpus Ask endpoint, embeddings, workflow engine,
+and MCP service are not implied. The [integration guide](../integrations/README.md)
+and [CLI boundary contract](contracts/cli-json-v1.md) own command examples,
+JSON/errors, write boundaries, and safe isolation.
 
 ---
 
@@ -1909,15 +1931,17 @@ MacParakeet's brand is privacy. These are non-negotiable.
 | Opt-out telemetry | Self-hosted usage analytics and crash reporting can be disabled in Settings |
 | No accounts | No email, no login, no registration |
 | No cloud STT | All speech recognition runs locally on Apple Silicon; Parakeet is default and Nemotron/Cohere/WhisperKit are optional |
-| User-controlled storage | File/YouTube/meeting audio is retained for playback/recovery unless deleted; dictation audio is opt-in |
-| Explicit network surfaces | Model download, update checks, optional LLM providers, optional telemetry/crash reporting, retained purchase activation endpoints if explicitly invoked, and YouTube download |
+| User-controlled storage | Saved audio follows the relevant dictation/file/media/meeting storage setting; meeting audio is retained by default, with explicit deletion/retention choices |
+| Network surfaces | Model/helper setup, media/podcast imports, configured LLM features, opt-out telemetry/crash reporting, updates, explicit submissions/activation, and the independent launch-time Discover feed request |
 
-**What "supports a fully local setup" means:**
+**What local-first means:**
 - Parakeet, Nemotron, and Cohere STT run locally via FluidAudio CoreML; WhisperKit also runs locally when selected
-- Audio never leaves the device
-- Transcripts stay local unless the user explicitly enables external AI features
-- Users can remain fully local by sticking to offline/core features and local providers such as Ollama
-- Network access is limited to explicit product surfaces such as updates, telemetry/crash reporting, model downloads, optional LLM providers, retained purchase activation endpoints if explicitly invoked, and media download
+- Captured audio is not sent to an STT or LLM service
+- Text stays local unless configured AI features or explicit user/agent delivery sends it elsewhere
+- Core workflows can run offline after model setup; local providers can keep LLM inference on-device
+- Discover requests its public feed at every app launch, even with telemetry off
+  and without opening the page. It uses cached/bundled content offline. There
+  is no global no-network toggle, and release-readiness work leaves it unchanged.
 
 ---
 

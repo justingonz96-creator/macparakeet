@@ -154,7 +154,8 @@ struct MeetingRecordingPanelView: View {
         isActive: Bool
     ) -> some View {
         let weight: Font.Weight = isActive ? .medium : .regular
-        let foreground: Color = isActive
+        let foreground: Color =
+            isActive
             ? DesignSystem.Colors.textPrimary
             : DesignSystem.Colors.textTertiary
         let hasTrailing = isStreaming || badge != nil
@@ -186,9 +187,11 @@ struct MeetingRecordingPanelView: View {
                                 .foregroundStyle(DesignSystem.Colors.textTertiary.opacity(0.6))
                             Text(badge)
                                 .font(.system(size: 11, weight: .regular).monospacedDigit())
-                                .foregroundStyle(isActive
-                                    ? DesignSystem.Colors.accent
-                                    : DesignSystem.Colors.textTertiary)
+                                .foregroundStyle(
+                                    isActive
+                                        ? DesignSystem.Colors.accent
+                                        : DesignSystem.Colors.textTertiary
+                                )
                                 .lineLimit(1)
                         }
                     }
@@ -369,6 +372,8 @@ struct MeetingRecordingPanelView: View {
     @ViewBuilder
     private var statusDot: some View {
         switch viewModel.state {
+        case .starting:
+            ParakeetSpinner(.inline, tint: DesignSystem.Colors.textTertiary)
         case .hidden, .recording:
             // Recording: vivid success green. Paused: shifts to warning
             // amber — the same color language used by the pause button on
@@ -377,9 +382,10 @@ struct MeetingRecordingPanelView: View {
             // lights). 0.85 opacity keeps it slightly quieter than the
             // recording dot — paused is a held-breath, not a shout.
             Circle()
-                .fill(viewModel.isPaused
-                    ? DesignSystem.Colors.warningAmber.opacity(0.85)
-                    : DesignSystem.Colors.successGreen
+                .fill(
+                    viewModel.isPaused
+                        ? DesignSystem.Colors.warningAmber.opacity(0.85)
+                        : DesignSystem.Colors.successGreen
                 )
                 .frame(width: 8, height: 8)
                 .animation(.easeInOut(duration: 0.2), value: viewModel.isPaused)
@@ -733,9 +739,10 @@ private struct FooterButton: View {
                 .padding(.vertical, 5)
                 .background(
                     Capsule()
-                        .fill(isHovered
-                            ? DesignSystem.Colors.surfaceElevated
-                            : .clear
+                        .fill(
+                            isHovered
+                                ? DesignSystem.Colors.surfaceElevated
+                                : .clear
                         )
                 )
                 .scaleEffect(isHovered ? 1.03 : 1.0)
@@ -791,9 +798,10 @@ private struct FooterIconButton: View {
             .padding(.vertical, 5)
             .background(
                 Capsule()
-                    .fill(isHovered
-                        ? DesignSystem.Colors.surfaceElevated
-                        : .clear
+                    .fill(
+                        isHovered
+                            ? DesignSystem.Colors.surfaceElevated
+                            : .clear
                     )
             )
             // Hover expand/contract is the only layout change this button

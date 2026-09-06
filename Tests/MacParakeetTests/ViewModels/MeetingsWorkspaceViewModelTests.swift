@@ -41,7 +41,7 @@ final class MeetingsWorkspaceViewModelTests: XCTestCase {
         calendar.stubEvents = [
             makeEvent(title: "Design Review", meetUrl: "https://zoom.us/j/123", calendarIdentifier: "work"),
             makeEvent(title: "Focus Block", meetUrl: nil, calendarIdentifier: "work"),
-            makeEvent(title: "Ignored Review", meetUrl: "https://meet.google.com/abc", calendarIdentifier: "personal")
+            makeEvent(title: "Ignored Review", meetUrl: "https://meet.google.com/abc", calendarIdentifier: "personal"),
         ]
         let viewModel = makeViewModel(
             calendarMode: .notify,
@@ -75,7 +75,7 @@ final class MeetingsWorkspaceViewModelTests: XCTestCase {
             makeEvent(title: "Accepted Review", meetUrl: "https://zoom.us/j/1", userStatus: .accepted),
             makeEvent(title: "Pending Invite", meetUrl: "https://zoom.us/j/2", userStatus: .pending),
             makeEvent(title: "Tentative Sync", meetUrl: "https://zoom.us/j/3", userStatus: .tentative),
-            makeEvent(title: "Declined Standup", meetUrl: "https://zoom.us/j/4", userStatus: .declined)
+            makeEvent(title: "Declined Standup", meetUrl: "https://zoom.us/j/4", userStatus: .declined),
         ]
         let viewModel = makeViewModel(
             calendarMode: .autoStart,
@@ -102,7 +102,7 @@ final class MeetingsWorkspaceViewModelTests: XCTestCase {
         calendar.stubEvents = [
             makeEvent(title: "Real Meeting", meetUrl: "https://zoom.us/j/123"),
             makeEvent(title: "All-day Offsite", meetUrl: "https://zoom.us/j/456", isAllDay: true),
-            makeEvent(title: "Declined Sync", meetUrl: "https://zoom.us/j/789", userStatus: .declined)
+            makeEvent(title: "Declined Sync", meetUrl: "https://zoom.us/j/789", userStatus: .declined),
         ]
         let viewModel = makeViewModel(
             calendarMode: .notify,
@@ -125,7 +125,7 @@ final class MeetingsWorkspaceViewModelTests: XCTestCase {
         calendar.stubPermissionStatus = .granted
         calendar.stubEvents = [
             makeEvent(title: "Accepted Review", meetUrl: "https://zoom.us/j/123", userStatus: .accepted),
-            makeEvent(title: "Pending Invite", meetUrl: "https://zoom.us/j/456", userStatus: .pending)
+            makeEvent(title: "Pending Invite", meetUrl: "https://zoom.us/j/456", userStatus: .pending),
         ]
         let viewModel = makeViewModel(
             calendarMode: .notify,
@@ -161,10 +161,16 @@ final class MeetingsWorkspaceViewModelTests: XCTestCase {
         // Deliberately unsorted, with the soonest standup in the middle, to
         // prove the collapse picks soonest by start time, not array order.
         calendar.stubEvents = [
-            makeEvent(title: "Standup Wed", meetUrl: "https://zoom.us/j/1", id: "standup", startTime: base.addingTimeInterval(2 * 86_400)),
+            makeEvent(
+                title: "Standup Wed", meetUrl: "https://zoom.us/j/1", id: "standup",
+                startTime: base.addingTimeInterval(2 * 86_400)),
             makeEvent(title: "Standup Mon", meetUrl: "https://zoom.us/j/1", id: "standup", startTime: base),
-            makeEvent(title: "Standup Tue", meetUrl: "https://zoom.us/j/1", id: "standup", startTime: base.addingTimeInterval(86_400)),
-            makeEvent(title: "1:1", meetUrl: "https://zoom.us/j/2", id: "one-on-one", startTime: base.addingTimeInterval(3 * 86_400))
+            makeEvent(
+                title: "Standup Tue", meetUrl: "https://zoom.us/j/1", id: "standup",
+                startTime: base.addingTimeInterval(86_400)),
+            makeEvent(
+                title: "1:1", meetUrl: "https://zoom.us/j/2", id: "one-on-one",
+                startTime: base.addingTimeInterval(3 * 86_400)),
         ]
         let viewModel = makeViewModel(
             calendarMode: .notify,
@@ -188,6 +194,10 @@ final class MeetingsWorkspaceViewModelTests: XCTestCase {
     func testRecordingStatusTracksMeetingPillState() {
         let pill = MeetingRecordingPillViewModel()
         let viewModel = makeViewModel(meetingPillViewModel: pill)
+
+        pill.state = .starting
+        XCTAssertEqual(viewModel.recordingStatus, .starting)
+        XCTAssertTrue(viewModel.hasActiveRecording)
 
         pill.state = .recording
         XCTAssertEqual(viewModel.recordingStatus, .recording)
@@ -314,7 +324,7 @@ final class MeetingsWorkspaceViewModelTests: XCTestCase {
     func testSetMeetingAutoNoteScopesToMeetingOnly() throws {
         let promptRepo = MockPromptRepository()
         promptRepo.prompts = [
-            makeResultPrompt(name: "Action Items", isAutoRun: false, sortOrder: 0),
+            makeResultPrompt(name: "Action Items", isAutoRun: false, sortOrder: 0)
         ]
         let promptsVM = PromptsViewModel()
         promptsVM.configure(repo: promptRepo)
@@ -327,14 +337,118 @@ final class MeetingsWorkspaceViewModelTests: XCTestCase {
 
         let toggled = try XCTUnwrap(viewModel.meetingAutoNotePrompts.first)
         XCTAssertTrue(viewModel.isMeetingAutoNote(toggled))
-        XCTAssertEqual(toggled.appliesToSources, [.meeting], "Enabling from the Meetings card must scope to meetings only.")
+        XCTAssertEqual(
+            toggled.appliesToSources, [.meeting], "Enabling from the Meetings card must scope to meetings only.")
         XCTAssertEqual(viewModel.meetingAutoNoteActiveCount, 1)
+    }
+
+    func testSuccessfulDetailRenamePropagatesAcrossSeparateMeetingCollectionsInPlace() async throws {
+        let target = Transcription(
+            createdAt: Date(timeIntervalSinceReferenceDate: 300),
+            fileName: "Meeting Sep 4",
+            status: .completed,
+            sourceType: .meeting,
+            derivedTitle: "Generated target title"
+        )
+        let unrelatedLocal = Transcription(
+            createdAt: Date(timeIntervalSinceReferenceDate: 200),
+            fileName: "interview.m4a",
+            status: .completed,
+            sourceType: .file,
+            derivedTitle: "Local interview"
+        )
+        let unrelatedMeeting = Transcription(
+            createdAt: Date(timeIntervalSinceReferenceDate: 100),
+            fileName: "Weekly Sync",
+            status: .completed,
+            sourceType: .meeting,
+            derivedTitle: "Generated weekly title"
+        )
+        let repo = MockTranscriptionRepository()
+        repo.transcriptions = [unrelatedMeeting, unrelatedLocal, target]
+
+        let detailViewModel = TranscriptionViewModel()
+        detailViewModel.configure(
+            transcriptionService: MockTranscriptionService(),
+            transcriptionRepo: repo
+        )
+        detailViewModel.currentTranscription = target
+
+        let libraryViewModel = TranscriptionLibraryViewModel()
+        libraryViewModel.configure(transcriptionRepo: repo)
+        let recentMeetingsViewModel = TranscriptionLibraryViewModel(scope: .meetings)
+        let workspaceViewModel = makeViewModel(
+            recentMeetingsViewModel: recentMeetingsViewModel
+        )
+        workspaceViewModel.configure(transcriptionRepo: repo)
+        await libraryViewModel.loadTranscriptions().value
+        await workspaceViewModel.refreshRecentMeetings().value
+
+        XCTAssertFalse(libraryViewModel === recentMeetingsViewModel)
+        let originalDetailOrder = detailViewModel.transcriptions.map(\.id)
+        let originalLibraryOrder = libraryViewModel.groupedTranscriptions.flatMap { $0.items }.map(\.id)
+        let originalRecentOrder = recentMeetingsViewModel.groupedTranscriptions.flatMap { $0.items }.map(\.id)
+
+        detailViewModel.onMeetingRenamed = { rename in
+            libraryViewModel.applyMeetingRename(rename)
+            workspaceViewModel.recentMeetingsViewModel.applyMeetingRename(rename)
+        }
+
+        detailViewModel.renameCurrentTranscription(to: "Design Review")
+
+        XCTAssertEqual(detailViewModel.currentTranscription?.fileName, "Design Review")
+        XCTAssertEqual(
+            detailViewModel.transcriptions.first(where: { $0.id == target.id })?.fileName,
+            "Design Review"
+        )
+        XCTAssertEqual(
+            libraryViewModel.filteredTranscriptions.first(where: { $0.id == target.id })?.fileName,
+            "Design Review"
+        )
+        XCTAssertEqual(
+            recentMeetingsViewModel.filteredTranscriptions.first(where: { $0.id == target.id })?.fileName,
+            "Design Review"
+        )
+        XCTAssertEqual(
+            [
+                detailViewModel.transcriptions.first(where: { $0.id == target.id })?.derivedTitle,
+                libraryViewModel.filteredTranscriptions.first(where: { $0.id == target.id })?.derivedTitle,
+                recentMeetingsViewModel.filteredTranscriptions.first(where: { $0.id == target.id })?.derivedTitle,
+            ],
+            ["Design Review", "Design Review", "Design Review"]
+        )
+        XCTAssertEqual(detailViewModel.transcriptions.map(\.id), originalDetailOrder)
+        XCTAssertEqual(
+            libraryViewModel.groupedTranscriptions.flatMap { $0.items }.map(\.id),
+            originalLibraryOrder
+        )
+        XCTAssertEqual(
+            recentMeetingsViewModel.groupedTranscriptions.flatMap { $0.items }.map(\.id),
+            originalRecentOrder
+        )
+        XCTAssertEqual(
+            libraryViewModel.filteredTranscriptions.first(where: { $0.id == unrelatedLocal.id })?.derivedTitle,
+            "Local interview"
+        )
+        XCTAssertEqual(
+            detailViewModel.transcriptions.first(where: { $0.id == unrelatedLocal.id })?.derivedTitle,
+            "Local interview"
+        )
+        XCTAssertEqual(
+            libraryViewModel.filteredTranscriptions.first(where: { $0.id == unrelatedMeeting.id })?.fileName,
+            "Weekly Sync"
+        )
+        XCTAssertEqual(
+            recentMeetingsViewModel.filteredTranscriptions.first(where: { $0.id == unrelatedMeeting.id })?.derivedTitle,
+            "Generated weekly title"
+        )
     }
 
     private func makeViewModel(
         calendarMode: CalendarAutoStartMode = .off,
         triggerFilter: MeetingTriggerFilter = .withLink,
         excludedCalendarIds: Set<String> = [],
+        recentMeetingsViewModel: TranscriptionLibraryViewModel? = nil,
         meetingPillViewModel: MeetingRecordingPillViewModel? = nil,
         promptsViewModel: PromptsViewModel? = nil,
         calendarService: MockCalendarService = MockCalendarService()
@@ -346,7 +460,8 @@ final class MeetingsWorkspaceViewModelTests: XCTestCase {
         let settingsViewModel = SettingsViewModel(defaults: defaults)
         let llmSettingsViewModel = LLMSettingsViewModel(defaults: defaults)
         return MeetingsWorkspaceViewModel(
-            recentMeetingsViewModel: TranscriptionLibraryViewModel(scope: .meetings),
+            recentMeetingsViewModel:
+                recentMeetingsViewModel ?? TranscriptionLibraryViewModel(scope: .meetings),
             meetingPillViewModel: meetingPillViewModel ?? MeetingRecordingPillViewModel(),
             settingsViewModel: settingsViewModel,
             llmSettingsViewModel: llmSettingsViewModel,

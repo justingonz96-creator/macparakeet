@@ -89,17 +89,43 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ## [Unreleased]
 
+### Fixed
+
+- Local CLI output normalizes line endings: CRLF collapses to a single LF and
+  a bare CR is rewritten to LF instead of passing through unsanitized. This
+  closes a terminal-overwrite gap in the existing sanitizer (a wrapped CLI
+  could no longer emit a bare CR to visually overwrite prior sanitized
+  output); readable content, including intentional newlines, is preserved.
+
+## [3.2.0] — 2026-09-04
+
 ### Added
 
 - `meetings artifact --json` and envelope output may now include the additive
   optional `meetingCaptureReport` field with frame-derived meeting capture
   quality, elapsed/playable durations, and per-source coverage. Legacy meetings
   omit it; omission means unknown rather than healthy.
+  Reports may now use source status `silent` when a selected system-audio track
+  delivered buffers but remained at exact digital silence for an actionable
+  meeting; consumers must treat unknown future status values defensively.
 - `export --format dapt` and `transcribe --format dapt` now emit W3C DAPT 1.0
   `originalTranscript` documents through the shared exporter. File output uses
   `.dapt.xml`; stdout is supported by both commands. Aligned word timing and
   speaker labels are preserved when present, while undiarized transcripts omit
   character agents and timestampless or edited transcripts remain untimed.
+
+### Fixed
+
+- OpenCode Go requests now carry an opaque per-conversation session header.
+  Probe and one-shot IDs are isolated; unsupported endpoints do not receive the
+  session identity. Unapproved redirects are refused so credentials and prompt
+  content cannot be forwarded outside the allowed endpoints (#948).
+- Local CLI output strips valid two-byte terminal escapes as well as CSI/OSC
+  sequences. Failure stderr is sanitized before error classification and
+  presentation, matching successful-output handling.
+- Default `health` inspects required directories without creating them and
+  opens existing databases read-only without running migrations. Repair flags
+  remain explicit opt-ins; JSON field names and exit codes are unchanged.
 
 ## [3.1.0] — 2026-07-19
 

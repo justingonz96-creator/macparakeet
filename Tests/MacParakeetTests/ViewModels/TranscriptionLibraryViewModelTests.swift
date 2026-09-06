@@ -57,12 +57,13 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
 
     func testFilterAll() async throws {
         try repo.save(Transcription(fileName: "local.mp3", status: .completed))
-        try repo.save(Transcription(
-            fileName: "youtube.mp3",
-            status: .completed,
-            sourceURL: "https://youtube.com/watch?v=abc",
-            sourceType: .youtube
-        ))
+        try repo.save(
+            Transcription(
+                fileName: "youtube.mp3",
+                status: .completed,
+                sourceURL: "https://youtube.com/watch?v=abc",
+                sourceType: .youtube
+            ))
 
         vm.filter = .all
         await load()
@@ -71,12 +72,13 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
 
     func testFilterYouTube() async throws {
         try repo.save(Transcription(fileName: "local.mp3", status: .completed))
-        try repo.save(Transcription(
-            fileName: "youtube.mp3",
-            status: .completed,
-            sourceURL: "https://youtube.com/watch?v=abc",
-            sourceType: .youtube
-        ))
+        try repo.save(
+            Transcription(
+                fileName: "youtube.mp3",
+                status: .completed,
+                sourceURL: "https://youtube.com/watch?v=abc",
+                sourceType: .youtube
+            ))
 
         vm.filter = .youtube
         await load()
@@ -86,13 +88,17 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
 
     func testFilterPodcast() async throws {
         try repo.save(Transcription(fileName: "local.mp3", status: .completed, sourceType: .file))
-        try repo.save(Transcription(fileName: "youtube.mp3", status: .completed, sourceURL: "https://youtube.com/watch?v=abc", sourceType: .youtube))
-        try repo.save(Transcription(
-            fileName: "episode.mp3",
-            status: .completed,
-            sourceURL: "https://podcasts.apple.com/us/podcast/x/id1?i=2",
-            sourceType: .podcast
-        ))
+        try repo.save(
+            Transcription(
+                fileName: "youtube.mp3", status: .completed, sourceURL: "https://youtube.com/watch?v=abc",
+                sourceType: .youtube))
+        try repo.save(
+            Transcription(
+                fileName: "episode.mp3",
+                status: .completed,
+                sourceURL: "https://podcasts.apple.com/us/podcast/x/id1?i=2",
+                sourceType: .podcast
+            ))
 
         vm.filter = .podcast
         await load()
@@ -103,7 +109,10 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
     func testFilterLocal() async throws {
         try repo.save(Transcription(fileName: "local.mp3", status: .completed, sourceType: .file))
         try repo.save(Transcription(fileName: "meeting.mp3", status: .completed, sourceType: .meeting))
-        try repo.save(Transcription(fileName: "youtube.mp3", status: .completed, sourceURL: "https://youtube.com/watch?v=abc", sourceType: .youtube))
+        try repo.save(
+            Transcription(
+                fileName: "youtube.mp3", status: .completed, sourceURL: "https://youtube.com/watch?v=abc",
+                sourceType: .youtube))
 
         vm.filter = .local
         await load()
@@ -152,7 +161,8 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
         let meetingVM = TranscriptionLibraryViewModel(scope: .meetings)
         meetingVM.configure(transcriptionRepo: repo)
 
-        try repo.save(Transcription(fileName: "fav meeting.mp3", status: .completed, isFavorite: true, sourceType: .meeting))
+        try repo.save(
+            Transcription(fileName: "fav meeting.mp3", status: .completed, isFavorite: true, sourceType: .meeting))
         try repo.save(Transcription(fileName: "normal meeting.mp3", status: .completed, sourceType: .meeting))
         try repo.save(Transcription(fileName: "fav local.mp3", status: .completed, isFavorite: true, sourceType: .file))
 
@@ -191,12 +201,13 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
     }
 
     func testSearchByChannel() async throws {
-        try repo.save(Transcription(
-            fileName: "Video",
-            status: .completed,
-            sourceURL: "https://youtube.com/watch?v=abc",
-            channelName: "TechChannel"
-        ))
+        try repo.save(
+            Transcription(
+                fileName: "Video",
+                status: .completed,
+                sourceURL: "https://youtube.com/watch?v=abc",
+                channelName: "TechChannel"
+            ))
         try repo.save(Transcription(fileName: "Other", status: .completed))
 
         vm.searchText = "techchannel"
@@ -374,6 +385,227 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
 
         XCTAssertEqual(viewModel.transcriptions.first?.titleOverride, "Q3 Vendor Notes")
         XCTAssertEqual(viewModel.transcriptions.first?.effectiveDisplayTitle, "Q3 Vendor Notes")
+    }
+
+    func testApplyMeetingRenameReordersTitleAscendingLoadedWindow() async throws {
+        let first = Transcription(fileName: "Zulu Review", status: .completed, sourceType: .meeting)
+        let second = Transcription(fileName: "Beta Review", status: .completed, sourceType: .meeting)
+        try repo.save(first)
+        try repo.save(second)
+        vm.pageSize = 1
+        vm.sortOrder = .titleAscending
+        await load()
+        let nextPage = try XCTUnwrap(vm.loadMoreTranscriptions())
+        await nextPage.value
+        XCTAssertEqual(vm.filteredTranscriptions.map(\.id), [second.id, first.id])
+
+        try repo.updateFileName(id: first.id, fileName: "Aardvark Review")
+        vm.applyMeetingRename(MeetingRename(id: first.id, title: "Aardvark Review"))
+
+        XCTAssertEqual(vm.filteredTranscriptions.map(\.id), [first.id, second.id])
+        XCTAssertEqual(vm.filteredTranscriptions.map(\.effectiveDisplayTitle), ["Aardvark Review", "Beta Review"])
+        XCTAssertFalse(vm.hasMore)
+    }
+
+    func testApplyMeetingRenameAddsPreviouslyUnloadedTitleSearchMatch() async throws {
+        let meeting = Transcription(fileName: "Planning", status: .completed, sourceType: .meeting)
+        try repo.save(meeting)
+        vm.searchText = "  Review  "
+        await load()
+        XCTAssertTrue(vm.filteredTranscriptions.isEmpty)
+
+        try repo.updateFileName(id: meeting.id, fileName: "Design Review")
+        vm.applyMeetingRename(MeetingRename(id: meeting.id, title: "Design Review"))
+
+        XCTAssertEqual(vm.filteredTranscriptions.map(\.id), [meeting.id])
+        XCTAssertEqual(vm.filteredTranscriptions.first?.effectiveDisplayTitle, "Design Review")
+    }
+
+    func testApplyMeetingRenameRemovesRenamedAwayTitleSearchMatch() async throws {
+        let meeting = Transcription(fileName: "Design Review", status: .completed, sourceType: .meeting)
+        try repo.save(meeting)
+        vm.searchText = "Review"
+        await load()
+        XCTAssertEqual(vm.filteredTranscriptions.map(\.id), [meeting.id])
+        vm.toggleSelection(for: meeting)
+
+        try repo.updateFileName(id: meeting.id, fileName: "Planning")
+        vm.applyMeetingRename(MeetingRename(id: meeting.id, title: "Planning"))
+
+        XCTAssertTrue(vm.transcriptions.isEmpty)
+        XCTAssertTrue(vm.filteredTranscriptions.isEmpty)
+        XCTAssertTrue(vm.groupedTranscriptions.isEmpty)
+        XCTAssertFalse(vm.hasSelectedTranscriptions)
+        XCTAssertFalse(vm.hasMore)
+    }
+
+    func testApplyMeetingRenamePreventsStaleLoadFromRestoringTitleOrderAndSearchMembership() async throws {
+        let mockRepo = MockTranscriptionRepository()
+        let viewModel = TranscriptionLibraryViewModel()
+        let renamedFirst = Transcription(fileName: "Zulu Review", status: .completed, sourceType: .meeting)
+        let renamedAway = Transcription(fileName: "Beta Review", status: .completed, sourceType: .meeting)
+        let unchanged = Transcription(fileName: "Middle Review", status: .completed, sourceType: .meeting)
+        let gate = StaleFetchGate()
+        mockRepo.transcriptions = [renamedFirst, renamedAway, unchanged]
+        mockRepo.fetchAllHandler = { [mockRepo, gate] _ in
+            let callNumber = gate.nextCallNumber()
+            let snapshot = mockRepo.transcriptions
+            if callNumber == 1 {
+                gate.blockFirstFetchUntilAllowed()
+            }
+            return snapshot
+        }
+        viewModel.sortOrder = .titleAscending
+        viewModel.searchText = "Review"
+        viewModel.configure(transcriptionRepo: mockRepo)
+
+        let staleLoad = viewModel.loadTranscriptions()
+        await Task.detached {
+            gate.waitForFirstFetchStarted()
+        }.value
+
+        try mockRepo.updateFileName(id: renamedFirst.id, fileName: "Aardvark Review")
+        viewModel.applyMeetingRename(MeetingRename(id: renamedFirst.id, title: "Aardvark Review"))
+        try mockRepo.updateFileName(id: renamedAway.id, fileName: "Planning")
+        viewModel.applyMeetingRename(MeetingRename(id: renamedAway.id, title: "Planning"))
+        XCTAssertEqual(viewModel.filteredTranscriptions.map(\.id), [renamedFirst.id, unchanged.id])
+
+        gate.allowFirstFetchToFinish()
+        await staleLoad.value
+
+        XCTAssertEqual(viewModel.filteredTranscriptions.map(\.id), [renamedFirst.id, unchanged.id])
+        XCTAssertEqual(
+            viewModel.filteredTranscriptions.map(\.effectiveDisplayTitle),
+            ["Aardvark Review", "Middle Review"]
+        )
+    }
+
+    func testApplyMeetingRenameRejectsStaleUnloadedLibrarySnapshot() async throws {
+        try await assertMeetingRenameRejectsStaleDateWindow(scope: .all, loadMore: false)
+    }
+
+    func testApplyMeetingRenameRejectsStaleUnloadedRecentMeetingsSnapshot() async throws {
+        try await assertMeetingRenameRejectsStaleDateWindow(scope: .meetings, loadMore: false)
+    }
+
+    func testApplyMeetingRenamePreservesInFlightLibraryPagination() async throws {
+        try await assertMeetingRenameRejectsStaleDateWindow(scope: .all, loadMore: true)
+    }
+
+    func testApplyMeetingRenamePreservesInFlightRecentMeetingsPagination() async throws {
+        try await assertMeetingRenameRejectsStaleDateWindow(scope: .meetings, loadMore: true)
+    }
+
+    func testApplyMeetingRenameUpdatesIdleDateWindowWithoutRequery() async throws {
+        let mockRepo = MockTranscriptionRepository()
+        let meeting = Transcription(fileName: "Old meeting", status: .completed, sourceType: .meeting)
+        mockRepo.transcriptions = [meeting]
+        vm.configure(transcriptionRepo: mockRepo)
+        await load()
+        mockRepo.fetchAllError = LibraryRenameTestError.reloadFailed
+
+        try mockRepo.updateFileName(id: meeting.id, fileName: "Renamed meeting")
+        vm.applyMeetingRename(MeetingRename(id: meeting.id, title: "Renamed meeting"))
+
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertEqual(vm.filteredTranscriptions.first?.fileName, "Renamed meeting")
+        XCTAssertEqual(vm.groupedTranscriptions.first?.items.first?.fileName, "Renamed meeting")
+    }
+
+    func testApplyMeetingRenameLeavesNonMeetingQueryLoadActive() async throws {
+        let mockRepo = MockTranscriptionRepository()
+        let local = Transcription(fileName: "Local recording", status: .completed, sourceType: .file)
+        let gate = StaleFetchGate()
+        mockRepo.fetchAllHandler = { _ in
+            guard gate.nextCallNumber() == 1 else { throw LibraryRenameTestError.reloadFailed }
+            gate.blockFirstFetchUntilAllowed()
+            return [local]
+        }
+        let viewModel = TranscriptionLibraryViewModel()
+        viewModel.filter = .local
+        viewModel.sortOrder = .titleAscending
+        viewModel.configure(transcriptionRepo: mockRepo)
+        let activeLoad = viewModel.loadTranscriptions()
+        defer { gate.allowFirstFetchToFinish() }
+        await Task.detached { gate.waitForFirstFetchStarted() }.value
+
+        viewModel.applyMeetingRename(MeetingRename(id: UUID(), title: "Renamed meeting"))
+
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertTrue(viewModel.isLoading)
+        gate.allowFirstFetchToFinish()
+        await activeLoad.value
+        XCTAssertEqual(viewModel.filteredTranscriptions.map(\.id), [local.id])
+        XCTAssertFalse(viewModel.isLoading)
+    }
+
+    private func assertMeetingRenameRejectsStaleDateWindow(
+        scope: TranscriptionLibraryScope,
+        loadMore: Bool
+    ) async throws {
+        let repository = try XCTUnwrap(repo)
+        let meetings = (0..<3).map { index in
+            Transcription(
+                createdAt: Date(timeIntervalSince1970: Double(3 - index)),
+                fileName: "Meeting \(index)",
+                status: .completed,
+                sourceType: .meeting
+            )
+        }
+        for meeting in meetings {
+            try repository.save(meeting)
+        }
+        let mockRepo = MockTranscriptionRepository()
+        mockRepo.fetchAllHandler = { try repository.fetchAll(limit: $0) }
+        let viewModel = TranscriptionLibraryViewModel(scope: scope)
+        viewModel.pageSize = 1
+        viewModel.configure(transcriptionRepo: mockRepo)
+        if loadMore {
+            await viewModel.loadTranscriptions().value
+            XCTAssertEqual(viewModel.transcriptions.map(\.id), [meetings[0].id])
+        }
+
+        let gate = StaleFetchGate()
+        mockRepo.fetchAllHandler = { limit in
+            let callNumber = gate.nextCallNumber()
+            let snapshot = try repository.fetchAll(limit: limit)
+            if callNumber == 1 {
+                gate.blockFirstFetchUntilAllowed()
+            }
+            return snapshot
+        }
+        let staleLoad: Task<Void, Never>
+        if loadMore {
+            staleLoad = try XCTUnwrap(viewModel.loadMoreTranscriptions())
+        } else {
+            staleLoad = viewModel.loadTranscriptions()
+        }
+        defer { gate.allowFirstFetchToFinish() }
+        await Task.detached { gate.waitForFirstFetchStarted() }.value
+        let renamed = meetings[loadMore ? 1 : 0]
+        XCTAssertFalse(viewModel.transcriptions.contains { $0.id == renamed.id })
+
+        try repository.updateFileName(id: renamed.id, fileName: "Renamed meeting")
+        viewModel.applyMeetingRename(MeetingRename(id: renamed.id, title: "Renamed meeting"))
+
+        let expectedIDs = Array(meetings.prefix(loadMore ? 2 : 1)).map(\.id)
+        XCTAssertEqual(viewModel.transcriptions.map(\.id), expectedIDs)
+        XCTAssertEqual(viewModel.transcriptions.last?.fileName, "Renamed meeting")
+        XCTAssertTrue(viewModel.hasMore)
+        XCTAssertFalse(viewModel.isLoading)
+        gate.allowFirstFetchToFinish()
+        await staleLoad.value
+        XCTAssertEqual(viewModel.transcriptions.map(\.id), expectedIDs)
+        XCTAssertEqual(viewModel.transcriptions.last?.fileName, "Renamed meeting")
+
+        let nextPage = try XCTUnwrap(viewModel.loadMoreTranscriptions())
+        await nextPage.value
+        XCTAssertEqual(
+            viewModel.transcriptions.map(\.id),
+            Array(meetings.prefix(loadMore ? 3 : 2)).map(\.id)
+        )
+        XCTAssertEqual(viewModel.transcriptions.first { $0.id == renamed.id }?.fileName, "Renamed meeting")
+        XCTAssertEqual(viewModel.hasMore, !loadMore)
     }
 
     // MARK: - Favorites
@@ -586,9 +818,12 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
 
     func testSelectLoadedVisibleTranscriptionsExcludesUnloadedRows() async throws {
         vm.pageSize = 2
-        try repo.save(Transcription(createdAt: Date(timeIntervalSince1970: 3), fileName: "third.mp3", status: .completed))
-        try repo.save(Transcription(createdAt: Date(timeIntervalSince1970: 2), fileName: "second.mp3", status: .completed))
-        try repo.save(Transcription(createdAt: Date(timeIntervalSince1970: 1), fileName: "first.mp3", status: .completed))
+        try repo.save(
+            Transcription(createdAt: Date(timeIntervalSince1970: 3), fileName: "third.mp3", status: .completed))
+        try repo.save(
+            Transcription(createdAt: Date(timeIntervalSince1970: 2), fileName: "second.mp3", status: .completed))
+        try repo.save(
+            Transcription(createdAt: Date(timeIntervalSince1970: 1), fileName: "first.mp3", status: .completed))
 
         await load()
 
@@ -620,7 +855,8 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
 
     func testSelectedLoadedTranscriptionsForExportFollowsVisibleOrder() async throws {
         let first = Transcription(createdAt: Date(timeIntervalSince1970: 2), fileName: "first.mp3", status: .completed)
-        let second = Transcription(createdAt: Date(timeIntervalSince1970: 1), fileName: "second.mp3", status: .completed)
+        let second = Transcription(
+            createdAt: Date(timeIntervalSince1970: 1), fileName: "second.mp3", status: .completed)
         try repo.save(second)
         try repo.save(first)
 

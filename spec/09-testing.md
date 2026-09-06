@@ -171,11 +171,8 @@ timing instead of ignoring it.
 ## Running Tests
 
 ```bash
-# Full suite (deterministic; usually ~1-2 minutes depending on cache state)
+# Full suite: final gate, at most once per task (see AGENTS.md)
 swift test
-
-# Parallel run when chasing wall-clock time
-swift test --parallel
 
 # Single test file
 swift test --filter TextProcessingPipelineTests
@@ -185,28 +182,23 @@ swift test --filter STTClientTests
 swift test --filter WhisperLanguageCatalogTests
 ```
 
-**Note:** `swift test` works for all tests because tests don't need Metal shaders. The app itself requires `xcodebuild` (see CLAUDE.md).
+**Note:** Normal `swift test` does not exercise a real in-process MLX model.
+The app requires the Xcode app-build path; optional runtime build gates and
+canonical commands are documented in [AGENTS.md](../AGENTS.md).
 
 ## AI Agent Testing Loop
 
-AI agents working on this codebase must follow this loop:
+Follow [AGENTS.md](../AGENTS.md#commands), not a second full-suite loop here:
+iterate with focused tests for the changed area, then run the full suite at
+most once as the final gate unless the user specifies another scope. A reported
+hardware failure is evidence; do not erase it with a passing mock-based suite.
 
-### Before Coding
-```bash
-swift test  # Establish baseline -- all tests must pass
-```
-
-### After Changes
-```bash
-swift test  # Verify no regressions
-```
-
-### Bug Fix Protocol
-1. Write a test that reproduces the bug (must fail)
-2. Run `swift test` to confirm failure
-3. Fix the bug
-4. Run `swift test` to confirm all pass
-5. Commit test + fix together (never separately)
+For a bug fix, keep a focused reproduction that fails before the fix and passes
+afterward when practical. Verify UI/capture changes on the real surface as
+well, and distinguish fixture results, live hardware checks, and checks not run.
+Never run destructive CLI smoke commands against the user's database or model
+cache. Use the [integration isolation rules](../integrations/README.md#safe-automation-and-isolation);
+`--database` alone is not full application-state isolation.
 
 ## Test Quality Rules
 
@@ -218,9 +210,9 @@ swift test  # Verify no regressions
 
 ### Fast
 - Individual test: < 1 second
-- Full suite: usually ~1-2 minutes on a warm Apple Silicon checkout; investigate large regressions
-- Database tests use in-memory SQLite (no disk I/O)
-- No network calls (mock everything external)
+- Full-suite cost depends on DSP fixtures and model/cache state; avoid repeating it during iteration
+- Repository unit tests use in-memory SQLite; persistence/recovery tests use test-owned temporary folders
+- Keep external services mocked or fixture-backed; real model/hardware smoke runs are separate evidence
 
 ### Clear Errors
 - Test names describe the scenario: `testImportVTTCreatesMemoryWithCorrectTimestamps`

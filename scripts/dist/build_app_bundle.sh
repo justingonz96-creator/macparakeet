@@ -698,6 +698,11 @@ cat >"$INFO_PLIST" <<EOF
   <string>${MIN_MACOS_VERSION}</string>
   <key>LSUIElement</key>
   <true/>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>MacParakeet needs microphone access for dictation.</string>
   <key>NSAudioCaptureUsageDescription</key>

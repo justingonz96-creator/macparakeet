@@ -1,6 +1,6 @@
 # 11 - LLM Integration
 
-> Status: **IMPLEMENTED** - Done, still accurate (CLI command signatures updated 2026-04-26)
+> Status: **IMPLEMENTED** — describes the release candidate, including OpenCode Go session headers (#948). Candidate changes are not a claim about the published stable build; runtime validation is tracked separately.
 > Supersedes: Previous HISTORICAL version (local Qwen3-8B via mlx-swift-lm, removed 2026-02-23)
 > ADR: ADR-011 (Cloud API keys + optional local providers)
 > Note: §1 (Transcript Summary) is superseded by [spec/12-processing-layer.md](12-processing-layer.md) — Prompt Library + multi-summary architecture. §3's old UserDefaults custom-transform design is superseded by ADR-022's productized `Prompt.Category.transform` Transforms. Provider protocol, formatter, chat, and CLI sections remain current.
@@ -15,7 +15,7 @@ model option.
 
 1. Deliver transcript summarization, chat, AI formatting, and Transforms via user-configured LLM providers.
 2. Support cloud APIs (Anthropic, OpenAI, Gemini, OpenRouter), local runtimes (Ollama), and CLI tools (Claude Code, Codex) through one shared service layer.
-3. Keep core speech processing local and preserve a fully local setup when users stick to local providers/features — only transcript text is sent to LLM providers, never audio.
+3. Keep core speech processing local and preserve a fully local setup when users stick to local providers/features. LLM requests can include transcript text, user notes, questions, conversation history, and prompts, but never audio. Provider-specific request metadata is described below.
 4. LLM features are optional — the app is fully functional without any provider configured.
 
 ## Non-Goals
@@ -68,7 +68,7 @@ The service boundary stays stable even though the transport is mixed.
 
 | Provider | Type | Default Base URL | Auth |
 |----------|------|-----------------|------|
-| Anthropic | Cloud | `https://api.anthropic.com/v1/` | `Authorization: Bearer` |
+| Anthropic | Cloud | `https://api.anthropic.com/v1/` | `x-api-key` + `anthropic-version` |
 | OpenAI | Cloud | `https://api.openai.com/v1` | `Authorization: Bearer` |
 | OpenAI-Compatible | Custom | User-supplied | Optional API key; local loopback endpoints are treated as local |
 | Google Gemini | Cloud | `https://generativelanguage.googleapis.com/v1beta/openai` | `Authorization: Bearer` |
@@ -79,6 +79,47 @@ The service boundary stays stable even though the transport is mixed.
 | Local MLX | In-process local, developer-gated | `inprocess://local` | N/A |
 
 **Local CLI:** Users with Claude Code or Codex subscriptions can use their CLI tools directly. The app runs the configured command as a subprocess via `posix_spawn`, delivering prompts via stdin and `MACPARAKEET_*` environment variables. No API key needed — the CLI tool manages its own authentication. Built-in presets for Claude Code (`claude -p --model haiku`) and Codex (`codex exec --model gpt-5.4-mini`), or any custom command. See PR #47.
+
+### OpenCode Go (custom endpoint)
+
+Configure **OpenAI-Compatible** with base URL `https://opencode.ai/zen/go/v1`,
+an OpenCode Go API key, and a model served by its Chat Completions endpoint.
+The existing Anthropic adapter also supports its Messages endpoint when configured
+with that base URL and a Messages-compatible model. There is no new provider type.
+See OpenCode's [usage requirements and endpoint list](https://opencode.ai/docs/go/).
+The Anthropic catalog filter remains Claude-only, so Go Messages model IDs must
+be supplied explicitly rather than selected from that adapter's discovered list.
+Its catalog changes independently of MacParakeet; a listed model requiring the
+Responses API is not supported by the current app's chat adapters. Tool execution,
+multimodal inputs, and coding-agent workflows are not added by this integration.
+OpenCode describes Go as a coding-agent service; header compliance does not
+guarantee that every MacParakeet workload is permitted by its usage policy.
+
+For HTTPS requests to the exact `opencode.ai` host (default port or 443) at
+`/zen/go/v1/chat/completions`, `/zen/go/v1/messages`, or `/zen/go/v1/models`,
+the candidate sends `User-Agent: MacParakeet` and
+`x-opencode-session: <opaque UUID>`. HTTP, alternate ports, lookalike/subdomains,
+and unrelated paths do not receive this session header. Redirects outside these
+endpoints are refused, so neither credentials nor prompt content follow them.
+
+- Saved chat uses the existing `ChatConversation.id` across turns, tail-response
+  regeneration, conversation switching, and reopening.
+- A live/unsaved chat owns an in-memory UUID. Promotion after a meeting reuses
+  it as the saved conversation ID; New Chat or clearing history starts a new ID.
+- Service chat entry points require a conversation UUID. `llm chat` is one-shot,
+  so each CLI invocation creates one operation-scoped UUID, for plain, JSON,
+  or streaming output.
+- Other one-shot completions, connection tests, and model-list probes receive
+  a fresh request-scoped UUID, including repeated use of `.default` options.
+- `ChatCompletionOptions.conversationID` carries identity only to HTTP headers:
+  request JSON semantics are unchanged. IDs are never derived from transcript
+  text, shared across the device, or added to logs/telemetry. No new persistence
+  field, schema migration, or credential logging is introduced.
+
+Request-capture regressions cover both adapters and response modes, operation
+isolation, host/path scoping, redirect filtering, saved-thread reuse, and live
+chat promotion. These are local transport checks, not proof of provider uptime,
+account eligibility, model quality, or successful live API authentication.
 
 ---
 
@@ -152,6 +193,8 @@ public struct ChatMessage: Codable, Sendable {
 public struct ChatCompletionOptions: Sendable {
     public let temperature: Double?
     public let maxTokens: Int?
+    public let responseFormat: ChatResponseFormat?
+    public let conversationID: UUID? // nil for a one-shot; header-only, not JSON
 }
 
 public struct ChatCompletionResponse: Sendable {
@@ -206,7 +249,9 @@ public protocol LLMServiceProtocol: Sendable {
         question: String,
         transcript: String,
         userNotes: String?,
-        history: [ChatMessage]
+        history: [ChatMessage],
+        source: TelemetryChatSource,
+        conversationID: UUID
     ) async throws -> String
 
     /// Apply a custom transform to text
@@ -233,7 +278,9 @@ public protocol LLMServiceProtocol: Sendable {
         question: String,
         transcript: String,
         userNotes: String?,
-        history: [ChatMessage]
+        history: [ChatMessage],
+        source: TelemetryChatSource,
+        conversationID: UUID
     ) async throws -> LLMResult
     func transformDetailed(text: String, prompt: String) async throws -> LLMResult
 
@@ -246,7 +293,9 @@ public protocol LLMServiceProtocol: Sendable {
         question: String,
         transcript: String,
         userNotes: String?,
-        history: [ChatMessage]
+        history: [ChatMessage],
+        source: TelemetryChatSource,
+        conversationID: UUID
     ) -> AsyncThrowingStream<String, Error>
     func transformStream(text: String, prompt: String) -> AsyncThrowingStream<String, Error>
 }

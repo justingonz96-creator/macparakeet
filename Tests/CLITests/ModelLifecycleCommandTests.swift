@@ -47,6 +47,49 @@ final class ModelLifecycleCommandTests: XCTestCase {
         XCTAssertTrue(report.error?.contains("v99.0-future-app-migration") == true)
     }
 
+    func testHealthDatabaseProbeDoesNotApplyPendingMigrations() throws {
+        let dbURL = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+        let db = try DatabaseManager(path: dbURL.path)
+        let pendingMigration = try XCTUnwrap(DatabaseManager.registeredMigrationIdentifiers.last)
+        try db.dbQueue.write { database in
+            try database.execute(
+                sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+                arguments: [pendingMigration]
+            )
+        }
+        let appliedBefore = try db.appliedMigrationIdentifiers()
+
+        let report = probeHealthDatabase(at: dbURL.path)
+
+        XCTAssertEqual(report.status, "ok")
+        XCTAssertEqual(report.dictations, 0)
+        XCTAssertEqual(report.transcriptions, 0)
+        XCTAssertEqual(try db.appliedMigrationIdentifiers(), appliedBefore)
+    }
+
+    func testHealthDirectoryProbeDoesNotCreateMissingPaths() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("health-missing-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        XCTAssertNotNil(probeHealthDirectories([directory.path]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    func testHealthDirectoryProbeRejectsFileAndAcceptsDirectory() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("health-directory-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("not-a-directory")
+        try Data("preserve".utf8).write(to: file)
+
+        XCTAssertNotNil(probeHealthDirectories([file.path]))
+        XCTAssertNil(probeHealthDirectories([directory.path]))
+        XCTAssertEqual(try Data(contentsOf: file), Data("preserve".utf8))
+    }
+
     func testResolveWhisperDownloadModelRequiresWhisperPrefix() throws {
         XCTAssertEqual(
             try resolveWhisperDownloadModel("whisper-large-v3-v20240930-turbo-632MB"),

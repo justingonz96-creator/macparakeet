@@ -147,10 +147,12 @@ For meeting recording specifically, this has an important consequence: the saved
 
 MacParakeet Phase 1 uses FluidAudio's 110M CTC encoder as a post-TDT
 recognition sidecar, not as a replacement ASR runtime. The normal Parakeet TDT
-decode runs first and returns transcript text plus token timings; when
-recognition boosting is supported and there are enabled vocabulary anchors,
-MacParakeet runs the CTC sidecar over the same audio samples and uses
-`VocabularyRescorer` to produce the final transcript text.
+decode runs first and returns transcript text plus token timings. Recognition
+boosting is opt-in: `customVocabularyRecognitionBoostingEnabled` defaults to
+`false`. When that preference is enabled, the engine supports boosting, and
+enabled vocabulary anchors exist, MacParakeet runs the CTC sidecar over the
+same audio samples and uses `VocabularyRescorer` to produce the final
+transcript text. Adding an anchor alone does not enable this sidecar.
 
 Source of truth:
 
