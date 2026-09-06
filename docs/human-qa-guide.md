@@ -73,6 +73,17 @@ for release-gating checks (signing, notarization, first-run onboarding, auto-upd
   `tccutil reset All com.macparakeet.dev`.
 - Its history and settings are independent — a clean slate is expected, not a bug.
 
+## Markdown regression checks
+
+- While a result or chat response is streaming, leave its pane and return. The
+  latest text must appear and later chunks must continue to render. Repeat after
+  a completed result starts streaming again.
+- In a rendered table, select text in a header and a body cell, then copy it.
+  Selection must remain usable without a table-wide click action consuming it.
+- Navigate the table actions with VoiceOver. Both **Copy table** and **Download
+  table** must be named and reachable before clicking the table; downloading must
+  open the existing save dialog and export the original Markdown source.
+
 ## Writing a QA checklist (for PR authors / agents)
 
 Put this in the PR description so the human can self-serve. Keep items concrete and

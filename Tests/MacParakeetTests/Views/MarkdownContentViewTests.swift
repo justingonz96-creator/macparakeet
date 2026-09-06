@@ -15,6 +15,55 @@ final class MarkdownContentViewTests: XCTestCase {
         XCTAssertEqual(updated, "# Summary\n\n- [ ] Review")
     }
 
+    func testStreamingSourceReplaysLatestSnapshotAfterConsumerCancellation() async {
+        let source = MarkdownSnapshotSource(initialContent: "# First visit")
+        let subscribed = expectation(description: "First renderer consumed its snapshot")
+        let firstRenderer = Task {
+            var iterator = source.text.makeAsyncIterator()
+            let initial = await iterator.next()
+            XCTAssertEqual(initial, "# First visit")
+            subscribed.fulfill()
+            return await iterator.next()
+        }
+        await fulfillment(of: [subscribed], timeout: 2)
+
+        // Match StreamedMarkdownController.end() when the pane disappears.
+        firstRenderer.cancel()
+        let cancelledValue = await firstRenderer.value
+        XCTAssertNil(cancelledValue)
+        source.send("# Changed while hidden")
+
+        // SwiftUI keeps the StateObject when the pane returns. A fresh renderer
+        // must see both the latest hidden update and subsequent live snapshots.
+        var returnedRenderer = source.text.makeAsyncIterator()
+        let replayed = await returnedRenderer.next()
+        XCTAssertEqual(replayed, "# Changed while hidden")
+        source.send("# Continued after returning")
+        let continued = await returnedRenderer.next()
+        XCTAssertEqual(continued, "# Continued after returning")
+    }
+
+    func testCancellingOldRendererDoesNotTerminateReplacementSubscription() async {
+        let source = MarkdownSnapshotSource(initialContent: "Initial")
+        let subscribed = expectation(description: "Old renderer subscribed")
+        let oldRenderer = Task {
+            var iterator = source.text.makeAsyncIterator()
+            _ = await iterator.next()
+            subscribed.fulfill()
+            return await iterator.next()
+        }
+        await fulfillment(of: [subscribed], timeout: 2)
+        var replacement = source.text.makeAsyncIterator()
+        oldRenderer.cancel()
+        _ = await oldRenderer.value
+        let initial = await replacement.next()
+        XCTAssertEqual(initial, "Initial")
+
+        source.send("Replacement remains live")
+        let next = await replacement.next()
+        XCTAssertEqual(next, "Replacement remains live")
+    }
+
     func testKitchenSinkAndIncompleteSnapshotsProduceRenderableContent() async {
         let parser = MarkdownParserImpl()
         let config = MarkdownContentConfiguration.make(baseFontSize: 14, isStreaming: false)
