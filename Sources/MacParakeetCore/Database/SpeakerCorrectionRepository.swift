@@ -70,9 +70,11 @@ public final class SpeakerCorrectionRepository: SpeakerCorrectionRepositoryProto
         fingerprint: String,
         in db: Database
     ) throws -> [SpeakerCorrection] {
-        try fetchHistory(transcriptionId: transcriptionId, in: db).filter {
-            $0.transcriptFingerprint.rawValue == fingerprint
-        }
+        try SpeakerCorrection
+            .filter(Column("transcriptionId") == transcriptionId)
+            .filter(Column("transcriptFingerprint") == fingerprint)
+            .order(Column("sequence").asc)
+            .fetchAll(db)
     }
 
     static func fetchActiveCorrections(
