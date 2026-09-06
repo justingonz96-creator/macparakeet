@@ -1092,17 +1092,19 @@ Button to re-run onboarding flow: "Run Onboarding Again..."
 
 ## Discover (v0.4)
 
-A curated content feed displayed as a sidebar item with a full-page content view. Discover surfaces tips, quotes, affirmations, and sponsored items fetched from a remote JSON feed (`macparakeet.com/api/discover.json`) with local cache fallback and a bundled default.
+A curated content feed displayed as a sidebar item with a full-page content view. Discover surfaces tips, quotes, affirmations, and sponsored items fetched from a remote JSON feed (`macparakeet.com/api/discover.json`) with local cache fallback and a bundled default. Visibility and the launch fetch are gated by Settings → System → Appearance → **Show Discover in the sidebar** (`showDiscover`, default on). When launched with the preference off, the card is omitted and `DiscoverService` is not configured, so launch makes no request to the feed endpoint.
 
-The refresh is started unconditionally by app launch, not by selecting this
-page, and is independent of the telemetry setting. The app does not provide a
-Discover visibility/network toggle; release-readiness work leaves that product
-behavior unchanged. Cached/bundled content supports offline display, not an
-opt-out from the launch request.
+While enabled, the feed refresh starts at app launch or on re-enable, not by
+selecting this page, and remains independent of the telemetry setting. Turning
+Discover off cancels cache-load, refresh, and rotation tasks and clears the
+displayed feed. Late completions cannot publish content or revive cancelled
+work, including across rapid disable/re-enable transitions. Bounded local cache
+I/O already queued may finish; disabling does not erase the on-disk cache.
+Neither this setting nor telemetry opt-out is a global network switch.
 
 ### Sidebar Card
 
-The Discover item is **not** part of the regular sidebar `List`. It renders as a pinned card below the sidebar list via `.safeAreaInset(edge: .bottom)`. This keeps it visually distinct and always visible regardless of scroll position.
+The Discover item is **not** part of the regular sidebar `List`. When `showDiscover` is on, it renders as a pinned card below the sidebar list via `.safeAreaInset(edge: .bottom)`. This keeps it visually distinct and always visible regardless of scroll position. Turning the preference off hides the card and, if Discover is the active detail pane, falls back to Transcribe.
 
 ```
 ┌──────────────────┐
@@ -1185,9 +1187,13 @@ Users can submit suggestions via a text form at the bottom of the feed. Submissi
 ### Data Flow
 
 ```
-App launch → DiscoverViewModel.loadCached() → DiscoverService reads disk cache (or bundled fallback)
-          → DiscoverViewModel.refreshInBackground() → DiscoverService fetches remote JSON, writes cache
-          → Sidebar card rotates through items every 30s
+App launch
+  showDiscover == false → DiscoverViewModel.cancelDiscover(); no service, no request
+  showDiscover == true  → DiscoverViewModel.loadCached() → DiscoverService reads disk cache (or bundled fallback)
+                        → DiscoverViewModel.refreshInBackground() → DiscoverService fetches remote JSON, writes cache
+                        → Sidebar card rotates through items every 30s
+Toggle off  → cancel in-flight load/refresh/rotation and drop the feed
+Toggle on   → setupDiscoverContent() again (no relaunch)
 ```
 
 ---

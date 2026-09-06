@@ -1,7 +1,7 @@
 # MacParakeet Spec Index
 
 > Status: **ACTIVE** - Authoritative, current
-> Runtime Note: FluidAudio CoreML is the active architecture. Core STT is local; LLM provider use is opt-in and telemetry/crash reporting is opt-out. These controls do not disable the app's launch-time Discover feed request; see [ADR-002](adr/002-local-only.md) for the external I/O boundaries.
+> Runtime Note: FluidAudio CoreML is the active architecture. Core STT is local; LLM provider use is opt-in and telemetry/crash reporting is opt-out. Discover's default-on launch feed has a separate opt-out in Settings → System → Appearance. Neither setting is a global network switch; see [ADR-002](adr/002-local-only.md) for the external I/O boundaries.
 
 **MacParakeet** is a voice toolkit for macOS with on-device STT and a durable local library. Core capture and transcription work offline after model setup; that is not a promise that the app makes no network requests.
 

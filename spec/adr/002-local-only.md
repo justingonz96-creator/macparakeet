@@ -3,7 +3,7 @@
 > Status: **Accepted** (Amended 2026-03-11)
 > Date: 2026-02-08
 > Amended: 2026-03-11 — Refined scope from "no cloud processing" to local processing with optional external AI/telemetry surfaces (ADR-011)
-> Implementation clarification (2026-09-04): local speech is not a global no-network mode. Discover's public feed refresh remains unconditional at app launch, independent of telemetry consent; the release-readiness work deliberately leaves Discover unchanged.
+> Implementation clarification (2026-09-06): local speech is not a global no-network mode. Discover's public feed refresh is enabled by default at app launch, independent of telemetry consent, with its own runtime opt-out in Settings → System → Appearance.
 
 ## Context
 
@@ -49,10 +49,15 @@ LLM-powered features (summaries, chat/Meeting Ask, AI Formatter, and Transforms)
 - **App updates**: Sparkle update checks.
 - **Analytics**: Non-identifying, opt-out telemetry/crash reporting via the
   self-hosted endpoint (ADR-012); no transcript/audio content or persistent IDs.
-- **Discover**: An unconditional launch-time GET of
+- **Discover**: A default-on launch-time GET of
   `https://macparakeet.com/api/discover.json`, with cached/bundled offline
   fallback. It is independent of telemetry and does not require opening the
-  Discover page. Disabling telemetry does not disable this request.
+  Discover page. Turning off **Show Discover in the sidebar** in Settings →
+  System → Appearance hides Discover, cancels pending feed requests, clears
+  the displayed feed, and stops new feed loads until re-enabled. Late results
+  cannot republish the feed after disabling or replace a newer enabled session.
+  Already-queued bounded local cache I/O may finish; the on-disk cache is retained.
+  Disabling telemetry does not disable Discover, or vice versa.
 - **Explicit submissions**: Feedback and Discover thoughts send the user's
   submitted content and associated diagnostics; these are not STT uploads.
 - **Dormant activation**: Retained LemonSqueezy activation endpoints are used
@@ -81,8 +86,9 @@ Users make an informed choice. The UI makes the tradeoff explicit. Apple Intelli
 
 Core capture, local-file transcription, and local retrieval remain usable
 offline after model setup. Local LLM servers can keep generated text on-device,
-and telemetry can be disabled. Those choices do not prevent Discover's
-launch-time request or constitute a global network opt-out.
+and telemetry and Discover can each be disabled independently. Neither setting
+constitutes a global network opt-out; updates and other external surfaces retain
+their own behavior.
 
 ### Official paid distribution still works
 

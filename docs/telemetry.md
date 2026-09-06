@@ -607,6 +607,14 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
 - One final `telemetry_opted_out` event is sent and flushed immediately when the user disables telemetry
 - GUI opt-out is the Settings toggle, persisted to `UserDefaults` (`telemetryEnabled`). The CLI honors that same preference plus env/CI overrides (see the CLI section). For source builds and self-hosting, setting `MACPARAKEET_TELEMETRY_URL` redirects the ingestion endpoint away from `macparakeet.com` (it overrides the destination; it is not itself an opt-out).
 
+Discover has a separate, default-on preference: Settings → System → Appearance →
+**Show Discover in the sidebar**. While enabled it requests the public
+`https://macparakeet.com/api/discover.json` feed at launch or on re-enable,
+including when telemetry is off and its page has not been opened. Turning
+Discover off hides its UI, cancels pending feed requests, and prevents new
+feed loads until re-enabled; it does not change telemetry consent or send a
+telemetry opt-out event. Neither preference is a global network switch.
+
 ---
 
 ## Cloudflare Worker Design
