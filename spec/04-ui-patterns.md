@@ -167,6 +167,11 @@ derived-artifact refresh reports a separate retryable warning. Successive
 saves use database last-writer-wins semantics, while artifact refresh remains
 ordered/latest-wins so stale completion cannot overwrite newer files.
 
+A notes-save error banner belongs to the selected meeting. Selecting another
+recording dismisses that banner while retaining the failed draft and its retry
+state in the notes coordinator. Same-meeting metadata refreshes and background
+saves for other meetings preserve the banner; unrelated diagnostics remain intact.
+
 ### Result Prompt Meeting-Notes Context
 
 The expanded configuration area of every result-prompt card includes an
