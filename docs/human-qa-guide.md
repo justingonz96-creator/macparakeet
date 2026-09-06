@@ -75,6 +75,12 @@ for release-gating checks (signing, notarization, first-run onboarding, auto-upd
 
 ## Markdown regression checks
 
+- Select text directly inside table headers and cells. The pinned compatibility
+  fork uses the same native selectable text view as ordinary paragraphs on macOS.
+  Table Copy and Download actions are always visible; verify VoiceOver announces
+  “Copy table” and “Download table” and can activate both. The automated native
+  selection regression passes, but the XCTest host does not expose the SwiftUI
+  accessibility tree, so the VoiceOver check must run in the app.
 - While a result or chat response is streaming, leave its pane and return. The
   latest text must appear and later chunks must continue to render. Repeat after
   a completed result starts streaming again.

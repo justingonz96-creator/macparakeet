@@ -14,11 +14,11 @@ let streamingMarkdownPackageDependencies: [Package.Dependency] = skipStreamingMa
     // Shared SwiftUI renderer for static and streaming LLM Markdown output.
     // v0.7.0 transitively pins two dependencies by revision, so SwiftPM rejects
     // the stable-version requirement. The fork removes one trailing argument
-    // comma that Swift 6.0 / Xcode 16.1 cannot parse; keep this immutable pin
-    // until upstream supports the repository's CI toolchain.
+    // comma that Swift 6.0 / Xcode 16.1 cannot parse and restores selectable
+    // macOS table cells with named actions. Keep these fixes immutably pinned.
     .package(
         url: "https://github.com/alfred-sa/SwiftStreamingMarkdown",
-        revision: "17507bfe99e90b89f5cae65b78b92dade91e0d30"
+        revision: "1f10d5286985349b63145e1193f4f6ad5f7fdfe1"
     )
 ]
 
