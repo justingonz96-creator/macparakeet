@@ -1092,17 +1092,11 @@ Button to re-run onboarding flow: "Run Onboarding Again..."
 
 ## Discover (v0.4)
 
-A curated content feed displayed as a sidebar item with a full-page content view. Discover surfaces tips, quotes, affirmations, and sponsored items fetched from a remote JSON feed (`macparakeet.com/api/discover.json`) with local cache fallback and a bundled default.
-
-The refresh is started unconditionally by app launch, not by selecting this
-page, and is independent of the telemetry setting. The app does not provide a
-Discover visibility/network toggle; release-readiness work leaves that product
-behavior unchanged. Cached/bundled content supports offline display, not an
-opt-out from the launch request.
+A curated content feed displayed as a sidebar item with a full-page content view. Discover surfaces tips, quotes, affirmations, and sponsored items fetched from a remote JSON feed (`macparakeet.com/api/discover.json`) with local cache fallback and a bundled default. The feature is included by default; setting `MACPARAKEET_DISABLE_DISCOVER=1` at compile time excludes its code, resources, and UI.
 
 ### Sidebar Card
 
-The Discover item is **not** part of the regular sidebar `List`. It renders as a pinned card below the sidebar list via `.safeAreaInset(edge: .bottom)`. This keeps it visually distinct and always visible regardless of scroll position.
+When compiled in, the Discover item is **not** part of the regular sidebar `List`. It renders as a pinned card below the sidebar list via `.safeAreaInset(edge: .bottom)`. This keeps it visually distinct and always visible regardless of scroll position.
 
 ```
 ┌──────────────────┐
