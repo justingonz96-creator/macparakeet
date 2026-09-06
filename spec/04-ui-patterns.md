@@ -71,8 +71,9 @@ The sidebar uses NavigationSplitView with flat items (icon + label):
 - **Library** (`square.grid.2x2`) -- All transcriptions; every filter offers the same persistent Grid/List switch
 - **Dictations** (`clock.arrow.circlepath`) -- Flat history list with bottom bar player
 - **Meetings** (`person.2.wave.2`) -- Workflow space for upcoming, live, and saved meeting work; visible when `AppFeatures.meetingRecordingEnabled` is true
-- **Vocabulary** (`book.fill`) -- Processing mode, pipeline guide, custom words & snippets management
+- **Prompts** (`text.quote`) -- First-class prompt manager for versioned result prompts and Transforms
 - **Transforms** (`sparkles`) -- Saved selected-text rewrites backed by `.transform` prompt rows; visible when `AppFeatures.transformsEnabled` is true
+- **Vocabulary** (`book.fill`) -- Processing mode, pipeline guide, custom words & snippets management
 - **Feedback** (`bubble.left.and.text.bubble.right`) -- Bug reports, feature requests, community link
 - **Settings** (`gearshape`) -- Dictation prefs, meeting recording prefs, storage, permissions
 
@@ -135,8 +136,11 @@ restart ScreenCaptureKit during a meeting.
 Every Library filter, including Meetings, exposes a compact Grid/List segmented
 control in the header. The preference persists across launches. List mode reuses the
 date-grouped row presentation and adds the transcription source beside the
-title; search, filters, contextual actions, pagination, and bulk selection
-behave identically in either layout.
+title; search, label filters, contextual actions, pagination, and bulk
+selection behave identically in either layout. Grid cards reserve a fixed-height
+metadata area whether or not labels are assigned, so every card in a row stays
+aligned. Cards show at most two labels followed by `+N`; labels remain on one
+line and truncate rather than increasing card height.
 
 Opening an empty processing meeting row must preserve that same lifecycle
 truth. The transcript pane shows an indeterminate "Transcribing meeting"
@@ -152,6 +156,38 @@ meeting is recording. That in-place refresh must not navigate, activate a
 window, or replace an unrelated open detail page. Recorder-idle queued
 completion may still present the finished meeting, matching the existing
 queued-completion behavior.
+
+### Transcription Labels Popover
+
+Label editing uses a compact popover anchored to the action that opened it from
+Library, the Meetings workspace, or any saved-transcription detail. Labels are
+shared by meetings, podcasts, videos, and local files. The popover floats above
+the current context without masking or resizing it and is never presented as a
+blocking sheet. It does not repeat the transcription title or add its own
+heading; clicking outside or pressing Escape dismisses it.
+
+The source tabs — Meetings, Podcasts, Video, and Local — are the transcription
+types. The product does not add a second, user-defined "meeting type" taxonomy.
+Legacy custom meeting types are migrated to labels without removing the legacy
+database value, preserving downgrade compatibility.
+
+Result prompts expose an **Available for** label cloud in the Prompt Manager.
+**All transcriptions** is the default. Selecting one or more colored labels
+makes the prompt available when any selected label is present, across meetings,
+podcasts, videos, and local files. The same availability gate applies before
+automatic generation; the prompt's existing per-source Auto-Run setting remains
+the source of truth for whether matching content runs automatically.
+
+Library's label filter opens a compact popover with an integrated search field.
+Its options use colored, wrapping chips instead of vertical menu rows, allowing
+multi-selection at a glance in every source tab.
+
+Labels use the same search-or-create semantics with live suggestions from
+existing labels. Assigned labels render as removable
+tokens on the same row as the input; the token area scrolls horizontally so the
+control stays one line tall. Pressing Return reuses an exact match or
+creates and immediately assigns a new value; there is no separate **Add**
+button.
 
 ### Saved Meeting Notes
 

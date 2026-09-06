@@ -5,6 +5,62 @@ import XCTest
 @testable import MacParakeetCore
 
 final class MeetingsCommandTests: XCTestCase {
+    func testMeetingClassificationCommandsParse() throws {
+        let list = try MeetingsCommand.ListSubcommand.parse([
+            "--type", "Customer", "--label", "QBR", "--json",
+        ])
+        XCTAssertEqual(list.type, ["Customer"])
+        XCTAssertEqual(list.label, ["QBR"])
+        XCTAssertNoThrow(try MeetingsCommand.TypesSubcommand.List.parse(["--json"]))
+        XCTAssertNoThrow(try MeetingsCommand.TypesSubcommand.Add.parse(["--name", "Customer", "--json"]))
+        XCTAssertNoThrow(try MeetingsCommand.TypesSubcommand.Rename.parse(["Customer", "--name", "Client", "--json"]))
+        XCTAssertNoThrow(try MeetingsCommand.TypesSubcommand.Archive.parse(["Customer", "--json"]))
+        XCTAssertNoThrow(try MeetingsCommand.LabelsSubcommand.List.parse(["--json"]))
+        XCTAssertNoThrow(try MeetingsCommand.LabelsSubcommand.Add.parse(["--name", "QBR", "--json"]))
+        XCTAssertNoThrow(try MeetingsCommand.ClassifySubcommand.parse([
+            "Meeting", "--type", "Customer", "--add-label", "QBR", "--json",
+        ]))
+    }
+
+    func testMeetingClassificationValidation() {
+        XCTAssertThrowsError(try MeetingsCommand.ListSubcommand.parse(["--unclassified", "--type", "Customer"]))
+        XCTAssertThrowsError(try MeetingsCommand.ClassifySubcommand.parse(["Meeting"]))
+        XCTAssertThrowsError(try MeetingsCommand.TypesSubcommand.Add.parse(["--name", "   "]))
+        XCTAssertThrowsError(try MeetingsCommand.TypesSubcommand.Rename.parse(["Customer", "--name", "   "]))
+        XCTAssertThrowsError(try MeetingsCommand.LabelsSubcommand.Add.parse(["--name", "   "]))
+        XCTAssertThrowsError(try MeetingsCommand.LabelsSubcommand.Rename.parse(["QBR", "--name", "   "]))
+    }
+
+    func testClassificationAddAndRenameReturnNormalizedStoredValues() throws {
+        let dbURL = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+        _ = try DatabaseManager(path: dbURL.path)
+
+        let addType = try MeetingsCommand.TypesSubcommand.Add.parse([
+            "--name", "  Customer  ", "--color", "  blue  ", "--json", "--database", dbURL.path,
+        ])
+        let typeOutput = try captureStandardOutput { try addType.run() }
+        let type = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(typeOutput.utf8)) as? [String: Any])
+        XCTAssertEqual(type["name"] as? String, "Customer")
+        XCTAssertEqual(type["colorToken"] as? String, "blue")
+
+        let renameType = try MeetingsCommand.TypesSubcommand.Rename.parse([
+            "Customer", "--name", "  Client  ", "--json", "--database", dbURL.path,
+        ])
+        let renamedTypeOutput = try captureStandardOutput { try renameType.run() }
+        let renamedType = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(renamedTypeOutput.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(renamedType["name"] as? String, "Client")
+
+        let addLabel = try MeetingsCommand.LabelsSubcommand.Add.parse([
+            "--name", "  QBR  ", "--color", "  green  ", "--json", "--database", dbURL.path,
+        ])
+        let labelOutput = try captureStandardOutput { try addLabel.run() }
+        let label = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(labelOutput.utf8)) as? [String: Any])
+        XCTAssertEqual(label["name"] as? String, "QBR")
+        XCTAssertEqual(label["colorToken"] as? String, "green")
+    }
     func testMeetingsCommandIsRegisteredAtTopLevel() {
         XCTAssertTrue(
             CLI.configuration.subcommands.contains { $0 == MeetingsCommand.self },
@@ -621,6 +677,15 @@ final class MeetingsCommandTests: XCTestCase {
             updatedAt: Date(timeIntervalSince1970: 1_720_000_001)
         )
         try transcriptionRepo.save(meeting)
+        let meetingType = MeetingType(name: "Design review", colorToken: "blue")
+        let meetingLabel = MeetingLabel(name: "Decision", colorToken: "green")
+        try MeetingTypeRepository(dbQueue: db.dbQueue).save(meetingType)
+        try MeetingLabelRepository(dbQueue: db.dbQueue).save(meetingLabel)
+        try await MeetingClassificationService(dbQueue: db.dbQueue).update(
+            meetingTypeId: meetingType.id,
+            labelIds: [meetingLabel.id],
+            for: meeting.id
+        )
         try resultRepo.save(
             PromptResult(
                 transcriptionId: meeting.id,
@@ -641,6 +706,11 @@ final class MeetingsCommandTests: XCTestCase {
             JSONSerialization.jsonObject(with: Data(artifactOutput.utf8)) as? [String: Any]
         )
         XCTAssertNil(artifact["meetingCaptureReport"])
+        XCTAssertEqual((artifact["meetingType"] as? [String: Any])?["name"] as? String, "Design review")
+        XCTAssertEqual(
+            (artifact["meetingLabels"] as? [[String: Any]])?.first?["name"] as? String,
+            "Decision"
+        )
         let markdownPath = try XCTUnwrap(artifact["markdownPath"] as? String)
         let materializedMarkdown = try String(contentsOfFile: markdownPath, encoding: .utf8)
 
@@ -657,6 +727,8 @@ final class MeetingsCommandTests: XCTestCase {
         XCTAssertEqual(exportedMarkdown, materializedMarkdown)
         XCTAssertTrue(exportedMarkdown.contains("speakerLabelsIncluded: true"))
         XCTAssertTrue(exportedMarkdown.contains("**Speaker 1**"))
+        XCTAssertTrue(exportedMarkdown.contains("name: \"Design review\""))
+        XCTAssertTrue(exportedMarkdown.contains("name: \"Decision\""))
     }
 
     func testPromptResultAddRefreshesMaterializedMarkdownAndExportParity() async throws {

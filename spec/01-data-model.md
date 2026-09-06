@@ -8,6 +8,48 @@ MacParakeet uses **SQLite via GRDB** for all persistent storage. Single database
 
 **Design Principle (YAGNI):** Only add tables when a version needs them. Don't create empty tables for future features.
 
+## Versioned prompts and meeting classification (2026-09-05)
+
+> Label unification amendment: user-defined classification is label-only and
+> applies to every transcription source. Existing custom meeting types are
+> copied to labels by `v0.37-general-transcription-labels`; their legacy rows
+> and `meetingTypeId` values remain temporarily for downgrade compatibility.
+
+The versioned Prompt Manager extends the relational model with:
+
+- `prompt_versions`: immutable, monotonically numbered versions containing
+  Markdown content, optional typed inference settings, optional model override,
+  origin, note, and creation time. `prompts.activeVersionId` selects the active
+  row. The repository resolves this join for callers.
+- `prompt_collections`: optional user-facing organization for prompts. The
+  existing `Prompt.Category` remains the technical result/Transform kind.
+- soft deletion and canonical provenance on `prompts`; built-in provenance does
+  not confer different CRUD rights.
+- `meeting_labels` plus `transcription_meeting_labels`: reusable labels for
+  every transcription source, with a unique transcription/label pair. The
+  historical table names are retained for migration compatibility.
+- `prompt_label_policies`: label-specific or all-transcriptions prompt
+  availability. Matching labels use OR semantics; auto-run remains sourced
+  from prompt metadata and is gated by availability.
+- `meeting_types` and `prompt_meeting_policies`: legacy compatibility state,
+  migrated to labels by v0.37/v0.38 and no longer used by the primary UI or
+  runtime prompt resolver.
+
+The v0.38 policy backfill copies prompt and label foreign keys in their
+existing SQLite representation. Legacy TEXT identifiers remain TEXT; UUID
+identifiers already stored as BLOBs retain their bytes. The migration does
+not rewrite parent identifiers or re-encode their references.
+
+Prompt name and operational metadata stay on `prompts` and are not versioned.
+The historical `prompts.content` and `prompts.inferenceSettings` columns are
+copied into V1 during migration and may remain only for a bounded compatibility
+window; they are not permanent writable mirrors. `summaries.promptContent` and
+`summaries.inferenceSettingsSnapshot` remain durable execution snapshots.
+
+Classification names are local user data and are not telemetry dimensions.
+SQLite is the mutable source of truth; meeting artifact JSON and Markdown are
+materialized projections refreshed after classification changes.
+
 ## Relationship Diagram
 
 ```
@@ -428,11 +470,9 @@ CREATE INDEX idx_chat_conversations_transcription_id ON chat_conversations(trans
 
 ### `prompts` (v0.7)
 
-Reusable prompt templates for LLM-powered transcript processing. Community
-prompts are seeded during migration; custom prompts support full CRUD.
-Community prompt instruction text remains read-only and rows cannot be deleted,
-but user-owned configuration such as visibility, auto-run scope, and the
-in-progress meeting-notes context preference can be changed.
+Reusable prompt templates for LLM-powered transcript processing. Built-in and
+custom prompts share full editing, immutable versioning, recoverable
+soft-deletion, and configurable meeting-notes context rights.
 
 ```sql
 CREATE TABLE prompts (
@@ -450,7 +490,7 @@ CREATE TABLE prompts (
     runningLabel TEXT,                                    -- v0.13 Transform progress label override
     appliesToSources TEXT,                                -- v0.20 JSON Set<SourceType> for auto-run scoping; NULL = all sources
     inferenceSettings TEXT,                               -- v0.31 JSON PromptInferenceSettings; NULL = MacParakeet defaults
-    includeMeetingNotes INTEGER NOT NULL DEFAULT 0         -- v0.33: opt-in result-prompt context
+    includeMeetingNotes INTEGER NOT NULL DEFAULT 0         -- v0.32: opt-in result-prompt context
 );
 
 CREATE UNIQUE INDEX idx_prompts_name ON prompts(name COLLATE NOCASE);
@@ -458,7 +498,7 @@ CREATE UNIQUE INDEX idx_prompts_name ON prompts(name COLLATE NOCASE);
 
 **Notes:**
 - `name` has a case-insensitive unique index — no duplicate names across community and custom prompts.
-- `isBuiltIn` prompts are seeded from `Prompt.builtInPrompts()` during migration. The repository layer enforces the hide-only invariant (delete returns `false` for built-in prompts).
+- `isBuiltIn` prompts are seeded from `Prompt.builtInPrompts()` during migration. Built-ins use the same editable, recoverable soft-deletion lifecycle as custom prompts.
 - `isAutoRun` is independent of `isVisible`, but repository/UI behavior forces auto-run prompts visible while auto-run is enabled.
 - `category` currently stores the raw value `"summary"` for compatibility, while the Swift enum case is `Prompt.Category.result`.
 - Built-ins currently come from `Prompt.builtInPrompts()` in Swift. "Summary" is the lone auto-run built-in for users who have not disabled every auto-run prompt. ("Memo-Steered Notes" was a second auto-run built-in introduced in ADR-020 and reverted on 2026-05-02 — see ADR-020 amendment.)
@@ -478,7 +518,7 @@ CREATE UNIQUE INDEX idx_prompts_name ON prompts(name COLLATE NOCASE);
   non-empty meeting notes may be appended as a delimited context block unless
   the prompt already places them explicitly through `{{userNotes}}`. Transform
   rows must remain false. This column is specified for the next additive
-  v0.33 migration and is not considered shipped until final implementation tests pass.
+  v0.32 migration and is not considered shipped until final implementation tests pass.
 
 ---
 
@@ -496,7 +536,7 @@ CREATE TABLE summaries (
     extraInstructions TEXT,                                -- User's per-run extra instructions (if any)
     content           TEXT NOT NULL,                       -- The generated summary text
     userNotesSnapshot TEXT,                                -- v0.8: notes used when generating this result
-    includeMeetingNotesSnapshot INTEGER NOT NULL DEFAULT 0, -- v0.33: checkbox receipt
+    includeMeetingNotesSnapshot INTEGER NOT NULL DEFAULT 0, -- v0.32: checkbox receipt
     inferenceSettingsSnapshot TEXT,                       -- v0.31: JSON effective settings actually sent
     createdAt         TEXT NOT NULL,                       -- ISO 8601 timestamp
     updatedAt         TEXT NOT NULL                        -- ISO 8601 timestamp
@@ -967,7 +1007,7 @@ struct Prompt: Codable, Identifiable, Sendable {
     var runningLabel: String?
     var appliesToSources: Set<Transcription.SourceType>?  // v0.20 auto-run scoping; nil = all sources
     var inferenceSettings: PromptInferenceSettings?       // v0.31; nil = MacParakeet defaults
-    var includeMeetingNotes: Bool                         // v0.33; result-only opt-in, defaults false
+    var includeMeetingNotes: Bool                         // v0.32; result-only opt-in, defaults false
     var createdAt: Date
     var updatedAt: Date
 
@@ -1400,8 +1440,8 @@ migrator.registerMigration("v0.7-prompts-and-summaries") { db in
 | `summaries` | v0.7 | Prompt results per transcription (FK → transcriptions, cascade delete; Swift model `PromptResult`) |
 | `prompts.inferenceSettings` | v0.31 | Nullable JSON requested settings for custom result prompts; `NULL` inherits MacParakeet defaults |
 | `summaries.inferenceSettingsSnapshot` | v0.31 | Nullable JSON receipt of effective settings sent after provider/model filtering |
-| `prompts.includeMeetingNotes` | v0.33 | Result-prompt opt-in for automatic meeting-notes context; non-null, default false |
-| `summaries.includeMeetingNotesSnapshot` | v0.33 | Generation-time receipt of the prompt's notes-context opt-in; non-null, default false |
+| `prompts.includeMeetingNotes` | v0.32 | Result-prompt opt-in for automatic meeting-notes context; non-null, default false |
+| `summaries.includeMeetingNotesSnapshot` | v0.32 | Generation-time receipt of the prompt's notes-context opt-in; non-null, default false |
 | `lifetime_dictation_stats` | v0.7.4 | Singleton lifetime voice-stat counters |
 | `daily_dictation_stats` | v0.11 | Per-day rollup powering Stats-tab heatmap + daily streaks |
 | `transcriptions.recoveredFromCrash` | v0.7.5 | Interrupted meeting recovery marker |

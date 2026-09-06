@@ -865,6 +865,7 @@ final class MockLLMService: LLMServiceProtocol, @unchecked Sendable {
     var lastChatSource: TelemetryChatSource?
     var lastSummarySystemPrompt: String?
     var lastSummaryInferenceSettings: PromptInferenceSettings?
+    var lastSummaryModelOverride: String?
     var lastFormattedTranscript: String?
     var lastFormatterPromptTemplate: String?
     var lastFormatterSource: TelemetryFormatterSource?
@@ -1041,16 +1042,32 @@ final class MockLLMService: LLMServiceProtocol, @unchecked Sendable {
                     continuation.yield(.text(token))
                 }
                 if emitsTerminal {
-                    continuation.yield(.completed(LLMStreamTerminal(
-                        provider: "mock",
-                        model: "mock-model",
-                        effectiveSettings: effectiveSettings
-                    )))
+                    continuation.yield(
+                        .completed(
+                            LLMStreamTerminal(
+                                provider: "mock",
+                                model: "mock-model",
+                                effectiveSettings: effectiveSettings
+                            )))
                 }
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    func generatePromptResultDetailedStream(
+        transcript: String,
+        systemPrompt: String?,
+        inferenceSettings: PromptInferenceSettings?,
+        modelOverride: String?
+    ) -> AsyncThrowingStream<LLMStreamEvent, Error> {
+        lastSummaryModelOverride = modelOverride
+        return generatePromptResultDetailedStream(
+            transcript: transcript,
+            systemPrompt: systemPrompt,
+            inferenceSettings: inferenceSettings
+        )
     }
 
     func chatStream(
@@ -1107,6 +1124,7 @@ final class MockLLMService: LLMServiceProtocol, @unchecked Sendable {
 
 final class MockPromptRepository: PromptRepositoryProtocol, @unchecked Sendable {
     var prompts: [Prompt] = []
+    var deletedPrompts: [Prompt] = []
     var fetchAutoRunPromptsError: Error?
 
     func save(_ prompt: Prompt) throws {
@@ -1119,6 +1137,14 @@ final class MockPromptRepository: PromptRepositoryProtocol, @unchecked Sendable 
 
     func fetch(id: UUID) throws -> Prompt? {
         prompts.first(where: { $0.id == id })
+    }
+
+    func fetchIncludingDeleted(id: UUID) throws -> Prompt? {
+        prompts.first(where: { $0.id == id }) ?? deletedPrompts.first(where: { $0.id == id })
+    }
+
+    func fetchDeleted() throws -> [Prompt] {
+        deletedPrompts
     }
 
     func fetchAll() throws -> [Prompt] {
@@ -1150,9 +1176,11 @@ final class MockPromptRepository: PromptRepositoryProtocol, @unchecked Sendable 
     }
 
     func delete(id: UUID) throws -> Bool {
-        let before = prompts.count
-        prompts.removeAll { $0.id == id }
-        return prompts.count < before
+        guard let index = prompts.firstIndex(where: { $0.id == id }) else { return false }
+        var prompt = prompts.remove(at: index)
+        prompt.deletedAt = Date()
+        deletedPrompts.append(prompt)
+        return true
     }
 
     func toggleVisibility(id: UUID) throws {
@@ -1215,6 +1243,109 @@ final class MockPromptRepository: PromptRepositoryProtocol, @unchecked Sendable 
             prompts[index].isVisible = true
             prompts[index].updatedAt = Date()
         }
+    }
+}
+
+// MARK: - MockPromptMeetingPolicyRepository
+
+final class MockPromptMeetingPolicyRepository: PromptMeetingPolicyRepositoryProtocol, @unchecked Sendable {
+    var policiesByPromptID: [UUID: [PromptMeetingPolicy]] = [:]
+    var bulkFetchHandler: ((Set<UUID>) throws -> [PromptMeetingPolicy])?
+    private(set) var bulkFetchCallCount = 0
+    private(set) var singleFetchCallCount = 0
+    private(set) var mutationRanOnMainThread = false
+    private let metricsLock = NSLock()
+
+    func save(_ policy: PromptMeetingPolicy) throws {
+        var policies = policiesByPromptID[policy.promptId] ?? []
+        if let index = policies.firstIndex(where: { $0.id == policy.id }) {
+            policies[index] = policy
+        } else {
+            policies.append(policy)
+        }
+        policiesByPromptID[policy.promptId] = policies
+    }
+
+    func fetch(id: UUID) throws -> PromptMeetingPolicy? {
+        policiesByPromptID.values.lazy.flatMap { $0 }.first(where: { $0.id == id })
+    }
+
+    func fetchPolicies(promptId: UUID) throws -> [PromptMeetingPolicy] {
+        metricsLock.withLock { singleFetchCallCount += 1 }
+        return policiesByPromptID[promptId] ?? []
+    }
+
+    func fetchPolicies(promptIds: Set<UUID>) throws -> [PromptMeetingPolicy] {
+        metricsLock.withLock { bulkFetchCallCount += 1 }
+        if let bulkFetchHandler {
+            return try bulkFetchHandler(promptIds)
+        }
+        return promptIds.flatMap { policiesByPromptID[$0] ?? [] }
+    }
+
+    func fetchEffectivePolicy(promptId: UUID, meetingTypeId: UUID?) throws -> PromptMeetingPolicy? {
+        let policies = policiesByPromptID[promptId] ?? []
+        if let meetingTypeId,
+            let exact = policies.first(where: { $0.scopeKind == .type && $0.meetingTypeId == meetingTypeId })
+        {
+            return exact
+        }
+        return policies.first(where: { $0.scopeKind == .all && $0.meetingTypeId == nil })
+    }
+
+    func setAllMeetingsPolicy(
+        promptId: UUID,
+        isAvailable: Bool,
+        isAutoRun: Bool,
+        sortOrder: Int?
+    ) throws -> PromptMeetingPolicy {
+        metricsLock.withLock { mutationRanOnMainThread = Thread.isMainThread }
+        policiesByPromptID[promptId]?.removeAll {
+            $0.scopeKind == .all && $0.meetingTypeId == nil
+        }
+        let policy = PromptMeetingPolicy.allMeetings(
+            promptId: promptId,
+            isAvailable: isAvailable,
+            isAutoRun: isAutoRun,
+            sortOrder: sortOrder
+        )
+        try save(policy)
+        return policy
+    }
+
+    func setPolicy(
+        promptId: UUID,
+        meetingTypeId: UUID,
+        isAvailable: Bool,
+        isAutoRun: Bool,
+        sortOrder: Int?
+    ) throws -> PromptMeetingPolicy {
+        metricsLock.withLock { mutationRanOnMainThread = Thread.isMainThread }
+        policiesByPromptID[promptId]?.removeAll {
+            $0.scopeKind == .type && $0.meetingTypeId == meetingTypeId
+        }
+        let policy = PromptMeetingPolicy.meetingType(
+            promptId: promptId,
+            meetingTypeId: meetingTypeId,
+            isAvailable: isAvailable,
+            isAutoRun: isAutoRun,
+            sortOrder: sortOrder
+        )
+        try save(policy)
+        return policy
+    }
+
+    func delete(id: UUID) throws -> Bool {
+        for promptID in policiesByPromptID.keys {
+            let previousCount = policiesByPromptID[promptID]?.count ?? 0
+            policiesByPromptID[promptID]?.removeAll { $0.id == id }
+            if policiesByPromptID[promptID]?.count != previousCount { return true }
+        }
+        return false
+    }
+
+    func deletePolicies(promptId: UUID) throws {
+        policiesByPromptID[promptId] = nil
     }
 }
 

@@ -19,6 +19,12 @@ final class SpecCommandTests: XCTestCase {
         let paths = commands.compactMap { $0["path"] as? [String] }
         XCTAssertTrue(paths.contains(["meetings", "results", "add"]))
         XCTAssertTrue(paths.contains(["meetings", "artifact"]))
+        XCTAssertTrue(paths.contains(["meetings", "classify"]))
+        XCTAssertTrue(paths.contains(["meetings", "types", "list"]))
+        XCTAssertTrue(paths.contains(["meetings", "labels", "list"]))
+        XCTAssertTrue(paths.contains(["prompts", "history"]))
+        XCTAssertTrue(paths.contains(["prompts", "diff"]))
+        XCTAssertTrue(paths.contains(["prompts", "restore-deleted"]))
         XCTAssertTrue(paths.contains(["config", "set"]))
         XCTAssertTrue(paths.contains(["models", "delete"]))
         XCTAssertTrue(paths.contains(["spec"]))

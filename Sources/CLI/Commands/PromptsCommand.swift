@@ -29,9 +29,13 @@ struct PromptsCommand: AsyncParsableCommand {
         subcommands: [
             ListSubcommand.self,
             ShowSubcommand.self,
+            HistorySubcommand.self,
+            DiffSubcommand.self,
+            RestoreSubcommand.self,
             AddSubcommand.self,
             SetSubcommand.self,
             DeleteSubcommand.self,
+            RestoreDeletedSubcommand.self,
             RestoreDefaultsSubcommand.self,
             RunSubcommand.self,
         ],
@@ -75,7 +79,7 @@ extension PromptsCommand {
                 }
 
                 if json {
-                    try printJSON(prompts)
+                    try printJSON(prompts.map { try promptCLIRecord($0, db: db) })
                     return
                 }
 
@@ -110,6 +114,9 @@ extension PromptsCommand {
         @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
         var json: Bool = false
 
+        @Option(name: .long, help: "Show an immutable historical version number instead of the active prompt.")
+        var version: Int?
+
         @Option(help: "Path to SQLite database file (defaults to the app database).")
         var database: String?
 
@@ -118,10 +125,25 @@ extension PromptsCommand {
                 try AppPaths.ensureDirectories()
                 let db = try DatabaseManager(path: resolvedDatabasePath(database))
                 let repo = PromptRepository(dbQueue: db.dbQueue)
-                let prompt = try findPrompt(idOrName: idOrName, repo: repo)
+                let prompt = try findPrompt(
+                    idOrName: idOrName,
+                    repo: repo,
+                    categories: [.result, .transform]
+                )
+
+                if let version {
+                    let versionRepo = PromptVersionRepository(dbQueue: db.dbQueue)
+                    let selected = try findPromptVersion(number: version, prompt: prompt, repo: versionRepo)
+                    if json {
+                        try printJSON(selected)
+                    } else {
+                        printPromptVersion(selected, promptName: prompt.name)
+                    }
+                    return
+                }
 
                 if json {
-                    try printJSON(prompt)
+                    try printJSON(try promptCLIRecord(prompt, db: db))
                     return
                 }
 
@@ -131,6 +153,120 @@ extension PromptsCommand {
                 print("Updated:   \(ISO8601DateFormatter().string(from: prompt.updatedAt))")
                 print()
                 print(prompt.content)
+            }
+        }
+    }
+}
+
+// MARK: - History and diff
+
+extension PromptsCommand {
+    struct HistorySubcommand: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "history",
+            abstract: "List a prompt's immutable versions."
+        )
+
+        @Argument(help: "Prompt ID, ID prefix, or name.") var idOrName: String
+        @Flag(name: .long, help: "Emit JSON instead of human-readable output.") var json = false
+        @Option(help: "Path to SQLite database file (defaults to the app database).") var database: String?
+
+        func run() throws {
+            try emitJSONOrRethrow(json: json) {
+                let db = try makeDatabaseManager(database: database)
+                let prompt = try findPrompt(
+                    idOrName: idOrName,
+                    repo: PromptRepository(dbQueue: db.dbQueue),
+                    categories: [.result, .transform]
+                )
+                let versions = try PromptVersionRepository(dbQueue: db.dbQueue).fetchAll(promptId: prompt.id)
+                if json {
+                    try printJSON(versions)
+                } else {
+                    for version in versions {
+                        let active = version.id == prompt.activeVersionId ? "  [active]" : ""
+                        print("v\(version.versionNumber)  \(version.origin.rawValue)  \(formatPromptVersionDate(version.createdAt))\(active)")
+                    }
+                }
+            }
+        }
+    }
+
+    struct DiffSubcommand: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "diff",
+            abstract: "Compare two immutable prompt versions."
+        )
+
+        @Argument(help: "Prompt ID, ID prefix, or name.") var idOrName: String
+        @Option(name: .long, help: "Older version number.") var from: Int
+        @Option(name: .long, help: "Newer version number.") var to: Int
+        @Flag(name: .long, help: "Emit JSON instead of human-readable output.") var json = false
+        @Option(help: "Path to SQLite database file (defaults to the app database).") var database: String?
+
+        func validate() throws {
+            guard from > 0, to > 0 else { throw ValidationError("--from and --to must be positive version numbers") }
+        }
+
+        func run() throws {
+            try emitJSONOrRethrow(json: json) {
+                let db = try makeDatabaseManager(database: database)
+                let prompt = try findPrompt(
+                    idOrName: idOrName,
+                    repo: PromptRepository(dbQueue: db.dbQueue),
+                    categories: [.result, .transform]
+                )
+                let versions = PromptVersionRepository(dbQueue: db.dbQueue)
+                let old = try findPromptVersion(number: from, prompt: prompt, repo: versions)
+                let new = try findPromptVersion(number: to, prompt: prompt, repo: versions)
+                let diff = PromptDiffService.diff(from: old, to: new)
+                if json {
+                    try printJSON(PromptDiffRecord(prompt: prompt, from: old, to: new, diff: diff))
+                } else {
+                    print("\(prompt.name): v\(from) -> v\(to)")
+                    print(renderPromptDiff(diff))
+                }
+            }
+        }
+    }
+
+    struct RestoreSubcommand: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "restore",
+            abstract: "Restore an old prompt version by creating a new active version."
+        )
+
+        @Argument(help: "Prompt ID, ID prefix, or name.") var idOrName: String
+        @Option(name: .long, help: "Version number to copy into a new version.") var version: Int
+        @Option(name: .long, help: "Optional history note for the restored version.") var note: String?
+        @Flag(name: .long, help: "Emit JSON instead of human-readable output.") var json = false
+        @Option(help: "Path to SQLite database file (defaults to the app database).") var database: String?
+
+        func validate() throws {
+            guard version > 0 else { throw ValidationError("--version must be positive") }
+        }
+
+        func run() throws {
+            try emitJSONOrRethrow(json: json) {
+                let db = try makeDatabaseManager(database: database)
+                let prompt = try findPrompt(
+                    idOrName: idOrName,
+                    repo: PromptRepository(dbQueue: db.dbQueue),
+                    categories: [.result, .transform]
+                )
+                let versionRepo = PromptVersionRepository(dbQueue: db.dbQueue)
+                let source = try findPromptVersion(number: version, prompt: prompt, repo: versionRepo)
+                let restored = try PromptEditingService(dbQueue: db.dbQueue).restore(
+                    promptId: prompt.id,
+                    versionId: source.id,
+                    changeNote: note
+                )
+                if json {
+                    try printJSON(try promptCLIRecord(restored, db: db))
+                } else {
+                    let active = try versionRepo.fetchActive(promptId: prompt.id)
+                    print("Restored '\(prompt.name)' from v\(version) as v\(active?.versionNumber ?? 0).")
+                }
             }
         }
     }
@@ -242,6 +378,45 @@ extension PromptsCommand {
         )
         var source: PromptAutoRunSource?
 
+        @Option(name: .long, help: "Use this active-provider model for the prompt; creates a version.")
+        var model: String?
+
+        @Flag(name: .long, help: "Clear the prompt model override; creates a version when changed.")
+        var activeModel = false
+
+        @Option(name: .long, help: "Override sampling temperature (0...2); creates a version.")
+        var temperature: Double?
+
+        @Option(name: .long, help: "Override nucleus sampling top-p (0...1); creates a version.")
+        var topP: Double?
+
+        @Option(name: .long, help: "Override top-k (0...1000); creates a version.")
+        var topK: Int?
+
+        @Option(name: .long, help: "Override maximum output tokens (1...131072); creates a version.")
+        var maxTokens: Int?
+
+        @Option(name: .long, help: "Thinking mode: providerDefault, enabled, disabled; creates a version.")
+        var thinkingMode: String?
+
+        @Option(name: .long, help: "Reasoning effort: low, medium, high, xhigh; creates a version.")
+        var reasoningEffort: String?
+
+        @Flag(name: .long, help: "Clear all per-prompt inference settings; creates a version when changed.")
+        var providerDefaultSettings = false
+
+        @Option(name: .long, help: "Configure availability for one meeting type UUID, prefix, or name.")
+        var meetingType: String?
+
+        @Flag(name: .long, help: "Configure the fallback policy for all meeting types.")
+        var allMeetingTypes = false
+
+        @Flag(name: .long, help: "Make the prompt manually available for the selected meeting policy.")
+        var available = false
+
+        @Flag(name: .long, help: "Make the prompt unavailable for the selected meeting policy.")
+        var unavailable = false
+
         @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
         var json: Bool = false
 
@@ -258,6 +433,58 @@ extension PromptsCommand {
             if includeMeetingNotes && noIncludeMeetingNotes {
                 throw ValidationError("--include-meeting-notes and --no-include-meeting-notes are mutually exclusive")
             }
+            if model != nil && activeModel {
+                throw ValidationError("--model and --active-model are mutually exclusive")
+            }
+            if let model, model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw ValidationError("--model must not be empty")
+            }
+            let hasInferenceOptions = temperature != nil || topP != nil || topK != nil
+                || maxTokens != nil || thinkingMode != nil || reasoningEffort != nil
+            if providerDefaultSettings && hasInferenceOptions {
+                throw ValidationError("--provider-default-settings cannot be combined with inference overrides")
+            }
+            if let thinkingMode,
+                PromptInferenceSettings.ThinkingMode(rawValue: thinkingMode) == nil
+            {
+                throw ValidationError("--thinking-mode must be providerDefault, enabled, or disabled")
+            }
+            if let reasoningEffort,
+                PromptInferenceSettings.ReasoningEffort(rawValue: reasoningEffort) == nil
+            {
+                throw ValidationError("--reasoning-effort must be low, medium, high, or xhigh")
+            }
+            do {
+                _ = try PromptInferenceSettings(
+                    temperature: temperature,
+                    topP: topP,
+                    topK: topK,
+                    maxTokens: maxTokens
+                ).validated()
+            } catch {
+                throw ValidationError("invalid inference setting: \(error)")
+            }
+            if meetingType != nil && allMeetingTypes {
+                throw ValidationError("--meeting-type and --all-meeting-types are mutually exclusive")
+            }
+            if available && unavailable {
+                throw ValidationError("--available and --unavailable are mutually exclusive")
+            }
+            let hasPolicyTarget = meetingType != nil || allMeetingTypes
+            if (available || unavailable) && !hasPolicyTarget {
+                throw ValidationError("--available/--unavailable require --meeting-type or --all-meeting-types")
+            }
+            if hasPolicyTarget {
+                if visible || hidden || source != nil || model != nil || activeModel
+                    || hasInferenceOptions || providerDefaultSettings
+                    || includeMeetingNotes || noIncludeMeetingNotes
+                {
+                    throw ValidationError("meeting policy options cannot be combined with visibility, source, or model options")
+                }
+                if !(available || unavailable || autoRun || noAutoRun) {
+                    throw ValidationError("a meeting policy requires --available, --unavailable, --auto-run, or --no-auto-run")
+                }
+            }
             // Auto-run requires visible (mirrors PromptRepository.toggleAutoRun).
             // Reject the contradictory combo explicitly so the user doesn't get a
             // silent precedence surprise where one flag overrides the other.
@@ -272,8 +499,11 @@ extension PromptsCommand {
                     throw ValidationError("--source requires --auto-run or --no-auto-run")
                 }
             }
-            if !(visible || hidden || autoRun || noAutoRun || includeMeetingNotes || noIncludeMeetingNotes) {
-                throw ValidationError("specify at least one setting flag")
+            if !(visible || hidden || autoRun || noAutoRun || model != nil || activeModel
+                || hasInferenceOptions || providerDefaultSettings || hasPolicyTarget
+                || includeMeetingNotes || noIncludeMeetingNotes)
+            {
+                throw ValidationError("specify at least one setting to change")
             }
         }
 
@@ -308,16 +538,95 @@ extension PromptsCommand {
                 var prompt = try findPrompt(
                     idOrName: idOrName,
                     repo: repo,
-                    category: meetingNotesFlagSpecified ? nil : .result
+                    categories: [.result, .transform]
                 )
                 if meetingNotesFlagSpecified, prompt.category != .result {
                     throw ValidationError("meeting-note context is only available for result prompts")
                 }
 
+                if meetingType != nil || allMeetingTypes {
+                    guard prompt.category == .result else {
+                        throw ValidationError("meeting policies apply only to result prompts")
+                    }
+                    let policies = PromptMeetingPolicyRepository(dbQueue: db.dbQueue)
+                    let existing: PromptMeetingPolicy?
+                    let meetingTypeID: UUID?
+                    if let meetingType {
+                        let typeRepo = MeetingTypeRepository(dbQueue: db.dbQueue)
+                        meetingTypeID = try findMeetingType(meetingType, repo: typeRepo).id
+                        existing = try policies.fetchPolicies(promptId: prompt.id).first {
+                            $0.scopeKind == .type && $0.meetingTypeId == meetingTypeID
+                        }
+                    } else {
+                        meetingTypeID = nil
+                        existing = try policies.fetchPolicies(promptId: prompt.id).first {
+                            $0.scopeKind == .all
+                        }
+                    }
+                    let isAvailable = unavailable ? false : (available || autoRun ? true : existing?.isAvailable ?? true)
+                    let isAutoRun = isAvailable && (autoRun ? true : noAutoRun ? false : existing?.isAutoRun ?? false)
+                    let policy = if let meetingTypeID {
+                        try policies.setPolicy(
+                            promptId: prompt.id,
+                            meetingTypeId: meetingTypeID,
+                            isAvailable: isAvailable,
+                            isAutoRun: isAutoRun,
+                            sortOrder: existing?.sortOrder
+                        )
+                    } else {
+                        try policies.setAllMeetingsPolicy(
+                            promptId: prompt.id,
+                            isAvailable: isAvailable,
+                            isAutoRun: isAutoRun,
+                            sortOrder: existing?.sortOrder
+                        )
+                    }
+                    if json { try printJSON(policy) }
+                    else { print("Updated meeting policy for '\(prompt.name)'.") }
+                    return
+                }
+
+                if let model {
+                    prompt.modelOverride = model.trimmingCharacters(in: .whitespacesAndNewlines)
+                } else if activeModel {
+                    prompt.modelOverride = nil
+                }
+                if providerDefaultSettings {
+                    prompt.inferenceSettings = nil
+                } else if temperature != nil || topP != nil || topK != nil || maxTokens != nil
+                    || thinkingMode != nil || reasoningEffort != nil
+                {
+                    var settings = prompt.inferenceSettings ?? PromptInferenceSettings()
+                    if let temperature { settings.temperature = temperature }
+                    if let topP { settings.topP = topP }
+                    if let topK { settings.topK = topK }
+                    if let maxTokens { settings.maxTokens = maxTokens }
+                    if let thinkingMode {
+                        settings.thinkingMode = PromptInferenceSettings.ThinkingMode(rawValue: thinkingMode)!
+                    }
+                    if let reasoningEffort {
+                        settings.reasoningEffort = PromptInferenceSettings.ReasoningEffort(rawValue: reasoningEffort)!
+                    }
+                    prompt.inferenceSettings = try settings.validated()
+                }
+
                 if let source {
+                    let desiredModelOverride = prompt.modelOverride
+                    let desiredInferenceSettings = prompt.inferenceSettings
                     try repo.setAutoRun(id: prompt.id, source: source.sourceType, enabled: autoRun)
                     prompt = try repo.fetch(id: prompt.id) ?? prompt
-                } else if visible || hidden || autoRun || noAutoRun {
+                    if prompt.modelOverride != desiredModelOverride
+                        || prompt.inferenceSettings != desiredInferenceSettings
+                    {
+                        prompt.modelOverride = desiredModelOverride
+                        prompt.inferenceSettings = desiredInferenceSettings
+                        prompt.updatedAt = Date()
+                        prompt = try PromptEditingService(dbQueue: db.dbQueue).save(prompt)
+                    }
+                } else if visible || hidden || autoRun || noAutoRun || model != nil || activeModel
+                    || providerDefaultSettings || temperature != nil || topP != nil || topK != nil
+                    || maxTokens != nil || thinkingMode != nil || reasoningEffort != nil
+                {
                     Self.applyFlags(
                         to: &prompt,
                         visible: visible,
@@ -327,7 +636,7 @@ extension PromptsCommand {
                     )
 
                     prompt.updatedAt = Date()
-                    try repo.save(prompt)
+                    prompt = try PromptEditingService(dbQueue: db.dbQueue).save(prompt)
                 }
 
                 if includeMeetingNotes || noIncludeMeetingNotes {
@@ -336,7 +645,7 @@ extension PromptsCommand {
                 }
 
                 if json {
-                    try printJSON(prompt)
+                    try printJSON(try promptCLIRecord(prompt, db: db))
                 } else {
                     print("Updated '\(prompt.name)':\(renderBadges(prompt))")
                 }
@@ -351,29 +660,60 @@ extension PromptsCommand {
     struct DeleteSubcommand: ParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "delete",
-            abstract: "Delete a custom prompt (built-ins cannot be deleted)."
+            abstract: "Soft-delete a prompt. Built-ins and custom prompts use the same lifecycle."
         )
 
         @Argument(help: "Prompt ID, ID prefix, or name.")
         var idOrName: String
 
+        @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
+        var json = false
+
         @Option(help: "Path to SQLite database file (defaults to the app database).")
         var database: String?
 
         func run() throws {
-            try AppPaths.ensureDirectories()
-            let db = try DatabaseManager(path: resolvedDatabasePath(database))
-            let repo = PromptRepository(dbQueue: db.dbQueue)
+            try emitJSONOrRethrow(json: json) {
+                let db = try makeDatabaseManager(database: database)
+                let repo = PromptRepository(dbQueue: db.dbQueue)
+                let prompt = try findPrompt(
+                    idOrName: idOrName,
+                    repo: repo,
+                    categories: [.result, .transform]
+                )
+                let deleted = try PromptEditingService(dbQueue: db.dbQueue).softDelete(id: prompt.id)
+                guard deleted else { throw PromptCLIError.deleteFailed(prompt.name) }
+                let affected = try repo.fetchIncludingDeleted(id: prompt.id) ?? prompt
+                if json {
+                    try printJSON(try promptCLIRecord(affected, db: db))
+                } else {
+                    print("Deleted prompt '\(prompt.name)'")
+                }
+            }
+        }
+    }
 
-            let prompt = try findPrompt(idOrName: idOrName, repo: repo)
-            if prompt.isBuiltIn {
-                throw PromptCLIError.cannotDeleteBuiltIn(prompt.name)
+    struct RestoreDeletedSubcommand: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "restore-deleted",
+            abstract: "Restore a soft-deleted prompt."
+        )
+
+        @Argument(help: "Deleted prompt UUID, UUID prefix, or exact name.") var idOrName: String
+        @Flag(name: .long, help: "Emit JSON instead of human-readable output.") var json = false
+        @Option(help: "Path to SQLite database file (defaults to the app database).") var database: String?
+
+        func run() throws {
+            try emitJSONOrRethrow(json: json) {
+                let db = try makeDatabaseManager(database: database)
+                let repo = PromptRepository(dbQueue: db.dbQueue)
+                let prompt = try findDeletedPrompt(idOrName: idOrName, repo: repo)
+                let restored = try PromptEditingService(dbQueue: db.dbQueue).restoreDeleted(id: prompt.id)
+                guard restored else { throw PromptCLIError.restoreFailed(prompt.name) }
+                let resolved = try repo.fetch(id: prompt.id) ?? prompt
+                if json { try printJSON(try promptCLIRecord(resolved, db: db)) }
+                else { print("Restored prompt '\(prompt.name)'") }
             }
-            let deleted = try repo.delete(id: prompt.id)
-            guard deleted else {
-                throw PromptCLIError.deleteFailed(prompt.name)
-            }
-            print("Deleted prompt '\(prompt.name)'")
         }
     }
 }
@@ -458,6 +798,18 @@ extension PromptsCommand {
                 let projection = try speakerAttributionReader.resolve(transcription: automaticTranscript)
                 let transcript = projection.effectiveTranscription
 
+                let resolution = try PromptLabelApplicabilityResolver.resolve(
+                    prompt: prompt,
+                    sourceType: transcript.sourceType,
+                    transcriptionLabelIDs: TranscriptionMeetingLabelRepository(dbQueue: db.dbQueue)
+                        .labelIDs(for: transcript.id),
+                    policies: PromptLabelPolicyRepository(dbQueue: db.dbQueue)
+                        .fetchPolicies(promptId: prompt.id)
+                )
+                guard resolution.isAvailable else {
+                    throw PromptCLIError.promptUnavailable(prompt.name, resolution.reason.rawValue)
+                }
+
                 let transcriptText = transcript.cleanTranscript ?? transcript.rawTranscript ?? ""
                 guard !transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw PromptCLIError.emptyTranscript(transcript.fileName)
@@ -474,7 +826,11 @@ extension PromptsCommand {
                 )
                 let systemPrompt = assembly.systemPrompt
 
-                let execution = try llm.buildExecutionContext()
+                var effectiveLLM = llm
+                if let modelOverride = prompt.modelOverride {
+                    effectiveLLM.model = modelOverride
+                }
+                let execution = try effectiveLLM.buildExecutionContext()
                 let service = LLMService(
                     client: execution.client,
                     contextResolver: StaticLLMExecutionContextResolver(context: execution.context)
@@ -483,20 +839,26 @@ extension PromptsCommand {
                 var output = ""
                 var jsonResult: LLMResult?
                 var effectiveSettings: PromptInferenceSettings?
+                var providerSnapshot: String?
+                var modelSnapshot: String?
                 if json {
                     let result = try await service.generatePromptResultDetailed(
                         transcript: transcriptText,
                         systemPrompt: systemPrompt,
-                        inferenceSettings: prompt.inferenceSettings
+                        inferenceSettings: prompt.inferenceSettings,
+                        modelOverride: prompt.modelOverride
                     )
                     output = result.output
                     jsonResult = result
                     effectiveSettings = result.effectiveSettings
+                    providerSnapshot = result.provider
+                    modelSnapshot = result.model
                 } else if stream {
                     let eventStream = service.generatePromptResultDetailedStream(
                         transcript: transcriptText,
                         systemPrompt: systemPrompt,
-                        inferenceSettings: prompt.inferenceSettings
+                        inferenceSettings: prompt.inferenceSettings,
+                        modelOverride: prompt.modelOverride
                     )
                     var terminal: LLMStreamTerminal?
                     for try await event in eventStream {
@@ -513,14 +875,19 @@ extension PromptsCommand {
                         throw LLMError.streamingError("prompt result stream ended without terminal metadata")
                     }
                     effectiveSettings = terminal.effectiveSettings
+                    providerSnapshot = terminal.provider
+                    modelSnapshot = terminal.model
                 } else {
                     let result = try await service.generatePromptResultDetailed(
                         transcript: transcriptText,
                         systemPrompt: systemPrompt,
-                        inferenceSettings: prompt.inferenceSettings
+                        inferenceSettings: prompt.inferenceSettings,
+                        modelOverride: prompt.modelOverride
                     )
                     output = result.output
                     effectiveSettings = result.effectiveSettings
+                    providerSnapshot = result.provider
+                    modelSnapshot = result.model
                     print(output)
                 }
 
@@ -531,12 +898,15 @@ extension PromptsCommand {
                         extraInstructions: normalizedExtra,
                         output: output,
                         userNotesSnapshot: assembly.effectiveUserNotes,
-                        effectiveSettings: effectiveSettings
+                        effectiveSettings: effectiveSettings,
+                        providerSnapshot: providerSnapshot,
+                        modelSnapshot: modelSnapshot
                     )
                     try resultRepo.save(result)
                     await refreshMeetingArtifacts(
                         projection: projection,
-                        resultRepo: resultRepo
+                        resultRepo: resultRepo,
+                        db: db
                     )
                     // Status messages on stderr so stdout stays grep-able as the prompt output.
                     FileHandle.standardError.write(
@@ -557,33 +927,43 @@ func makeStoredPromptRunResult(
     extraInstructions: String?,
     output: String,
     userNotesSnapshot: String?,
-    effectiveSettings: PromptInferenceSettings?
+    effectiveSettings: PromptInferenceSettings?,
+    providerSnapshot: String? = nil,
+    modelSnapshot: String? = nil
 ) -> PromptResult {
     PromptResult(
         transcriptionId: transcript.id,
+        promptId: prompt.id,
+        promptVersionId: prompt.activeVersionId,
         promptName: prompt.name,
         promptContent: prompt.content,
         extraInstructions: extraInstructions,
         content: output,
         userNotesSnapshot: userNotesSnapshot,
         includeMeetingNotesSnapshot: prompt.includeMeetingNotes,
-        inferenceSettingsSnapshot: effectiveSettings
+        inferenceSettingsSnapshot: effectiveSettings,
+        providerSnapshot: providerSnapshot,
+        modelSnapshot: modelSnapshot
     )
 }
 
 /// Refreshes meeting artifacts; failures are logged and never surfaced or thrown, and refresh never blocks or fails the triggering user action.
 private func refreshMeetingArtifacts(
     projection: SpeakerAttributionProjection,
-    resultRepo: PromptResultRepositoryProtocol
+    resultRepo: PromptResultRepositoryProtocol,
+    db: DatabaseManager
 ) async {
     let transcription = projection.effectiveTranscription
     guard transcription.sourceType == .meeting else { return }
 
     do {
         let promptResults = try resultRepo.fetchAll(transcriptionId: transcription.id)
+        let classification = try MeetingClassificationService(dbQueue: db.dbQueue)
+            .classification(for: transcription.id)
         _ = try await MeetingArtifactStore().materialize(
             projection: projection,
-            promptResults: promptResults
+            promptResults: promptResults,
+            classification: MeetingArtifactClassificationSnapshot(classification)
         )
     } catch {
         printErr("Warning: meeting artifact refresh failed: \(error.localizedDescription)")
@@ -611,17 +991,218 @@ private func renderBadges(_ p: Prompt) -> String {
     return badges.isEmpty ? "" : "  [\(badges.joined(separator: ", "))]"
 }
 
+private func findPromptVersion(
+    number: Int,
+    prompt: Prompt,
+    repo: PromptVersionRepositoryProtocol
+) throws -> PromptVersion {
+    guard let version = try repo.fetchAll(promptId: prompt.id).first(where: { $0.versionNumber == number }) else {
+        throw PromptCLIError.versionNotFound(prompt.name, number)
+    }
+    return version
+}
+
+private func findDeletedPrompt(idOrName: String, repo: PromptRepository) throws -> Prompt {
+    let trimmed = idOrName.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { throw CLILookupError.emptyID }
+    if let id = UUID(uuidString: trimmed), let prompt = try repo.fetchIncludingDeleted(id: id), prompt.deletedAt != nil {
+        return prompt
+    }
+    let deleted = try repo.fetchDeleted().filter { [.result, .transform].contains($0.category) }
+    if let prefix = uuidPrefixSearchKey(trimmed) {
+        let matches = deleted.filter { $0.id.uuidString.lowercased().hasPrefix(prefix) }
+        if matches.count == 1 { return matches[0] }
+        if matches.count > 1 { throw CLILookupError.ambiguous("Multiple deleted prompts match '\(trimmed)'.") }
+    }
+    let matches = deleted.filter { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }
+    if matches.count == 1 { return matches[0] }
+    if matches.count > 1 { throw CLILookupError.ambiguous("Multiple deleted prompts named '\(trimmed)'.") }
+    if let error = shortUUIDPrefixErrorIfApplicable(trimmed) { throw error }
+    throw CLILookupError.notFound("No deleted prompt matching '\(trimmed)'.")
+}
+
+private func printPromptVersion(_ version: PromptVersion, promptName: String) {
+    print("Prompt:    \(promptName)")
+    print("Version:   \(version.versionNumber)")
+    print("Origin:    \(version.origin.rawValue)")
+    print("Created:   \(formatPromptVersionDate(version.createdAt))")
+    if let model = version.modelOverride { print("Model:     \(model)") }
+    if let note = version.changeNote { print("Note:      \(note)") }
+    print()
+    print(version.content)
+}
+
+private func formatPromptVersionDate(_ date: Date) -> String {
+    ISO8601DateFormatter().string(from: date)
+}
+
+private func renderPromptDiff(_ diff: PromptVersionDiff) -> String {
+    var output: [String] = []
+    for line in diff.markdown.lines where line.kind != .unchanged {
+        switch line.kind {
+        case .removed:
+            output.append("-\(line.oldLineNumber ?? 0) \(line.oldText ?? "")")
+        case .added:
+            output.append("+\(line.newLineNumber ?? 0) \(line.newText ?? "")")
+        case .modified:
+            output.append("-\(line.oldLineNumber ?? 0) \(line.oldText ?? "")")
+            output.append("+\(line.newLineNumber ?? 0) \(line.newText ?? "")")
+        case .unchanged:
+            break
+        }
+    }
+    for change in diff.inferenceSettings {
+        output.append("~ settings.\(change.field.rawValue): \(describeSetting(change.oldValue)) -> \(describeSetting(change.newValue))")
+    }
+    if let model = diff.modelOverride {
+        output.append("~ modelOverride: \(model.oldValue ?? "default") -> \(model.newValue ?? "default")")
+    }
+    return output.isEmpty ? "No changes." : output.joined(separator: "\n")
+}
+
+private func describeSetting(_ value: PromptInferenceSettingValue?) -> String {
+    guard let value else { return "default" }
+    switch value {
+    case .decimal(let value): return String(value)
+    case .integer(let value): return String(value)
+    case .thinkingMode(let value): return value.rawValue
+    case .reasoningEffort(let value): return value.rawValue
+    }
+}
+
+private struct PromptCLIRecord: Encodable {
+    let id: UUID
+    let name: String
+    let content: String
+    let category: Prompt.Category
+    let isBuiltIn: Bool
+    let isVisible: Bool
+    let isAutoRun: Bool
+    let sortOrder: Int
+    let createdAt: Date
+    let updatedAt: Date
+    let keyboardShortcut: String?
+    let runningLabel: String?
+    let appliesToSources: Set<Transcription.SourceType>?
+    let inferenceSettings: PromptInferenceSettings?
+    let includeMeetingNotes: Bool
+    let activeVersionId: UUID?
+    let activeVersionNumber: Int?
+    let modelOverride: String?
+    let canonicalKey: String?
+    let lastAppliedCanonicalRevision: Int?
+    let userCustomizedAt: Date?
+    let deletedAt: Date?
+    let collectionId: UUID?
+
+    init(prompt: Prompt, activeVersionNumber: Int?) {
+        id = prompt.id
+        name = prompt.name
+        content = prompt.content
+        category = prompt.category
+        isBuiltIn = prompt.isBuiltIn
+        isVisible = prompt.isVisible
+        isAutoRun = prompt.isAutoRun
+        sortOrder = prompt.sortOrder
+        createdAt = prompt.createdAt
+        updatedAt = prompt.updatedAt
+        keyboardShortcut = prompt.keyboardShortcut
+        runningLabel = prompt.runningLabel
+        appliesToSources = prompt.appliesToSources
+        inferenceSettings = prompt.inferenceSettings
+        includeMeetingNotes = prompt.includeMeetingNotes
+        activeVersionId = prompt.activeVersionId
+        self.activeVersionNumber = activeVersionNumber
+        modelOverride = prompt.modelOverride
+        canonicalKey = prompt.canonicalKey
+        lastAppliedCanonicalRevision = prompt.lastAppliedCanonicalRevision
+        userCustomizedAt = prompt.userCustomizedAt
+        deletedAt = prompt.deletedAt
+        collectionId = prompt.collectionId
+    }
+}
+
+private func promptCLIRecord(_ prompt: Prompt, db: DatabaseManager) throws -> PromptCLIRecord {
+    let versionNumber = try prompt.activeVersionId.flatMap {
+        try PromptVersionRepository(dbQueue: db.dbQueue).fetch(id: $0)?.versionNumber
+    }
+    return PromptCLIRecord(prompt: prompt, activeVersionNumber: versionNumber)
+}
+
+private struct PromptDiffRecord: Encodable {
+    let promptId: UUID
+    let promptName: String
+    let fromVersion: Int
+    let toVersion: Int
+    let hasChanges: Bool
+    let lines: [Line]
+    let inferenceSettings: [Setting]
+    let modelOverride: ValueChange?
+
+    struct Line: Encodable {
+        let kind: String
+        let oldLineNumber: Int?
+        let newLineNumber: Int?
+        let oldText: String?
+        let newText: String?
+    }
+
+    struct Setting: Encodable {
+        let field: String
+        let oldValue: String?
+        let newValue: String?
+    }
+
+    struct ValueChange: Encodable {
+        let oldValue: String?
+        let newValue: String?
+    }
+
+    init(prompt: Prompt, from: PromptVersion, to: PromptVersion, diff: PromptVersionDiff) {
+        promptId = prompt.id
+        promptName = prompt.name
+        fromVersion = from.versionNumber
+        toVersion = to.versionNumber
+        hasChanges = diff.hasChanges
+        lines = diff.markdown.lines.map {
+            Line(
+                kind: $0.kind.rawValue,
+                oldLineNumber: $0.oldLineNumber,
+                newLineNumber: $0.newLineNumber,
+                oldText: $0.oldText,
+                newText: $0.newText
+            )
+        }
+        inferenceSettings = diff.inferenceSettings.map {
+            Setting(
+                field: $0.field.rawValue,
+                oldValue: $0.oldValue.map(describeSetting),
+                newValue: $0.newValue.map(describeSetting)
+            )
+        }
+        modelOverride = diff.modelOverride.map {
+            ValueChange(oldValue: $0.oldValue, newValue: $0.newValue)
+        }
+    }
+}
+
 private enum PromptCLIError: Error, LocalizedError {
-    case cannotDeleteBuiltIn(String)
     case deleteFailed(String)
+    case restoreFailed(String)
+    case versionNotFound(String, Int)
+    case promptUnavailable(String, String)
     case emptyTranscript(String)
 
     var errorDescription: String? {
         switch self {
-        case .cannotDeleteBuiltIn(let name):
-            return "Cannot delete built-in prompt '\(name)'. Use `prompts set <name> --hidden` to hide it instead."
         case .deleteFailed(let name):
             return "Delete failed for prompt '\(name)'."
+        case .restoreFailed(let name):
+            return "Restore failed for prompt '\(name)'."
+        case .versionNotFound(let name, let version):
+            return "Prompt '\(name)' has no version \(version)."
+        case .promptUnavailable(let name, let reason):
+            return "Prompt '\(name)' is unavailable for this transcription (\(reason))."
         case .emptyTranscript(let fileName):
             return "Transcription '\(fileName)' has no text to run a prompt against."
         }

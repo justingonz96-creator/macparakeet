@@ -12,6 +12,20 @@ public protocol MeetingArtifactStoring: Sendable {
         projection: SpeakerAttributionProjection,
         promptResults: [PromptResult]
     ) async throws -> MeetingArtifactSnapshot
+
+    @discardableResult
+    func materialize(
+        transcription: Transcription,
+        promptResults: [PromptResult],
+        classification: MeetingArtifactClassificationSnapshot?
+    ) async throws -> MeetingArtifactSnapshot
+
+    @discardableResult
+    func materialize(
+        projection: SpeakerAttributionProjection,
+        promptResults: [PromptResult],
+        classification: MeetingArtifactClassificationSnapshot?
+    ) async throws -> MeetingArtifactSnapshot
 }
 
 public extension MeetingArtifactStoring {
@@ -23,6 +37,80 @@ public extension MeetingArtifactStoring {
             transcription: projection.effectiveTranscription,
             promptResults: promptResults
         )
+    }
+
+    @discardableResult
+    func materialize(
+        projection: SpeakerAttributionProjection,
+        promptResults: [PromptResult],
+        classification: MeetingArtifactClassificationSnapshot?
+    ) async throws -> MeetingArtifactSnapshot {
+        try await materialize(
+            transcription: projection.effectiveTranscription,
+            promptResults: promptResults,
+            classification: classification
+        )
+    }
+
+    @discardableResult
+    func materialize(
+        transcription: Transcription,
+        promptResults: [PromptResult],
+        classification: MeetingArtifactClassificationSnapshot?
+    ) async throws -> MeetingArtifactSnapshot {
+        try await materialize(transcription: transcription, promptResults: promptResults)
+    }
+}
+
+public struct MeetingArtifactClassificationSnapshot: Codable, Sendable, Equatable {
+    public struct Value: Codable, Sendable, Equatable, Identifiable {
+        public var id: UUID
+        public var name: String
+        public var colorToken: String?
+        public var iconName: String?
+        public var isArchived: Bool
+
+        public init(
+            id: UUID,
+            name: String,
+            colorToken: String?,
+            iconName: String? = nil,
+            isArchived: Bool
+        ) {
+            self.id = id
+            self.name = name
+            self.colorToken = colorToken
+            self.iconName = iconName
+            self.isArchived = isArchived
+        }
+    }
+
+    public var meetingType: Value?
+    public var labels: [Value]
+
+    public init(meetingType: Value?, labels: [Value]) {
+        self.meetingType = meetingType
+        self.labels = labels
+    }
+
+    public init(_ classification: MeetingClassification) {
+        meetingType = classification.meetingType.map {
+            Value(
+                id: $0.id,
+                name: $0.name,
+                colorToken: $0.colorToken,
+                iconName: $0.iconName,
+                isArchived: $0.isArchived
+            )
+        }
+        labels = classification.labels.map {
+            Value(
+                id: $0.id,
+                name: $0.name,
+                colorToken: $0.colorToken,
+                isArchived: $0.isArchived
+            )
+        }
     }
 }
 
@@ -60,6 +148,8 @@ public struct MeetingArtifactSnapshot: Codable, Sendable, Equatable {
     public let promptResultCount: Int
     public let speakerCorrectionsApplied: Bool
     public let speakerCorrectionRevision: Int
+    public let meetingType: MeetingArtifactClassificationSnapshot.Value?
+    public let meetingLabels: [MeetingArtifactClassificationSnapshot.Value]?
     public let calendarEventSnapshot: MeetingCalendarSnapshot?
     public let meetingCaptureReport: MeetingCaptureReport?
 
@@ -83,6 +173,8 @@ public struct MeetingArtifactSnapshot: Codable, Sendable, Equatable {
         promptResultCount: Int,
         speakerCorrectionsApplied: Bool = false,
         speakerCorrectionRevision: Int = 0,
+        meetingType: MeetingArtifactClassificationSnapshot.Value? = nil,
+        meetingLabels: [MeetingArtifactClassificationSnapshot.Value]? = nil,
         calendarEventSnapshot: MeetingCalendarSnapshot? = nil,
         meetingCaptureReport: MeetingCaptureReport? = nil
     ) {
@@ -105,6 +197,8 @@ public struct MeetingArtifactSnapshot: Codable, Sendable, Equatable {
         self.promptResultCount = promptResultCount
         self.speakerCorrectionsApplied = speakerCorrectionsApplied
         self.speakerCorrectionRevision = speakerCorrectionRevision
+        self.meetingType = meetingType
+        self.meetingLabels = meetingLabels
         self.calendarEventSnapshot = calendarEventSnapshot
         self.meetingCaptureReport = meetingCaptureReport
     }
@@ -122,13 +216,16 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
     private let fileManager: FileManager
     private let markdownWriter: @Sendable (String, String) throws -> Void
     private let speakerAttributionReader: SpeakerAttributionReading?
+    private let classificationProvider: (@Sendable (UUID) throws -> MeetingArtifactClassificationSnapshot?)?
 
     public init(
         fileManager: FileManager = .default,
-        speakerAttributionReader: SpeakerAttributionReading? = nil
+        speakerAttributionReader: SpeakerAttributionReading? = nil,
+        classificationProvider: (@Sendable (UUID) throws -> MeetingArtifactClassificationSnapshot?)? = nil
     ) {
         self.fileManager = fileManager
         self.speakerAttributionReader = speakerAttributionReader
+        self.classificationProvider = classificationProvider
         markdownWriter = { content, path in
             try content.write(
                 toFile: path,
@@ -141,10 +238,12 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
     init(
         fileManager: FileManager = .default,
         speakerAttributionReader: SpeakerAttributionReading? = nil,
+        classificationProvider: (@Sendable (UUID) throws -> MeetingArtifactClassificationSnapshot?)? = nil,
         markdownWriter: @escaping @Sendable (String, String) throws -> Void
     ) {
         self.fileManager = fileManager
         self.speakerAttributionReader = speakerAttributionReader
+        self.classificationProvider = classificationProvider
         self.markdownWriter = markdownWriter
     }
 
@@ -153,14 +252,25 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
         transcription: Transcription,
         promptResults: [PromptResult] = []
     ) async throws -> MeetingArtifactSnapshot {
-        let projection = try speakerAttributionReader?.resolve(transcription: transcription)
-        if let projection {
-            return try await materialize(projection: projection, promptResults: promptResults)
-        }
-        return try await materializeResolved(
+        try await materialize(
             transcription: transcription,
-            projection: nil,
-            promptResults: promptResults
+            promptResults: promptResults,
+            classification: nil
+        )
+    }
+
+    @discardableResult
+    public func materialize(
+        transcription: Transcription,
+        promptResults: [PromptResult],
+        classification: MeetingArtifactClassificationSnapshot?
+    ) async throws -> MeetingArtifactSnapshot {
+        let projection = try speakerAttributionReader?.resolve(transcription: transcription)
+        return try await materializeResolved(
+            transcription: projection?.effectiveTranscription ?? transcription,
+            projection: projection,
+            promptResults: promptResults,
+            classification: classification
         )
     }
 
@@ -168,17 +278,28 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
         projection: SpeakerAttributionProjection,
         promptResults: [PromptResult] = []
     ) async throws -> MeetingArtifactSnapshot {
+        try await materialize(projection: projection, promptResults: promptResults, classification: nil)
+    }
+
+    @discardableResult
+    public func materialize(
+        projection: SpeakerAttributionProjection,
+        promptResults: [PromptResult],
+        classification: MeetingArtifactClassificationSnapshot?
+    ) async throws -> MeetingArtifactSnapshot {
         try await materializeResolved(
             transcription: projection.effectiveTranscription,
             projection: projection,
-            promptResults: promptResults
+            promptResults: promptResults,
+            classification: classification
         )
     }
 
     private func materializeResolved(
         transcription: Transcription,
         projection: SpeakerAttributionProjection?,
-        promptResults: [PromptResult]
+        promptResults: [PromptResult],
+        classification: MeetingArtifactClassificationSnapshot?
     ) async throws -> MeetingArtifactSnapshot {
         guard transcription.sourceType == .meeting else {
             throw MeetingArtifactError.notMeeting
@@ -187,13 +308,19 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
             throw MeetingArtifactError.missingSessionFolder
         }
         let effectiveTranscription = transcription
+        let effectiveClassification =
+            try classification
+            ?? classificationProvider?(transcription.id)
 
         try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
 
         let generatedAt = Date()
         let transcriptURL = folderURL.appendingPathComponent(Self.transcriptFileName)
         let promptResultsURL = folderURL.appendingPathComponent(Self.promptResultsFileName)
-        let promptResultsDirectoryURL = folderURL.appendingPathComponent(Self.promptResultsDirectoryName, isDirectory: true)
+        let promptResultsDirectoryURL = folderURL.appendingPathComponent(
+            Self.promptResultsDirectoryName,
+            isDirectory: true
+        )
         let notesURL = MeetingNotesFile.fileURL(for: folderURL)
 
         let notesPath: String?
@@ -213,7 +340,11 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
         )
 
         try writeJSON(
-            MeetingArtifactTranscript(effectiveTranscription, projection: projection),
+            MeetingArtifactTranscript(
+                effectiveTranscription,
+                projection: projection,
+                classification: effectiveClassification
+            ),
             to: transcriptURL
         )
 
@@ -241,6 +372,8 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
             promptResultCount: promptResults.count,
             speakerCorrectionsApplied: projection?.correctionsApplied ?? false,
             speakerCorrectionRevision: projection?.correctionRevision ?? 0,
+            meetingType: effectiveClassification?.meetingType,
+            meetingLabels: effectiveClassification?.labels,
             calendarEventSnapshot: effectiveTranscription.calendarEventSnapshot,
             meetingCaptureReport: effectiveTranscription.meetingCaptureReport
         )
@@ -250,7 +383,8 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
                 promptResults: promptResults,
                 artifactPaths: artifactPaths,
                 speakerCorrectionsApplied: projection?.correctionsApplied ?? false,
-                speakerCorrectionRevision: projection?.correctionRevision ?? 0
+                speakerCorrectionRevision: projection?.correctionRevision ?? 0,
+                classification: effectiveClassification
             )
             try markdownWriter(markdown, markdownPath)
         }
@@ -259,7 +393,8 @@ public final class MeetingArtifactStore: MeetingArtifactStoring, @unchecked Send
                 snapshot: snapshot,
                 transcription: effectiveTranscription,
                 artifactPaths: artifactPaths,
-                promptResultFiles: resultFiles
+                promptResultFiles: resultFiles,
+                classification: effectiveClassification
             ),
             to: manifestURL
         )
@@ -365,12 +500,16 @@ private struct MeetingArtifactManifest: Codable {
         snapshot: MeetingArtifactSnapshot,
         transcription: Transcription,
         artifactPaths: MeetingMarkdownArtifactPaths,
-        promptResultFiles: [MeetingArtifactPromptResultFile]
+        promptResultFiles: [MeetingArtifactPromptResultFile],
+        classification: MeetingArtifactClassificationSnapshot?
     ) {
         schema = snapshot.schema
         schemaVersion = snapshot.schemaVersion
         generatedAt = snapshot.generatedAt
-        meeting = MeetingArtifactMeetingSummary(transcription)
+        meeting = MeetingArtifactMeetingSummary(
+            transcription,
+            classification: classification
+        )
         files = MeetingArtifactFiles(paths: artifactPaths)
         promptResults = promptResultFiles
     }
@@ -391,8 +530,13 @@ private struct MeetingArtifactMeetingSummary: Codable {
     let recoveredFromCrash: Bool
     let isTranscriptEdited: Bool
     let startContext: MeetingStartContext?
+    let meetingType: MeetingArtifactClassificationSnapshot.Value?
+    let meetingLabels: [MeetingArtifactClassificationSnapshot.Value]?
 
-    init(_ transcription: Transcription) {
+    init(
+        _ transcription: Transcription,
+        classification: MeetingArtifactClassificationSnapshot?
+    ) {
         id = transcription.id
         title = transcription.fileName
         createdAt = transcription.createdAt
@@ -407,6 +551,8 @@ private struct MeetingArtifactMeetingSummary: Codable {
         recoveredFromCrash = transcription.recoveredFromCrash
         isTranscriptEdited = transcription.isTranscriptEdited
         startContext = transcription.meetingStartContext
+        meetingType = classification?.meetingType
+        meetingLabels = classification?.labels
     }
 }
 
@@ -468,8 +614,14 @@ private struct MeetingArtifactTranscript: Codable {
     let recoveredFromCrash: Bool
     let isTranscriptEdited: Bool
     let startContext: MeetingStartContext?
+    let meetingType: MeetingArtifactClassificationSnapshot.Value?
+    let meetingLabels: [MeetingArtifactClassificationSnapshot.Value]?
 
-    init(_ transcription: Transcription, projection: SpeakerAttributionProjection?) {
+    init(
+        _ transcription: Transcription,
+        projection: SpeakerAttributionProjection?,
+        classification: MeetingArtifactClassificationSnapshot?
+    ) {
         id = transcription.id
         title = transcription.fileName
         createdAt = transcription.createdAt
@@ -513,6 +665,8 @@ private struct MeetingArtifactTranscript: Codable {
         recoveredFromCrash = transcription.recoveredFromCrash
         isTranscriptEdited = transcription.isTranscriptEdited
         startContext = transcription.meetingStartContext
+        meetingType = classification?.meetingType
+        meetingLabels = classification?.labels
     }
 }
 

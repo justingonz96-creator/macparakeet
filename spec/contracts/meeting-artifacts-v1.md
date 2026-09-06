@@ -10,6 +10,11 @@ agent workflows to inspect. The database row remains canonical for meeting
 identity and current metadata; files are refreshed views of that row and its
 related prompt results.
 
+Meeting classification follows the same rule. SQLite owns the current optional
+primary type and complete label assignment; artifacts contain local snapshots
+so copied folders remain understandable. The capture metadata sidecar is
+provenance and is not rewritten when classification changes.
+
 For meeting rows, `transcriptions.meetingArtifactFolderPath` is the durable
 folder locator. `transcriptions.filePath` is only the mixed-audio
 playback/export path and may be cleared by user deletion or retention.
@@ -137,6 +142,8 @@ raw-audio filenames.
 - `promptResultsPath`
 - `promptResultsDirectoryPath`
 - `promptResultCount`
+- `meetingType`
+- `meetingLabels`
 - `calendarEventSnapshot`
 - `meetingCaptureReport`
 - `speakerCorrectionsApplied`
@@ -150,6 +157,12 @@ raw-audio filenames.
 - `meeting` (including optional `startContext`)
 - `files`
 - `promptResults`
+
+`manifest.meeting.meetingType` is optional; absence means unclassified.
+`manifest.meeting.meetingLabels` is the complete assigned-label array and may
+be empty. Type and label snapshots carry stable UUID and display name plus
+optional presentation metadata. Archived values remain materialized while a
+meeting still references them.
 
 `manifest.meeting.calendarEventSnapshot`, when present, keeps the same local
 EventKit snapshot shape as `transcriptions.calendarEventSnapshot`: confidence,
@@ -231,11 +244,18 @@ artifact paths.
 manual splits that cannot be represented by the segment's legacy single
 speaker fields.
 
+When classified, the frontmatter also includes the type id/name and complete
+label id/name list. Human-readable details render those values without changing
+the stable section order. Unclassified meetings omit the type and do not gain a
+synthetic label.
+
 `transcript.json` keeps meeting essentials: `id`, `title`, timestamps,
 `durationMs`, `status`, raw/clean/transcript text, word/speaker/diarization
 fields, durable `transcriptSegments`, `userNotes`, language/engine attribution,
 `sourceType`, `recoveredFromCrash`, `isTranscriptEdited`, and optional
-`startContext`, `calendarEventSnapshot`, and `meetingCaptureReport`.
+`startContext`, `calendarEventSnapshot`, `meetingCaptureReport`, `meetingType`,
+and `meetingLabels`. Classification uses the same snapshot shape as the
+manifest.
 
 `transcriptSegments` is an additive v1 field populated from the DB row when a
 meeting has durable segments. Each segment keeps `id`, `startMs`, `endMs`,

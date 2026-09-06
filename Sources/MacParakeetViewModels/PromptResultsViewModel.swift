@@ -5,6 +5,17 @@ import OSLog
 @MainActor
 @Observable
 public final class PromptResultsViewModel {
+    private struct ResolvedPrompt {
+        let prompt: Prompt
+        let isAutoRun: Bool
+        let effectiveSortOrder: Int
+    }
+
+    private struct PromptProvenance {
+        let promptId: UUID?
+        let promptVersionId: UUID?
+    }
+
     public struct PendingGeneration: Identifiable, Equatable, Sendable {
         public enum State: Equatable, Sendable {
             case queued
@@ -25,6 +36,8 @@ public final class PromptResultsViewModel {
 
         public var id: UUID
         public var transcriptionId: UUID
+        public var promptId: UUID?
+        public var promptVersionId: UUID?
         public var promptName: String
         public var promptContent: String
         public var extraInstructions: String?
@@ -33,6 +46,10 @@ public final class PromptResultsViewModel {
         /// time. Queueing, retry, and provider/model changes must not mutate
         /// the request that this generation represents.
         public var inferenceSettings: PromptInferenceSettings?
+        /// Concrete model captured at enqueue time. This is passed as a
+        /// request-scoped override so later global model changes cannot alter
+        /// queued work or retries.
+        public var modelSnapshot: String?
         /// Snapshot of `Transcription.userNotes` captured at enqueue time. Used
         /// both for prompt assembly and the resulting receipt. This is already
         /// normalized/capped and is nil when the prompt sends no notes.
@@ -46,11 +63,14 @@ public final class PromptResultsViewModel {
         public init(
             id: UUID = UUID(),
             transcriptionId: UUID,
+            promptId: UUID? = nil,
+            promptVersionId: UUID? = nil,
             promptName: String,
             promptContent: String,
             extraInstructions: String?,
             transcript: String,
             inferenceSettings: PromptInferenceSettings? = nil,
+            modelSnapshot: String? = nil,
             userNotes: String? = nil,
             includeMeetingNotes: Bool = false,
             replacingPromptResultID: UUID? = nil,
@@ -59,11 +79,14 @@ public final class PromptResultsViewModel {
         ) {
             self.id = id
             self.transcriptionId = transcriptionId
+            self.promptId = promptId
+            self.promptVersionId = promptVersionId
             self.promptName = promptName
             self.promptContent = promptContent
             self.extraInstructions = extraInstructions
             self.transcript = transcript
             self.inferenceSettings = inferenceSettings?.normalized
+            self.modelSnapshot = modelSnapshot
             self.userNotes = userNotes
             self.includeMeetingNotes = includeMeetingNotes
             self.replacingPromptResultID = replacingPromptResultID
@@ -97,6 +120,9 @@ public final class PromptResultsViewModel {
     private var llmService: LLMServiceProtocol?
     private var cardGenerator: CardGenerating?
     private var promptRepo: PromptRepositoryProtocol?
+    private var promptApplicabilityResolver: PromptApplicabilityResolver?
+    private var promptLabelPolicyRepository: PromptLabelPolicyRepositoryProtocol?
+    private var transcriptionLabelRepository: TranscriptionMeetingLabelRepositoryProtocol?
     private var promptResultRepo: PromptResultRepositoryProtocol?
     /// Read-only access to the underlying transcription so prompt assembly
     /// can pull `userNotes` for `{{userNotes}}` substitution and snapshotting
@@ -188,6 +214,9 @@ public final class PromptResultsViewModel {
         llmService: LLMServiceProtocol?,
         promptRepo: PromptRepositoryProtocol?,
         promptResultRepo: PromptResultRepositoryProtocol?,
+        promptMeetingPolicyRepository: PromptMeetingPolicyRepositoryProtocol? = nil,
+        promptLabelPolicyRepository: PromptLabelPolicyRepositoryProtocol? = nil,
+        transcriptionLabelRepository: TranscriptionMeetingLabelRepositoryProtocol? = nil,
         transcriptionRepo: TranscriptionRepositoryProtocol? = nil,
         meetingArtifactStore: MeetingArtifactStoring? = nil,
         speakerAttributionReader: SpeakerAttributionReading? = nil,
@@ -199,6 +228,11 @@ public final class PromptResultsViewModel {
         self.llmService = llmService
         self.promptRepo = promptRepo
         self.promptResultRepo = promptResultRepo
+        promptApplicabilityResolver = promptMeetingPolicyRepository.map {
+            PromptApplicabilityResolver(policyRepository: $0)
+        }
+        self.promptLabelPolicyRepository = promptLabelPolicyRepository
+        self.transcriptionLabelRepository = transcriptionLabelRepository
         self.transcriptionRepo = transcriptionRepo
         self.meetingArtifactStore = meetingArtifactStore
         self.speakerAttributionReader = speakerAttributionReader
@@ -267,19 +301,16 @@ public final class PromptResultsViewModel {
     }
 
     public func loadVisiblePrompts() {
-        guard let promptRepo else { return }
         do {
-            visiblePrompts = try promptRepo.fetchVisible(category: .result)
-            if let selectedPrompt,
-                let refreshed = visiblePrompts.first(where: { $0.id == selectedPrompt.id })
-            {
-                self.selectedPrompt = refreshed
-            } else {
-                self.selectedPrompt =
-                    visiblePrompts.first(where: { $0.isAutoRun })
-                    ?? visiblePrompts.first
-            }
-            errorMessage = nil
+            let context = try currentTranscriptionID.flatMap { try transcriptionRepo?.fetch(id: $0) }
+            let labelIDs = try currentTranscriptionID.map {
+                try transcriptionLabelRepository?.labelIDs(for: $0) ?? []
+            } ?? []
+            try loadVisiblePrompts(
+                sourceType: context?.sourceType,
+                meetingTypeId: context?.meetingTypeId,
+                transcriptionLabelIDs: labelIDs
+            )
         } catch {
             errorMessage = error.localizedDescription
             visiblePrompts = []
@@ -287,11 +318,128 @@ public final class PromptResultsViewModel {
         }
     }
 
+    /// Re-resolves the picker from an already observed context. The meeting
+    /// detail UI uses this after classification changes so it does not have to
+    /// wait for navigation to re-fetch the Transcription row.
+    public func loadVisiblePrompts(
+        sourceType: Transcription.SourceType,
+        meetingTypeId: UUID?
+    ) {
+        do {
+            let labelIDs = try currentTranscriptionID.map {
+                try transcriptionLabelRepository?.labelIDs(for: $0) ?? []
+            } ?? []
+            try loadVisiblePrompts(
+                sourceType: Optional(sourceType),
+                meetingTypeId: meetingTypeId,
+                transcriptionLabelIDs: labelIDs
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+            visiblePrompts = []
+            selectedPrompt = nil
+        }
+    }
+
+    private func loadVisiblePrompts(
+        sourceType: Transcription.SourceType?,
+        meetingTypeId: UUID?,
+        transcriptionLabelIDs: Set<UUID>
+    ) throws {
+        guard let promptRepo else { return }
+        let prompts = try promptRepo.fetchVisible(category: .result)
+        let resolvedPrompts = try resolveAvailablePrompts(
+            prompts,
+            sourceType: sourceType,
+            meetingTypeId: meetingTypeId,
+            transcriptionLabelIDs: transcriptionLabelIDs
+        )
+        visiblePrompts = resolvedPrompts.map(\.prompt)
+        if let selectedPrompt,
+           let refreshed = visiblePrompts.first(where: { $0.id == selectedPrompt.id }) {
+            self.selectedPrompt = refreshed
+        } else {
+            self.selectedPrompt = resolvedPrompts.first(where: \.isAutoRun)?.prompt
+                ?? visiblePrompts.first(where: { $0.isAutoRun })
+                ?? visiblePrompts.first
+        }
+        errorMessage = nil
+    }
+
+    private func resolveAvailablePrompts(
+        _ prompts: [Prompt],
+        sourceType: Transcription.SourceType?,
+        meetingTypeId: UUID?,
+        transcriptionLabelIDs: Set<UUID>
+    ) throws -> [ResolvedPrompt] {
+        guard let sourceType else {
+            return prompts.map {
+                ResolvedPrompt(prompt: $0, isAutoRun: $0.isAutoRun, effectiveSortOrder: $0.sortOrder)
+            }
+        }
+
+        if let promptLabelPolicyRepository {
+            let policies = try promptLabelPolicyRepository.fetchPolicies(promptIds: Set(prompts.map(\.id)))
+            let policiesByPromptID = Dictionary(grouping: policies, by: \.promptId)
+            return prompts.compactMap { prompt in
+                let resolution = PromptLabelApplicabilityResolver.resolve(
+                    prompt: prompt,
+                    sourceType: sourceType,
+                    transcriptionLabelIDs: transcriptionLabelIDs,
+                    policies: policiesByPromptID[prompt.id] ?? []
+                )
+                guard resolution.isAvailable else { return nil }
+                return ResolvedPrompt(
+                    prompt: prompt,
+                    isAutoRun: resolution.isAutoRun,
+                    effectiveSortOrder: prompt.sortOrder
+                )
+            }.sorted(by: Self.resolvedPromptOrdering)
+        }
+
+        guard sourceType == .meeting, let promptApplicabilityResolver else {
+            return prompts.map {
+                ResolvedPrompt(
+                    prompt: $0,
+                    isAutoRun: $0.autoRuns(for: sourceType),
+                    effectiveSortOrder: $0.sortOrder
+                )
+            }
+        }
+        return try prompts.compactMap { prompt in
+            let resolution = try promptApplicabilityResolver.resolve(
+                prompt: prompt,
+                sourceType: .meeting,
+                meetingTypeId: meetingTypeId
+            )
+            return resolution.isAvailable
+                ? ResolvedPrompt(
+                    prompt: prompt,
+                    isAutoRun: resolution.isAutoRun,
+                    effectiveSortOrder: resolution.effectiveSortOrder
+                )
+                : nil
+        }.sorted(by: Self.resolvedPromptOrdering)
+    }
+
+    nonisolated private static func resolvedPromptOrdering(
+        _ lhs: ResolvedPrompt,
+        _ rhs: ResolvedPrompt
+    ) -> Bool {
+        let lhsOrder = lhs.effectiveSortOrder
+        let rhsOrder = rhs.effectiveSortOrder
+        if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+        let nameOrder = lhs.prompt.name.localizedCaseInsensitiveCompare(rhs.prompt.name)
+        if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+        return lhs.prompt.id.uuidString < rhs.prompt.id.uuidString
+    }
+
     public func loadPromptResults(transcriptionId: UUID) {
         if currentTranscriptionID != transcriptionId {
             cancelAllGenerations()
         }
         currentTranscriptionID = transcriptionId
+        loadVisiblePrompts()
         do {
             promptResults = try promptResultRepo?.fetchAll(transcriptionId: transcriptionId) ?? []
             onPromptResultsChanged?(transcriptionId, !promptResults.isEmpty)
@@ -368,12 +516,15 @@ public final class PromptResultsViewModel {
     @discardableResult
     public func regeneratePromptResult(_ promptResult: PromptResult, transcript: String) -> UUID? {
         let prompt = Prompt(
+            id: promptResult.promptId ?? UUID(),
             name: promptResult.promptName,
             content: promptResult.promptContent,
             isBuiltIn: false,
             sortOrder: 0,
             inferenceSettings: promptResult.inferenceSettingsSnapshot,
-            includeMeetingNotes: promptResult.includeMeetingNotesSnapshot
+            includeMeetingNotes: promptResult.includeMeetingNotesSnapshot,
+            activeVersionId: promptResult.promptVersionId,
+            modelOverride: promptResult.modelSnapshot
         )
         // Regeneration re-snapshots from the *current* notes on the row — if
         // the user edited notes between summary generations they expect the
@@ -385,6 +536,10 @@ public final class PromptResultsViewModel {
             prompt: prompt,
             extraInstructions: promptResult.extraInstructions,
             userNotes: fetchUserNotes(for: promptResult.transcriptionId),
+            provenanceOverride: PromptProvenance(
+                promptId: promptResult.promptId,
+                promptVersionId: promptResult.promptVersionId
+            ),
             replacingPromptResultID: promptResult.id
         )
     }
@@ -393,7 +548,8 @@ public final class PromptResultsViewModel {
     public func autoGeneratePromptResults(
         transcript: String,
         transcriptionId: UUID,
-        sourceType: Transcription.SourceType
+        sourceType: Transcription.SourceType,
+        meetingTypeId: UUID? = nil
     ) -> [UUID] {
         guard transcript.contains(where: { !$0.isWhitespace }) else { return [] }
 
@@ -401,7 +557,28 @@ public final class PromptResultsViewModel {
 
         let autoPrompts: [Prompt]
         do {
-            autoPrompts = try promptRepo?.fetchAutoRunPrompts(for: sourceType) ?? []
+            if promptLabelPolicyRepository != nil {
+                let prompts = try promptRepo?.fetchVisible(category: .result) ?? []
+                let labelIDs = try transcriptionLabelRepository?.labelIDs(for: transcriptionId) ?? []
+                autoPrompts = try resolveAvailablePrompts(
+                    prompts,
+                    sourceType: sourceType,
+                    meetingTypeId: meetingTypeId,
+                    transcriptionLabelIDs: labelIDs
+                ).filter(\.isAutoRun)
+                    .map(\.prompt)
+            } else if sourceType == .meeting, promptApplicabilityResolver != nil {
+                let prompts = try promptRepo?.fetchVisible(category: .result) ?? []
+                autoPrompts = try resolveAvailablePrompts(
+                    prompts,
+                    sourceType: sourceType,
+                    meetingTypeId: meetingTypeId,
+                    transcriptionLabelIDs: []
+                ).filter(\.isAutoRun)
+                    .map(\.prompt)
+            } else {
+                autoPrompts = try promptRepo?.fetchAutoRunPrompts(for: sourceType) ?? []
+            }
         } catch {
             logger.warning(
                 "Skipping auto-run prompts because preferences could not be loaded: \(error.localizedDescription, privacy: .private)"
@@ -471,6 +648,7 @@ public final class PromptResultsViewModel {
         extraInstructions: String?,
         userNotes: String? = nil,
         userNotesAreEffective: Bool = false,
+        provenanceOverride: PromptProvenance? = nil,
         replacingPromptResultID: UUID? = nil
     ) -> UUID? {
         guard llmService != nil else { return nil }
@@ -478,13 +656,20 @@ public final class PromptResultsViewModel {
         currentTranscriptionID = transcriptionId
         errorMessage = nil
 
+        let provenance = provenanceOverride ?? PromptProvenance(
+            promptId: prompt.id,
+            promptVersionId: prompt.activeVersionId
+        )
         let generation = PendingGeneration(
             transcriptionId: transcriptionId,
+            promptId: provenance.promptId,
+            promptVersionId: provenance.promptVersionId,
             promptName: prompt.name,
             promptContent: prompt.content,
             extraInstructions: extraInstructions,
             transcript: transcript,
             inferenceSettings: prompt.inferenceSettings,
+            modelSnapshot: resolvedModelSnapshot(for: prompt),
             userNotes: userNotesAreEffective
                 ? userNotes
                 : PromptSystemPromptAssembler.effectiveUserNotes(
@@ -526,7 +711,8 @@ public final class PromptResultsViewModel {
                 let stream = llmService.generatePromptResultDetailedStream(
                     transcript: generation.transcript,
                     systemPrompt: systemPrompt,
-                    inferenceSettings: generation.inferenceSettings
+                    inferenceSettings: generation.inferenceSettings,
+                    modelOverride: generation.modelSnapshot
                 )
                 var terminal: LLMStreamTerminal?
                 for try await event in stream {
@@ -544,10 +730,7 @@ public final class PromptResultsViewModel {
                 guard let terminal else {
                     throw LLMError.streamingError("prompt result stream ended without terminal metadata")
                 }
-                try await finishGeneration(
-                    id: generationID,
-                    effectiveSettings: terminal.effectiveSettings
-                )
+                try await finishGeneration(id: generationID, terminal: terminal)
             } catch is CancellationError {
                 finishCancelledGeneration(id: generationID)
             } catch {
@@ -563,7 +746,7 @@ public final class PromptResultsViewModel {
 
     private func finishGeneration(
         id generationID: UUID,
-        effectiveSettings: PromptInferenceSettings?
+        terminal: LLMStreamTerminal
     ) async throws {
         guard let index = pendingGenerations.firstIndex(where: { $0.id == generationID }) else {
             streamingTask = nil
@@ -579,13 +762,17 @@ public final class PromptResultsViewModel {
         let promptResult = PromptResult(
             id: generation.id,
             transcriptionId: generation.transcriptionId,
+            promptId: generation.promptId,
+            promptVersionId: generation.promptVersionId,
             promptName: generation.promptName,
             promptContent: generation.promptContent,
             extraInstructions: generation.extraInstructions,
             content: generation.content,
             userNotesSnapshot: generation.userNotes,
             includeMeetingNotesSnapshot: generation.includeMeetingNotes,
-            inferenceSettingsSnapshot: effectiveSettings,
+            inferenceSettingsSnapshot: terminal.effectiveSettings,
+            providerSnapshot: terminal.provider,
+            modelSnapshot: terminal.model,
             createdAt: timestamp,
             updatedAt: timestamp
         )
@@ -656,18 +843,37 @@ public final class PromptResultsViewModel {
             transcript: failed.transcript,
             transcriptionId: failed.transcriptionId,
             prompt: Prompt(
+                id: failed.promptId ?? UUID(),
                 name: failed.promptName,
                 content: failed.promptContent,
                 isBuiltIn: false,
                 sortOrder: 0,
                 inferenceSettings: failed.inferenceSettings,
-                includeMeetingNotes: failed.includeMeetingNotes
+                includeMeetingNotes: failed.includeMeetingNotes,
+                activeVersionId: failed.promptVersionId,
+                modelOverride: failed.modelSnapshot
             ),
             extraInstructions: failed.extraInstructions,
             userNotes: failed.userNotes,
             userNotesAreEffective: true,
+            provenanceOverride: PromptProvenance(
+                promptId: failed.promptId,
+                promptVersionId: failed.promptVersionId
+            ),
             replacingPromptResultID: failed.replacingPromptResultID
         )
+    }
+
+    private func resolvedModelSnapshot(for prompt: Prompt) -> String? {
+        if let override = prompt.modelOverride?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            return override
+        }
+        // Local CLI selects its model in the command template rather than the
+        // provider config. Its terminal receipt remains authoritative.
+        guard currentProviderID != .localCLI else { return nil }
+        let current = currentModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return current.isEmpty ? nil : current
     }
 
     private func assembledSystemPrompt(

@@ -467,6 +467,10 @@ macparakeet-cli history search "what did I say about" --json
 
 ```bash
 macparakeet-cli prompts list --json
+macparakeet-cli prompts history "Action items" --json
+macparakeet-cli prompts show "Action items" --version 2 --json
+macparakeet-cli prompts diff "Action items" --from 1 --to 2 --json
+macparakeet-cli prompts restore "Action items" --version 1 --json
 macparakeet-cli prompts run "Action items" \
   --transcription <id-or-prefix> \
   --provider anthropic \
@@ -485,6 +489,21 @@ prompt-result defaults. `prompts run --json` includes additive optional
 provider/model-filtered receipt of settings actually sent, not a copy of the
 unfiltered prompt request. Automations should treat either field as optional
 and must not infer provider support from `inferenceSettings` alone.
+
+Prompt history is immutable. Restoring an old version creates and activates a
+new version; it never rewrites history. `prompts delete` is recoverable with
+`prompts restore-deleted`, including for built-ins. Built-in status is
+provenance rather than a mutation restriction. A restored version's `createdAt`
+and the prompt's `updatedAt` record the restoration time.
+
+`prompts run` uses the app's label availability rules for every transcription
+source. An untargeted prompt is available everywhere; a targeted prompt needs
+at least one matching label. Legacy meeting-type policies do not override
+these rules. Manual runs do not require auto-run to be enabled.
+
+Model discovery is advisory: providers validate requested model names and
+aliases when generation runs. Local CLI cannot apply a different prompt model
+override to its configured command and rejects it before executing the command.
 
 `<id-or-prefix>` accepts a full UUID, a UUID prefix (>= 4 chars), or the
 case-insensitive name. Ambiguous prefixes return a `.ambiguous` error so the
@@ -518,6 +537,8 @@ require an LLM provider.
 
 ```bash
 macparakeet-cli meetings list --json
+macparakeet-cli meetings list --type "Customer" --label "QBR" --json
+macparakeet-cli meetings list --unclassified --json
 macparakeet-cli meetings show <id-or-prefix-or-title> --json
 macparakeet-cli meetings transcript <id> --format text
 macparakeet-cli meetings transcript <id> --format json
@@ -533,12 +554,31 @@ macparakeet-cli meetings results add <id> \
 macparakeet-cli meetings export <id> --format md --stdout
 ```
 
+Manage local meeting classification and assign it atomically:
+
+```bash
+macparakeet-cli meetings types list --json
+macparakeet-cli meetings types add --name "Customer" --json
+macparakeet-cli meetings labels add --name "QBR" --json
+macparakeet-cli meetings classify <meeting> --type "Customer" --add-label "QBR" --json
+macparakeet-cli meetings classify <meeting> --type none --remove-label "QBR" --json
+```
+
+The compatibility surface retains zero or one primary type and any number of
+labels per meeting. Labels drive prompt availability and support search;
+legacy types no longer control prompt selection. Names remain local user data.
+Changing a completed meeting's classification does not rerun prompts retroactively.
+
 Use `meetings notes` for user-authored notes. Use `meetings results add` for
 externally generated summaries, decisions, action items, or other agent output;
 those rows are stored as `PromptResult` records rather than overwriting
 `userNotes`. Meeting result JSON and `prompt-results.json` include additive
 optional `inferenceSettingsSnapshot` when MacParakeet recorded an effective
 provider/model-filtered inference receipt for that result.
+Library-generated results also carry optional `promptId`, `promptVersionId`,
+`providerSnapshot`, and `modelSnapshot` receipts. Older or externally added
+results can omit them; never substitute current configuration for a missing
+historical receipt.
 
 `meetings artifact` is the stable folder contract for local meeting sessions.
 It refreshes the session folder from SQLite and returns paths to:

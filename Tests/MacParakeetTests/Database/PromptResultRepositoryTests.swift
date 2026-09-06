@@ -43,6 +43,37 @@ final class PromptResultRepositoryTests: XCTestCase {
         XCTAssertEqual(fetched.map(\.content), ["Newer", "Older"])
     }
 
+    func testPromptExecutionProvenanceRoundTrips() throws {
+        let transcription = try makeTranscription()
+        let promptRepo = PromptRepository(dbQueue: manager.dbQueue)
+        let prompt = Prompt(
+            name: "Provenance \(UUID().uuidString)",
+            content: "Summarize this.",
+            modelOverride: "requested-model"
+        )
+        try promptRepo.save(prompt)
+        let storedPrompt = try XCTUnwrap(promptRepo.fetch(id: prompt.id))
+        let versionID = try XCTUnwrap(storedPrompt.activeVersionId)
+        let result = PromptResult(
+            transcriptionId: transcription.id,
+            promptId: storedPrompt.id,
+            promptVersionId: versionID,
+            promptName: storedPrompt.name,
+            promptContent: storedPrompt.content,
+            content: "Summary",
+            providerSnapshot: "openai",
+            modelSnapshot: "gpt-test"
+        )
+
+        try repo.save(result)
+
+        let fetched = try XCTUnwrap(repo.fetchAll(transcriptionId: transcription.id).first)
+        XCTAssertEqual(fetched.promptId, storedPrompt.id)
+        XCTAssertEqual(fetched.promptVersionId, versionID)
+        XCTAssertEqual(fetched.providerSnapshot, "openai")
+        XCTAssertEqual(fetched.modelSnapshot, "gpt-test")
+    }
+
     func testInferenceSettingsSnapshotRoundTripAndDefaultNormalization() throws {
         let transcription = try makeTranscription()
         var result = PromptResult(

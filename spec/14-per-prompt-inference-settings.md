@@ -3,14 +3,19 @@
 > Status: **IMPLEMENTED / PR OPEN** — the default-semantics
 > decision and conditional reasoning-effort extension are accepted in
 > [`plans/active/2026-09-03-per-prompt-inference-settings.md`](../plans/active/2026-09-03-per-prompt-inference-settings.md).
+>
+> **2026-09-05 amendment:** Settings now apply uniformly to built-in and custom
+> result/Transform prompts and are owned by the active immutable prompt version,
+> alongside prompt content and an optional model override. The provider remains
+> global. Historical result snapshots remain unchanged.
 
 Target: MacParakeet
 
-Scope: Prompt Library result prompts (`Prompt.Category.result`)
+Scope: Prompt Library result and Transform prompts
 
 ## Outcome
 
-A custom Prompt Library prompt can carry its own generation settings. Manual,
+A Prompt Library prompt can carry its own generation settings. Manual,
 queued, auto-run, retry, and regenerate flows use the settings captured for
 that run. Existing prompts continue to behave exactly as they do today.
 
@@ -64,9 +69,9 @@ The section includes **Reset to defaults**, which clears every value.
 Validation happens before save and shows a field-level error. Blank means
 unset; blank is not converted into zero.
 
-Built-in prompts remain read-only and keep all settings unset in the first
-release. A later product decision may add shipped settings without changing
-the storage contract.
+Built-in provenance does not restrict these controls. Built-in and user-created
+prompts use the same validation, version creation, reset, and execution paths.
+Clearing every override means inherit MacParakeet defaults.
 
 ### Generation popover
 
@@ -128,13 +133,15 @@ Extend `ChatCompletionOptions` with the same transport-neutral fields. Keep
 `responseFormat` separate: it is controlled by an operation such as knowledge
 card generation, not by a user prompt.
 
-Add:
+The first implementation added:
 
 ```swift
 public var inferenceSettings: PromptInferenceSettings?
 ```
 
-to `Prompt`, and:
+to `Prompt`. The versioning amendment moves that property to the resolved
+active `PromptVersion`; the public resolved `Prompt` value may continue exposing
+it so callers do not perform database joins. Add:
 
 ```swift
 public var inferenceSettingsSnapshot: PromptInferenceSettings?
@@ -167,6 +174,11 @@ silently replaced with defaults.
 No settings belong in `llm_runs`. That table remains the metadata-only ledger;
 the reproducibility snapshot belongs with the full prompt result in
 `summaries`.
+
+The later prompt-version migration copies `prompts.inferenceSettings` into each
+prompt's version 1. `prompt_versions.inferenceSettings` then becomes the sole
+long-term writable source. The old prompt-row column may survive a bounded
+compatibility window but is not a permanent cache or dual-write target.
 
 Update `spec/01-data-model.md`, `spec/12-processing-layer.md`, and
 `spec/11-llm-integration.md` in the implementation change. If the provider

@@ -119,6 +119,12 @@ public final class TranscriptionLibraryViewModel {
     private let logger = Logger(subsystem: "com.macparakeet.viewmodels", category: "TranscriptionLibrary")
     public private(set) var transcriptions: [Transcription] = []
     public var filter: LibraryFilter = .all { didSet { reloadAfterStateChange() } }
+    /// SQL-backed meeting classification filters. Type and label selections
+    /// use ANY semantics; `unclassifiedMeetingsOnly` is mutually exclusive
+    /// with an explicit type selection.
+    public private(set) var selectedMeetingTypeIDs: Set<UUID> = []
+    public private(set) var unclassifiedMeetingsOnly = false
+    public private(set) var selectedMeetingLabelIDs: Set<UUID> = []
     public var searchText: String = "" { didSet { debounceSearchReload() } }
     public var sortOrder: LibrarySortOrder = .dateDescending { didSet { reloadAfterStateChange() } }
     public private(set) var filteredTranscriptions: [Transcription] = []
@@ -134,6 +140,7 @@ public final class TranscriptionLibraryViewModel {
     public private(set) var pendingBulkOperation: BulkTranscriptionOperation?
     public private(set) var retryingMeetingTranscriptionIDs: Set<UUID> = []
     public var onRetryMeetingTranscription: ((Transcription) async throws -> Void)?
+    public let meetingClassificationViewModel = MeetingClassificationViewModel()
 
     /// Override for tests; production code uses `Date()`.
     public var nowProvider: @Sendable () -> Date = { Date() }
@@ -155,9 +162,20 @@ public final class TranscriptionLibraryViewModel {
 
     public func configure(
         transcriptionRepo: TranscriptionRepositoryProtocol,
+        meetingTypeRepository: (any MeetingTypeRepositoryProtocol)? = nil,
+        meetingLabelRepository: (any MeetingLabelRepositoryProtocol)? = nil,
+        meetingClassificationService: (any MeetingClassificationServiceProtocol)? = nil,
         speakerAttributionReader: SpeakerAttributionReading? = nil
     ) {
         self.transcriptionRepo = transcriptionRepo
+        if let meetingTypeRepository, let meetingLabelRepository, let meetingClassificationService {
+            meetingClassificationViewModel.configure(
+                typeRepository: meetingTypeRepository,
+                labelRepository: meetingLabelRepository,
+                service: meetingClassificationService
+            )
+            meetingClassificationViewModel.loadOptions()
+        }
         if let speakerAttributionReader {
             let projectionProvider:
                 @Sendable (Transcription) throws -> SpeakerAttributionProjection = { transcription in
@@ -171,6 +189,45 @@ public final class TranscriptionLibraryViewModel {
 
     public var selectedTranscriptionCount: Int {
         selectedTranscriptionIDs.count
+    }
+
+    public var hasMeetingClassificationFilter: Bool {
+        unclassifiedMeetingsOnly || !selectedMeetingTypeIDs.isEmpty || !selectedMeetingLabelIDs.isEmpty
+    }
+
+    public func toggleMeetingTypeFilter(_ id: UUID) {
+        unclassifiedMeetingsOnly = false
+        if selectedMeetingTypeIDs.contains(id) {
+            selectedMeetingTypeIDs.remove(id)
+        } else {
+            selectedMeetingTypeIDs.insert(id)
+        }
+        reloadAfterStateChange()
+    }
+
+    public func setUnclassifiedMeetingsFilter(_ enabled: Bool) {
+        unclassifiedMeetingsOnly = enabled
+        if enabled {
+            selectedMeetingTypeIDs = []
+        }
+        reloadAfterStateChange()
+    }
+
+    public func toggleMeetingLabelFilter(_ id: UUID) {
+        if selectedMeetingLabelIDs.contains(id) {
+            selectedMeetingLabelIDs.remove(id)
+        } else {
+            selectedMeetingLabelIDs.insert(id)
+        }
+        reloadAfterStateChange()
+    }
+
+    public func clearMeetingClassificationFilters() {
+        guard hasMeetingClassificationFilter else { return }
+        selectedMeetingTypeIDs = []
+        unclassifiedMeetingsOnly = false
+        selectedMeetingLabelIDs = []
+        reloadAfterStateChange()
     }
 
     public var hasSelectedTranscriptions: Bool {
@@ -704,6 +761,9 @@ public final class TranscriptionLibraryViewModel {
         return TranscriptionLibraryQuery(
             sourceType: sourceType,
             favoritesOnly: favoritesOnly,
+            meetingTypeIDs: selectedMeetingTypeIDs,
+            unclassifiedMeetingsOnly: unclassifiedMeetingsOnly,
+            meetingLabelIDs: selectedMeetingLabelIDs,
             searchText: trimmedSearch.isEmpty ? nil : trimmedSearch,
             sortOrder: sortOrder,
             limit: pageSize,
@@ -718,6 +778,7 @@ public final class TranscriptionLibraryViewModel {
         filteredTranscriptions = items
         groupedTranscriptions = groupByDate(items)
         self.hasMore = hasMore
+        meetingClassificationViewModel.loadClassifications(for: items)
         pruneSelectionToLoadedItems()
     }
 

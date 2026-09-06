@@ -58,6 +58,12 @@ public final class PromptsViewModel {
     public typealias InferenceValidationErrors = [PromptInferenceSettings.Field: String]
 
     public var prompts: [Prompt] = []
+    public private(set) var managedPrompts: [Prompt] = []
+    public private(set) var deletedPrompts: [Prompt] = []
+    public private(set) var collections: [PromptCollection] = []
+    public private(set) var promptVersions: [PromptVersion] = []
+    public private(set) var availableLabels: [MeetingLabel] = []
+    public private(set) var labelIDsByPromptID: [UUID: Set<UUID>] = [:]
     public var newName: String = "" {
         didSet { resetValidationError() }
     }
@@ -67,6 +73,13 @@ public final class PromptsViewModel {
     public var newIncludeMeetingNotes = false {
         didSet { resetValidationError() }
     }
+    public var newModelOverride: String = "" {
+        didSet { resetValidationError() }
+    }
+    public var newCollectionID: UUID?
+    public var newTargetLabelIDs: Set<UUID> = []
+    public var newPromptCategory: Prompt.Category = .result
+    public var newCollectionName = ""
     public var newInferenceSettings = InferenceSettingsDraft() {
         didSet {
             newInferenceValidationErrors = [:]
@@ -82,6 +95,11 @@ public final class PromptsViewModel {
     public var editingIncludeMeetingNotes = false {
         didSet { resetValidationError() }
     }
+    public var editingModelOverride: String = "" {
+        didSet { resetValidationError() }
+    }
+    public var editingCollectionID: UUID?
+    public var editingTargetLabelIDs: Set<UUID> = []
     public private(set) var newInferenceValidationErrors: InferenceValidationErrors = [:]
     public private(set) var editingInferenceValidationErrors: InferenceValidationErrors = [:]
     public var errorMessage: String?
@@ -89,22 +107,51 @@ public final class PromptsViewModel {
     public var editingPrompt: Prompt?
 
     private var repo: PromptRepositoryProtocol?
+    private var versionRepo: PromptVersionRepositoryProtocol?
+    private var collectionRepo: PromptCollectionRepositoryProtocol?
+    private var editingService: PromptEditingServiceProtocol?
+    private var labelRepository: MeetingLabelRepositoryProtocol?
+    private var labelPolicyRepository: PromptLabelPolicyRepositoryProtocol?
 
     public init() {}
 
-    public func configure(repo: PromptRepositoryProtocol) {
+    public func configure(
+        repo: PromptRepositoryProtocol,
+        versionRepo: PromptVersionRepositoryProtocol? = nil,
+        collectionRepo: PromptCollectionRepositoryProtocol? = nil,
+        editingService: PromptEditingServiceProtocol? = nil,
+        labelRepository: MeetingLabelRepositoryProtocol? = nil,
+        labelPolicyRepository: PromptLabelPolicyRepositoryProtocol? = nil
+    ) {
         self.repo = repo
+        self.versionRepo = versionRepo
+        self.collectionRepo = collectionRepo
+        self.editingService = editingService
+        self.labelRepository = labelRepository
+        self.labelPolicyRepository = labelPolicyRepository
         loadPrompts()
+        loadDeletedPrompts()
+        loadCollections()
+        loadLabels()
     }
 
     public func loadPrompts() {
         guard let repo else { return }
         do {
-            prompts = try repo.fetchAll().filter { $0.category == .result }
+            managedPrompts = try repo.fetchAll()
+            prompts = managedPrompts.filter { $0.category == .result }
             errorMessage = nil
+            loadPromptLabelPolicies()
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    public func refresh() {
+        loadPrompts()
+        loadDeletedPrompts()
+        loadCollections()
+        loadLabels()
     }
 
     public func addPrompt() {
@@ -135,24 +182,36 @@ public final class PromptsViewModel {
             return
         }
 
-        let nextSortOrder = (prompts.map(\.sortOrder).max() ?? 0) + 1
+        let nextSortOrder = (managedPrompts.map(\.sortOrder).max() ?? 0) + 1
         let prompt = Prompt(
             name: trimmedName,
             content: trimmedContent,
-            category: .result,
+            category: newPromptCategory,
             isBuiltIn: false,
             isVisible: true,
             sortOrder: nextSortOrder,
             inferenceSettings: inferenceSettings,
-            includeMeetingNotes: newIncludeMeetingNotes
+            includeMeetingNotes: newIncludeMeetingNotes,
+            modelOverride: normalizedOptional(newModelOverride),
+            collectionId: newCollectionID
         )
 
         do {
             try repo.save(prompt)
+            if prompt.category == .result {
+                try labelPolicyRepository?.replaceTargetLabels(
+                    promptId: prompt.id,
+                    labelIds: newTargetLabelIDs
+                )
+            }
             Telemetry.send(.promptCreated)
             newName = ""
             newContent = ""
             newIncludeMeetingNotes = false
+            newModelOverride = ""
+            newCollectionID = nil
+            newTargetLabelIDs = []
+            newPromptCategory = .result
             newInferenceSettings = InferenceSettingsDraft()
             newInferenceValidationErrors = [:]
             errorMessage = nil
@@ -163,7 +222,7 @@ public final class PromptsViewModel {
     }
 
     public func updatePrompt(_ prompt: Prompt, name: String, content: String) {
-        guard let repo, !prompt.isBuiltIn else { return }
+        guard let repo else { return }
         let trimmedName = normalized(name)
         let trimmedContent = normalized(content)
         guard !trimmedName.isEmpty, !trimmedContent.isEmpty else {
@@ -201,15 +260,30 @@ public final class PromptsViewModel {
             ? editingIncludeMeetingNotes
             : prompt.includeMeetingNotes
         updated.inferenceSettings = inferenceSettings
+        updated.modelOverride =
+            editingPrompt?.id == prompt.id
+            ? normalizedOptional(editingModelOverride)
+            : prompt.modelOverride
+        updated.collectionId = editingPrompt?.id == prompt.id ? editingCollectionID : prompt.collectionId
         updated.updatedAt = Date()
 
         do {
             try repo.save(updated)
+            if updated.category == .result {
+                try labelPolicyRepository?.replaceTargetLabels(
+                    promptId: updated.id,
+                    labelIds: editingTargetLabelIDs
+                )
+            }
             Telemetry.send(.promptUpdated)
             editingPrompt = nil
             editingIncludeMeetingNotes = false
             editingInferenceSettings = InferenceSettingsDraft()
+            editingModelOverride = ""
+            editingCollectionID = nil
+            editingTargetLabelIDs = []
             editingInferenceValidationErrors = [:]
+            promptVersions = []
             errorMessage = nil
             loadPrompts()
         } catch {
@@ -218,18 +292,54 @@ public final class PromptsViewModel {
     }
 
     public func beginEditing(_ prompt: Prompt) {
-        guard !prompt.isBuiltIn else { return }
         editingIncludeMeetingNotes = prompt.includeMeetingNotes
         editingInferenceSettings = InferenceSettingsDraft(settings: prompt.inferenceSettings)
+        editingModelOverride = prompt.modelOverride ?? ""
+        editingCollectionID = prompt.collectionId
+        editingTargetLabelIDs = labelIDsByPromptID[prompt.id] ?? []
         editingInferenceValidationErrors = [:]
         editingPrompt = prompt
+        loadVersions(for: prompt.id)
     }
 
     public func cancelEditing() {
         editingPrompt = nil
         editingIncludeMeetingNotes = false
         editingInferenceSettings = InferenceSettingsDraft()
+        editingModelOverride = ""
+        editingCollectionID = nil
+        editingTargetLabelIDs = []
         editingInferenceValidationErrors = [:]
+        promptVersions = []
+    }
+
+    public func hasEditingChanges(prompt: Prompt, name: String, content: String) -> Bool {
+        name != prompt.name
+            || content != prompt.content
+            || editingInferenceSettings != InferenceSettingsDraft(settings: prompt.inferenceSettings)
+            || editingIncludeMeetingNotes != prompt.includeMeetingNotes
+            || normalizedOptional(editingModelOverride) != prompt.modelOverride
+            || editingCollectionID != prompt.collectionId
+            || editingTargetLabelIDs != (labelIDsByPromptID[prompt.id] ?? [])
+    }
+
+    @discardableResult
+    public func restoreVersion(_ version: PromptVersion) -> Prompt? {
+        guard let prompt = editingPrompt, let repo, let editingService else { return nil }
+        do {
+            _ = try editingService.restore(promptId: prompt.id, versionId: version.id, changeNote: nil)
+            loadPrompts()
+            guard let restored = try repo.fetch(id: prompt.id) else { return nil }
+            editingPrompt = restored
+            editingInferenceSettings = InferenceSettingsDraft(settings: restored.inferenceSettings)
+            editingModelOverride = restored.modelOverride ?? ""
+            loadVersions(for: prompt.id)
+            errorMessage = nil
+            return restored
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
     }
 
     public func resetNewInferenceSettings() {
@@ -238,6 +348,13 @@ public final class PromptsViewModel {
 
     public func resetEditingInferenceSettings() {
         editingInferenceSettings = InferenceSettingsDraft()
+    }
+
+    public static func hasCustomGenerationSettings(
+        draft: InferenceSettingsDraft,
+        modelOverride: String
+    ) -> Bool {
+        !draft.isDefault || !modelOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     public static func compactInferenceSummary(_ settings: PromptInferenceSettings?) -> String? {
@@ -332,12 +449,89 @@ public final class PromptsViewModel {
     }
 
     public func deletePrompt(_ prompt: Prompt) {
-        guard let repo, !prompt.isBuiltIn else { return }
+        guard let repo else { return }
         do {
             _ = try repo.delete(id: prompt.id)
             Telemetry.send(.promptDeleted)
             errorMessage = nil
             loadPrompts()
+            loadDeletedPrompts()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func restoreDeletedPrompt(_ prompt: Prompt) {
+        guard let editingService else { return }
+        do {
+            _ = try editingService.restoreDeleted(id: prompt.id)
+            loadPrompts()
+            loadDeletedPrompts()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func createCollection() {
+        guard let collectionRepo else { return }
+        let name = normalized(newCollectionName)
+        guard !name.isEmpty else {
+            errorMessage = "Collection name is required."
+            return
+        }
+        do {
+            try collectionRepo.save(
+                PromptCollection(
+                    name: name,
+                    sortOrder: (collections.map(\.sortOrder).max() ?? -1) + 1
+                )
+            )
+            newCollectionName = ""
+            loadCollections()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func renameCollection(_ collection: PromptCollection, name: String) {
+        guard let collectionRepo else { return }
+        var updated = collection
+        updated.name = name
+        do {
+            try collectionRepo.save(updated)
+            loadCollections()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func deleteCollection(_ collection: PromptCollection) {
+        guard let collectionRepo else { return }
+        do {
+            _ = try collectionRepo.delete(id: collection.id)
+            loadCollections()
+            loadPrompts()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func moveCollection(_ collection: PromptCollection, by offset: Int) {
+        guard let collectionRepo,
+            let sourceIndex = collections.firstIndex(where: { $0.id == collection.id })
+        else { return }
+        let destinationIndex = sourceIndex + offset
+        guard collections.indices.contains(destinationIndex) else { return }
+        var ids = collections.map(\.id)
+        ids.swapAt(sourceIndex, destinationIndex)
+        do {
+            try collectionRepo.reorder(ids: ids)
+            loadCollections()
+            errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -354,6 +548,11 @@ public final class PromptsViewModel {
         }
     }
 
+    public func targetLabels(for prompt: Prompt) -> [MeetingLabel] {
+        let ids = labelIDsByPromptID[prompt.id] ?? []
+        return availableLabels.filter { ids.contains($0.id) }
+    }
+
     private func isUniqueName(
         _ name: String,
         excluding promptID: UUID? = nil,
@@ -365,8 +564,91 @@ public final class PromptsViewModel {
         }
     }
 
+    private func loadVersions(for promptID: UUID) {
+        guard let versionRepo else {
+            promptVersions = []
+            return
+        }
+        do {
+            promptVersions = try versionRepo.fetchAll(promptId: promptID)
+        } catch {
+            promptVersions = []
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func loadCollections() {
+        guard let collectionRepo else {
+            collections = []
+            return
+        }
+        do {
+            collections = try collectionRepo.fetchAll()
+        } catch {
+            collections = []
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func loadLabels() {
+        guard let labelRepository else {
+            availableLabels = []
+            return
+        }
+        do {
+            availableLabels = try labelRepository.fetchAll(includeArchived: true)
+        } catch {
+            availableLabels = []
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func loadPromptLabelPolicies() {
+        guard let labelPolicyRepository else {
+            labelIDsByPromptID = [:]
+            return
+        }
+        do {
+            let policies = try labelPolicyRepository.fetchPolicies(promptIds: Set(prompts.map(\.id)))
+            let grouped = Dictionary(grouping: policies, by: \.promptId)
+            labelIDsByPromptID = grouped.reduce(into: [:]) { result, entry in
+                let hasRestrictedFallback = entry.value.contains {
+                    $0.scopeKind == .all && !$0.isAvailable
+                }
+                guard hasRestrictedFallback else {
+                    result[entry.key] = []
+                    return
+                }
+                result[entry.key] = Set(entry.value.compactMap {
+                    $0.scopeKind == .label && $0.isAvailable ? $0.labelId : nil
+                })
+            }
+        } catch {
+            labelIDsByPromptID = [:]
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func loadDeletedPrompts() {
+        guard let repo else {
+            deletedPrompts = []
+            return
+        }
+        do {
+            deletedPrompts = try repo.fetchDeleted()
+        } catch {
+            deletedPrompts = []
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func normalized(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func normalizedOptional(_ value: String) -> String? {
+        let value = normalized(value)
+        return value.isEmpty ? nil : value
     }
 
     private enum InferenceDraftValidationResult {
@@ -474,7 +756,7 @@ public final class PromptsViewModel {
         }
     }
 
-    nonisolated private static func displayName(for field: PromptInferenceSettings.Field) -> String {
+    nonisolated public static func displayName(for field: PromptInferenceSettings.Field) -> String {
         switch field {
         case .temperature: return "Temperature"
         case .topP: return "Top P"

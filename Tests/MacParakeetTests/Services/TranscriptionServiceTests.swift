@@ -1745,6 +1745,9 @@ final class TranscriptionServiceTests: XCTestCase {
     }
 
     func testPrepareMeetingTranscriptionCreatesProcessingStubBeforeSTT() async throws {
+        let meetingType = MeetingType(name: "Customer")
+        try MeetingTypeRepository(dbQueue: dbManager.dbQueue).save(meetingType)
+        let meetingTypeId = meetingType.id
         let startContext = MeetingStartContext(
             triggerKind: .manual,
             frontmostApplication: .init(
@@ -1755,7 +1758,8 @@ final class TranscriptionServiceTests: XCTestCase {
         )
         let recording = try makeOneSourceMeetingRecording(
             displayName: "Queued Meeting",
-            startContext: startContext
+            startContext: startContext,
+            meetingTypeId: meetingTypeId
         )
         defer { try? FileManager.default.removeItem(at: recording.folderURL) }
 
@@ -1772,11 +1776,13 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertEqual(stub.sourceType, .meeting)
         XCTAssertEqual(stub.engine, SpeechEnginePreference.parakeet.rawValue)
         XCTAssertEqual(stub.meetingStartContext, startContext)
+        XCTAssertEqual(stub.meetingTypeId, meetingTypeId)
 
         let fetched = try XCTUnwrap(transcriptionRepo.fetch(id: stub.id))
         XCTAssertEqual(fetched.status, .processing)
         XCTAssertEqual(fetched.filePath, recording.mixedAudioURL.path)
         XCTAssertEqual(fetched.meetingStartContext, startContext)
+        XCTAssertEqual(fetched.meetingTypeId, meetingTypeId)
         XCTAssertEqual(try transcriptionRepo.count(), 1)
     }
 
@@ -3381,6 +3387,7 @@ final class TranscriptionServiceTests: XCTestCase {
     private func makeOneSourceMeetingRecording(
         displayName: String,
         startContext: MeetingStartContext? = nil,
+        meetingTypeId: UUID? = nil,
         captureReport: MeetingCaptureReport? = nil,
         durationSeconds: TimeInterval = 3
     ) throws -> MeetingRecordingOutput {
@@ -3414,7 +3421,8 @@ final class TranscriptionServiceTests: XCTestCase {
                 system: nil
             ),
             captureReport: captureReport,
-            startContext: startContext
+            startContext: startContext,
+            meetingTypeId: meetingTypeId
         )
     }
 

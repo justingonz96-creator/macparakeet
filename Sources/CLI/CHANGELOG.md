@@ -59,6 +59,15 @@ and `spec --json` lives in `spec/contracts/cli-json-v1.md`.
 
 ### Fixed
 
+- `prompts run` now applies the same label availability rules as the app for
+  every transcription source. A matching target label is sufficient; legacy
+  meeting-type policies no longer override label availability.
+- Prompt restoration timestamps now record the restoration time on the new
+  version and the active prompt.
+- Provider model aliases are validated by the provider during generation,
+  instead of being rejected when absent from model discovery results. Local
+  CLI rejects a prompt model override that differs from the configured model
+  because its command template cannot apply that override.
 - `export`, `meetings show`, `meetings transcript`, `meetings export`, and
   meeting-artifact refreshes now render the active speaker corrections instead
   of silently falling back to automatic diarization.
@@ -122,6 +131,18 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
   reject the setting. Advanced custom prompts may still use `{{userNotes}}`
   independently, and `prompts run` avoids duplicating notes when both the token
   and checkbox are present.
+- Versioned Prompt Library commands: `prompts history`, version-aware `prompts
+  show`, `prompts diff`, restore-as-new-version, soft delete/restore, optional
+  model selection, and meeting-type availability policies. Built-in prompts use
+  the same CLI mutation rights as user-created prompts. Existing prompt JSON is
+  extended additively with version and provenance metadata.
+- Meeting classification commands: `meetings types`, `meetings labels`, and
+  `meetings classify`, plus SQL-backed `meetings list --type`, `--label`, and
+  `--unclassified` filters. Meeting list/show/export JSON and materialized
+  meeting artifacts gain additive optional type and label snapshots.
+- Stored prompt-result JSON gains optional `promptId`, `promptVersionId`,
+  `providerSnapshot`, and `modelSnapshot` execution receipts. Historical and
+  externally imported results may omit them.
 - Prompt JSON gains additive optional inference metadata. `prompts list/show`
   (and prompt objects returned by `prompts set`) expose `inferenceSettings`
   with optional `temperature`, `topP`, `topK`, `maxTokens`, and a
@@ -769,8 +790,8 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
     [--json]` — headless install of a new Transform.
     Shortcut format: `opt+1`, `cmd+shift+P`, etc. Refuses bare-key
     bindings (must include a modifier).
-  - `transforms delete <id|name> [--json]` — deletes a custom
-    Transform. Built-ins are protected.
+  - `transforms delete <id|name> [--json]` — soft-deletes a custom or
+    built-in Transform through the same recoverable prompt lifecycle.
   - `transforms list/show/create --json` use a snake-cased `TransformDTO`
     payload (`id`, `name`, `shortcut`, `is_built_in`,
     `prompt`, `created_at`, `updated_at`). `transforms run --json`

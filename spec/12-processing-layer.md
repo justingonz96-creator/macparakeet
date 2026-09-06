@@ -6,6 +6,42 @@
 
 This spec defines MacParakeet's current processing layer: the Prompt Library, multi-summary system, and the shared prompt-storage contract that productized Transforms use. Summary/result behavior remains the main focus here; ADR-022 owns the system-wide Transform interaction model. The persisted summary table is still named `summaries`; the Swift model is now `PromptResult`.
 
+> **2026-09-05 amendment — versioned prompts and classified meetings:** The
+> historical row shape and management sheet documented below describe the
+> pre-versioning implementation. The following accepted rules supersede any
+> conflicting older wording in this file.
+>
+> - `prompts` owns identity and mutable metadata. `prompt_versions` exclusively
+>   owns Markdown content, typed inference settings, and an optional
+>   active-provider model override; `prompts.activeVersionId` selects the
+>   current immutable version.
+> - Creating a prompt creates V1. Saving changed versioned values creates and
+>   activates one new monotonically numbered version. A no-op creates none.
+>   Restoring copies an old version into a new version; history is never
+>   rewritten. Name, organization collection, visibility, routing, ordering,
+>   Transform shortcut, and running label are not versioned.
+> - `PromptRepository` performs the active-version join and returns a resolved
+>   domain prompt. Runtime callers never join tables or maintain a permanent
+>   `content`/`inferenceSettings` mirror on `prompts`.
+> - Built-in and user-created prompts have identical edit, configuration,
+>   organization, routing, soft-delete, and restore rights. `isBuiltIn` is
+>   provenance only. A bundled canonical update applies automatically only to
+>   a prompt proven untouched and not deleted; customized prompts can compare
+>   and explicitly adopt the bundled candidate.
+> - The Prompt Manager is a resizable three-column surface with collections,
+>   smart filters, Markdown source/preview editing, typed LLM settings, history,
+>   deterministic source/settings diff, and restore-as-new-version.
+> - A meeting has zero or one primary `MeetingType` and zero or more
+>   `MeetingLabel` values. Type drives prompt availability and auto-run; labels
+>   are local descriptive/search facets only in v1.
+> - A central resolver chooses an exact meeting-type policy first, then the
+>   all-meeting-types policy. Without either, the prompt is unavailable. Manual
+>   selection, auto-run, and CLI use the same result. Already queued work keeps
+>   its captured prompt/version/settings when classification later changes.
+> - SQLite is canonical for mutable classification. Meeting artifacts expose
+>   additive type/label snapshots and are refreshed after classification
+>   changes; capture metadata remains provenance.
+
 ---
 
 ## Goals

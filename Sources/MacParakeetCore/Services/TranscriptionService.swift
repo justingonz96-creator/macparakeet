@@ -1396,6 +1396,7 @@ public actor TranscriptionService: SpeakerConfiguredRetranscriptionService, Audi
             language: nil,
             status: .processing,
             sourceType: .meeting,
+            meetingTypeId: recording.meetingTypeId,
             userNotes: recording.userNotes,
             meetingStartContext: recording.startContext,
             meetingCaptureReport: recording.captureReport,
@@ -2124,7 +2125,11 @@ public actor TranscriptionService: SpeakerConfiguredRetranscriptionService, Audi
                 logger.error("segment_invalidation_failed id=\(transcriptionID, privacy: .public) reindex_needed=true action=search-reindex error=\(error.localizedDescription, privacy: .public)")
                 throw error
             }
-            try transcriptionRepo.save(transcription)
+            if source == .meeting {
+                try transcriptionRepo.savePreservingMeetingClassification(transcription)
+            } else {
+                try transcriptionRepo.save(transcription)
+            }
             do {
                 if let knowledgeLayerMutator {
                     try knowledgeLayerMutator.replaceSegmentsAndInvalidateCard(

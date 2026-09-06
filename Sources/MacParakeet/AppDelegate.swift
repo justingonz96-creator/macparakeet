@@ -580,6 +580,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             llmServiceProvider: llmServiceProvider,
             promptRepository: env.promptRepo,
             historyRepository: env.transformHistoryRepo,
+            activeModelNameProvider: { [weak configStore] in
+                try? configStore?.loadConfig()?.modelName
+            },
             reservedHotkeysProvider: { [weak self] in
                 self?.transformReservedHotkeysForTransforms() ?? []
             },

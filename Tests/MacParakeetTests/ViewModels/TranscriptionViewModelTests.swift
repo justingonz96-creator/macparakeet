@@ -4129,6 +4129,56 @@ final class TranscriptionViewModelTests: XCTestCase {
         )
     }
 
+    func testMeetingAutoRunReceivesPersistedMeetingTypeForPolicyResolution() {
+        let meetingTypeID = UUID()
+        let prompt = Prompt(
+            name: "Typed auto-note",
+            content: "Summarize this meeting.",
+            category: .result,
+            isVisible: true,
+            isAutoRun: false
+        )
+        let promptRepo = MockPromptRepository()
+        promptRepo.prompts = [prompt]
+        let policies = MockPromptMeetingPolicyRepository()
+        policies.policiesByPromptID[prompt.id] = [
+            .allMeetings(promptId: prompt.id, isAvailable: false, isAutoRun: false),
+            .meetingType(
+                promptId: prompt.id,
+                meetingTypeId: meetingTypeID,
+                isAvailable: true,
+                isAutoRun: true
+            ),
+        ]
+        let llm = MockLLMService()
+        llm.streamDelayNs = 1_000_000_000
+        let promptResultsVM = PromptResultsViewModel()
+        promptResultsVM.configure(
+            llmService: llm,
+            promptRepo: promptRepo,
+            promptResultRepo: mockPromptResultRepo,
+            promptMeetingPolicyRepository: policies
+        )
+        viewModel.configure(
+            transcriptionService: mockService,
+            transcriptionRepo: mockRepo,
+            llmService: llm,
+            promptResultRepo: mockPromptResultRepo,
+            promptResultsViewModel: promptResultsVM
+        )
+        let transcription = Transcription(
+            fileName: "typed-meeting.m4a",
+            rawTranscript: "A completed typed meeting.",
+            status: .completed,
+            sourceType: .meeting,
+            meetingTypeId: meetingTypeID
+        )
+
+        viewModel.presentCompletedTranscription(transcription, autoSave: false)
+
+        XCTAssertEqual(promptResultsVM.pendingGenerations.map(\.promptName), [prompt.name])
+    }
+
     func testAutoRunPromptsUsePlainTranscriptContextWhenConfigured() {
         let suite = "test.transcription.context.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

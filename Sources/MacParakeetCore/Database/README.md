@@ -24,6 +24,7 @@ processes own their connections.
   - `CustomWordRepository.swift` — vocabulary entries.
   - `TextSnippetRepository.swift` — snippets (text + action).
   - `PromptRepository.swift` — prompt-library entries.
+  - `PromptVersionRepository.swift` — immutable prompt request versions.
   - `PromptResultRepository.swift` — saved prompt outputs.
   - `QuickPromptRepository.swift` — quick-prompt entries (Ask tab).
   - `ChatConversationRepository.swift` — multi-turn chat history.

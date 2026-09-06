@@ -6,6 +6,7 @@ import SwiftUI
 /// (recovered dot, speaker count) appear only when they carry signal.
 struct MeetingRowCard<MenuContent: View>: View {
     let transcription: Transcription
+    var classification: MeetingClassification? = nil
     var searchText: String = ""
     var isSelected: Bool = false
     var showsSelectionControls: Bool = false
@@ -106,6 +107,10 @@ struct MeetingRowCard<MenuContent: View>: View {
     private var contentColumn: some View {
         VStack(alignment: .leading, spacing: 3) {
             titleRow
+            MeetingClassificationBadges(
+                classification: classification,
+                maximumLabels: showsSource ? 4 : 2
+            )
             snippetRow
         }
         .frame(maxWidth: .infinity, alignment: .leading)

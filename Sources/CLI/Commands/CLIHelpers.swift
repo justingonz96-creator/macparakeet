@@ -104,7 +104,7 @@ private func isUUIDPrefixCandidate(_ value: String) -> Bool {
     }
 }
 
-private func uuidPrefixSearchKey(_ value: String) -> String? {
+func uuidPrefixSearchKey(_ value: String) -> String? {
     let lowered = value.lowercased()
     guard lowered.count >= minimumUUIDPrefixLength,
           isUUIDPrefixCandidate(lowered)
@@ -114,7 +114,7 @@ private func uuidPrefixSearchKey(_ value: String) -> String? {
     return lowered
 }
 
-private func shortUUIDPrefixErrorIfApplicable(_ value: String) -> CLILookupError? {
+func shortUUIDPrefixErrorIfApplicable(_ value: String) -> CLILookupError? {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty,
           trimmed.count < minimumUUIDPrefixLength,
@@ -222,18 +222,21 @@ func findDictation(id: String, repo: DictationRepository) throws -> Dictation {
 func findPrompt(
     idOrName: String,
     repo: PromptRepository,
-    category: Prompt.Category? = .result
+    category: Prompt.Category? = .result,
+    categories: [Prompt.Category]? = nil
 ) throws -> Prompt {
     let trimmed = idOrName.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { throw CLILookupError.emptyID }
 
     if let uuid = UUID(uuidString: trimmed),
        let prompt = try repo.fetch(id: uuid),
-       category == nil || prompt.category == category {
+       categories?.contains(prompt.category) ?? (category == nil || prompt.category == category) {
         return prompt
     }
 
-    let all = try repo.fetchAll().filter { category == nil || $0.category == category }
+    let all = try repo.fetchAll().filter {
+        categories?.contains($0.category) ?? (category == nil || $0.category == category)
+    }
     let lowered = trimmed.lowercased()
 
     if let prefix = uuidPrefixSearchKey(trimmed) {
@@ -429,7 +432,7 @@ enum CLIErrorType {
             case .connectionFailed: return connection
             case .authenticationFailed: return auth
             case .rateLimited: return rateLimit
-            case .modelNotFound: return model
+            case .modelNotFound, .invalidModelOverride: return model
             case .contextTooLong: return context
             case .formatterTruncated, .formatterEmptyResponse: return truncated
             case .providerError: return provider
@@ -438,6 +441,7 @@ enum CLIErrorType {
             case .cliError: return runtime
             }
         }
+        if error is MeetingClassificationRepositoryError { return validation }
         if error is CLILookupError { return lookup }
         if let input = error as? CLIInputError {
             switch input {
@@ -610,6 +614,9 @@ private func rethrowWithOptionalJSONEnvelope(_ error: Error, json: Bool) throws 
 
 func isCLIValidationMisuse(_ error: Error) -> Bool {
     if error is ValidationError || error is CLIInputError {
+        return true
+    }
+    if error is MeetingClassificationRepositoryError {
         return true
     }
     if let transforms = error as? CLITransformsError, transforms.isValidationMisuse {

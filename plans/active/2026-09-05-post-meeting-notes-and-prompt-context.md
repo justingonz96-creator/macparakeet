@@ -1,9 +1,12 @@
 # Post-Meeting Notes and Opt-In Prompt Context
 
-> **Extracted upstream scope:** Saved-meeting notes, autosave, durable drafts,
-> notes-context snapshots, and lifecycle/action gates are included in this branch.
-> Rich Markdown rendering is a separate upstream PR; its design and historical
-> fork QA findings below do not certify a renderer included in this branch.
+> **Status:** IMPLEMENTED — VISUAL QA FOUND ACCESSIBILITY BLOCKERS. Saved-meeting
+> notes, opt-in prompt context, and the shared rich Markdown renderer are
+> implemented and locally verified on 2026-09-05. Real-app QA passed the visual
+> rendering paths but found the table-selection and table-action-label gaps
+> recorded below. Those gaps and a release-bundle size comparison remain before
+> PR/release. Saved notes now live in their own detail tab, separate from the
+> transcript.
 > **Priority:** P2
 > **Date:** 2026-09-05
 > **Issues:** [#889](https://github.com/moona3k/macparakeet/issues/889),
@@ -498,7 +501,7 @@ Manual QA must cover completed and streaming Summary output, saved Chat, live
 Ask, a wide table in the 360 px panel, text selection across blocks/cells,
 mouse and keyboard link activation, VoiceOver task states, and light/dark mode.
 
-### Historical fork visual QA record — 2026-09-05
+### Visual QA record — 2026-09-05
 
 QA ran against commit `023809123cb4` in `MacParakeet-Dev.app`, with an isolated
 database under `/tmp` so no real meeting data was changed.

@@ -18,6 +18,38 @@ final class PromptsViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.prompts.count, 6)
         XCTAssertTrue(viewModel.prompts.allSatisfy { $0.category == .result })
         XCTAssertFalse(viewModel.prompts.contains(where: { $0.name == "Polish" }))
+        XCTAssertTrue(viewModel.managedPrompts.contains(where: { $0.name == "Polish" }))
+    }
+
+    func testCreatingPromptPersistsSelectedLabelTargets() throws {
+        let manager = try DatabaseManager()
+        let promptRepository = PromptRepository(dbQueue: manager.dbQueue)
+        let labelRepository = MeetingLabelRepository(dbQueue: manager.dbQueue)
+        let policyRepository = PromptLabelPolicyRepository(dbQueue: manager.dbQueue)
+        let customer = MeetingLabel(name: "Customer")
+        try labelRepository.save(customer)
+        let subject = PromptsViewModel()
+        subject.configure(
+            repo: promptRepository,
+            labelRepository: labelRepository,
+            labelPolicyRepository: policyRepository
+        )
+        subject.newName = "Customer follow-up"
+        subject.newContent = "Draft the next steps."
+        subject.newTargetLabelIDs = [customer.id]
+
+        subject.addPrompt()
+
+        let created = try XCTUnwrap(
+            promptRepository.fetchAll().first { $0.name == "Customer follow-up" }
+        )
+        XCTAssertEqual(subject.labelIDsByPromptID[created.id], [customer.id])
+        XCTAssertEqual(
+            Set(try policyRepository.fetchPolicies(promptId: created.id).compactMap {
+                $0.scopeKind == .label && $0.isAvailable ? $0.labelId : nil
+            }),
+            [customer.id]
+        )
     }
 
     func testAddPromptCreatesCustomSummaryPrompt() {
@@ -57,6 +89,7 @@ final class PromptsViewModelTests: XCTestCase {
             thinkingMode: .enabled,
             reasoningEffort: .medium
         )
+        viewModel.newModelOverride = "  local-model-v2  "
 
         viewModel.addPrompt()
 
@@ -73,6 +106,8 @@ final class PromptsViewModelTests: XCTestCase {
             )
         )
         XCTAssertTrue(viewModel.newInferenceSettings.isDefault)
+        XCTAssertEqual(prompt.modelOverride, "local-model-v2")
+        XCTAssertEqual(viewModel.newModelOverride, "")
         XCTAssertTrue(viewModel.newInferenceValidationErrors.isEmpty)
     }
 
@@ -218,6 +253,7 @@ final class PromptsViewModelTests: XCTestCase {
         viewModel.editingInferenceSettings.topK = ""
         viewModel.editingInferenceSettings.thinkingMode = .enabled
         viewModel.editingInferenceSettings.reasoningEffort = .xhigh
+        viewModel.editingModelOverride = "  qwen-next  "
         viewModel.updatePrompt(custom, name: "New", content: "New content")
 
         let updated = try XCTUnwrap(viewModel.prompts.first { $0.id == custom.id })
@@ -225,6 +261,7 @@ final class PromptsViewModelTests: XCTestCase {
         XCTAssertNil(updated.inferenceSettings?.topK)
         XCTAssertEqual(updated.inferenceSettings?.thinkingMode, .enabled)
         XCTAssertEqual(updated.inferenceSettings?.reasoningEffort, .xhigh)
+        XCTAssertEqual(updated.modelOverride, "qwen-next")
     }
 
     func testEditPromptLoadsAndPersistsMeetingNotesPreference() throws {
@@ -306,15 +343,28 @@ final class PromptsViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.newInferenceSettings, .init())
     }
 
-    func testBuiltInPromptCannotBeEditedThroughViewModel() {
+    func testBuiltInPromptCanBeEditedThroughViewModel() throws {
         let builtIn = viewModel.prompts[0]
 
         viewModel.beginEditing(builtIn)
+        viewModel.editingInferenceSettings.temperature = "0.3"
         viewModel.updatePrompt(builtIn, name: "Changed", content: "Changed")
 
         XCTAssertNil(viewModel.editingPrompt)
-        XCTAssertEqual(repo.prompts.first { $0.id == builtIn.id }?.name, builtIn.name)
-        XCTAssertNil(repo.prompts.first { $0.id == builtIn.id }?.inferenceSettings)
+        let updated = try XCTUnwrap(repo.prompts.first { $0.id == builtIn.id })
+        XCTAssertEqual(updated.name, "Changed")
+        XCTAssertEqual(updated.content, "Changed")
+        XCTAssertEqual(updated.inferenceSettings?.temperature, 0.3)
+        XCTAssertTrue(updated.isBuiltIn)
+    }
+
+    func testBuiltInPromptCanBeDeletedThroughViewModel() {
+        let builtIn = viewModel.prompts[0]
+
+        viewModel.deletePrompt(builtIn)
+
+        XCTAssertFalse(repo.prompts.contains { $0.id == builtIn.id })
+        XCTAssertFalse(viewModel.prompts.contains { $0.id == builtIn.id })
     }
 
     func testCompactInferenceSummaryUsesStableOrdering() {
@@ -351,5 +401,184 @@ final class PromptsViewModelTests: XCTestCase {
         )
 
         XCTAssertEqual(message, "Not supported by this provider/model: Temperature, Top K.")
+    }
+
+    func testBeginEditingLoadsNewestVersions() {
+        let prompt = viewModel.prompts[0]
+        let versionRepo = MockPromptVersionRepository()
+        versionRepo.versions = [
+            PromptVersion(promptId: prompt.id, versionNumber: 1, content: "Old"),
+            PromptVersion(promptId: prompt.id, versionNumber: 2, content: "Current"),
+        ]
+        viewModel.configure(repo: repo, versionRepo: versionRepo)
+
+        viewModel.beginEditing(prompt)
+
+        XCTAssertEqual(viewModel.promptVersions.map(\.versionNumber), [2, 1])
+    }
+
+    func testCreateAndEditPromptPersistCollectionMembership() throws {
+        let collection = PromptCollection(name: "Meetings")
+        let collectionRepo = MockPromptCollectionRepository(collections: [collection])
+        viewModel.configure(repo: repo, collectionRepo: collectionRepo)
+        viewModel.newName = "Customer recap"
+        viewModel.newContent = "Summarize the meeting."
+        viewModel.newCollectionID = collection.id
+
+        viewModel.addPrompt()
+
+        var prompt = try XCTUnwrap(viewModel.prompts.first { $0.name == "Customer recap" })
+        XCTAssertEqual(prompt.collectionId, collection.id)
+        XCTAssertEqual(viewModel.collections, [collection])
+
+        viewModel.beginEditing(prompt)
+        viewModel.editingCollectionID = nil
+        viewModel.updatePrompt(prompt, name: prompt.name, content: prompt.content)
+        prompt = try XCTUnwrap(viewModel.prompts.first { $0.id == prompt.id })
+        XCTAssertNil(prompt.collectionId)
+    }
+
+    func testEditingCollectionMembershipCountsAsDirty() {
+        let prompt = viewModel.prompts[0]
+        viewModel.beginEditing(prompt)
+        viewModel.editingCollectionID = UUID()
+
+        XCTAssertTrue(
+            viewModel.hasEditingChanges(
+                prompt: prompt,
+                name: prompt.name,
+                content: prompt.content
+            )
+        )
+    }
+
+    func testModelOverrideAloneCountsAsCustomGenerationSettings() {
+        XCTAssertTrue(
+            PromptsViewModel.hasCustomGenerationSettings(
+                draft: .init(),
+                modelOverride: "qwen-next"
+            )
+        )
+        XCTAssertFalse(
+            PromptsViewModel.hasCustomGenerationSettings(
+                draft: .init(),
+                modelOverride: "  "
+            )
+        )
+    }
+
+    func testCollectionCRUDAndReorder() throws {
+        let first = PromptCollection(name: "First", sortOrder: 0)
+        let second = PromptCollection(name: "Second", sortOrder: 1)
+        let collectionRepo = MockPromptCollectionRepository(collections: [first, second])
+        viewModel.configure(repo: repo, collectionRepo: collectionRepo)
+
+        viewModel.newCollectionName = "Third"
+        viewModel.createCollection()
+        let third = try XCTUnwrap(viewModel.collections.first { $0.name == "Third" })
+        viewModel.renameCollection(third, name: "Renamed")
+        let renamed = try XCTUnwrap(viewModel.collections.first { $0.id == third.id })
+        XCTAssertEqual(renamed.name, "Renamed")
+
+        viewModel.moveCollection(renamed, by: -1)
+        XCTAssertEqual(viewModel.collections.map(\.id), [first.id, renamed.id, second.id])
+
+        viewModel.deleteCollection(renamed)
+        XCTAssertFalse(viewModel.collections.contains { $0.id == renamed.id })
+    }
+
+    func testTrashRestoresBuiltInAndCustomPrompts() {
+        let editingService = MockPromptEditingService(repo: repo)
+        viewModel.configure(repo: repo, editingService: editingService)
+        let builtIn = viewModel.prompts[0]
+        let custom = Prompt(name: "Custom", content: "Content")
+        repo.prompts.append(custom)
+        viewModel.loadPrompts()
+
+        viewModel.deletePrompt(builtIn)
+        viewModel.deletePrompt(custom)
+        XCTAssertEqual(Set(viewModel.deletedPrompts.map(\.id)), Set([builtIn.id, custom.id]))
+
+        viewModel.restoreDeletedPrompt(builtIn)
+        viewModel.restoreDeletedPrompt(custom)
+        XCTAssertTrue(viewModel.deletedPrompts.isEmpty)
+        XCTAssertTrue(viewModel.managedPrompts.contains { $0.id == builtIn.id })
+        XCTAssertTrue(viewModel.managedPrompts.contains { $0.id == custom.id })
+    }
+
+}
+
+private final class MockPromptVersionRepository: PromptVersionRepositoryProtocol, @unchecked Sendable {
+    var versions: [PromptVersion] = []
+
+    func fetch(id: UUID) throws -> PromptVersion? {
+        versions.first { $0.id == id }
+    }
+
+    func fetchAll(promptId: UUID) throws -> [PromptVersion] {
+        versions
+            .filter { $0.promptId == promptId }
+            .sorted { $0.versionNumber > $1.versionNumber }
+    }
+
+    func fetchActive(promptId: UUID) throws -> PromptVersion? {
+        try fetchAll(promptId: promptId).first
+    }
+}
+
+private final class MockPromptCollectionRepository: PromptCollectionRepositoryProtocol, @unchecked Sendable {
+    var collections: [PromptCollection]
+
+    init(collections: [PromptCollection]) {
+        self.collections = collections
+    }
+
+    func save(_ collection: PromptCollection) throws {
+        collections.removeAll { $0.id == collection.id }
+        collections.append(collection)
+    }
+
+    func fetch(id: UUID) throws -> PromptCollection? {
+        collections.first { $0.id == id }
+    }
+
+    func fetchAll() throws -> [PromptCollection] {
+        collections.sorted { $0.sortOrder < $1.sortOrder }
+    }
+
+    func reorder(ids: [UUID]) throws {
+        for (index, id) in ids.enumerated() {
+            guard let collectionIndex = collections.firstIndex(where: { $0.id == id }) else { continue }
+            collections[collectionIndex].sortOrder = index
+        }
+    }
+
+    func delete(id: UUID) throws -> Bool {
+        let oldCount = collections.count
+        collections.removeAll { $0.id == id }
+        return collections.count != oldCount
+    }
+}
+
+private final class MockPromptEditingService: PromptEditingServiceProtocol, @unchecked Sendable {
+    let repo: MockPromptRepository
+
+    init(repo: MockPromptRepository) {
+        self.repo = repo
+    }
+
+    func restore(promptId: UUID, versionId: UUID, changeNote: String?) throws -> Prompt {
+        guard let prompt = repo.prompts.first(where: { $0.id == promptId }) else {
+            throw PromptEditingError.promptNotFound
+        }
+        return prompt
+    }
+
+    func restoreDeleted(id: UUID) throws -> Bool {
+        guard let index = repo.deletedPrompts.firstIndex(where: { $0.id == id }) else { return false }
+        var prompt = repo.deletedPrompts.remove(at: index)
+        prompt.deletedAt = nil
+        repo.prompts.append(prompt)
+        return true
     }
 }

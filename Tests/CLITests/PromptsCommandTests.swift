@@ -5,6 +5,88 @@ import XCTest
 
 final class PromptsCommandTests: XCTestCase {
 
+    func testVersionCommandsParse() throws {
+        let show = try PromptsCommand.ShowSubcommand.parse(["Prompt", "--version", "2", "--json"])
+        XCTAssertEqual(show.version, 2)
+        XCTAssertNoThrow(try PromptsCommand.HistorySubcommand.parse(["Prompt", "--json"]))
+        let diff = try PromptsCommand.DiffSubcommand.parse(["Prompt", "--from", "1", "--to", "2", "--json"])
+        XCTAssertEqual(diff.from, 1)
+        XCTAssertEqual(diff.to, 2)
+        XCTAssertNoThrow(try PromptsCommand.RestoreSubcommand.parse(["Prompt", "--version", "1", "--json"]))
+        XCTAssertNoThrow(try PromptsCommand.RestoreDeletedSubcommand.parse(["Prompt", "--json"]))
+    }
+
+    func testVersionCommandsRejectInvalidNumbers() {
+        XCTAssertThrowsError(try PromptsCommand.DiffSubcommand.parse(["Prompt", "--from", "0", "--to", "2"]))
+        XCTAssertThrowsError(try PromptsCommand.RestoreSubcommand.parse(["Prompt", "--version", "0"]))
+    }
+
+    func testHistoryDiffAndRestoreRoundTrip() throws {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prompt-cli-versions-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let database = try DatabaseManager(path: databaseURL.path)
+        let repository = PromptRepository(dbQueue: database.dbQueue)
+        let editing = PromptEditingService(dbQueue: database.dbQueue)
+        var prompt = try editing.create(Prompt(name: "Versioned CLI", content: "# One"))
+        prompt.content = "# Two"
+        prompt.updatedAt = Date()
+        _ = try editing.save(prompt)
+
+        let history = try PromptsCommand.HistorySubcommand.parse([
+            prompt.id.uuidString, "--json", "--database", databaseURL.path,
+        ])
+        let historyOutput = try captureStandardOutput { try history.run() }
+        let versions = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(historyOutput.utf8)) as? [[String: Any]]
+        )
+        XCTAssertEqual(versions.compactMap { $0["versionNumber"] as? Int }, [2, 1])
+
+        let diff = try PromptsCommand.DiffSubcommand.parse([
+            prompt.id.uuidString, "--from", "1", "--to", "2", "--json",
+            "--database", databaseURL.path,
+        ])
+        let diffOutput = try captureStandardOutput { try diff.run() }
+        let diffRecord = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(diffOutput.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(diffRecord["hasChanges"] as? Bool, true)
+
+        let restore = try PromptsCommand.RestoreSubcommand.parse([
+            prompt.id.uuidString, "--version", "1", "--json", "--database", databaseURL.path,
+        ])
+        _ = try captureStandardOutput { try restore.run() }
+        let restored = try XCTUnwrap(repository.fetch(id: prompt.id))
+        XCTAssertEqual(restored.content, "# One")
+        XCTAssertEqual(
+            try PromptVersionRepository(dbQueue: database.dbQueue).fetchActive(promptId: prompt.id)?.versionNumber,
+            3
+        )
+    }
+
+    func testSetAcceptsModelAndMeetingPolicies() throws {
+        let model = try PromptsCommand.SetSubcommand.parse(["Prompt", "--model", "qwen-local"])
+        XCTAssertEqual(model.model, "qwen-local")
+        XCTAssertNoThrow(try PromptsCommand.SetSubcommand.parse(["Prompt", "--active-model"]))
+        let policy = try PromptsCommand.SetSubcommand.parse([
+            "Prompt", "--meeting-type", "Customer", "--available", "--auto-run",
+        ])
+        XCTAssertEqual(policy.meetingType, "Customer")
+        XCTAssertTrue(policy.available)
+        XCTAssertNoThrow(try PromptsCommand.SetSubcommand.parse([
+            "Polish", "--temperature", "0.3", "--thinking-mode", "enabled",
+            "--reasoning-effort", "low",
+        ]))
+    }
+
+    func testSetRejectsInvalidPolicyCombinations() {
+        XCTAssertThrowsError(try PromptsCommand.SetSubcommand.parse(["Prompt", "--available"]))
+        XCTAssertThrowsError(try PromptsCommand.SetSubcommand.parse([
+            "Prompt", "--meeting-type", "Customer", "--all-meeting-types", "--available",
+        ]))
+        XCTAssertThrowsError(try PromptsCommand.SetSubcommand.parse(["Prompt", "--model", " "]))
+    }
+
     func testStoredPromptRunResultUsesEffectiveSettingsReceipt() {
         let transcript = Transcription(
             fileName: "Meeting",
@@ -34,6 +116,8 @@ final class PromptsCommandTests: XCTestCase {
         )
 
         XCTAssertEqual(result.transcriptionId, transcript.id)
+        XCTAssertEqual(result.promptId, prompt.id)
+        XCTAssertEqual(result.promptVersionId, prompt.activeVersionId)
         XCTAssertEqual(result.promptName, prompt.name)
         XCTAssertNil(result.userNotesSnapshot)
         XCTAssertFalse(result.includeMeetingNotesSnapshot)
@@ -66,6 +150,182 @@ final class PromptsCommandTests: XCTestCase {
 
         XCTAssertEqual(result.userNotesSnapshot, effectiveNotes)
         XCTAssertTrue(result.includeMeetingNotesSnapshot)
+    }
+
+    func testTransformSupportsVersionedSettingsThroughPromptCommands() throws {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("transform-prompt-cli-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let database = try DatabaseManager(path: databaseURL.path)
+        let repository = PromptRepository(dbQueue: database.dbQueue)
+        let transform = try XCTUnwrap(
+            try repository.fetchVisible(category: .transform).first(where: { $0.name == "Polish" })
+        )
+
+        let set = try PromptsCommand.SetSubcommand.parse([
+            transform.id.uuidString,
+            "--temperature", "0.3",
+            "--thinking-mode", "enabled",
+            "--reasoning-effort", "low",
+            "--model", "house-model",
+            "--json",
+            "--database", databaseURL.path,
+        ])
+        let output = try captureStandardOutput { try set.run() }
+        let record = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(record["activeVersionNumber"] as? Int, 2)
+        XCTAssertEqual(record["modelOverride"] as? String, "house-model")
+        let settings = try XCTUnwrap(record["inferenceSettings"] as? [String: Any])
+        XCTAssertEqual(settings["temperature"] as? Double, 0.3)
+        XCTAssertEqual(settings["thinkingMode"] as? String, "enabled")
+
+        let history = try PromptsCommand.HistorySubcommand.parse([
+            transform.id.uuidString, "--json", "--database", databaseURL.path,
+        ])
+        let historyOutput = try captureStandardOutput { try history.run() }
+        let versions = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(historyOutput.utf8)) as? [[String: Any]]
+        )
+        XCTAssertEqual(versions.compactMap { $0["versionNumber"] as? Int }, [2, 1])
+    }
+
+    func testNoAutoRunPreservesUnavailableMeetingPolicy() throws {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prompt-policy-cli-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let database = try DatabaseManager(path: databaseURL.path)
+        let prompt = try PromptEditingService(dbQueue: database.dbQueue).create(
+            Prompt(name: "Unavailable policy", content: "Summarize.")
+        )
+        let policies = PromptMeetingPolicyRepository(dbQueue: database.dbQueue)
+        _ = try policies.setAllMeetingsPolicy(
+            promptId: prompt.id, isAvailable: false, isAutoRun: false, sortOrder: nil
+        )
+        let command = try PromptsCommand.SetSubcommand.parse([
+            prompt.id.uuidString, "--all-meeting-types", "--no-auto-run",
+            "--database", databaseURL.path,
+        ])
+        try command.run()
+        let policy = try XCTUnwrap(try policies.fetchEffectivePolicy(promptId: prompt.id, meetingTypeId: nil))
+        XCTAssertFalse(policy.isAvailable)
+        XCTAssertFalse(policy.isAutoRun)
+    }
+
+    func testRunRejectsNonmatchingLabelForEverySourceBeforeProviderExecution() async throws {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prompt-cli-label-policy-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let database = try DatabaseManager(path: databaseURL.path)
+        let prompt = try PromptEditingService(dbQueue: database.dbQueue).create(
+            Prompt(name: "Restricted label prompt", content: "Summarize.")
+        )
+        let target = MeetingLabel(name: "Required")
+        let unrelated = MeetingLabel(name: "Unrelated")
+        let labels = MeetingLabelRepository(dbQueue: database.dbQueue)
+        try labels.save(target)
+        try labels.save(unrelated)
+        try PromptLabelPolicyRepository(dbQueue: database.dbQueue).replaceTargetLabels(
+            promptId: prompt.id, labelIds: [target.id]
+        )
+
+        for source in Transcription.SourceType.allCases {
+            for hasUnrelatedLabel in [false, true] {
+                let transcription = Transcription(
+                    fileName: "Restricted \(source.rawValue)",
+                    rawTranscript: "A transcript that must not reach the provider.",
+                    status: .completed,
+                    sourceType: source
+                )
+                try TranscriptionRepository(dbQueue: database.dbQueue).save(transcription)
+                if hasUnrelatedLabel {
+                    try TranscriptionMeetingLabelRepository(dbQueue: database.dbQueue)
+                        .add(labelId: unrelated.id, to: transcription.id)
+                }
+                let command = try PromptsCommand.RunSubcommand.parse([
+                    prompt.id.uuidString, "--transcription", transcription.id.uuidString,
+                    "--provider", "cli", "--command", "/usr/bin/printf unexpected-provider-execution",
+                    "--no-store", "--database", databaseURL.path,
+                ])
+                do {
+                    try await command.run()
+                    XCTFail("Expected label policy rejection for \(source.rawValue)")
+                } catch {
+                    XCTAssertTrue(error.localizedDescription.contains("is unavailable"), "\(error)")
+                    XCTAssertTrue(error.localizedDescription.contains("allLabelsPolicy"), "\(error)")
+                }
+            }
+        }
+    }
+
+    func testRunAcceptsMatchingLabelForEverySourceDespiteLegacyMeetingDenial() async throws {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prompt-cli-matching-label-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let database = try DatabaseManager(path: databaseURL.path)
+        let prompt = try PromptEditingService(dbQueue: database.dbQueue).create(
+            Prompt(name: "Label prompt", content: "Summarize.", isAutoRun: false)
+        )
+        let firstTarget = MeetingLabel(name: "First target")
+        let secondTarget = MeetingLabel(name: "Second target")
+        let labels = MeetingLabelRepository(dbQueue: database.dbQueue)
+        try labels.save(firstTarget)
+        try labels.save(secondTarget)
+        try PromptLabelPolicyRepository(dbQueue: database.dbQueue).replaceTargetLabels(
+            promptId: prompt.id, labelIds: [firstTarget.id, secondTarget.id]
+        )
+        _ = try PromptMeetingPolicyRepository(dbQueue: database.dbQueue).setAllMeetingsPolicy(
+            promptId: prompt.id, isAvailable: false, isAutoRun: false, sortOrder: nil
+        )
+
+        for source in Transcription.SourceType.allCases {
+            let transcription = Transcription(
+                fileName: "Matching \(source.rawValue)", rawTranscript: "Transcript.",
+                status: .completed, sourceType: source
+            )
+            try TranscriptionRepository(dbQueue: database.dbQueue).save(transcription)
+            try TranscriptionMeetingLabelRepository(dbQueue: database.dbQueue)
+                .add(labelId: secondTarget.id, to: transcription.id)
+            let command = try PromptsCommand.RunSubcommand.parse([
+                prompt.id.uuidString, "--transcription", transcription.id.uuidString,
+                "--provider", "cli", "--command", "/usr/bin/printf label-policy-accepted",
+                "--database", databaseURL.path,
+            ])
+            try await command.run()
+            let results = try PromptResultRepository(dbQueue: database.dbQueue)
+                .fetchAll(transcriptionId: transcription.id)
+            XCTAssertEqual(results.count, 1)
+            XCTAssertEqual(results.first?.content, "label-policy-accepted")
+        }
+    }
+
+    func testRunRejectsHiddenPromptForNonMeetingBeforeProviderExecution() async throws {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prompt-cli-hidden-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let database = try DatabaseManager(path: databaseURL.path)
+        var prompt = try PromptEditingService(dbQueue: database.dbQueue).create(
+            Prompt(name: "Hidden result", content: "Summarize.")
+        )
+        prompt.isVisible = false
+        prompt = try PromptEditingService(dbQueue: database.dbQueue).save(prompt)
+        let transcription = Transcription(
+            fileName: "Saved file", rawTranscript: "Do not send.", status: .completed, sourceType: .file
+        )
+        try TranscriptionRepository(dbQueue: database.dbQueue).save(transcription)
+        let command = try PromptsCommand.RunSubcommand.parse([
+            prompt.id.uuidString, "--transcription", transcription.id.uuidString,
+            "--provider", "anthropic", "--api-key", "unused", "--no-store",
+            "--database", databaseURL.path,
+        ])
+        do {
+            try await command.run()
+            XCTFail("Expected hidden prompt rejection")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("is unavailable"))
+            XCTAssertTrue(error.localizedDescription.contains("hidden"))
+        }
     }
 
     // MARK: - findPrompt

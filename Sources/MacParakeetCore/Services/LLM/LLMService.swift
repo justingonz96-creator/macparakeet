@@ -36,16 +36,40 @@ public protocol LLMServiceProtocol: Sendable {
         systemPrompt: String?,
         inferenceSettings: PromptInferenceSettings?
     ) async throws -> LLMResult
+    func generatePromptResultDetailed(
+        transcript: String,
+        systemPrompt: String?,
+        inferenceSettings: PromptInferenceSettings?,
+        modelOverride: String?
+    ) async throws -> LLMResult
     func generatePromptResultDetailedStream(
         transcript: String,
         systemPrompt: String?,
         inferenceSettings: PromptInferenceSettings?
+    ) -> AsyncThrowingStream<LLMStreamEvent, Error>
+    func generatePromptResultDetailedStream(
+        transcript: String,
+        systemPrompt: String?,
+        inferenceSettings: PromptInferenceSettings?,
+        modelOverride: String?
     ) -> AsyncThrowingStream<LLMStreamEvent, Error>
     func chatDetailed(
         question: String, transcript: String, userNotes: String?, history: [ChatMessage], source: TelemetryChatSource,
         conversationID: UUID
     ) async throws -> LLMResult
     func transformDetailed(text: String, prompt: String) async throws -> LLMResult
+    func transformDetailed(
+        text: String,
+        prompt: String,
+        inferenceSettings: PromptInferenceSettings?,
+        modelOverride: String?
+    ) async throws -> LLMResult
+    func transformStream(
+        text: String,
+        prompt: String,
+        inferenceSettings: PromptInferenceSettings?,
+        modelOverride: String?
+    ) -> AsyncThrowingStream<String, Error>
     func formatTranscriptDetailed(
         transcript: String,
         promptTemplate: String,
@@ -55,6 +79,50 @@ public protocol LLMServiceProtocol: Sendable {
 }
 
 public extension LLMServiceProtocol {
+    func generatePromptResultDetailed(
+        transcript: String,
+        systemPrompt: String?,
+        inferenceSettings: PromptInferenceSettings?,
+        modelOverride: String?
+    ) async throws -> LLMResult {
+        try await generatePromptResultDetailed(
+            transcript: transcript,
+            systemPrompt: systemPrompt,
+            inferenceSettings: inferenceSettings
+        )
+    }
+
+    func generatePromptResultDetailedStream(
+        transcript: String,
+        systemPrompt: String?,
+        inferenceSettings: PromptInferenceSettings?,
+        modelOverride: String?
+    ) -> AsyncThrowingStream<LLMStreamEvent, Error> {
+        generatePromptResultDetailedStream(
+            transcript: transcript,
+            systemPrompt: systemPrompt,
+            inferenceSettings: inferenceSettings
+        )
+    }
+
+    func transformDetailed(
+        text: String,
+        prompt: String,
+        inferenceSettings: PromptInferenceSettings?,
+        modelOverride: String?
+    ) async throws -> LLMResult {
+        try await transformDetailed(text: text, prompt: prompt)
+    }
+
+    func transformStream(
+        text: String,
+        prompt: String,
+        inferenceSettings: PromptInferenceSettings?,
+        modelOverride: String?
+    ) -> AsyncThrowingStream<String, Error> {
+        transformStream(text: text, prompt: prompt)
+    }
+
     func generatePromptResult(transcript: String) async throws -> String {
         try await generatePromptResult(transcript: transcript, systemPrompt: nil)
     }
@@ -479,10 +547,24 @@ public final class LLMService: LLMServiceProtocol, Sendable {
         systemPrompt: String?,
         inferenceSettings: PromptInferenceSettings?
     ) async throws -> LLMResult {
+        try await generatePromptResultDetailed(
+            transcript: transcript,
+            systemPrompt: systemPrompt,
+            inferenceSettings: inferenceSettings,
+            modelOverride: nil
+        )
+    }
+
+    public func generatePromptResultDetailed(
+        transcript: String,
+        systemPrompt: String?,
+        inferenceSettings: PromptInferenceSettings?,
+        modelOverride: String?
+    ) async throws -> LLMResult {
         let operationID = Observability.operationID()
         let startedAt = Date()
         let promptDefaultUsed = systemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
-        let context = try loadContextForLLMOperation(
+        let baseContext = try loadContextForLLMOperation(
             operationID: operationID,
             feature: "prompt_result",
             streaming: false,
@@ -491,6 +573,7 @@ public final class LLMService: LLMServiceProtocol, Sendable {
             promptDefaultUsed: promptDefaultUsed,
             messageCount: 2
         )
+        let context = try context(baseContext, overridingModelWith: modelOverride)
         let config = context.providerConfig
         let resolution = PromptInferenceCapabilityResolver.resolve(
             config: config,
@@ -666,9 +749,23 @@ public final class LLMService: LLMServiceProtocol, Sendable {
     }
 
     public func transformDetailed(text: String, prompt: String) async throws -> LLMResult {
+        try await transformDetailed(
+            text: text,
+            prompt: prompt,
+            inferenceSettings: nil,
+            modelOverride: nil
+        )
+    }
+
+    public func transformDetailed(
+        text: String,
+        prompt: String,
+        inferenceSettings: PromptInferenceSettings?,
+        modelOverride: String?
+    ) async throws -> LLMResult {
         let operationID = Observability.operationID()
         let startedAt = Date()
-        let context = try loadContextForLLMOperation(
+        let baseContext = try loadContextForLLMOperation(
             operationID: operationID,
             feature: "transform",
             streaming: false,
@@ -676,11 +773,20 @@ public final class LLMService: LLMServiceProtocol, Sendable {
             inputChars: text.count + prompt.count,
             messageCount: 2
         )
+        let context = try context(baseContext, overridingModelWith: modelOverride)
         let config = context.providerConfig
+        let resolution = PromptInferenceCapabilityResolver.resolve(
+            config: config,
+            requested: inferenceSettings
+        )
         let assembly = buildTransformMessages(text: text, prompt: prompt, config: config)
         let messages = assembly.messages
         do {
-            let response = try await client.chatCompletion(messages: messages, context: context, options: .default)
+            let response = try await client.chatCompletion(
+                messages: messages,
+                context: context,
+                options: resolution.options
+            )
             let latencyMs = Self.latencyMs(since: startedAt)
             Telemetry.send(.llmTransformUsed(provider: config.id.rawValue))
             sendLLMOperation(
@@ -953,6 +1059,20 @@ public final class LLMService: LLMServiceProtocol, Sendable {
         systemPrompt: String?,
         inferenceSettings: PromptInferenceSettings?
     ) -> AsyncThrowingStream<LLMStreamEvent, Error> {
+        generatePromptResultDetailedStream(
+            transcript: transcript,
+            systemPrompt: systemPrompt,
+            inferenceSettings: inferenceSettings,
+            modelOverride: nil
+        )
+    }
+
+    public func generatePromptResultDetailedStream(
+        transcript: String,
+        systemPrompt: String?,
+        inferenceSettings: PromptInferenceSettings?,
+        modelOverride: String?
+    ) -> AsyncThrowingStream<LLMStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let operationID = Observability.operationID()
             let startedAt = Date()
@@ -964,7 +1084,8 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                 do {
                     let context: LLMExecutionContext
                     do {
-                        context = try self.loadContext()
+                        let baseContext = try self.loadContext()
+                        context = try self.context(baseContext, overridingModelWith: modelOverride)
                     } catch {
                         self.sendLLMOperation(
                             operationID: operationID,
@@ -1185,6 +1306,20 @@ public final class LLMService: LLMServiceProtocol, Sendable {
     }
 
     public func transformStream(text: String, prompt: String) -> AsyncThrowingStream<String, Error> {
+        transformStream(
+            text: text,
+            prompt: prompt,
+            inferenceSettings: nil,
+            modelOverride: nil
+        )
+    }
+
+    public func transformStream(
+        text: String,
+        prompt: String,
+        inferenceSettings: PromptInferenceSettings?,
+        modelOverride: String?
+    ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let operationID = Observability.operationID()
             let startedAt = Date()
@@ -1195,7 +1330,8 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                 do {
                     let context: LLMExecutionContext
                     do {
-                        context = try self.loadContext()
+                        let baseContext = try self.loadContext()
+                        context = try self.context(baseContext, overridingModelWith: modelOverride)
                     } catch {
                         self.sendLLMOperation(
                             operationID: operationID,
@@ -1212,11 +1348,18 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                     }
                     let config = context.providerConfig
                     provider = config.id.rawValue
+                    let resolution = PromptInferenceCapabilityResolver.resolve(
+                        config: config,
+                        requested: inferenceSettings
+                    )
                     let assembly = self.buildTransformMessages(text: text, prompt: prompt, config: config)
                     inputTruncated = assembly.inputTruncated
                     let messages = assembly.messages
                     let stream = self.client.chatCompletionStream(
-                        messages: messages, context: context, options: .default)
+                        messages: messages,
+                        context: context,
+                        options: resolution.options
+                    )
                     for try await token in stream {
                         outputChars += token.count
                         continuation.yield(token)
@@ -1283,6 +1426,72 @@ public final class LLMService: LLMServiceProtocol, Sendable {
             throw LLMError.notConfigured
         }
         return context
+    }
+
+    /// Returns a request-scoped context with the requested model while keeping
+    /// the provider, endpoint, credentials, and local-CLI configuration from
+    /// the resolved context. No shared configuration is mutated.
+    private func context(
+        _ context: LLMExecutionContext,
+        overridingModelWith modelOverride: String?
+    ) throws -> LLMExecutionContext {
+        guard let rawModelOverride = modelOverride else { return context }
+        let modelOverride = rawModelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !modelOverride.isEmpty else {
+            throw LLMError.invalidModelOverride(
+                model: rawModelOverride,
+                provider: context.providerConfig.id,
+                reason: "the model name is empty."
+            )
+        }
+        guard Self.isLocallyCompatible(modelOverride, with: context.providerConfig.id) else {
+            throw LLMError.invalidModelOverride(
+                model: modelOverride,
+                provider: context.providerConfig.id,
+                reason: "the model identifier does not match this provider."
+            )
+        }
+        guard modelOverride != context.providerConfig.modelName else { return context }
+
+        guard context.providerConfig.id != .localCLI else {
+            throw LLMError.invalidModelOverride(
+                model: modelOverride,
+                provider: .localCLI,
+                reason: "the configured CLI command controls its model. "
+                    + "Remove the override or change the command in Settings."
+            )
+        }
+
+        let config = context.providerConfig
+        return LLMExecutionContext(
+            providerConfig: LLMProviderConfig(
+                id: config.id,
+                baseURL: config.baseURL,
+                apiKey: config.apiKey,
+                modelName: modelOverride,
+                isLocal: config.isLocal
+            ),
+            localCLIConfig: context.localCLIConfig
+        )
+    }
+
+    /// Rejects provider/model combinations that can be disproved without a
+    /// network request. OpenAI-compatible and local runtimes intentionally
+    /// accept arbitrary non-empty identifiers because their installed model
+    /// sets are endpoint-specific. Discovery lists can omit valid aliases, so
+    /// the generation endpoint validates existence without a fallback model.
+    private static func isLocallyCompatible(_ model: String, with provider: LLMProviderID) -> Bool {
+        switch provider {
+        case .anthropic:
+            return model.hasPrefix("claude-")
+        case .gemini:
+            return model.hasPrefix("gemini-")
+        case .openrouter:
+            let components = model.split(separator: "/", omittingEmptySubsequences: false)
+            return components.count == 2 && components.allSatisfy { !$0.isEmpty }
+        case .openai, .openaiCompatible, .ollama, .lmstudio, .localCLI, .inProcessLocal:
+            return true
+        }
     }
 
     private func loadContextForLLMOperation(
@@ -1445,7 +1654,7 @@ public final class LLMService: LLMServiceProtocol, Sendable {
         switch llmError {
         case .connectionFailed, .modelNotFound, .cliError, .authenticationFailed:
             return true
-        case .notConfigured, .rateLimited, .contextTooLong, .formatterTruncated,
+        case .notConfigured, .invalidModelOverride, .rateLimited, .contextTooLong, .formatterTruncated,
             .formatterEmptyResponse, .providerError, .streamingError, .invalidResponse:
             return false
         }
