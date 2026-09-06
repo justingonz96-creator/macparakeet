@@ -102,6 +102,12 @@ with human progress/status kept off stdout.
   effective receipt is available; callers must not reinterpret it as raw
   upstream-provider defaults. Other LLM commands omit it because per-prompt
   settings do not apply to them.
+- LLM receipts never infer a normal `stopReason` when the runtime supplies no
+  finish reason. Local CLI omits `effectiveSettings`, because inference options
+  are not passed to its command. Token usage may derive `totalTokens` from both
+  component counts when the provider omits the total. Explicit streaming
+  provider errors fail the operation even after partial text; they do not
+  produce a successful result receipt.
 - `meetings results list|add --json` prompt-result objects include additive
   optional `inferenceSettingsSnapshot` with the same settings shape. When
   present it is the effective receipt stored with the result; imported results
