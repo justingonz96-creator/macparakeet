@@ -14,6 +14,9 @@ public final class SavedMeetingNotesCoordinator {
 
     public var hasUnsavedChanges: Bool { !drafts.isEmpty }
 
+    /// One pending AppKit termination decision owns the eventual reply.
+    public var isPreparingToQuit: Bool { quitTask != nil }
+
     public func editor(
         meetingID: UUID,
         text: String?,
