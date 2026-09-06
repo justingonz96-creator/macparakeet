@@ -1809,6 +1809,94 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(editor.saveState, .deleted)
     }
 
+    func testNotesAutosavePreservesUnrelatedErrorAndDiagnostic() async throws {
+        let meeting = Transcription(fileName: "Meeting", sourceType: .meeting)
+        mockRepo.transcriptions = [meeting]
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.currentTranscription = meeting
+        viewModel.setError(message: "Could not export audio", detail: "Folder permission was revoked")
+        let saved = expectation(description: "Debounced notes saved")
+        let notesViewModel = try XCTUnwrap(viewModel)
+        let editor = SavedMeetingNotesViewModel(waitForDebounce: { _ in })
+        editor.configure(meetingID: meeting.id, text: nil) { text in
+            let result = await notesViewModel.updateMeetingNotes(for: meeting, to: text)
+            saved.fulfill()
+            return result
+        }
+        editor.textBinding.wrappedValue = "Autosaved draft"
+        await fulfillment(of: [saved], timeout: 2)
+        XCTAssertEqual(try mockRepo.fetch(id: meeting.id)?.userNotes, "Autosaved draft")
+        XCTAssertEqual(viewModel.errorMessage, "Could not export audio")
+        XCTAssertEqual(viewModel.errorDetail, "Folder permission was revoked")
+    }
+
+    func testNotesRetryClearsOnlyItsOwnErrorBanner() async throws {
+        let meeting = Transcription(fileName: "Meeting", sourceType: .meeting)
+        mockRepo.transcriptions = [meeting]
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.currentTranscription = meeting
+        mockRepo.saveError = NSError(domain: "notes-write", code: 1)
+        let failed = await viewModel.updateCurrentMeetingNotes(to: "Draft")
+        XCTAssertFalse(failed)
+        XCTAssertNotNil(viewModel.errorMessage)
+        mockRepo.saveError = nil
+        let retried = await viewModel.updateCurrentMeetingNotes(to: "Draft")
+        XCTAssertTrue(retried)
+        XCTAssertNil(viewModel.errorMessage)
+
+        mockRepo.saveError = NSError(domain: "notes-write", code: 1)
+        _ = await viewModel.updateCurrentMeetingNotes(to: "Next draft")
+        let repeatedHeadline = try XCTUnwrap(viewModel.errorMessage)
+        // A later feature may publish even an identical headline. Ownership,
+        // not string equality, determines whether autosave may clear it.
+        viewModel.setError(message: repeatedHeadline, detail: "Another feature's diagnostic")
+        mockRepo.saveError = nil
+        _ = await viewModel.updateCurrentMeetingNotes(to: "Next draft")
+        XCTAssertEqual(viewModel.errorMessage, repeatedHeadline)
+        XCTAssertEqual(viewModel.errorDetail, "Another feature's diagnostic")
+    }
+
+    func testArtifactRetryDoesNotSuppressOverlappingNotesWriteFailure() async throws {
+        let meeting = Transcription(fileName: "Meeting", sourceType: .meeting, userNotes: "Original")
+        mockRepo.transcriptions = [meeting]
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.currentTranscription = meeting
+        let writeStarted = expectation(description: "Database write held")
+        let releaseWrite = DispatchSemaphore(value: 0)
+        defer { releaseWrite.signal() }
+        mockRepo.userNotesUpdateHandler = {
+            writeStarted.fulfill()
+            guard releaseWrite.wait(timeout: .now() + 3) == .success else {
+                throw NSError(domain: "test-write-timeout", code: 1)
+            }
+            throw NSError(domain: "notes-write", code: 1)
+        }
+        let notesViewModel = try XCTUnwrap(viewModel)
+        let editor = SavedMeetingNotesViewModel()
+        editor.configure(meetingID: meeting.id, text: meeting.userNotes) { text in
+            await notesViewModel.updateMeetingNotes(for: meeting, to: text)
+        }
+        editor.textBinding.wrappedValue = "Unsaved draft"
+        editor.cancelPendingSave()
+        let saveTask = Task { @MainActor in await editor.flush() }
+        await fulfillment(of: [writeStarted], timeout: 2)
+        let retryEntered = expectation(description: "Artifact retry enqueued on main actor")
+        let retryTask = Task { @MainActor in
+            retryEntered.fulfill()
+            await notesViewModel.retryCurrentMeetingNotesArtifactRefresh()
+        }
+        await fulfillment(of: [retryEntered], timeout: 2)
+        releaseWrite.signal()
+        let saved = await saveTask.value
+        await retryTask.value
+        XCTAssertFalse(saved)
+        XCTAssertEqual(editor.saveState, .failed)
+        XCTAssertEqual(editor.text, "Unsaved draft")
+        XCTAssertTrue(editor.hasUnsavedChanges)
+        XCTAssertEqual(try mockRepo.fetch(id: meeting.id)?.userNotes, "Original")
+        XCTAssertTrue(viewModel.errorMessage?.hasPrefix("Failed to save meeting notes:") == true)
+    }
+
     func testUpdateCurrentMeetingNotesSucceedsWhenReadBackFailsAfterCommit() async throws {
         let meeting = Transcription(
             fileName: "Design Review",
