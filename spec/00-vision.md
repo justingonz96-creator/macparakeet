@@ -101,9 +101,11 @@ network requests.
 - Audio never leaves your Mac for dictation or transcription.
 - No email signup. No login. Optional self-hosted telemetry can be disabled in Settings.
 - Core capture and local-file speech workflows work in airplane-mode or air-gapped environments after the required models are installed. Media imports, models, updates, telemetry, and remote AI providers are separate network surfaces.
-- Discover requests its public feed at app launch even with telemetry disabled
-  and without opening the Discover page. It has cached/bundled offline content,
-  not a no-network toggle. Explicit feedback/thought submissions also use the network.
+- Discover requests its public feed at app launch by default, even with telemetry
+  disabled and without opening the Discover page. It has cached/bundled offline
+  content and an independent opt-out in Settings → System → Appearance. Turning
+  Discover off hides the card and cancels feed work; it is not a global network
+  switch. Explicit feedback/thought submissions also use the network.
 
 This is privacy by architecture at the speech boundary: recognition has no
 server path. [ADR-002](adr/002-local-only.md) documents the distinct provider,
@@ -334,7 +336,7 @@ MacParakeet optimizes the default pipeline for Parakeet while routing optional N
 
 This is not "cloud by default with a local mode." Core speech recognition runs entirely on-device. There is no cloud STT path, no account system, and no requirement to send audio anywhere.
 
-Network surfaces remain separate from speech inference: configured LLM providers can receive text, models/media download assets, Sparkle checks updates, and self-hosted telemetry is opt-out. Discover refreshes its public feed at launch independently of telemetry. The privacy boundary is local speech, not a claim that all other app I/O is opt-in.
+Network surfaces remain separate from speech inference: configured LLM providers can receive text, models/media download assets, Sparkle checks updates, and self-hosted telemetry is opt-out. Discover refreshes its public feed at launch by default and has its own Settings opt-out, independent of telemetry. The privacy boundary is local speech, not a claim that all other app I/O is opt-in.
 
 ### 3. Free and Open-Source
 

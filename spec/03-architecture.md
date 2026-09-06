@@ -1156,7 +1156,7 @@ same required permission checks in context.
 
 ### Privacy Guarantees
 
-1. **No cloud STT** — Speech recognition stays local. Other network surfaces include model/helper setup, media/podcast imports, updates, configured LLM features, opt-out telemetry/crash reporting, explicit feedback/Discover submissions, and retained activation when invoked. Discover separately requests its public feed at app launch even when telemetry is disabled; it is not opt-in or gated by opening its page.
+1. **No cloud STT** — Speech recognition stays local. Other network surfaces include model/helper setup, media/podcast imports, updates, configured LLM features, opt-out telemetry/crash reporting, explicit feedback/Discover submissions, and retained activation when invoked. Discover separately requests its public feed at app launch by default, even when telemetry is disabled and without opening its page. Its own Settings → System → Appearance opt-out hides Discover and cancels feed work; neither preference is a global network switch.
 2. **Managed temporary files** — Owning flows clean their temporary working files; persisted dictation/meeting audio follows the user's explicit storage and retention settings
 3. **No required product account** — No login or email is required; optional telemetry/crash reporting is described separately
 4. **Telemetry is opt-out** — Self-hosted usage analytics and crash reporting run only while telemetry is enabled
@@ -1389,7 +1389,7 @@ open Package.swift
 
 2. **Protocol-first services.** Every service has a protocol. Tests inject mocks. No singletons.
 
-3. **Local-only for user data.** Core speech inference has no cloud or API-key dependency. Network is only for model artifacts, optional LLM providers, update/telemetry surfaces, retained purchase activation/validation if explicitly invoked, and user-initiated media downloads.
+3. **Local-first user data.** Core speech inference has no cloud or API-key dependency. Network surfaces include model/helper setup, configured LLM providers, updates, opt-out telemetry and Discover, explicit feedback/Discover submissions, retained purchase activation/validation if explicitly invoked, and user-initiated media downloads.
 
 4. **Fast launch + onboarding pre-warm.** App launch stays lightweight; first-run onboarding prepares STT model so core features feel ready immediately afterward.
 

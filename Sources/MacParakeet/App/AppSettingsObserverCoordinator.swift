@@ -17,6 +17,7 @@ final class AppSettingsObserverCoordinator {
     private let onMenuBarOnlyModeChanged: () -> Void
     private let onMenuBarIconVisibilityChanged: () -> Void
     private let onShowIdlePillChanged: () -> Void
+    private let onShowDiscoverChanged: () -> Void
     private let onShowMeetingRecordingPillChanged: () -> Void
     private let onInstantDictationChanged: () -> Void
     private let onMicrophoneSelectionChanged: () -> Void
@@ -54,6 +55,7 @@ final class AppSettingsObserverCoordinator {
         onMenuBarOnlyModeChanged: @escaping () -> Void,
         onMenuBarIconVisibilityChanged: @escaping () -> Void,
         onShowIdlePillChanged: @escaping () -> Void,
+        onShowDiscoverChanged: @escaping () -> Void,
         onShowMeetingRecordingPillChanged: @escaping () -> Void,
         onInstantDictationChanged: @escaping () -> Void,
         onMicrophoneSelectionChanged: @escaping () -> Void,
@@ -71,6 +73,7 @@ final class AppSettingsObserverCoordinator {
         self.onMenuBarOnlyModeChanged = onMenuBarOnlyModeChanged
         self.onMenuBarIconVisibilityChanged = onMenuBarIconVisibilityChanged
         self.onShowIdlePillChanged = onShowIdlePillChanged
+        self.onShowDiscoverChanged = onShowDiscoverChanged
         self.onShowMeetingRecordingPillChanged = onShowMeetingRecordingPillChanged
         self.onInstantDictationChanged = onInstantDictationChanged
         self.onMicrophoneSelectionChanged = onMicrophoneSelectionChanged
@@ -91,6 +94,17 @@ final class AppSettingsObserverCoordinator {
         ) { [weak self] notification in
             let tab = Self.settingsTab(from: notification)
             Task { @MainActor in self?.onOpenSettings(tab) }
+        })
+
+        // Unlike the other settings, Discover opt-out must cancel work before
+        // a rapid re-enable or an already-ready feed completion can run.
+        // NotificationCenter delivers this observer on the main queue.
+        observerTokens.append(notificationCenter.addObserver(
+            forName: .macParakeetShowDiscoverDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.onShowDiscoverChanged()
+            }
         })
 
         for (name, invoke) in Self.plainChannels {
