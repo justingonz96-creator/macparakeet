@@ -4,6 +4,33 @@ import UniformTypeIdentifiers
 import MacParakeetCore
 import MacParakeetViewModels
 
+struct MenuBarStatusItemState: Equatable {
+    enum Transition: Equatable {
+        case none
+        case install(BreathWaveIcon.MenuBarState)
+        case remove
+        case update(BreathWaveIcon.MenuBarState)
+    }
+
+    private(set) var isVisible = false
+    private(set) var iconState: BreathWaveIcon.MenuBarState = .idle
+
+    mutating func setVisible(_ shouldBeVisible: Bool) -> Transition {
+        guard shouldBeVisible != isVisible else { return .none }
+        isVisible = shouldBeVisible
+        return shouldBeVisible ? .install(iconState) : .remove
+    }
+
+    mutating func updateIcon(_ state: BreathWaveIcon.MenuBarState) -> Transition {
+        iconState = state
+        return isVisible ? .update(state) : .none
+    }
+
+    mutating func markInstallationFailed() {
+        isVisible = false
+    }
+}
+
 @MainActor
 final class MenuBarCoordinator: NSObject, NSMenuDelegate {
     private let updaterController: SPUStandardUpdaterController
@@ -29,6 +56,7 @@ final class MenuBarCoordinator: NSObject, NSMenuDelegate {
     private let onShowAboutPanel: () -> Void
 
     private var statusItem: NSStatusItem?
+    private var statusItemState = MenuBarStatusItemState()
     private var newTranscriptionMenuItem: NSMenuItem?
     private var startDictationMenuItem: NSMenuItem?
     private var createTransformMenuItem: NSMenuItem?
@@ -323,13 +351,34 @@ final class MenuBarCoordinator: NSObject, NSMenuDelegate {
         NSApp.mainMenu = mainMenu
     }
 
-    func setupMenuBar() {
+    func setMenuBarIconVisible(_ visible: Bool) {
+        switch statusItemState.setVisible(visible) {
+        case .install(let state):
+            if !installMenuBarIcon(state: state) {
+                statusItemState.markInstallationFailed()
+            }
+        case .remove:
+            removeMenuBarIcon()
+        case .none, .update:
+            break
+        }
+    }
+
+    private func installMenuBarIcon(state: BreathWaveIcon.MenuBarState) -> Bool {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
 
-        guard let statusItem,
-              let button = statusItem.button else { return }
+        guard
+            let statusItem,
+            let button = statusItem.button
+        else {
+            if let statusItem {
+                NSStatusBar.system.removeStatusItem(statusItem)
+            }
+            self.statusItem = nil
+            return false
+        }
 
-        button.image = BreathWaveIcon.menuBarIcon(pointSize: 18)
+        button.image = BreathWaveIcon.menuBarIcon(pointSize: 18, state: state)
 
         let dropView = MenuBarDropView(frame: button.bounds)
         dropView.onDrop = { [weak self] urls in
@@ -505,6 +554,28 @@ final class MenuBarCoordinator: NSObject, NSMenuDelegate {
         menu.addItem(quitItem)
 
         statusItem.menu = menu
+        return true
+    }
+
+    private func removeMenuBarIcon() {
+        guard let statusItem else { return }
+
+        if let menu = statusItem.menu {
+            transcribeFileMenuItems.removeAll { $0.menu === menu }
+            transcribeYouTubeMenuItems.removeAll { $0.menu === menu }
+            recordMeetingMenuItems.removeAll { $0.menu === menu }
+        }
+
+        statusItem.menu = nil
+        NSStatusBar.system.removeStatusItem(statusItem)
+        self.statusItem = nil
+        pasteLastMenuItem = nil
+        recentDictationsMenuItem = nil
+        pasteLastTransformMenuItem = nil
+        recentTransformsMenuItem = nil
+        openLiveMeetingPanelMenuItem = nil
+        hotkeyMenuItem = nil
+        cohereLanguageMenuItem = nil
     }
 
     func refreshHotkeyTitle() {
@@ -556,7 +627,8 @@ final class MenuBarCoordinator: NSObject, NSMenuDelegate {
     }
 
     func updateIcon(state: BreathWaveIcon.MenuBarState) {
-        statusItem?.button?.image = BreathWaveIcon.menuBarIcon(pointSize: 18, state: state)
+        guard case .update(let visibleState) = statusItemState.updateIcon(state) else { return }
+        statusItem?.button?.image = BreathWaveIcon.menuBarIcon(pointSize: 18, state: visibleState)
     }
 
     @objc private func showAboutPanel() {
