@@ -1866,7 +1866,8 @@ final class TranscriptionViewModelTests: XCTestCase {
         viewModel.currentTranscription = meeting
         let firstSaved = await viewModel.updateCurrentMeetingNotes(to: "Original")
         XCTAssertTrue(firstSaved)
-        XCTAssertNotNil(viewModel.meetingNotesArtifactWarning, "Expose the actual artifact Retry button before editing again")
+        XCTAssertNotNil(
+            viewModel.meetingNotesArtifactWarning, "Expose the actual artifact Retry button before editing again")
         let writeStarted = expectation(description: "Database write held")
         let releaseWrite = DispatchSemaphore(value: 0)
         defer { releaseWrite.signal() }
