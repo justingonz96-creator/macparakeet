@@ -409,10 +409,10 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             let paragraphs = TranscriptParagraphBuilder.build(from: timestamps)
             if options.includeTimestamps || options.includeSpeakerLabels {
                 var lastSpeakerId: String? = nil
-                for paragraph in paragraphs {
+                for (index, paragraph) in paragraphs.enumerated() {
                     if options.includeSpeakerLabels,
-                       let label = speakerLabel(for: paragraph.speakerId, in: transcription.speakers),
-                       paragraph.speakerId != lastSpeakerId {
+                       let label = paragraphSpeakerLabel(for: paragraph.speakerId, in: transcription.speakers),
+                       index == 0 || paragraph.speakerId != lastSpeakerId {
                         lines.append("**\(label)**")
                         lines.append("")
                     }
@@ -470,6 +470,11 @@ public final class ExportService: ExportServiceProtocol, Sendable {
         return speakers.first(where: { $0.id == speakerId })?.label ?? speakerId
     }
 
+    private func paragraphSpeakerLabel(for speakerId: String?, in speakers: [SpeakerInfo]?) -> String? {
+        guard let speakers, !speakers.isEmpty else { return nil }
+        return speakerId == nil ? "Unassigned" : speakerLabel(for: speakerId, in: speakers)
+    }
+
     // MARK: - Timestamp Formatting
 
     /// SRT format: 00:01:23,456
@@ -523,14 +528,14 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             let paragraphs = TranscriptParagraphBuilder.build(from: timestamps)
             if options.includeTimestamps || options.includeSpeakerLabels {
                 var lastSpeakerId: String? = nil
-                for paragraph in paragraphs {
+                for (index, paragraph) in paragraphs.enumerated() {
                     if !lines.isEmpty, lines.last != "" {
                         lines.append("")
                     }
 
                     if options.includeSpeakerLabels,
-                       let label = speakerLabel(for: paragraph.speakerId, in: transcription.speakers),
-                       paragraph.speakerId != lastSpeakerId {
+                       let label = paragraphSpeakerLabel(for: paragraph.speakerId, in: transcription.speakers),
+                       index == 0 || paragraph.speakerId != lastSpeakerId {
                         lines.append("\(label):")
                     }
                     lastSpeakerId = paragraph.speakerId

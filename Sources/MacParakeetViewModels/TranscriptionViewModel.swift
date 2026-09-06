@@ -122,21 +122,16 @@ public final class TranscriptionViewModel {
                 hasConversations = false
             }
             refreshPromptResultStatus()
-            if transcriptionChanged, let currentTranscription {
-                speakerAttributionLoadToken = nil
-                speakerAttributionTranscriptionID = nil
-                speakerAttribution = nil
-                speakerCorrectionsApplied = false
-                canUndoSpeakerCorrection = false
-                canRedoSpeakerCorrection = false
+            // Attribution belongs to a selected snapshot, including updates of
+            // the same row when a queued meeting finishes transcription.
+            speakerAttributionLoadToken = nil
+            speakerAttributionTranscriptionID = nil
+            speakerAttribution = nil
+            speakerCorrectionsApplied = false
+            canUndoSpeakerCorrection = false
+            canRedoSpeakerCorrection = false
+            if let currentTranscription {
                 loadSpeakerAttribution(for: currentTranscription)
-            } else if currentTranscription == nil {
-                speakerAttributionLoadToken = nil
-                speakerAttributionTranscriptionID = nil
-                speakerAttribution = nil
-                speakerCorrectionsApplied = false
-                canUndoSpeakerCorrection = false
-                canRedoSpeakerCorrection = false
             }
         }
     }
@@ -1842,28 +1837,27 @@ public final class TranscriptionViewModel {
     // MARK: - Speaker Corrections
 
     public func loadSpeakerAttribution(for transcription: Transcription) {
-        guard let speakerAttributionReader else {
-            speakerAttributionLoadToken = nil
-            speakerAttribution = SpeakerAttributionResolver.resolve(transcription: transcription)
-            speakerAttributionTranscriptionID = transcription.id
-            speakerCorrectionsApplied = false
-            canUndoSpeakerCorrection = false
-            canRedoSpeakerCorrection = false
-            return
-        }
-
         let token = UUID()
         speakerAttributionLoadToken = token
         let transcriptionID = transcription.id
-        Task { [weak self, speakerAttributionReader] in
+        let selectedRevision = currentTranscriptionRevision
+        let reader = speakerAttributionReader
+        Task { [weak self, reader] in
             do {
                 let projection = try await Task.detached(priority: .userInitiated) {
-                    try speakerAttributionReader.resolve(transcriptionId: transcriptionID)
+                    if let reader {
+                        return try reader.resolve(transcription: transcription)
+                    }
+                    return SpeakerAttributionProjection(
+                        automaticTranscription: transcription,
+                        attribution: SpeakerAttributionResolver.resolve(transcription: transcription),
+                        correctionsApplied: false
+                    )
                 }.value
                 guard let self,
                       self.speakerAttributionLoadToken == token,
-                      self.currentTranscription?.id == transcriptionID,
-                      let projection
+                      self.currentTranscriptionRevision == selectedRevision,
+                      self.currentTranscription?.id == transcriptionID
                 else { return }
                 self.speakerAttribution = projection.attribution
                 self.speakerAttributionTranscriptionID = transcriptionID
@@ -1871,7 +1865,10 @@ public final class TranscriptionViewModel {
                 self.canUndoSpeakerCorrection = projection.canUndo
                 self.canRedoSpeakerCorrection = projection.canRedo
             } catch {
-                guard let self, self.speakerAttributionLoadToken == token else { return }
+                guard let self,
+                      self.speakerAttributionLoadToken == token,
+                      self.currentTranscriptionRevision == selectedRevision
+                else { return }
                 self.setError(message: "Couldn't load speaker corrections.")
                 self.logger.error(
                     "speaker_correction_load_failed error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
@@ -1887,6 +1884,7 @@ public final class TranscriptionViewModel {
               !isApplyingSpeakerCorrection
         else { return }
         isApplyingSpeakerCorrection = true
+        let selectedRevision = currentTranscriptionRevision
         Task { [weak self, speakerCorrectionService] in
             do {
                 let result = try await speakerCorrectionService.apply(
@@ -1895,7 +1893,9 @@ public final class TranscriptionViewModel {
                     expectedFingerprint: attribution.fingerprint,
                     expectedRevision: attribution.correctionRevision
                 )
-                self?.publishSpeakerCorrectionResult(result, transcriptionID: transcriptionID)
+                self?.publishSpeakerCorrectionResult(
+                    result, transcriptionID: transcriptionID, selectedRevision: selectedRevision
+                )
             } catch {
                 self?.handleSpeakerCorrectionFailure(error, transcriptionID: transcriptionID)
             }
@@ -1917,6 +1917,7 @@ public final class TranscriptionViewModel {
               !isApplyingSpeakerCorrection
         else { return }
         isApplyingSpeakerCorrection = true
+        let selectedRevision = currentTranscriptionRevision
         Task { [weak self, speakerCorrectionService] in
             do {
                 let result: SpeakerCorrectionResult
@@ -1933,7 +1934,9 @@ public final class TranscriptionViewModel {
                         expectedRevision: attribution.correctionRevision
                     )
                 }
-                self?.publishSpeakerCorrectionResult(result, transcriptionID: transcriptionID)
+                self?.publishSpeakerCorrectionResult(
+                    result, transcriptionID: transcriptionID, selectedRevision: selectedRevision
+                )
             } catch {
                 self?.handleSpeakerCorrectionFailure(error, transcriptionID: transcriptionID)
             }
@@ -1942,21 +1945,25 @@ public final class TranscriptionViewModel {
 
     private func publishSpeakerCorrectionResult(
         _ result: SpeakerCorrectionResult,
-        transcriptionID: UUID
+        transcriptionID: UUID,
+        selectedRevision: UInt64
     ) {
-        guard currentTranscription?.id == transcriptionID else {
-            isApplyingSpeakerCorrection = false
-            return
-        }
-        // Invalidate an older read that may still be in flight. A committed
-        // correction is always newer than the snapshot that initiated it.
-        speakerAttributionLoadToken = UUID()
-        speakerAttribution = result.attribution
-        speakerAttributionTranscriptionID = transcriptionID
-        speakerCorrectionsApplied = result.canUndo
-        canUndoSpeakerCorrection = result.canUndo
-        canRedoSpeakerCorrection = result.canRedo
         isApplyingSpeakerCorrection = false
+        if currentTranscription?.id == transcriptionID {
+            if currentTranscriptionRevision == selectedRevision {
+                // A committed correction is newer than the read that initiated it.
+                speakerAttributionLoadToken = UUID()
+                speakerAttribution = result.attribution
+                speakerAttributionTranscriptionID = transcriptionID
+                speakerCorrectionsApplied = result.canUndo
+                canUndoSpeakerCorrection = result.canUndo
+                canRedoSpeakerCorrection = result.canRedo
+            } else if let currentTranscription {
+                // The selected row changed while the mutation was committing.
+                // Resolve its latest snapshot instead of restoring the old words.
+                loadSpeakerAttribution(for: currentTranscription)
+            }
+        }
         // Artifact refresh generations are local monotonic tokens, independent
         // of correction revisions (which restart after retranscription).
         let artifactGeneration = (speakerRenameGenerations[transcriptionID] ?? 0) + 1
@@ -1988,10 +1995,16 @@ public final class TranscriptionViewModel {
         let trimmed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if speakerCorrectionService != nil,
-           speakerAttribution != nil,
            currentTranscription?.status == .completed,
            !(currentTranscription?.wordTimestamps ?? []).isEmpty,
            !(currentTranscription?.transcriptSegments ?? []).isEmpty {
+            // Loading correction history must never enable a legacy write to
+            // the automatic baseline: that would bypass undo and active edits.
+            guard speakerAttribution != nil else {
+                setError(message: "Speaker corrections are loading. Try the rename again in a moment.")
+                return
+            }
+            clearError()
             applySpeakerCorrection(.rename(speakerID: speakerId, label: trimmed))
             return
         }

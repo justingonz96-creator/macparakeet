@@ -1742,7 +1742,9 @@ struct TranscriptResultView: View {
     /// Small timed transcripts render in a plain stack; only their row container
     /// becomes lazy at the long-transcript threshold.
     private var transcriptBodyUsesLazyStack: Bool {
-        TranscriptBodyLayout.usesLazyStack(rowCount: cachedTranscriptRowCount)
+        TranscriptBodyLayout.usesLazyStack(
+            rowCount: viewModel.speakerAttribution?.editableSegments.count ?? cachedTranscriptRowCount
+        )
     }
 
     private var transcriptPane: some View {
@@ -1817,9 +1819,9 @@ struct TranscriptResultView: View {
                 }
                 guard !autoScrollPaused else { return }
                 if let attribution = viewModel.speakerAttribution,
-                   let targetID = effectiveSpeakerTurnCardScrollTarget(
+                   let targetID = effectiveTranscriptScrollTarget(
                        for: newValue,
-                       in: identifiedEffectiveSpeakerTurnCards(attribution.turns)
+                       attribution: attribution
                    ),
                    targetID != lastScrolledEffectiveSegmentID {
                     lastScrolledEffectiveSegmentID = targetID
@@ -3874,7 +3876,8 @@ struct TranscriptResultView: View {
             textSelectionEnabled: TranscriptBodyLayout.rowTextSelectionEnabled,
             usesEffectiveAttribution: attribution != nil,
             editableSegments: attribution?.editableSegments ?? [],
-            effectiveTurnCards: identifiedEffectiveSpeakerTurnCards(attribution?.turns ?? []),
+            effectiveTurnCards: (attribution?.speakers.isEmpty ?? true)
+                ? [] : identifiedEffectiveSpeakerTurnCards(attribution?.turns ?? []),
             availableSpeakers: attribution?.speakers ?? [],
             isSpeakerEditing: editingSpeakers,
             isSpeakerActionDisabled: viewModel.isApplyingSpeakerCorrection,

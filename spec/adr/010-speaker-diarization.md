@@ -185,7 +185,11 @@ Skip diarization for: dictation (single speaker by design), or when the correspo
 > search, exports, meeting artifacts, cards, LLM context, and CLI. A successful
 > retranscription starts a new fingerprint and resets the effective correction
 > cursor; failed retranscription leaves the prior transcript and corrections
-> intact. See
+> intact. Attribution reads are scoped to the selected transcript snapshot,
+> including same-ID completion and refresh; older asynchronous reads cannot
+> replace a newer snapshot. Explicitly unassigned words remain separate from
+> named speakers in TXT/Markdown exports and appear under an Unassigned label
+> when the transcript has named speakers. See
 > `plans/active/2026-09-05-speaker-attribution-editing.md` and
 > `spec/01-data-model.md` for the command and persistence contracts.
 

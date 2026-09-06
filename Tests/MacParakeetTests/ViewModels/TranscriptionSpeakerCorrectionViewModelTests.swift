@@ -1,3 +1,4 @@
+import GRDB
 import XCTest
 @testable import MacParakeetCore
 @testable import MacParakeetViewModels
@@ -5,7 +6,12 @@ import XCTest
 private final class StubSpeakerAttributionReader: SpeakerAttributionReading, @unchecked Sendable {
     private let lock = NSLock()
     private let projection: SpeakerAttributionProjection
-    private(set) var requestedIDs: [UUID] = []
+    private var storedRequestedIDs: [UUID] = []
+    var requestedIDs: [UUID] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedRequestedIDs
+    }
 
     init(projection: SpeakerAttributionProjection) {
         self.projection = projection
@@ -13,13 +19,52 @@ private final class StubSpeakerAttributionReader: SpeakerAttributionReading, @un
 
     func resolve(transcriptionId: UUID) throws -> SpeakerAttributionProjection? {
         lock.lock()
-        requestedIDs.append(transcriptionId)
+        storedRequestedIDs.append(transcriptionId)
         lock.unlock()
         return projection
     }
 
-    func resolve(transcription _: Transcription) throws -> SpeakerAttributionProjection {
-        projection
+    func resolve(transcription: Transcription) throws -> SpeakerAttributionProjection {
+        lock.lock()
+        storedRequestedIDs.append(transcription.id)
+        lock.unlock()
+        return projection
+    }
+}
+
+/// Holds the first read off the main actor until a later snapshot has loaded.
+private final class DelayedSpeakerAttributionReader: SpeakerAttributionReading, @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var readCount = 0
+    let firstReadReturned: XCTestExpectation
+
+    init(firstReadReturned: XCTestExpectation) {
+        self.firstReadReturned = firstReadReturned
+    }
+
+    func resolve(transcriptionId: UUID) throws -> SpeakerAttributionProjection? {
+        XCTFail("Resolve the captured snapshot, not a potentially different database version")
+        return nil
+    }
+
+    func resolve(transcription: Transcription) throws -> SpeakerAttributionProjection {
+        lock.lock()
+        readCount += 1
+        let isFirst = readCount == 1
+        lock.unlock()
+        if isFirst {
+            started.signal()
+            _ = release.wait(timeout: .now() + 5)
+        }
+        let projection = SpeakerAttributionProjection(
+            automaticTranscription: transcription,
+            attribution: SpeakerAttributionResolver.resolve(transcription: transcription),
+            correctionsApplied: false
+        )
+        if isFirst { firstReadReturned.fulfill() }
+        return projection
     }
 }
 
@@ -227,6 +272,147 @@ final class TranscriptionSpeakerCorrectionViewModelTests: XCTestCase {
             viewModel.errorMessage,
             "Speaker changes were updated elsewhere. Review and try again."
         )
+    }
+
+    func testQueuedMeetingCompletionReloadsAttributionForSameID() async throws {
+        let manager = try DatabaseManager()
+        let repository = TranscriptionRepository(dbQueue: manager.dbQueue)
+        let completed = makeTranscription()
+        var processing = completed
+        processing.status = .processing
+        processing.wordTimestamps = nil
+        processing.speakers = nil
+        processing.diarizationSegments = nil
+        processing.transcriptSegments = nil
+        try repository.save(processing)
+        let viewModel = TranscriptionViewModel()
+        viewModel.configure(
+            transcriptionService: MockTranscriptionService(),
+            transcriptionRepo: repository,
+            speakerAttributionReader: SpeakerAttributionReadService(dbQueue: manager.dbQueue)
+        )
+        viewModel.currentTranscription = processing
+        try await waitUntil { viewModel.speakerAttribution != nil }
+        XCTAssertEqual(viewModel.speakerAttribution?.words, [])
+
+        try repository.save(completed)
+        viewModel.presentCompletedTranscription(
+            completed, autoSave: false, runAutoPrompts: false
+        )
+
+        // Old empty attribution must not mask the completed row while its read is pending.
+        XCTAssertEqual(viewModel.effectiveCurrentTranscription?.wordTimestamps, completed.wordTimestamps)
+        try await waitUntil { viewModel.speakerAttribution?.words == completed.wordTimestamps }
+        XCTAssertEqual(viewModel.effectiveCurrentTranscription?.speakers, completed.speakers)
+    }
+
+    func testSameIDReplacementRejectsAnOlderAsyncAttributionRead() async throws {
+        let returned = expectation(description: "Older attribution read returned")
+        let reader = DelayedSpeakerAttributionReader(firstReadReturned: returned)
+        let viewModel = TranscriptionViewModel()
+        viewModel.configure(
+            transcriptionService: MockTranscriptionService(),
+            transcriptionRepo: MockTranscriptionRepository(),
+            speakerAttributionReader: reader
+        )
+        let original = makeTranscription()
+        viewModel.currentTranscription = original
+        // The gate belongs to a detached reader. Never block MainActor waiting for it.
+        let started = await Task.detached {
+            reader.started.wait(timeout: .now() + 2) == .success
+        }.value
+        XCTAssertTrue(started)
+        defer { reader.release.signal() }
+        var replacement = original
+        replacement.wordTimestamps?[0].word = "updated"
+        replacement.speakers?[0].label = "Alice"
+        viewModel.currentTranscription = replacement
+        XCTAssertEqual(viewModel.effectiveCurrentTranscription?.wordTimestamps, replacement.wordTimestamps)
+        try await waitUntil { viewModel.speakerAttribution?.words == replacement.wordTimestamps }
+
+        reader.release.signal()
+        await fulfillment(of: [returned], timeout: 2)
+        // Allow the released Task's MainActor continuation to attempt publication.
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(viewModel.speakerAttribution?.words, replacement.wordTimestamps)
+        XCTAssertEqual(viewModel.effectiveCurrentTranscription?.speakers, replacement.speakers)
+    }
+
+    func testRenameWhileAttributionLoadsPreservesBaselineAndCanRetryWithUndo() async throws {
+        let manager = try DatabaseManager()
+        let repository = TranscriptionRepository(dbQueue: manager.dbQueue)
+        let original = makeTranscription()
+        try repository.save(original)
+        let returned = expectation(description: "Attribution read returned")
+        let reader = DelayedSpeakerAttributionReader(firstReadReturned: returned)
+        let viewModel = TranscriptionViewModel()
+        viewModel.configure(
+            transcriptionService: MockTranscriptionService(),
+            transcriptionRepo: repository,
+            speakerAttributionReader: reader,
+            speakerCorrectionService: SpeakerCorrectionService(dbQueue: manager.dbQueue)
+        )
+        viewModel.currentTranscription = original
+        let started = await Task.detached {
+            reader.started.wait(timeout: .now() + 2) == .success
+        }.value
+        XCTAssertTrue(started)
+        defer { reader.release.signal() }
+        XCTAssertNil(viewModel.speakerAttribution)
+
+        viewModel.renameSpeaker(id: "S1", to: "Alice")
+
+        XCTAssertEqual(viewModel.currentTranscription?.speakers, original.speakers)
+        XCTAssertEqual(viewModel.currentTranscription?.transcriptSegments, original.transcriptSegments)
+        XCTAssertEqual(viewModel.transcriptions.first?.speakers, original.speakers)
+        XCTAssertFalse(viewModel.isApplyingSpeakerCorrection)
+        XCTAssertEqual(
+            viewModel.errorMessage,
+            "Speaker corrections are loading. Try the rename again in a moment."
+        )
+        reader.release.signal()
+        await fulfillment(of: [returned], timeout: 2)
+        try await waitUntil { viewModel.speakerAttribution != nil }
+        XCTAssertEqual(try repository.fetch(id: original.id)?.speakers, original.speakers)
+
+        viewModel.renameSpeaker(id: "S1", to: "Alice")
+
+        try await waitUntil { viewModel.canUndoSpeakerCorrection && !viewModel.isApplyingSpeakerCorrection }
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertEqual(viewModel.effectiveCurrentTranscription?.speakers?.first?.label, "Alice")
+        XCTAssertEqual(try repository.fetch(id: original.id)?.speakers, original.speakers)
+        XCTAssertEqual(try repository.fetch(id: original.id)?.transcriptSegments, original.transcriptSegments)
+
+        viewModel.undoSpeakerCorrection()
+
+        try await waitUntil { viewModel.canRedoSpeakerCorrection && !viewModel.isApplyingSpeakerCorrection }
+        XCTAssertEqual(viewModel.effectiveCurrentTranscription?.speakers, original.speakers)
+    }
+
+    func testSameIDRefreshReloadsChangedSpeakerCorrections() async throws {
+        let manager = try DatabaseManager()
+        let repository = TranscriptionRepository(dbQueue: manager.dbQueue)
+        let transcription = makeTranscription()
+        try repository.save(transcription)
+        let viewModel = TranscriptionViewModel()
+        viewModel.configure(
+            transcriptionService: MockTranscriptionService(),
+            transcriptionRepo: repository,
+            speakerAttributionReader: SpeakerAttributionReadService(dbQueue: manager.dbQueue)
+        )
+        viewModel.currentTranscription = transcription
+        try await waitUntil { viewModel.speakerAttribution != nil }
+        _ = try await SpeakerCorrectionService(dbQueue: manager.dbQueue).apply(
+            transcriptionId: transcription.id,
+            command: .rename(speakerID: "S1", label: "Alice"),
+            expectedFingerprint: SpeakerAttributionResolver.fingerprint(for: transcription),
+            expectedRevision: 0
+        )
+
+        viewModel.refreshCurrentTranscriptionIfMatching(id: transcription.id)
+
+        try await waitUntil { viewModel.speakerAttribution?.correctionRevision == 1 }
+        XCTAssertEqual(viewModel.effectiveCurrentTranscription?.speakers?.first?.label, "Alice")
     }
 
     private func makeTranscription() -> Transcription {

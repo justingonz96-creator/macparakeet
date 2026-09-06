@@ -72,9 +72,11 @@ final class TranscriptTimestampedLayoutSmokeTests: XCTestCase {
         hasSpeakers: Bool,
         cards: [IdentifiedSpeakerTurn],
         segments: [TranscriptSegment],
-        onRenderedChildAppear: @escaping () -> Void = {}
+        onRenderedChildAppear: @escaping () -> Void = {},
+        attribution: EffectiveSpeakerAttribution? = nil
     ) -> CountingHostingView<AnyView> {
-        let rowCount = hasSpeakers ? cards.reduce(0) { $0 + $1.turn.segments.count } : segments.count
+        let rowCount = attribution?.editableSegments.count
+            ?? (hasSpeakers ? cards.reduce(0) { $0 + $1.turn.segments.count } : segments.count)
         let body = TranscriptTimestampedContentView(
             hasSpeakers: hasSpeakers,
             identifiedTurnCards: cards,
@@ -92,7 +94,12 @@ final class TranscriptTimestampedLayoutSmokeTests: XCTestCase {
                 rowCount: rowCount,
                 environment: [:]
             ),
-            onRenderedChildAppear: onRenderedChildAppear
+            onRenderedChildAppear: onRenderedChildAppear,
+            usesEffectiveAttribution: attribution != nil,
+            editableSegments: attribution?.editableSegments ?? [],
+            effectiveTurnCards: hasSpeakers
+                ? identifiedEffectiveSpeakerTurnCards(attribution?.turns ?? []) : [],
+            availableSpeakers: attribution?.speakers ?? []
         )
         let content = ScrollViewReader { _ in
             ScrollView {
@@ -188,6 +195,59 @@ final class TranscriptTimestampedLayoutSmokeTests: XCTestCase {
         let view = host(hasSpeakers: false, cards: [], segments: segments)
 
         assertLayoutSettles(view)
+    }
+
+    func testEffectiveSpeakerCardsSettleAfterScrolling() {
+        let segments = segments(count: 40, speakers: ["S1", "S2", nil])
+        let attribution = attribution(for: segments)
+        let view = host(hasSpeakers: true, cards: [], segments: [], attribution: attribution)
+
+        assertLayoutSettles(view)
+    }
+
+    func testEffectiveRowsWithoutSpeakersFollowIndividualSegmentsAndSettle() {
+        let segments = segments(count: 40, speakers: [nil])
+        let attribution = attribution(for: segments)
+        XCTAssertTrue(attribution.speakers.isEmpty)
+        XCTAssertEqual(
+            effectiveTranscriptScrollTarget(for: 25_000, attribution: attribution),
+            attribution.editableSegments.last { $0.startMs <= 25_000 }?.id
+        )
+        XCTAssertNotEqual(
+            effectiveTranscriptScrollTarget(for: 25_000, attribution: attribution),
+            attribution.editableSegments.first?.id
+        )
+        let view = host(hasSpeakers: false, cards: [], segments: [], attribution: attribution)
+
+        assertLayoutSettles(view)
+    }
+
+    func testEffectiveLongTranscriptUsesLazyBranchAndSettles() {
+        let segments = segments(count: 500, speakers: ["S1"])
+        let attribution = attribution(for: segments)
+        XCTAssertGreaterThan(attribution.editableSegments.count, TranscriptBodyLayout.nonLazyRowLimit)
+        let view = host(hasSpeakers: true, cards: [], segments: [], attribution: attribution)
+
+        assertLayoutSettles(view)
+    }
+
+    private func attribution(for segments: [TranscriptSegment]) -> EffectiveSpeakerAttribution {
+        let words = segments.map { segment in
+            WordTimestamp(
+                word: segment.text,
+                startMs: segment.startMs,
+                endMs: segment.startMs + 500,
+                confidence: 1,
+                speakerId: segment.speakerId
+            )
+        }
+        let transcription = Transcription(
+            fileName: "layout.wav",
+            wordTimestamps: words,
+            speakers: Set(segments.compactMap(\.speakerId)).sorted().map { SpeakerInfo(id: $0, label: $0) },
+            status: .completed
+        )
+        return SpeakerAttributionResolver.resolve(transcription: transcription)
     }
 
     /// The largest transcript still rendered without a lazy stack: every row

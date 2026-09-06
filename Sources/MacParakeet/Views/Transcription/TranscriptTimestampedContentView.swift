@@ -148,6 +148,19 @@ func effectiveSpeakerTurnCardScrollTarget(
     }?.id
 }
 
+func effectiveTranscriptScrollTarget(
+    for currentMs: Int,
+    attribution: EffectiveSpeakerAttribution
+) -> SpeakerEditableSegmentID? {
+    if attribution.speakers.isEmpty {
+        return attribution.editableSegments.last { $0.startMs <= currentMs }?.id
+    }
+    return effectiveSpeakerTurnCardScrollTarget(
+        for: currentMs,
+        in: identifiedEffectiveSpeakerTurnCards(attribution.turns)
+    )
+}
+
 private func identifySpeakerTurns(_ turns: [SpeakerTurn]) -> [IdentifiedSpeakerTurn] {
     var duplicateCounts: [SpeakerTurnIdentityBase: Int] = [:]
     return turns.map { turn in
@@ -331,6 +344,7 @@ struct TranscriptTimestampedContentView<SpeakerLabelContent: View>: View {
             timestampLabel: timestampLabel,
             isTimestampSeekable: isTimestampSeekable,
             bodyFont: bodyFont,
+            textSelectionEnabled: textSelectionEnabled,
             highlightRanges: effectiveHighlightRanges,
             currentHighlight: effectiveCurrentHighlight,
             onTimestampTap: onTimestampTap,
@@ -362,6 +376,7 @@ struct TranscriptTimestampedContentView<SpeakerLabelContent: View>: View {
                 currentRange: effectiveCurrentHighlight?.id == segment.id
                     ? effectiveCurrentHighlight?.range : nil,
                 onPlayFromHere: { onTimestampTap(segment.startMs) },
+                textSelectionEnabled: textSelectionEnabled,
                 editableSegment: segment,
                 availableSpeakers: availableSpeakers,
                 isSpeakerEditing: isSpeakerEditing,
@@ -404,6 +419,7 @@ private struct EditableTranscriptTurnCardView<SpeakerLabelContent: View>: View {
     let timestampLabel: (Int) -> String
     let isTimestampSeekable: Bool
     var bodyFont: Font
+    var textSelectionEnabled: Bool
     let highlightRanges: [SpeakerEditableSegmentID: [NSRange]]
     let currentHighlight: (id: SpeakerEditableSegmentID, range: NSRange)?
     let onTimestampTap: (Int) -> Void
@@ -498,6 +514,7 @@ private struct EditableTranscriptTurnCardView<SpeakerLabelContent: View>: View {
                             currentRange: currentHighlight?.id == segment.id
                                 ? currentHighlight?.range : nil,
                             onPlayFromHere: { onTimestampTap(segment.startMs) },
+                            textSelectionEnabled: textSelectionEnabled,
                             editableSegment: segment,
                             availableSpeakers: availableSpeakers,
                             isSpeakerEditing: isSpeakerEditing,
