@@ -201,9 +201,12 @@ struct CardsGenerationReport: Encodable {
     var generated = 0
     var skipped = 0
     var failed = 0
-    var promptTokens: Int?
-    var completionTokens: Int?
-    var totalTokens: Int?
+    private var promptTokenTotal = TokenTotal()
+    private var completionTokenTotal = TokenTotal()
+    private var combinedTokenTotal = TokenTotal()
+    var promptTokens: Int? { promptTokenTotal.value }
+    var completionTokens: Int? { completionTokenTotal.value }
+    var totalTokens: Int? { combinedTokenTotal.value }
     var failures: [CardsGenerationFailure] = []
 
     var exitCode: ExitCode {
@@ -221,9 +224,18 @@ struct CardsGenerationReport: Encodable {
     }
 
     mutating func add(_ usage: LLMUsage?) {
-        promptTokens = Self.sum(promptTokens, usage?.promptTokens)
-        completionTokens = Self.sum(completionTokens, usage?.completionTokens)
-        totalTokens = Self.sum(totalTokens, usage?.totalTokens)
+        promptTokenTotal.add(usage?.promptTokens)
+        completionTokenTotal.add(usage?.completionTokens)
+        if usage?.totalTokens == nil,
+            let prompt = usage?.promptTokens, let completion = usage?.completionTokens,
+            prompt.addingReportingOverflow(completion).overflow
+        {
+            // The individual receipt could not represent its total. Do not
+            // report the remaining receipts as a complete batch total.
+            combinedTokenTotal.invalidate()
+        } else {
+            combinedTokenTotal.add(usage?.totalTokens)
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -241,9 +253,24 @@ struct CardsGenerationReport: Encodable {
         try container.encode(failures, forKey: .failures)
     }
 
-    private static func sum(_ lhs: Int?, _ rhs: Int?) -> Int? {
-        guard lhs != nil || rhs != nil else { return nil }
-        return (lhs ?? 0) + (rhs ?? 0)
+    private struct TokenTotal {
+        private(set) var value: Int?
+        private var overflowed = false
+
+        mutating func add(_ count: Int?) {
+            guard !overflowed, let count else { return }
+            let sum = (value ?? 0).addingReportingOverflow(count)
+            if sum.overflow {
+                invalidate()
+            } else {
+                value = sum.partialValue
+            }
+        }
+
+        mutating func invalidate() {
+            value = nil
+            overflowed = true
+        }
     }
 }
 

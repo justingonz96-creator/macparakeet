@@ -79,6 +79,9 @@ with human progress/status kept off stdout.
   prompt/completion/total token totals, explicit `estimatedCostUSD: null`, and
   per-recording failures. Human progress remains on stderr. Any failed item
   makes the command exit `1` after emitting the aggregate report.
+  Token accumulators that overflow remain `null` for the rest of the batch;
+  later receipts cannot restart a misleading partial total. An individual
+  receipt whose component sum overflowed also makes the batch total unknown.
   For `--stale`, `selected` is the prefiltered missing/stale subset, not every
   completed transcription. Successful backfills also rebuild `cards_fts`.
 - `--envelope` success output uses `{ ok, command, data, meta }` and does not
