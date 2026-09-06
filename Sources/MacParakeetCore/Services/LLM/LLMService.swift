@@ -1549,7 +1549,11 @@ public final class LLMService: LLMServiceProtocol, Sendable {
         for config: LLMProviderConfig,
         maxOutputTokens: Int?
     ) throws -> Int {
-        let totalBudget = contextBudget(for: config)
+        // Native Ollama requests explicitly set num_ctx. Prompt results must
+        // use that window rather than the generic local-model allowance.
+        let totalBudget = config.id == .ollama
+            ? OllamaLLMHTTPAdapter.contextWindowTokens * 7 / 2
+            : contextBudget(for: config)
         guard let maxOutputTokens, maxOutputTokens > 0 else {
             return totalBudget
         }
