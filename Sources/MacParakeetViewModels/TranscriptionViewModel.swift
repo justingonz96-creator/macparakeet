@@ -1295,7 +1295,8 @@ public final class TranscriptionViewModel {
         promptResultsViewModel?.autoGeneratePromptResults(
             transcript: text,
             transcriptionId: transcription.id,
-            sourceType: transcription.sourceType
+            sourceType: transcription.sourceType,
+            runInBackground: !selectTranscription
         )
     }
 

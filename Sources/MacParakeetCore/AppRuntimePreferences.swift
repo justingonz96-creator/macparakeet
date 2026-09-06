@@ -22,6 +22,8 @@ public protocol AppRuntimePreferencesProtocol: Sendable {
     var selectedMicrophoneDeviceUID: String? { get }
     var meetingAudioSourceMode: MeetingAudioSourceMode { get }
     var shouldShowMeetingRecordingPill: Bool { get }
+    var openAppAfterMeetingEnd: Bool { get }
+    var notifyOnMeetingEnd: Bool { get }
     var pauseMediaDuringDictation: Bool { get }
     var instantDictationEnabled: Bool { get }
     var customVocabularyRecognitionBoostingEnabled: Bool { get }
@@ -485,6 +487,14 @@ public final class UserDefaultsAppRuntimePreferences: AppRuntimePreferencesProto
     public static let showIdlePillKey = "showIdlePill"
     public static let showDiscoverKey = "showDiscover"
     public static let showMeetingRecordingPillKey = "showMeetingRecordingPill"
+    /// Open the main window on the finished meeting when its transcription
+    /// completes (default on). Off means completion does not change focus or
+    /// select a different meeting; `notifyOnMeetingEnd` controls its signal.
+    public static let openAppAfterMeetingEndKey = "openAppAfterMeetingEnd"
+    /// Post the meeting-transcript-ready chime/banner on the quiet path, i.e.
+    /// when `openAppAfterMeetingEnd` is off (default on). Independent of the
+    /// Transcription card's `notifyOnTranscriptionComplete` toggle.
+    public static let notifyOnMeetingEndKey = "notifyOnMeetingEnd"
     public static let silenceAutoStopKey = "silenceAutoStop"
     public static let silenceDelayKey = "silenceDelay"
     public static let voiceReturnEnabledKey = "voiceReturnEnabled"
@@ -573,6 +583,14 @@ public final class UserDefaultsAppRuntimePreferences: AppRuntimePreferencesProto
 
     public static func showMeetingRecordingPill(defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: showMeetingRecordingPillKey) as? Bool ?? true
+    }
+
+    public static func openAppAfterMeetingEnd(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: openAppAfterMeetingEndKey) as? Bool ?? true
+    }
+
+    public static func notifyOnMeetingEnd(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: notifyOnMeetingEndKey) as? Bool ?? true
     }
 
     public var processingMode: Dictation.ProcessingMode {
@@ -669,6 +687,14 @@ public final class UserDefaultsAppRuntimePreferences: AppRuntimePreferencesProto
 
     public var shouldShowMeetingRecordingPill: Bool {
         Self.showMeetingRecordingPill(defaults: defaults)
+    }
+
+    public var openAppAfterMeetingEnd: Bool {
+        Self.openAppAfterMeetingEnd(defaults: defaults)
+    }
+
+    public var notifyOnMeetingEnd: Bool {
+        Self.notifyOnMeetingEnd(defaults: defaults)
     }
 
     public var pauseMediaDuringDictation: Bool {

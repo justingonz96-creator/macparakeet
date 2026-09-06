@@ -38,6 +38,8 @@ public final class PromptResultsViewModel {
         /// snapshot onto the resulting `PromptResult` (ADR-020 §4, §6).
         public var userNotes: String?
         public var replacingPromptResultID: UUID?
+        /// Completion-owned work survives navigation without selecting its meeting.
+        public var runsInBackground: Bool
         public var state: State
         public var content: String
 
@@ -51,6 +53,7 @@ public final class PromptResultsViewModel {
             inferenceSettings: PromptInferenceSettings? = nil,
             userNotes: String? = nil,
             replacingPromptResultID: UUID? = nil,
+            runsInBackground: Bool = false,
             state: State = .queued,
             content: String = ""
         ) {
@@ -63,6 +66,7 @@ public final class PromptResultsViewModel {
             self.inferenceSettings = inferenceSettings?.normalized
             self.userNotes = userNotes
             self.replacingPromptResultID = replacingPromptResultID
+            self.runsInBackground = runsInBackground
             self.state = state
             self.content = content
         }
@@ -120,35 +124,42 @@ public final class PromptResultsViewModel {
         llmService != nil
     }
 
-    public var hasPendingGenerations: Bool {
-        !pendingGenerations.isEmpty
+    /// Model changes affect every queued generation, not just the visible meeting.
+    public var canSelectModel: Bool {
+        configStore != nil && currentProviderID != .localCLI && !hasAnyActiveGenerations
     }
 
-    /// Queued or streaming — excludes failed entries, which only wait for
-    /// the user to retry or dismiss and should not block model switching
-    /// or read as in-flight work.
+    /// Status shown by the current transcript's controls excludes other meetings.
+    public var hasPendingGenerations: Bool {
+        pendingGenerations.contains { $0.transcriptionId == currentTranscriptionID }
+    }
+
+    /// Queued or streaming work for the displayed transcript, excluding failed
+    /// entries that only wait for the user to retry or dismiss.
     public var hasActiveGenerations: Bool {
-        pendingGenerations.contains { $0.state.isActive }
+        pendingGenerations.contains { $0.transcriptionId == currentTranscriptionID && $0.state.isActive }
     }
 
     public var isStreaming: Bool {
-        activeStreamingGeneration != nil
+        displayedStreamingGeneration != nil
     }
 
     public var queuedGenerationCount: Int {
-        pendingGenerations.filter { $0.state == .queued }.count
+        pendingGenerations.reduce(0) {
+            $0 + ($1.transcriptionId == currentTranscriptionID && $1.state == .queued ? 1 : 0)
+        }
     }
 
     public var streamingContent: String {
-        activeStreamingGeneration?.content ?? ""
+        displayedStreamingGeneration?.content ?? ""
     }
 
     public var streamingPromptResultID: UUID? {
-        activeStreamingGeneration?.id
+        displayedStreamingGeneration?.id
     }
 
     public var streamingPromptName: String {
-        activeStreamingGeneration?.promptName ?? ""
+        displayedStreamingGeneration?.promptName ?? ""
     }
 
     public var modelDisplayName: String {
@@ -171,6 +182,18 @@ public final class PromptResultsViewModel {
             settings: settings,
             config: config
         )
+    }
+
+    /// Provider/model configuration is shared by the entire single-worker queue.
+    private var hasAnyActiveGenerations: Bool {
+        pendingGenerations.contains { $0.state.isActive }
+    }
+
+    private var displayedStreamingGeneration: PendingGeneration? {
+        guard let generation = activeStreamingGeneration,
+              generation.transcriptionId == currentTranscriptionID
+        else { return nil }
+        return generation
     }
 
     private var activeStreamingGeneration: PendingGeneration? {
@@ -238,7 +261,7 @@ public final class PromptResultsViewModel {
     }
 
     public func selectModel(_ modelName: String) {
-        guard let configStore, currentProviderID != .localCLI, !hasActiveGenerations else { return }
+        guard let configStore, canSelectModel else { return }
         do {
             try configStore.updateModelName(modelName)
             currentModelName = modelName
@@ -279,7 +302,12 @@ public final class PromptResultsViewModel {
 
     public func loadPromptResults(transcriptionId: UUID) {
         if currentTranscriptionID != transcriptionId {
-            cancelAllGenerations()
+            // User-initiated generations belong to the current visit. Quiet
+            // meeting auto-prompts belong to the completed meeting instead.
+            if let activeStreamingGeneration, !activeStreamingGeneration.runsInBackground {
+                streamingTask?.cancel()
+            }
+            pendingGenerations.removeAll { !$0.runsInBackground }
         }
         currentTranscriptionID = transcriptionId
         do {
@@ -382,7 +410,8 @@ public final class PromptResultsViewModel {
     public func autoGeneratePromptResults(
         transcript: String,
         transcriptionId: UUID,
-        sourceType: Transcription.SourceType
+        sourceType: Transcription.SourceType,
+        runInBackground: Bool = false
     ) -> [UUID] {
         guard transcript.contains(where: { !$0.isWhitespace }) else { return [] }
 
@@ -405,7 +434,8 @@ public final class PromptResultsViewModel {
                 transcriptionId: transcriptionId,
                 prompt: prompt,
                 extraInstructions: nil,
-                userNotes: userNotes
+                userNotes: userNotes,
+                runInBackground: runInBackground
             ) {
                 queuedIDs.append(id)
             }
@@ -457,12 +487,17 @@ public final class PromptResultsViewModel {
         prompt: Prompt,
         extraInstructions: String?,
         userNotes: String? = nil,
-        replacingPromptResultID: UUID? = nil
+        replacingPromptResultID: UUID? = nil,
+        runInBackground: Bool = false
     ) -> UUID? {
         guard llmService != nil else { return nil }
 
-        currentTranscriptionID = transcriptionId
-        errorMessage = nil
+        if !runInBackground {
+            currentTranscriptionID = transcriptionId
+        }
+        if currentTranscriptionID == transcriptionId {
+            errorMessage = nil
+        }
 
         let generation = PendingGeneration(
             transcriptionId: transcriptionId,
@@ -472,7 +507,8 @@ public final class PromptResultsViewModel {
             transcript: transcript,
             inferenceSettings: prompt.inferenceSettings,
             userNotes: userNotes,
-            replacingPromptResultID: replacingPromptResultID
+            replacingPromptResultID: replacingPromptResultID,
+            runsInBackground: runInBackground
         )
         pendingGenerations.append(generation)
         processNextQueuedGeneration()
@@ -481,9 +517,8 @@ public final class PromptResultsViewModel {
 
     private func processNextQueuedGeneration() {
         guard streamingTask == nil, llmService != nil else { return }
-        guard let currentTranscriptionID else { return }
         guard let nextIndex = pendingGenerations.firstIndex(where: {
-            $0.state == .queued && $0.transcriptionId == currentTranscriptionID
+            $0.state == .queued && ($0.runsInBackground || $0.transcriptionId == currentTranscriptionID)
         }) else { return }
 
         pendingGenerations[nextIndex].state = .streaming
@@ -573,9 +608,9 @@ public final class PromptResultsViewModel {
 
         pendingGenerations.remove(at: index)
         streamingTask = nil
-        errorMessage = nil
 
         if currentTranscriptionID == generation.transcriptionId {
+            errorMessage = nil
             if let replacingPromptResultID = generation.replacingPromptResultID {
                 unreadPromptResultIDs.remove(replacingPromptResultID)
                 promptResults.removeAll { $0.id == replacingPromptResultID }
@@ -609,9 +644,11 @@ public final class PromptResultsViewModel {
         logger.error("Failed to generate prompt result error=\(error.localizedDescription, privacy: .public)")
         if let index = pendingGenerations.firstIndex(where: { $0.id == generationID }) {
             pendingGenerations[index].state = .failed(message: error.localizedDescription)
+            if currentTranscriptionID == pendingGenerations[index].transcriptionId {
+                errorMessage = error.localizedDescription
+            }
         }
         streamingTask = nil
-        errorMessage = error.localizedDescription
         processNextQueuedGeneration()
     }
 
@@ -639,7 +676,8 @@ public final class PromptResultsViewModel {
             ),
             extraInstructions: failed.extraInstructions,
             userNotes: failed.userNotes,
-            replacingPromptResultID: failed.replacingPromptResultID
+            replacingPromptResultID: failed.replacingPromptResultID,
+            runInBackground: failed.runsInBackground
         )
     }
 
