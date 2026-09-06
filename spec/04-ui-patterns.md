@@ -51,7 +51,7 @@ Design philosophy: **Simple, native, stays out of the way.** No chrome, no clutt
 │  🎤 Transcribe   │  [Depends on sidebar selection]           │
 │  🗂 Library      │                                           │
 │  🕒 Dictations   │  - Transcribe: 3-mode capture hub        │
-│  📖 Vocabulary   │  - Library: Grid (or list for Meetings)  │
+│  📖 Vocabulary   │  - Library: Grid or list                 │
 │  ✦ Transforms    │  - Dictations: History list               │
 │  💬 Feedback     │  - Vocabulary: Processing mode + manage   │
 │  ⚙ Settings      │  - Transforms: Rewrite selected text      │
@@ -68,7 +68,7 @@ Minimum window width: 800pt.
 The sidebar uses NavigationSplitView with flat items (icon + label):
 
 - **Transcribe** (`waveform`) -- Capture hub: YouTube card + file drop card + Meeting Recording tile
-- **Library** (`square.grid.2x2`) -- All transcriptions; filter chips switch between thumbnail grid (All/YouTube/Local/Favorites) and date-grouped list (Meetings)
+- **Library** (`square.grid.2x2`) -- All transcriptions; every filter offers the same persistent Grid/List switch
 - **Dictations** (`clock.arrow.circlepath`) -- Flat history list with bottom bar player
 - **Meetings** (`person.2.wave.2`) -- Workflow space for upcoming, live, and saved meeting work; visible when `AppFeatures.meetingRecordingEnabled` is true
 - **Vocabulary** (`book.fill`) -- Processing mode, pipeline guide, custom words & snippets management
@@ -119,18 +119,37 @@ States, all bound to the long-lived `MeetingRecordingPillViewModel` shared with 
 
 The tile body is informational. Only the visible Start and Stop capsules are real SwiftUI `Button`s, and both call the same `toggleRecording` path the menu bar uses. Completing, transcribing, completed, and error states render as inert status surfaces and must not expose button traits or no-op accessibility actions. The floating pill stays visible by default during recording so users who hide the main window keep an active control surface; users can hide it in Settings and continue controlling the live recording from the status menu, hotkey, or Meetings surfaces.
 
-### Library Meetings Filter
+### Library Layouts and Meeting States
 
-When `Library.filter == .meeting`, the view renders a date-grouped list (`Today` / `Yesterday` / `Previous 7 Days` / `Previous 30 Days` / `{Month Year}`) using `MeetingDateGroupHeader` + `MeetingRowCard` instead of the thumbnail grid the other filters use. Meeting rows surface saved-audio state directly (`Audio saved`, `Audio removed`, or `Audio missing`) so playback/retranscription expectations are visible before the user opens a menu.
+When list mode is selected, the view renders a date-grouped list (`Today` / `Yesterday` / `Previous 7 Days` / `Previous 30 Days` / `{Month Year}`) using `MeetingDateGroupHeader` + `MeetingRowCard`. Meeting rows surface saved-audio state directly (`Audio saved`, `Audio removed`, or `Audio missing`) so playback/retranscription expectations are visible before the user opens a menu.
 
 A finalized meeting whose `meetingCaptureReport.quality` is `partial` shows the
-existing **Partial audio** badge in its Library meeting row and the existing
-**Partial meeting audio** banner in transcript detail. The shared presentation
-explains elapsed versus captured duration and each degraded source. When the
-system source status is `silent`, its message is: “System audio contained no
-audible signal. Microphone audio remains saved.” This state is durable and
-appears after finalization; it does not add a live alert or automatically
-restart ScreenCaptureKit during a meeting.
+existing **Partial audio** badge in both its Library row and thumbnail card, and
+the existing **Partial meeting audio** banner in transcript detail. The shared
+presentation explains elapsed versus captured duration and each degraded source.
+Healthy silent system audio adds no warning; silence also adds no extra message
+when another source has a genuine capture failure. Missing, interrupted, failed,
+or short capture and playback fallback remain visible. This state is durable and
+appears after finalization; it does not add a live alert or automatically restart
+ScreenCaptureKit during a meeting.
+
+Every Library filter, including Meetings, exposes a compact Grid/List segmented
+control in the header. With no stored choice, Meetings uses the date-grouped list
+and other Library contexts use the grid. Browsing and switching filters do not
+save a preference. An explicit Grid or List choice is global across Library
+contexts and persists across launches; the separate Meetings workspace is unchanged.
+List mode reuses the date-grouped row presentation and adds the transcription
+source beside the title; thumbnail cards also show the source. Search, filters,
+contextual actions, pagination, export, and bulk selection behave identically in
+either layout.
+
+Rows and cards show transcription failure, stopped transcription, and pending
+background transcription independently of saved-audio state. Queued and running
+finalization both use the persisted `processing` status and the existing
+**Transcribing** presentation, never a completed claim. A stale or partial snippet
+must not hide a non-completed status. Card metadata grows to fit lifecycle,
+saved-audio, recovery, and partial-capture labels rather than clipping them to a
+fixed height.
 
 Opening an empty processing meeting row must preserve that same lifecycle
 truth. The transcript pane shows an indeterminate "Transcribing meeting"

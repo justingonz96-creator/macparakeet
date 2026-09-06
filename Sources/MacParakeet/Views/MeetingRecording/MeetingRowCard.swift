@@ -9,6 +9,7 @@ struct MeetingRowCard<MenuContent: View>: View {
     var searchText: String = ""
     var isSelected: Bool = false
     var showsSelectionControls: Bool = false
+    var showsSource = false
     var isRetrying: Bool = false
     var onTap: () -> Void
     var onRetry: (() -> Void)? = nil
@@ -144,6 +145,10 @@ struct MeetingRowCard<MenuContent: View>: View {
                 .contentTransition(.opacity)
                 .layoutPriority(1)
 
+            if showsSource {
+                sourceInline
+            }
+
             speakerInline
                 .layoutPriority(0)
 
@@ -152,6 +157,15 @@ struct MeetingRowCard<MenuContent: View>: View {
 
             Spacer(minLength: 0)
         }
+    }
+
+    private var sourceInline: some View {
+        let source = TranscriptionSourceDisplay.resolve(for: transcription)
+        return Label(source.collapsedText, systemImage: source.systemImage)
+            .font(DesignSystem.Typography.micro.weight(.medium))
+            .foregroundStyle(source.tint)
+            .lineLimit(1)
+            .fixedSize()
     }
 
     @ViewBuilder
@@ -174,13 +188,7 @@ struct MeetingRowCard<MenuContent: View>: View {
 
     @ViewBuilder
     private var snippetRow: some View {
-        if let snippet = displayedSnippet {
-            highlightedText(snippet)
-                .font(DesignSystem.Typography.bodySmall)
-                .foregroundStyle(DesignSystem.Colors.textSecondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-        } else if transcription.status == .processing {
+        if transcription.status == .processing {
             HStack(spacing: 5) {
                 ParakeetSpinner(.inline)
                     .scaleEffect(0.85)
@@ -199,6 +207,12 @@ struct MeetingRowCard<MenuContent: View>: View {
                 .font(DesignSystem.Typography.bodySmall)
                 .foregroundStyle(DesignSystem.Colors.textTertiary)
                 .lineLimit(1)
+        } else if let snippet = displayedSnippet {
+            highlightedText(snippet)
+                .font(DesignSystem.Typography.bodySmall)
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
     }
 
