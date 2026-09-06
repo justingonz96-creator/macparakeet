@@ -414,6 +414,13 @@ Failed Save or Clear keeps the working configuration and reports an error
 without notifying consumers or resetting formatter preferences. Successful
 transitions update the view model's committed state before notifying consumers.
 
+Clear removes the saved provider, not every remembered provider setup. It deletes
+Local CLI command settings only when the saved provider can be identified as
+Local CLI, and preserves inactive providers' settings and credentials. If saved
+provider metadata is unreadable, Clear removes that metadata without guessing
+ownership of the remaining provider-specific settings. Selecting a remembered
+Local CLI draft afterward does not reactivate AI; the user must explicitly Save.
+
 ```
 ┌─────────────────────────────────────────────┐
 │  AI                                          │

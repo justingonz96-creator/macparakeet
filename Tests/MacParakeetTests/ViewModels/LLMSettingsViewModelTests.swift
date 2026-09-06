@@ -1197,11 +1197,14 @@ final class LLMSettingsViewModelTests: XCTestCase {
 
     func testClearRemovesUnreadableProviderMetadata() throws {
         let store = LLMConfigStore(defaults: defaults, keychain: InMemoryKeyValueStore())
+        let cliStore = LocalCLIConfigStore(defaults: defaults)
+        let rememberedCLI = LocalCLIConfig(commandTemplate: "echo remembered", timeoutSeconds: 90)
+        try cliStore.save(rememberedCLI)
         defaults.set(Data("invalid provider metadata".utf8), forKey: "llm_provider_config")
         viewModel.configure(
             configStore: store,
             llmClient: mockClient,
-            cliConfigStore: LocalCLIConfigStore(defaults: defaults)
+            cliConfigStore: cliStore
         )
         XCTAssertThrowsError(try store.loadConfig())
 
@@ -1209,6 +1212,14 @@ final class LLMSettingsViewModelTests: XCTestCase {
 
         XCTAssertNil(try store.loadConfig())
         XCTAssertEqual(viewModel.saveState, .idle)
+        XCTAssertEqual(viewModel.setupStatus, .setUpNeeded)
+        XCTAssertEqual(cliStore.load(), rememberedCLI)
+
+        viewModel.selectedProviderID = .localCLI
+
+        XCTAssertEqual(viewModel.commandTemplate, rememberedCLI.commandTemplate)
+        XCTAssertEqual(viewModel.cliTimeoutSeconds, rememberedCLI.timeoutSeconds)
+        XCTAssertNil(try store.loadConfig(), "Selecting a remembered draft must not reactivate AI")
         XCTAssertEqual(viewModel.setupStatus, .setUpNeeded)
     }
 
