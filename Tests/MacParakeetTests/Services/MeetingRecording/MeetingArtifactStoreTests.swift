@@ -27,6 +27,37 @@ final class MeetingArtifactStoreTests: XCTestCase {
         folderURL = nil
     }
 
+    func testSnapshotDecodesLegacyV1WithoutCorrectionKeys() throws {
+        let json = """
+        {"schema":"com.macparakeet.meeting-session","schemaVersion":1,"generatedAt":0,
+         "meetingID":"00000000-0000-0000-0000-000000000001","title":"Legacy",
+         "folderPath":"/tmp/meeting","manifestPath":"/tmp/meeting/manifest.json",
+         "transcriptPath":"/tmp/meeting/transcript.json","promptResultsPath":"/tmp/meeting/results.json",
+         "promptResultsDirectoryPath":"/tmp/meeting/results","promptResultCount":0}
+        """
+        let snapshot = try JSONDecoder().decode(MeetingArtifactSnapshot.self, from: Data(json.utf8))
+        XCTAssertFalse(snapshot.speakerCorrectionsApplied)
+        XCTAssertEqual(snapshot.speakerCorrectionRevision, 0)
+        XCTAssertEqual(snapshot.title, "Legacy")
+    }
+
+    func testMaterializeToleratesDuplicateLegacySpeakerAndSegmentIDs() async throws {
+        var row = makeMeeting(notes: nil)
+        row.speakers = [.init(id: "S1", label: "First"), .init(id: "S1", label: "Duplicate")]
+        let segment = TranscriptSegmentRecord(startMs: 0, endMs: 100,
+            speakerId: "S1", speakerLabel: "First", text: "Hello",
+            wordRange: .init(startIndex: 0, endIndexExclusive: 1))
+        row.wordTimestamps = [.init(word: "Hello", startMs: 0, endMs: 100, confidence: 1, speakerId: "S1")]
+        row.transcriptSegments = [segment, segment]
+        let projection = SpeakerAttributionProjection(automaticTranscription: row,
+            attribution: SpeakerAttributionResolver.resolve(transcription: row), correctionsApplied: false)
+        let snapshot = try await MeetingArtifactStore().materialize(projection: projection, promptResults: [])
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: snapshot.transcriptPath))) as? [String: Any])
+        let segments = try XCTUnwrap(payload["transcriptSegments"] as? [[String: Any]])
+        let spans = try XCTUnwrap(segments.first?["speakerSpans"] as? [[String: Any]])
+        XCTAssertEqual(spans.first?["speakerLabel"] as? String, "First")
+    }
+
     func testMaterializeWritesFirstClassMeetingArtifactFiles() async throws {
         let startContext = MeetingStartContext(
             triggerKind: .manual,

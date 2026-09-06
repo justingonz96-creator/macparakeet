@@ -720,12 +720,13 @@ public final class PromptResultsViewModel {
         else { return }
 
         do {
-            guard let transcription = try transcriptionRepo.fetch(id: transcriptionId),
-                  transcription.sourceType == .meeting
-            else { return }
-            let projection = try speakerAttributionReader?.resolve(transcription: transcription)
-            let promptResults = try promptResultRepo.fetchAll(transcriptionId: transcriptionId)
+            let reader = speakerAttributionReader
             _ = try await Task.detached(priority: .utility) {
+                guard let transcription = try transcriptionRepo.fetch(id: transcriptionId),
+                    transcription.sourceType == .meeting
+                else { return nil as MeetingArtifactSnapshot? }
+                let projection = try reader?.resolve(transcription: transcription)
+                let promptResults = try promptResultRepo.fetchAll(transcriptionId: transcriptionId)
                 if let projection {
                     return try await meetingArtifactStore.materialize(
                         projection: projection,

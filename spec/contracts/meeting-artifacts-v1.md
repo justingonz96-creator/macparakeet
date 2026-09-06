@@ -230,6 +230,11 @@ available, `speakerLabelsIncluded`, `speakerCorrectionsApplied`,
 order is: title, optional notes, transcript, optional prompt results, and
 artifact paths.
 
+Legacy v1 `MeetingArtifactSnapshot` JSON without speaker correction keys decodes
+with `speakerCorrectionsApplied = false` and `speakerCorrectionRevision = 0`.
+Metadata and speaker refreshes in the transcription view model share a queue
+per meeting and read the current DB row after earlier materializations finish.
+
 `transcript.json` publishes the effective speaker projection and includes
 `speakerCorrectionsApplied` plus `speakerCorrectionRevision`. Each durable
 `transcriptSegments` item may additionally include `speakerSpans`. A span has
