@@ -81,7 +81,7 @@ public struct PromptInferenceSettings: Codable, Sendable, Equatable {
             try container.decodeIfPresent(ThinkingMode.self, forKey: .thinkingMode)
             ?? .providerDefault
         reasoningEffort = try container.decodeIfPresent(ReasoningEffort.self, forKey: .reasoningEffort)
-        _ = try validated()
+        self = try validated() ?? Self()
     }
 
     public var isDefault: Bool {

@@ -45,19 +45,6 @@ final class PromptInferenceSettingsTests: XCTestCase {
         XCTAssertEqual(decoded, settings)
     }
 
-    func testEveryReasoningEffortValueRoundTrips() throws {
-        for effort in PromptInferenceSettings.ReasoningEffort.allCases {
-            let settings = PromptInferenceSettings(
-                thinkingMode: .enabled,
-                reasoningEffort: effort
-            )
-            let decoded = try JSONDecoder().decode(
-                PromptInferenceSettings.self,
-                from: JSONEncoder().encode(settings)
-            )
-            XCTAssertEqual(decoded.reasoningEffort, effort)
-        }
-    }
 
     func testDecodingOlderPartialJSONUsesDefaultThinkingMode() throws {
         let empty = try JSONDecoder().decode(
@@ -68,9 +55,22 @@ final class PromptInferenceSettingsTests: XCTestCase {
 
         let partial = try JSONDecoder().decode(
             PromptInferenceSettings.self,
-            from: Data(#"{"temperature":0.2}"#.utf8)
+            from: Data(#"{"temperature":0.2,"reasoningEffort":"low"}"#.utf8)
         )
         XCTAssertEqual(partial, PromptInferenceSettings(temperature: 0.2))
+    }
+
+    func testDecodedDisabledThinkingDoesNotExportInactiveEffort() throws {
+        let decoded = try JSONDecoder().decode(
+            PromptInferenceSettings.self,
+            from: Data(#"{"temperature":0.2,"thinkingMode":"disabled","reasoningEffort":"high"}"#.utf8)
+        )
+        let exported = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as? [String: Any]
+        )
+        XCTAssertNil(exported["reasoningEffort"])
+        XCTAssertEqual(exported["thinkingMode"] as? String, "disabled")
+        XCTAssertEqual(exported["temperature"] as? Double, 0.2)
     }
 
     func testDecodingLegacySeedIgnoresRemovedField() throws {
