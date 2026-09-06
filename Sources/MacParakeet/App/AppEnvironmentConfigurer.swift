@@ -333,27 +333,20 @@ final class AppEnvironmentConfigurer {
             finalizationOwnershipClaimer: env.meetingRecordingLockFileStore,
             onMenuBarIconUpdate: { _ in callbacks.onMenuBarIconUpdate() },
             onTranscriptionReady: { [weak self] transcription in
-                guard let self else { return }
-                self.transcriptionViewModel.presentCompletedTranscription(transcription, autoSave: true)
-                self.libraryViewModel.loadTranscriptions()
-                self.meetingsWorkspaceViewModel.refreshRecentMeetings()
-                self.mainWindowState.navigateToTranscription(from: .library)
-                callbacks.onOpenMainWindow()
-            },
-            onQueuedTranscriptionReady: { [weak self] transcription, selectTranscription in
-                guard let self else { return }
-                self.transcriptionViewModel.presentCompletedTranscription(
+                self?.handleMeetingTranscriptReady(
                     transcription,
-                    autoSave: true,
-                    runAutoPrompts: true,
-                    selectTranscription: selectTranscription
+                    preferences: env.runtimePreferences,
+                    canPresent: true,
+                    openMainWindow: callbacks.onOpenMainWindow
                 )
-                self.libraryViewModel.loadTranscriptions()
-                self.meetingsWorkspaceViewModel.refreshRecentMeetings()
-                if selectTranscription {
-                    self.mainWindowState.navigateToTranscription(from: .library)
-                    callbacks.onOpenMainWindow()
-                }
+            },
+            onQueuedTranscriptionReady: { [weak self] transcription, canPresent in
+                self?.handleMeetingTranscriptReady(
+                    transcription,
+                    preferences: env.runtimePreferences,
+                    canPresent: canPresent,
+                    openMainWindow: callbacks.onOpenMainWindow
+                )
             },
             onQueuedTranscriptionFailed: { [weak self] transcriptionID, content in
                 guard let self else { return }
@@ -500,6 +493,49 @@ final class AppEnvironmentConfigurer {
             meetingAutoStartCoordinator: calendarCoordinator,
             meetingAutoStopCoordinator: meetingAutoStopCoordinator
         )
+    }
+
+    /// Read presentation preferences before selecting: quiet completion may
+    /// refresh this meeting's open detail, but must not replace another one.
+    /// The queue awaits TranscriptionService's actor-isolated durable save and
+    /// artifact settlement before invoking this synchronous UI handoff. The
+    /// `autoSave` below is folder export, not repository persistence.
+    /// Export, retention, prompts, and both library refreshes run even when
+    /// presentation is suppressed; do not add an asynchronous hop before the
+    /// presentation guard, which would stale the queue's generation/idle check.
+    private func handleMeetingTranscriptReady(
+        _ transcription: Transcription,
+        preferences: AppRuntimePreferencesProtocol,
+        canPresent: Bool,
+        openMainWindow: () -> Void
+    ) {
+        let shouldOpen = canPresent && preferences.openAppAfterMeetingEnd
+        transcriptionViewModel.presentCompletedTranscription(
+            transcription,
+            autoSave: true,
+            runAutoPrompts: true,
+            selectTranscription: shouldOpen
+        )
+        libraryViewModel.loadTranscriptions()
+        meetingsWorkspaceViewModel.refreshRecentMeetings()
+
+        guard canPresent else { return }
+        if shouldOpen {
+            mainWindowState.navigateToTranscription(from: .library)
+            openMainWindow()
+            return
+        }
+
+        let notifyEnabled = preferences.notifyOnMeetingEnd
+        guard notifyEnabled else { return }
+        let text = transcription.cleanTranscript ?? transcription.rawTranscript ?? ""
+        if let content = TranscriptionCompletionNotifier.meetingReadyContent(
+            settingEnabled: notifyEnabled,
+            meetingTitle: transcription.effectiveDisplayTitle,
+            wordCount: Observability.wordCount(text)
+        ) {
+            TranscriptionCompletionPresenter.present(content)
+        }
     }
 
     func refreshLLMAvailability(in env: AppEnvironment) {

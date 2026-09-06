@@ -624,6 +624,149 @@ final class PromptResultsViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.streamingPromptResultID)
     }
 
+    func testNavigationCancelsManualWorkButPreservesQueuedBackgroundMeetingPrompts() async throws {
+        let manualID = UUID()
+        let firstMeetingID = UUID()
+        let secondMeetingID = UUID()
+        let displayedID = UUID()
+        let displayedResult = PromptResult(
+            transcriptionId: displayedID,
+            promptName: "Summary",
+            promptContent: "Summarize",
+            content: "Displayed result"
+        )
+        promptResultRepo.promptResults = [displayedResult]
+        promptRepo.prompts = [
+            Prompt(name: "Summary", content: "Summarize", isAutoRun: true, sortOrder: 0)
+        ]
+        llm.streamDelayNs = 10_000_000
+        llm.streamTokens = ["Completed result"]
+        viewModel.configure(
+            llmService: llm,
+            promptRepo: promptRepo,
+            promptResultRepo: promptResultRepo
+        )
+        _ = viewModel.generatePromptResult(transcript: "Manual work", transcriptionId: manualID)
+        _ = viewModel.autoGeneratePromptResults(
+            transcript: "First background meeting",
+            transcriptionId: firstMeetingID,
+            sourceType: .meeting,
+            runInBackground: true
+        )
+        _ = viewModel.autoGeneratePromptResults(
+            transcript: "Second background meeting",
+            transcriptionId: secondMeetingID,
+            sourceType: .meeting,
+            runInBackground: true
+        )
+
+        viewModel.loadPromptResults(transcriptionId: displayedID)
+        try await waitUntil { !viewModel.pendingGenerations.contains { $0.state.isActive } }
+
+        XCTAssertTrue(try promptResultRepo.fetchAll(transcriptionId: manualID).isEmpty)
+        XCTAssertEqual(
+            try promptResultRepo.fetchAll(transcriptionId: firstMeetingID).map(\.content),
+            ["Completed result"]
+        )
+        XCTAssertEqual(
+            try promptResultRepo.fetchAll(transcriptionId: secondMeetingID).map(\.content),
+            ["Completed result"]
+        )
+        XCTAssertEqual(viewModel.promptResults.map(\.id), [displayedResult.id])
+    }
+
+    func testBackgroundMeetingStatusDoesNotLeakIntoDisplayedTranscriptControls() async throws {
+        let backgroundID = UUID()
+        let displayedID = UUID()
+        let configStore = MockLLMConfigStore()
+        configStore.config = .ollama(model: "initial-model")
+        promptRepo.prompts = [
+            Prompt(name: "Summary", content: "Summarize", isAutoRun: true, sortOrder: 0)
+        ]
+        llm.streamTokens = ["Saved result"]
+        viewModel.configure(
+            llmService: llm,
+            promptRepo: promptRepo,
+            promptResultRepo: promptResultRepo,
+            configStore: configStore
+        )
+        viewModel.loadPromptResults(transcriptionId: displayedID)
+        _ = viewModel.autoGeneratePromptResults(
+            transcript: "Background A",
+            transcriptionId: backgroundID,
+            sourceType: .meeting,
+            runInBackground: true
+        )
+        _ = viewModel.autoGeneratePromptResults(
+            transcript: "Another background meeting",
+            transcriptionId: UUID(),
+            sourceType: .meeting,
+            runInBackground: true
+        )
+
+        XCTAssertFalse(viewModel.hasPendingGenerations)
+        XCTAssertFalse(viewModel.hasActiveGenerations)
+        XCTAssertFalse(viewModel.isStreaming)
+        XCTAssertEqual(viewModel.queuedGenerationCount, 0)
+        XCTAssertNil(viewModel.streamingPromptResultID)
+        XCTAssertEqual(viewModel.streamingPromptName, "")
+        XCTAssertEqual(viewModel.streamingContent, "")
+        XCTAssertTrue(viewModel.canGenerateManualPromptResult)
+        // The globally shared model remains explicitly unavailable in both
+        // the picker and mutation API while any meeting still owns work.
+        XCTAssertFalse(viewModel.canSelectModel)
+        viewModel.selectModel("changed-model")
+        XCTAssertEqual(viewModel.currentModelName, "initial-model")
+        viewModel.cancelStreaming()  // No visible stream: must not cancel A.
+
+        let manualID = try XCTUnwrap(
+            viewModel.generatePromptResult(transcript: "Displayed B", transcriptionId: displayedID)
+        )
+        XCTAssertTrue(viewModel.hasActiveGenerations)
+        XCTAssertEqual(viewModel.queuedGenerationCount, 1)
+        XCTAssertFalse(viewModel.isStreaming)
+        try await waitUntil { !viewModel.pendingGenerations.contains { $0.state.isActive } }
+
+        XCTAssertEqual(
+            try promptResultRepo.fetchAll(transcriptionId: backgroundID).map(\.content),
+            ["Saved result"]
+        )
+        XCTAssertEqual(viewModel.promptResults.map(\.id), [manualID])
+        XCTAssertTrue(viewModel.canSelectModel)
+        viewModel.selectModel("changed-model")
+        XCTAssertEqual(viewModel.currentModelName, "changed-model")
+    }
+
+    func testBackgroundPromptFailureDoesNotReplaceDisplayedMeetingError() async throws {
+        viewModel.configure(
+            llmService: llm,
+            promptRepo: promptRepo,
+            promptResultRepo: promptResultRepo
+        )
+        viewModel.loadPromptResults(transcriptionId: UUID())
+        let displayedError = "An error belonging to the displayed meeting"
+        viewModel.errorMessage = displayedError
+        llm.streamTokens = []
+        let generationIDs = viewModel.autoGeneratePromptResults(
+            transcript: "Background meeting",
+            transcriptionId: UUID(),
+            sourceType: .meeting,
+            runInBackground: true
+        )
+        let generationID = try XCTUnwrap(generationIDs.first)
+        XCTAssertEqual(viewModel.errorMessage, displayedError)
+        // Navigation must preserve already-streaming background work as well
+        // as queued work, and its eventual error stays on its own meeting.
+        viewModel.loadPromptResults(transcriptionId: UUID())
+        viewModel.errorMessage = displayedError
+        try await waitUntil { !viewModel.pendingGenerations.contains { $0.state.isActive } }
+
+        guard case .failed = viewModel.pendingGeneration(id: generationID)?.state else {
+            return XCTFail("The background failure must remain retryable on its meeting")
+        }
+        XCTAssertEqual(viewModel.errorMessage, displayedError)
+    }
+
     func testLoadPromptResultsClearsFailedGenerationsWhenSwitchingTranscriptions() async throws {
         viewModel.configure(
             llmService: llm,

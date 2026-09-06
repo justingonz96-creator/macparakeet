@@ -34,6 +34,52 @@ final class MeetingTranscriptionQueueTests: XCTestCase {
             ])
     }
 
+    func testCompletionWaitsForDurableSaveBeforeRefreshingConsumers() async throws {
+        let transcriptionRepo = MockTranscriptionRepository()
+        let lockStore = QueueRecordingLockFileStore()
+        let finalizationStarted = expectation(description: "Finalization reached the delayed save")
+        let transcriptionService = QueueTranscriptionServiceSpy(
+            transcriptionRepo: transcriptionRepo,
+            onFinalizationStarted: { finalizationStarted.fulfill() }
+        )
+        await transcriptionService.setHoldFinalization(true)
+        let queue = MeetingTranscriptionQueue(
+            transcriptionService: transcriptionService,
+            transcriptionRepo: transcriptionRepo,
+            meetingRecordingSettlement: MeetingRecordingSettlement(
+                lockFileStore: lockStore,
+                transcriptionRepo: transcriptionRepo
+            )
+        )
+        let item = makeItem(name: "Delayed save")
+        try persistProcessingRows([item], in: transcriptionRepo)
+        var refreshedStatuses: [Transcription.TranscriptionStatus] = []
+        queue.onCompletion = { completion in
+            guard case .success(_, let transcription) = completion else {
+                XCTFail("Expected successful completion")
+                return
+            }
+            do {
+                let persisted = try XCTUnwrap(transcriptionRepo.fetch(id: transcription.id))
+                refreshedStatuses.append(persisted.status)
+                XCTAssertEqual(lockStore.deletes, [item.recording.folderURL])
+            } catch {
+                XCTFail("Completion must expose a durably saved row: \(error)")
+            }
+        }
+
+        await queue.enqueue(item)
+        await fulfillment(of: [finalizationStarted], timeout: 1)
+        XCTAssertTrue(refreshedStatuses.isEmpty)
+        XCTAssertEqual(try transcriptionRepo.fetch(id: item.transcriptionID)?.status, .processing)
+        XCTAssertTrue(lockStore.deletes.isEmpty)
+
+        await transcriptionService.releaseFinalization()
+        await queue.waitUntilIdle()
+
+        XCTAssertEqual(refreshedStatuses, [.completed])
+    }
+
     func testQueueContinuesAfterFailedFinalize() async throws {
         let transcriptionRepo = MockTranscriptionRepository()
         let lockStore = QueueRecordingLockFileStore()
@@ -334,6 +380,7 @@ final class MeetingTranscriptionQueueTests: XCTestCase {
         return MeetingTranscriptionQueue.Item(
             recording: output,
             transcriptionID: UUID(),
+            recordingGeneration: 0,
             operationContext: ObservabilityOperationContext(),
             trigger: .manual,
             liveWordCount: 0,
@@ -438,6 +485,7 @@ final class MeetingTranscriptionQueueTests: XCTestCase {
 
 private actor QueueTranscriptionServiceSpy: TranscriptionServiceProtocol {
     private let transcriptionRepo: MockTranscriptionRepository
+    private let onFinalizationStarted: @Sendable () -> Void
     private(set) var finalizedIDs: [UUID] = []
     private var failingIDs: Set<UUID> = []
     private var cancellationIDs: Set<UUID> = []
@@ -445,8 +493,12 @@ private actor QueueTranscriptionServiceSpy: TranscriptionServiceProtocol {
     var holdFinalization = false
     private var finalizationWaiters: [CheckedContinuation<Void, Never>] = []
 
-    init(transcriptionRepo: MockTranscriptionRepository) {
+    init(
+        transcriptionRepo: MockTranscriptionRepository,
+        onFinalizationStarted: @escaping @Sendable () -> Void = {}
+    ) {
         self.transcriptionRepo = transcriptionRepo
+        self.onFinalizationStarted = onFinalizationStarted
     }
 
     func snapshot() -> [UUID] {
@@ -529,6 +581,7 @@ private actor QueueTranscriptionServiceSpy: TranscriptionServiceProtocol {
         onProgress: (@Sendable (TranscriptionProgress) -> Void)?
     ) async throws -> Transcription {
         finalizedIDs.append(transcriptionID)
+        onFinalizationStarted()
         while holdFinalization {
             await withCheckedContinuation { continuation in
                 finalizationWaiters.append(continuation)
