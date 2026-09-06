@@ -1883,6 +1883,21 @@ and MCP service are not implied. The [integration guide](../integrations/README.
 and [CLI boundary contract](contracts/cli-json-v1.md) own command examples,
 JSON/errors, write boundaries, and safe isolation.
 
+### F47: Meeting-End Focus & Notification Controls
+
+> Status: **IMPLEMENTED**
+
+**What:** Make the end-of-meeting handoff optional instead of always stealing focus. Two toggles in the Meeting Recording settings card, both default on to preserve prior behavior:
+
+- **Open app when meeting ends** (`openAppAfterMeetingEnd`): when on, finishing a meeting transcription selects the transcript, navigates the main window to it, and activates the app (prior behavior). When off, completion preserves the user's current app and workspace instead of selecting a different meeting. An already-open detail for the completed meeting still refreshes in place, without resetting its selected subtab. The completed result persists, both Library surfaces refresh, and configured folder export, retention, and auto-prompts keep their existing policy regardless of these presentation settings.
+- **Notify when transcript is ready** (`notifyOnMeetingEnd`): governs the quiet path's completion signal — a chime plus, while the app is backgrounded, a notification banner ("*Meeting title* — Meeting transcript ready · N words"). Disabled in the UI while auto-open is on, since the banner only fires on the quiet path. Deliberately independent of the Transcription card's `notifyOnTranscriptionComplete` setting in Modes: meeting-end behavior is owned entirely by meetings settings.
+
+The transcription queue awaits `TranscriptionService`'s actor-isolated repository persistence and managed-artifact materialization, then artifact settlement, before invoking the main-actor completion handler. The handler's `autoSave` option controls optional folder export, not the durable database save. Presentation suppression never skips persistence, and no extra asynchronous handoff may invalidate the queue's recording-state check before presentation.
+
+Auto-prompts for an unselected completion stay in the existing single-worker prompt queue as background meeting work. They neither retarget the currently displayed prompt results nor clear its errors, and they survive subsequent transcript navigation. Manual generations retain their existing visit-scoped cancellation behavior. Background results and retryable failures remain attached to their own meeting.
+
+The existing completion handler reads the auto-open preference before presenting the completed transcription. Auto-open takes precedence over notifications, so it adds no completion chime or banner. When the queue reports that the recording flow is not idle (including a newer meeting starting, recording, paused, or stopping), success completion does not select a different meeting, navigate, activate, chime, or notify, regardless of settings; the same-meeting detail and Library still refresh. Quiet completion chimes while foregrounded and adds a silent banner only while backgrounded, subject to system sound and notification permissions. Turning off both toggles silences successful completion, not finalization failures that need a retry. Both settings emit `setting_changed` telemetry and are registered in the settings search index.
+
 ---
 
 ## Future Features (Post-Launch)

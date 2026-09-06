@@ -34,6 +34,8 @@ public final class PromptResultsViewModel {
         /// snapshot onto the resulting `PromptResult` (ADR-020 §4, §6).
         public var userNotes: String?
         public var replacingPromptResultID: UUID?
+        /// Completion-owned work survives navigation without selecting its meeting.
+        public var runsInBackground: Bool
         public var state: State
         public var content: String
 
@@ -46,6 +48,7 @@ public final class PromptResultsViewModel {
             transcript: String,
             userNotes: String? = nil,
             replacingPromptResultID: UUID? = nil,
+            runsInBackground: Bool = false,
             state: State = .queued,
             content: String = ""
         ) {
@@ -57,6 +60,7 @@ public final class PromptResultsViewModel {
             self.transcript = transcript
             self.userNotes = userNotes
             self.replacingPromptResultID = replacingPromptResultID
+            self.runsInBackground = runsInBackground
             self.state = state
             self.content = content
         }
@@ -259,7 +263,12 @@ public final class PromptResultsViewModel {
 
     public func loadPromptResults(transcriptionId: UUID) {
         if currentTranscriptionID != transcriptionId {
-            cancelAllGenerations()
+            // User-initiated generations belong to the current visit. Quiet
+            // meeting auto-prompts belong to the completed meeting instead.
+            if let activeStreamingGeneration, !activeStreamingGeneration.runsInBackground {
+                streamingTask?.cancel()
+            }
+            pendingGenerations.removeAll { !$0.runsInBackground }
         }
         currentTranscriptionID = transcriptionId
         do {
@@ -361,7 +370,8 @@ public final class PromptResultsViewModel {
     public func autoGeneratePromptResults(
         transcript: String,
         transcriptionId: UUID,
-        sourceType: Transcription.SourceType
+        sourceType: Transcription.SourceType,
+        runInBackground: Bool = false
     ) -> [UUID] {
         guard transcript.contains(where: { !$0.isWhitespace }) else { return [] }
 
@@ -384,7 +394,8 @@ public final class PromptResultsViewModel {
                 transcriptionId: transcriptionId,
                 prompt: prompt,
                 extraInstructions: nil,
-                userNotes: userNotes
+                userNotes: userNotes,
+                runInBackground: runInBackground
             ) {
                 queuedIDs.append(id)
             }
@@ -436,12 +447,17 @@ public final class PromptResultsViewModel {
         prompt: Prompt,
         extraInstructions: String?,
         userNotes: String? = nil,
-        replacingPromptResultID: UUID? = nil
+        replacingPromptResultID: UUID? = nil,
+        runInBackground: Bool = false
     ) -> UUID? {
         guard llmService != nil else { return nil }
 
-        currentTranscriptionID = transcriptionId
-        errorMessage = nil
+        if !runInBackground {
+            currentTranscriptionID = transcriptionId
+        }
+        if currentTranscriptionID == transcriptionId {
+            errorMessage = nil
+        }
 
         let generation = PendingGeneration(
             transcriptionId: transcriptionId,
@@ -450,7 +466,8 @@ public final class PromptResultsViewModel {
             extraInstructions: extraInstructions,
             transcript: transcript,
             userNotes: userNotes,
-            replacingPromptResultID: replacingPromptResultID
+            replacingPromptResultID: replacingPromptResultID,
+            runsInBackground: runInBackground
         )
         pendingGenerations.append(generation)
         processNextQueuedGeneration()
@@ -459,9 +476,8 @@ public final class PromptResultsViewModel {
 
     private func processNextQueuedGeneration() {
         guard streamingTask == nil, llmService != nil else { return }
-        guard let currentTranscriptionID else { return }
         guard let nextIndex = pendingGenerations.firstIndex(where: {
-            $0.state == .queued && $0.transcriptionId == currentTranscriptionID
+            $0.state == .queued && ($0.runsInBackground || $0.transcriptionId == currentTranscriptionID)
         }) else { return }
 
         pendingGenerations[nextIndex].state = .streaming
@@ -534,9 +550,9 @@ public final class PromptResultsViewModel {
 
         pendingGenerations.remove(at: index)
         streamingTask = nil
-        errorMessage = nil
 
         if currentTranscriptionID == generation.transcriptionId {
+            errorMessage = nil
             if let replacingPromptResultID = generation.replacingPromptResultID {
                 unreadPromptResultIDs.remove(replacingPromptResultID)
                 promptResults.removeAll { $0.id == replacingPromptResultID }
@@ -570,9 +586,11 @@ public final class PromptResultsViewModel {
         logger.error("Failed to generate prompt result error=\(error.localizedDescription, privacy: .public)")
         if let index = pendingGenerations.firstIndex(where: { $0.id == generationID }) {
             pendingGenerations[index].state = .failed(message: error.localizedDescription)
+            if currentTranscriptionID == pendingGenerations[index].transcriptionId {
+                errorMessage = error.localizedDescription
+            }
         }
         streamingTask = nil
-        errorMessage = error.localizedDescription
         processNextQueuedGeneration()
     }
 
@@ -599,7 +617,8 @@ public final class PromptResultsViewModel {
             ),
             extraInstructions: failed.extraInstructions,
             userNotes: failed.userNotes,
-            replacingPromptResultID: failed.replacingPromptResultID
+            replacingPromptResultID: failed.replacingPromptResultID,
+            runInBackground: failed.runsInBackground
         )
     }
 

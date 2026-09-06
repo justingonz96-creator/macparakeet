@@ -1318,6 +1318,74 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.currentTranscription?.id, displayed.id)
     }
 
+    func testUnselectedMeetingCompletionStillExportsRefreshesAndRunsAutoPrompts() async throws {
+        let suite = "test.quiet-meeting-completion.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("quiet-meeting-export-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        defaults.set(true, forKey: AutoSaveScope.meeting.enabledKey)
+        defaults.set(AutoSaveFormat.txt.rawValue, forKey: AutoSaveScope.meeting.formatKey)
+        XCTAssertNotNil(AutoSaveService.storeFolder(folder, scope: .meeting, defaults: defaults))
+        viewModel = TranscriptionViewModel(defaults: defaults)
+        let displayed = Transcription(fileName: "Displayed", rawTranscript: "Keep open", status: .completed)
+        let completed = Transcription(
+            fileName: "Background meeting",
+            rawTranscript: "Background meeting transcript",
+            status: .completed,
+            sourceType: .meeting
+        )
+        mockRepo.transcriptions = [displayed, completed]
+        let existingResult = PromptResult(
+            transcriptionId: displayed.id,
+            promptName: "Summary",
+            promptContent: "Summarize",
+            content: "Existing displayed result"
+        )
+        mockPromptResultRepo.promptResults = [existingResult]
+        let llm = MockLLMService()
+        llm.streamTokens = ["Background result"]
+        let promptRepo = MockPromptRepository()
+        promptRepo.prompts = [
+            Prompt(name: "Summary", content: "Summarize", isAutoRun: true, sortOrder: 0)
+        ]
+        let results = PromptResultsViewModel()
+        results.configure(llmService: llm, promptRepo: promptRepo, promptResultRepo: mockPromptResultRepo)
+        results.loadPromptResults(transcriptionId: displayed.id)
+        viewModel.configure(
+            transcriptionService: mockService,
+            transcriptionRepo: mockRepo,
+            llmService: llm,
+            promptResultRepo: mockPromptResultRepo,
+            promptResultsViewModel: results
+        )
+        viewModel.currentTranscription = displayed
+        viewModel.selectedTab = .result(id: existingResult.id)
+        let exportURL = AutoSaveService(defaults: defaults)
+            .buildFileURL(for: completed, format: .txt, in: folder)
+
+        viewModel.presentCompletedTranscription(
+            completed,
+            autoSave: true,
+            runAutoPrompts: true,
+            applyMeetingRetention: false,
+            selectTranscription: false
+        )
+        try await waitUntil { !results.hasActiveGenerations }
+
+        XCTAssertEqual(viewModel.currentTranscription?.id, displayed.id)
+        XCTAssertEqual(viewModel.selectedTab, .result(id: existingResult.id))
+        XCTAssertEqual(results.promptResults.map(\.id), [existingResult.id])
+        XCTAssertTrue(viewModel.transcriptions.contains { $0.id == completed.id && $0.status == .completed })
+        XCTAssertTrue(try String(contentsOf: exportURL, encoding: .utf8).contains("Background meeting transcript"))
+        XCTAssertEqual(
+            try mockPromptResultRepo.fetchAll(transcriptionId: completed.id).map(\.content),
+            ["Background result"]
+        )
+    }
+
     func testQueuedFailureRefreshesMatchingProcessingDetailInPlace() {
         let id = UUID()
         let processing = Transcription(
