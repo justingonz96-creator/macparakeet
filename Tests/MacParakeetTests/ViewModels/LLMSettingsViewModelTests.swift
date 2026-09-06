@@ -1195,6 +1195,23 @@ final class LLMSettingsViewModelTests: XCTestCase {
         XCTAssertEqual(defaults.dictionaryRepresentation() as NSDictionary, preferencesBefore as NSDictionary)
     }
 
+    func testClearRemovesUnreadableProviderMetadata() throws {
+        let store = LLMConfigStore(defaults: defaults, keychain: InMemoryKeyValueStore())
+        defaults.set(Data("invalid provider metadata".utf8), forKey: "llm_provider_config")
+        viewModel.configure(
+            configStore: store,
+            llmClient: mockClient,
+            cliConfigStore: LocalCLIConfigStore(defaults: defaults)
+        )
+        XCTAssertThrowsError(try store.loadConfig())
+
+        viewModel.clearConfiguration()
+
+        XCTAssertNil(try store.loadConfig())
+        XCTAssertEqual(viewModel.saveState, .idle)
+        XCTAssertEqual(viewModel.setupStatus, .setUpNeeded)
+    }
+
     func testFailedCLIEncodingPreservesWorkingProviderAndCLISettings() throws {
         let store = LLMConfigStore(defaults: defaults, keychain: InMemoryKeyValueStore())
         let cliStore = LocalCLIConfigStore(defaults: defaults)

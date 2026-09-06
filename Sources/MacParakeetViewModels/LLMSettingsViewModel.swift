@@ -713,11 +713,10 @@ public final class LLMSettingsViewModel {
 
     private func clearConfiguration(finalSaveState: SaveState) {
         guard let configStore else { return }
-        // Use the persisted provider to decide what to delete. The draft may
-        // point at an unsaved provider switch in Settings.
-        let storedProviderID: LLMProviderID?
+        // Provider lookup only controls optional CLI cleanup. The store's
+        // deletion boundary can also recover undecodable provider metadata.
+        let storedProviderID = (try? configStore.loadConfig())?.id
         do {
-            storedProviderID = try configStore.loadConfig()?.id
             try configStore.deleteConfig()
         } catch {
             logger.error("Failed to delete LLM configuration error=\(error.localizedDescription, privacy: .public)")
