@@ -45,7 +45,6 @@ final class PromptInferenceSettingsTests: XCTestCase {
         XCTAssertEqual(decoded, settings)
     }
 
-
     func testDecodingOlderPartialJSONUsesDefaultThinkingMode() throws {
         let empty = try JSONDecoder().decode(
             PromptInferenceSettings.self,
@@ -100,7 +99,6 @@ final class PromptInferenceSettingsTests: XCTestCase {
         XCTAssertNil(try PromptInferenceSettings(reasoningEffort: .low).validated())
     }
 
-
     func testResolverPreservesBaselineReasoningEffortWhenThinkingIsInherited() throws {
         let baseline = ChatCompletionOptions(
             temperature: 0.7,
@@ -120,13 +118,13 @@ final class PromptInferenceSettingsTests: XCTestCase {
         )
     }
 
-
-
     func testResolverRejectsInvalidValuesEvenWhenProviderWouldOmitThem() {
-        XCTAssertThrowsError(try PromptInferenceCapabilityResolver.resolve(
-            config: .openai(apiKey: "key", model: "gpt-5.5"),
-            requested: PromptInferenceSettings(temperature: 3)
-        )) { error in
+        XCTAssertThrowsError(
+            try PromptInferenceCapabilityResolver.resolve(
+                config: .openai(apiKey: "key", model: "gpt-5.5"),
+                requested: PromptInferenceSettings(temperature: 3)
+            )
+        ) { error in
             XCTAssertEqual(
                 error as? PromptInferenceSettings.ValidationError,
                 .outOfRange(field: .temperature, minimum: 0, maximum: 2)
@@ -136,9 +134,11 @@ final class PromptInferenceSettingsTests: XCTestCase {
 
     func testAnthropicTemperatureRangeAppliesAfterTopPPrecedence() throws {
         let config = LLMProviderConfig.anthropic(apiKey: "key", model: "claude-haiku-4-5")
-        XCTAssertThrowsError(try PromptInferenceCapabilityResolver.resolve(
-            config: config, requested: PromptInferenceSettings(temperature: 1.5)
-        )) { error in
+        XCTAssertThrowsError(
+            try PromptInferenceCapabilityResolver.resolve(
+                config: config, requested: PromptInferenceSettings(temperature: 1.5)
+            )
+        ) { error in
             XCTAssertEqual(
                 error as? PromptInferenceSettings.ValidationError,
                 .outOfRange(field: .temperature, minimum: 0, maximum: 1)
@@ -158,27 +158,31 @@ final class PromptInferenceSettingsTests: XCTestCase {
     }
 
     func testEffectiveReceiptIncludesInheritedValuesActuallySent() throws {
-        let custom = try PromptInferenceCapabilityResolver.resolve(config: .openaiCompatible(
-            model: "generic-model",
-            baseURL: URL(string: "http://localhost:8080/v1")!
-        ),
-        requested: nil)
+        let custom = try PromptInferenceCapabilityResolver.resolve(
+            config: .openaiCompatible(
+                model: "generic-model",
+                baseURL: URL(string: "http://localhost:8080/v1")!
+            ),
+            requested: nil)
         XCTAssertEqual(custom.effectiveSettings, PromptInferenceSettings(temperature: 0.7))
 
-        let anthropic = try PromptInferenceCapabilityResolver.resolve(config: .anthropic(apiKey: "key", model: "claude-sonnet-5"),
-        requested: nil)
+        let anthropic = try PromptInferenceCapabilityResolver.resolve(
+            config: .anthropic(apiKey: "key", model: "claude-sonnet-5"),
+            requested: nil)
         XCTAssertEqual(anthropic.effectiveSettings, PromptInferenceSettings(maxTokens: 4096))
 
-        let openAIReasoning = try PromptInferenceCapabilityResolver.resolve(config: .openai(apiKey: "key", model: "gpt-5.5"),
-        requested: nil)
+        let openAIReasoning = try PromptInferenceCapabilityResolver.resolve(
+            config: .openai(apiKey: "key", model: "gpt-5.5"),
+            requested: nil)
         XCTAssertNil(openAIReasoning.effectiveSettings)
     }
 
     func testAnthropicTopPReplacesInheritedTemperatureAndRegeneratesUnchanged() throws {
         let config = LLMProviderConfig.anthropic(apiKey: "key", model: "claude-haiku-4-5")
         for topP in [0.0, 0.9] {
-            let resolution = try PromptInferenceCapabilityResolver.resolve(config: config,
-            requested: PromptInferenceSettings(topP: topP))
+            let resolution = try PromptInferenceCapabilityResolver.resolve(
+                config: config,
+                requested: PromptInferenceSettings(topP: topP))
 
             XCTAssertNil(resolution.options.temperature)
             XCTAssertEqual(resolution.options.topP, topP)
@@ -189,16 +193,18 @@ final class PromptInferenceSettingsTests: XCTestCase {
             )
             XCTAssertEqual(resolution.options.effectiveInferenceSettings, resolution.effectiveSettings)
 
-            let regenerated = try PromptInferenceCapabilityResolver.resolve(config: config,
-            requested: resolution.effectiveSettings)
+            let regenerated = try PromptInferenceCapabilityResolver.resolve(
+                config: config,
+                requested: resolution.effectiveSettings)
             XCTAssertNil(regenerated.options.temperature)
             XCTAssertEqual(regenerated.effectiveSettings, resolution.effectiveSettings)
         }
     }
 
     func testAnthropicTopPWinsOverExplicitTemperatureAndReportsOmission() throws {
-        let resolution = try PromptInferenceCapabilityResolver.resolve(config: .anthropic(apiKey: "key", model: "claude-sonnet-4-6"),
-        requested: PromptInferenceSettings(temperature: 0.2, topP: 0.9))
+        let resolution = try PromptInferenceCapabilityResolver.resolve(
+            config: .anthropic(apiKey: "key", model: "claude-sonnet-4-6"),
+            requested: PromptInferenceSettings(temperature: 0.2, topP: 0.9))
 
         XCTAssertNil(resolution.options.temperature)
         XCTAssertEqual(resolution.options.topP, 0.9)
@@ -216,8 +222,9 @@ final class PromptInferenceSettingsTests: XCTestCase {
             PromptInferenceSettings(temperature: 0.7, maxTokens: 4096)
         )
 
-        let explicitResolution = try PromptInferenceCapabilityResolver.resolve(config: config,
-        requested: PromptInferenceSettings(temperature: 0.2))
+        let explicitResolution = try PromptInferenceCapabilityResolver.resolve(
+            config: config,
+            requested: PromptInferenceSettings(temperature: 0.2))
         XCTAssertEqual(explicitResolution.options.temperature, 0.2)
         XCTAssertNil(explicitResolution.options.topP)
         XCTAssertTrue(explicitResolution.unsupportedSettings.isEmpty)
@@ -236,11 +243,12 @@ final class PromptInferenceSettingsTests: XCTestCase {
             thinkingMode: .enabled,
             reasoningEffort: .xhigh
         )
-        let resolution = try PromptInferenceCapabilityResolver.resolve(config: .openaiCompatible(
-            model: "local-model",
-            baseURL: URL(string: "http://localhost:8080/v1")!
-        ),
-        requested: requested)
+        let resolution = try PromptInferenceCapabilityResolver.resolve(
+            config: .openaiCompatible(
+                model: "local-model",
+                baseURL: URL(string: "http://localhost:8080/v1")!
+            ),
+            requested: requested)
 
         XCTAssertEqual(resolution.effectiveSettings, requested)
         XCTAssertTrue(resolution.unsupportedSettings.isEmpty)
@@ -250,15 +258,16 @@ final class PromptInferenceSettingsTests: XCTestCase {
     }
 
     func testOpenAIReasoningModelReportsUnsupportedSampling() throws {
-        let resolution = try PromptInferenceCapabilityResolver.resolve(config: .openai(apiKey: "key", model: "gpt-5.5"),
-        requested: PromptInferenceSettings(
-            temperature: 0.2,
-            topP: 0.9,
-            topK: 20,
-            maxTokens: 4096,
-            thinkingMode: .enabled,
-            reasoningEffort: .medium
-        ))
+        let resolution = try PromptInferenceCapabilityResolver.resolve(
+            config: .openai(apiKey: "key", model: "gpt-5.5"),
+            requested: PromptInferenceSettings(
+                temperature: 0.2,
+                topP: 0.9,
+                topK: 20,
+                maxTokens: 4096,
+                thinkingMode: .enabled,
+                reasoningEffort: .medium
+            ))
 
         XCTAssertEqual(resolution.options.maxTokens, 4096)
         XCTAssertNil(resolution.options.temperature)
@@ -274,14 +283,15 @@ final class PromptInferenceSettingsTests: XCTestCase {
 
     func testLocalCLIReportsAllExplicitSettingsUnsupported() throws {
         let requested = PromptInferenceSettings(temperature: 0.2, thinkingMode: .disabled)
-        let resolution = try PromptInferenceCapabilityResolver.resolve(config: LLMProviderConfig(
-            id: .localCLI,
-            baseURL: URL(string: "http://localhost")!,
-            apiKey: nil,
-            modelName: "claude",
-            isLocal: false
-        ),
-        requested: requested)
+        let resolution = try PromptInferenceCapabilityResolver.resolve(
+            config: LLMProviderConfig(
+                id: .localCLI,
+                baseURL: URL(string: "http://localhost")!,
+                apiKey: nil,
+                modelName: "claude",
+                isLocal: false
+            ),
+            requested: requested)
 
         XCTAssertNil(resolution.effectiveSettings)
         XCTAssertEqual(resolution.unsupportedSettings, [.temperature, .thinkingMode])
@@ -289,8 +299,9 @@ final class PromptInferenceSettingsTests: XCTestCase {
     }
 
     func testOllamaDefaultPreservesLegacyRequestSemantics() throws {
-        let resolution = try PromptInferenceCapabilityResolver.resolve(config: .ollama(model: "qwen3.5:9b"),
-        requested: nil)
+        let resolution = try PromptInferenceCapabilityResolver.resolve(
+            config: .ollama(model: "qwen3.5:9b"),
+            requested: nil)
 
         XCTAssertNil(resolution.options.temperature)
         XCTAssertEqual(resolution.options.thinkingMode, .disabled)
@@ -302,11 +313,12 @@ final class PromptInferenceSettingsTests: XCTestCase {
     }
 
     func testOllamaReportsReasoningEffortUnsupported() throws {
-        let resolution = try PromptInferenceCapabilityResolver.resolve(config: .ollama(model: "local-model"),
-        requested: PromptInferenceSettings(
-            thinkingMode: .enabled,
-            reasoningEffort: .medium
-        ))
+        let resolution = try PromptInferenceCapabilityResolver.resolve(
+            config: .ollama(model: "local-model"),
+            requested: PromptInferenceSettings(
+                thinkingMode: .enabled,
+                reasoningEffort: .medium
+            ))
 
         XCTAssertEqual(resolution.options.thinkingMode, .enabled)
         XCTAssertNil(resolution.options.reasoningEffort)

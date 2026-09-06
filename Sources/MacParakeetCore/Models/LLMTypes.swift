@@ -136,6 +136,7 @@ public struct ChatCompletionOptions: Sendable, Equatable {
     public let maxTokens: Int?
     public let thinkingMode: PromptInferenceSettings.ThinkingMode
     public let reasoningEffort: PromptInferenceSettings.ReasoningEffort?
+    /// Resolver-owned provenance; directly initialized options have no receipt.
     public let usesPromptInferenceSettings: Bool
     public let effectiveInferenceSettings: PromptInferenceSettings?
     public let responseFormat: ChatResponseFormat?
@@ -150,8 +151,6 @@ public struct ChatCompletionOptions: Sendable, Equatable {
         maxTokens: Int? = nil,
         thinkingMode: PromptInferenceSettings.ThinkingMode = .providerDefault,
         reasoningEffort: PromptInferenceSettings.ReasoningEffort? = nil,
-        usesPromptInferenceSettings: Bool = false,
-        effectiveInferenceSettings: PromptInferenceSettings? = nil,
         responseFormat: ChatResponseFormat? = nil,
         conversationID: UUID? = nil
     ) {
@@ -161,30 +160,41 @@ public struct ChatCompletionOptions: Sendable, Equatable {
         self.maxTokens = maxTokens
         self.thinkingMode = thinkingMode
         self.reasoningEffort = reasoningEffort
-        self.usesPromptInferenceSettings = usesPromptInferenceSettings
-        self.effectiveInferenceSettings = effectiveInferenceSettings
+        self.usesPromptInferenceSettings = false
+        self.effectiveInferenceSettings = nil
         self.responseFormat = responseFormat
         self.conversationID = conversationID
+    }
+
+    private init(
+        _ options: ChatCompletionOptions,
+        usesPromptInferenceSettings: Bool,
+        effectiveInferenceSettings: PromptInferenceSettings?
+    ) {
+        self.temperature = options.temperature
+        self.topP = options.topP
+        self.topK = options.topK
+        self.maxTokens = options.maxTokens
+        self.thinkingMode = options.thinkingMode
+        self.reasoningEffort = options.reasoningEffort
+        self.usesPromptInferenceSettings = usesPromptInferenceSettings
+        self.effectiveInferenceSettings = effectiveInferenceSettings
+        self.responseFormat = options.responseFormat
+        self.conversationID = options.conversationID
     }
 
     public static let `default` = ChatCompletionOptions(temperature: 0.7, maxTokens: nil)
 
 
+    /// Attach provenance only after provider filtering has resolved the request.
     func withInferenceReceipt(
         usesPromptInferenceSettings: Bool,
         effectiveSettings: PromptInferenceSettings?
     ) -> ChatCompletionOptions {
         ChatCompletionOptions(
-            temperature: temperature,
-            topP: topP,
-            topK: topK,
-            maxTokens: maxTokens,
-            thinkingMode: thinkingMode,
-            reasoningEffort: reasoningEffort,
+            self,
             usesPromptInferenceSettings: usesPromptInferenceSettings,
-            effectiveInferenceSettings: effectiveSettings,
-            responseFormat: responseFormat,
-            conversationID: conversationID
+            effectiveInferenceSettings: effectiveSettings
         )
     }
 

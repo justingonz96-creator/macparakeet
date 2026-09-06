@@ -300,8 +300,6 @@ private extension ChatCompletionOptions {
             maxTokens: settings.maxTokens ?? maxTokens,
             thinkingMode: resolvedThinkingMode,
             reasoningEffort: resolvedReasoningEffort,
-            usesPromptInferenceSettings: usesPromptInferenceSettings,
-            effectiveInferenceSettings: effectiveInferenceSettings,
             responseFormat: responseFormat,
             conversationID: conversationID
         )

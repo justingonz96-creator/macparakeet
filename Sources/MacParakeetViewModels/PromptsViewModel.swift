@@ -390,27 +390,14 @@ public final class PromptsViewModel {
             errors: &nextErrors
         )
         if nextErrors.isEmpty {
-            do {
-                let settings = PromptInferenceSettings(
-                    temperature: temperature,
-                    topP: topP,
-                    topK: topK,
-                    maxTokens: maxTokens,
-                    thinkingMode: draft.thinkingMode,
-                    reasoningEffort: draft.reasoningEffort
-                )
-                let validated = try settings.validated()
-                return .valid(validated)
-            } catch let error as PromptInferenceSettings.ValidationError {
-                switch error {
-                case .nonFinite(let field), .outOfRange(let field, _, _):
-                    nextErrors[field] = validationMessage(for: field)
-                case .unsupportedPromptCategory:
-                    return .invalid([.thinkingMode: error.localizedDescription])
-                }
-            } catch {
-                return .invalid([.thinkingMode: error.localizedDescription])
-            }
+            return .valid(PromptInferenceSettings(
+                temperature: temperature,
+                topP: topP,
+                topK: topK,
+                maxTokens: maxTokens,
+                thinkingMode: draft.thinkingMode,
+                reasoningEffort: draft.reasoningEffort
+            ).normalized)
         }
 
         return .invalid(nextErrors)

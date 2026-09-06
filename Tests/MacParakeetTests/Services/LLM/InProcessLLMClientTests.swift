@@ -483,10 +483,10 @@ final class InProcessLLMClientTests: XCTestCase {
             idleUnloadDelaySeconds: 60
         )
         let settings = PromptInferenceSettings(temperature: 0.2, maxTokens: 64)
-        let options = ChatCompletionOptions(temperature: 0.2, maxTokens: 64).withInferenceReceipt(
-            usesPromptInferenceSettings: true,
-            effectiveSettings: settings
-        )
+        let options = try PromptInferenceCapabilityResolver.resolve(
+            config: .inProcessLocal(model: "stream-test"),
+            requested: settings
+        ).options
 
         var events: [LLMStreamEvent] = []
         for try await event in client.chatCompletionDetailedStream(

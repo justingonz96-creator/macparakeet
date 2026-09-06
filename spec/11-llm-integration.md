@@ -276,10 +276,37 @@ reserving requested output tokens before assembling input in both stream paths.
 Impossible output allowances fail before dispatch through the ordinary operation
 failure path. The input character estimate remains heuristic.
 
+`ChatCompletionOptions` accepts request controls through its public initializer,
+not caller-supplied effective-settings receipts. Receipt metadata is immutable
+and attached by Core's capability resolver after filtering. Callers dispatch
+resolved options with the same provider/model configuration used for resolution.
+
 Detailed streaming adds terminal metadata alongside text events:
 
 ```swift
-public enum LLMStreamEvent: Sendable {
+public struct LLMStreamTerminal: Sendable, Equatable {
+    public let provider: String
+    public let model: String
+    public let usage: LLMUsage?
+    public let stopReason: String?
+    public let effectiveSettings: PromptInferenceSettings?
+
+    public init(
+        provider: String,
+        model: String,
+        usage: LLMUsage? = nil,
+        stopReason: String? = nil,
+        effectiveSettings: PromptInferenceSettings? = nil
+    ) {
+        self.provider = provider
+        self.model = model
+        self.usage = usage
+        self.stopReason = stopReason
+        self.effectiveSettings = effectiveSettings
+    }
+}
+
+public enum LLMStreamEvent: Sendable, Equatable {
     case text(String)
     case completed(LLMStreamTerminal)
 }

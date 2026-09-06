@@ -459,20 +459,6 @@ final class LLMHTTPAdapterTests: XCTestCase {
             (disabledBody["chat_template_kwargs"] as? [String: Any])?["reasoning_effort"]
         )
 
-        let staleEffortBody = try jsonBody(
-            from: openAIAdapter.buildRequest(
-                messages: goldenMessages,
-                config: config,
-                options: ChatCompletionOptions(
-                    thinkingMode: .disabled,
-                    reasoningEffort: .high,
-                    usesPromptInferenceSettings: true
-                ),
-                stream: false
-            ))
-        XCTAssertNil(
-            (staleEffortBody["chat_template_kwargs"] as? [String: Any])?["reasoning_effort"]
-        )
     }
 
     func testNativeOpenAIAdapterOmitsCustomEndpointOnlySettings() async throws {
@@ -826,10 +812,10 @@ final class LLMHTTPAdapterTests: XCTestCase {
             return (self.okResponse(for: request), data)
         }
         let settings = PromptInferenceSettings(temperature: 0.2)
-        let options = ChatCompletionOptions(temperature: 0.2).withInferenceReceipt(
-            usesPromptInferenceSettings: true,
-            effectiveSettings: settings
-        )
+        let options = try PromptInferenceCapabilityResolver.resolve(
+            config: .openai(apiKey: "test", model: "gpt-4.1"),
+            requested: settings
+        ).options
 
         let events = try await collectDetailed(
             openAIAdapter.chatCompletionDetailedStream(
@@ -1113,13 +1099,13 @@ final class LLMHTTPAdapterTests: XCTestCase {
                 """.utf8)
             return (self.okResponse(for: request), data)
         }
-        let settings = PromptInferenceSettings(temperature: 0.3)
+        let settings = PromptInferenceSettings(temperature: 0.3, thinkingMode: .disabled)
         let events = try await collectDetailed(ollamaAdapter.chatCompletionDetailedStream(
             messages: goldenMessages,
             config: .ollama(model: "requested-alias"),
-            options: ChatCompletionOptions(temperature: 0.3).withInferenceReceipt(
-                usesPromptInferenceSettings: true, effectiveSettings: settings
-            )
+            options: try PromptInferenceCapabilityResolver.resolve(
+                config: .ollama(model: "requested-alias"), requested: settings
+            ).options
         ))
         XCTAssertEqual(events.filter { !$0.isTerminal }, [.text("Hello"), .text(" world")])
         XCTAssertEqual(events.filter { $0.isTerminal }.count, 1)

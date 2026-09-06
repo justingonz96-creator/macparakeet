@@ -95,10 +95,7 @@ final class LocalCLILLMClientTests: XCTestCase {
         for try await event in client.chatCompletionDetailedStream(
             messages: [ChatMessage(role: .user, content: "test")],
             context: context,
-            options: ChatCompletionOptions(
-                temperature: 0.2, usesPromptInferenceSettings: true,
-                effectiveInferenceSettings: PromptInferenceSettings(temperature: 0.2)
-            )
+            options: ChatCompletionOptions(temperature: 0.2)
         ) {
             events.append(event)
         }

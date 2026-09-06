@@ -481,7 +481,8 @@ struct PromptLibraryView: View {
                 .controlSize(.large)
                 .disabled(
                     viewModel.newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || viewModel.newContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        || viewModel.newContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || !viewModel.newInferenceValidationErrors.isEmpty)
             }
             .padding(DesignSystem.Spacing.md)
             .background(DesignSystem.Colors.surfaceElevated.opacity(0.3))
@@ -589,7 +590,8 @@ struct PromptLibraryView: View {
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(
                     editName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || editContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        || editContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || !viewModel.editingInferenceValidationErrors.isEmpty)
             }
             .padding(DesignSystem.Spacing.xl)
             .background(DesignSystem.Colors.surfaceElevated.opacity(0.3))

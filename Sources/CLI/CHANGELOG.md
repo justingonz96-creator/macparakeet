@@ -117,8 +117,9 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
   Missing receipt totals are derived when both component counts are available,
   while explicit provider totals retain precedence.
 - Native OpenAI streaming requests usage metadata without adding that option to
-  compatible third-party endpoints. Ollama result-prompt input budgeting now
-  shares its 8,192-token request window and reserves explicit output allowances.
+  compatible third-party endpoints.
+- Ollama result-prompt input budgeting shares its 8,192-token request window
+  and reserves explicit output allowances.
 - Local CLI output normalizes line endings: CRLF collapses to a single LF and
   a bare CR is rewritten to LF instead of passing through unsanitized. This
   closes a terminal-overwrite gap in the existing sanitizer (a wrapped CLI
