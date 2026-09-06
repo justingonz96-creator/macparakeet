@@ -1274,6 +1274,8 @@ migrator.registerMigration("v0.7-prompts-and-summaries") { db in
 // v0.28 — derived cards + external-content cards_fts (raw SQL)
 // v0.29 — transcriptions.audioTrackOrdinal
 // v0.30 — transcriptions.meetingCaptureReport (optional JSON)
+// v0.31-prompt-inference-settings —
+// prompts.inferenceSettings and summaries.inferenceSettingsSnapshot
 ```
 
 ### Migration Rules
