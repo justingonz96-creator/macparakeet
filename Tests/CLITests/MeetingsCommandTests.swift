@@ -5,6 +5,60 @@ import XCTest
 @testable import MacParakeetCore
 
 final class MeetingsCommandTests: XCTestCase {
+    func testClassifyPreservesCorrectedArtifactSpeakersAndProvenance() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let dbURL = folder.appendingPathComponent("test.db")
+        let db = try DatabaseManager(path: dbURL.path)
+        let repository = TranscriptionRepository(dbQueue: db.dbQueue)
+        let words = [WordTimestamp(word: "Hello.", startMs: 0, endMs: 400, confidence: 1, speakerId: "S1")]
+        let speakers = [SpeakerInfo(id: "S1", label: "Speaker 1")]
+        var meeting = Transcription(
+            fileName: "Corrected meeting", rawTranscript: "Hello.", wordTimestamps: words,
+            speakerCount: 1, speakers: speakers,
+            transcriptSegments: TranscriptSegmenter.materializeSegments(words: words, speakers: speakers),
+            status: .completed, sourceType: .meeting
+        )
+        meeting.meetingArtifactFolderPath = folder.path
+        try repository.save(meeting)
+        let label = MeetingLabel(name: "Reviewed")
+        try MeetingLabelRepository(dbQueue: db.dbQueue).save(label)
+        let target = try XCTUnwrap(SpeakerAttributionResolver.resolve(transcription: meeting).editableSegments.first)
+        let manualID = "user:\(UUID().uuidString)"
+        _ = try await SpeakerCorrectionService(dbQueue: db.dbQueue).apply(
+            transcriptionId: meeting.id,
+            command: .add(
+                speaker: ManualSpeaker(id: manualID, label: "Alice"),
+                assigning: [.init(anchorTranscriptSegmentIDs: target.anchorTranscriptSegmentIDs, wordRange: target.wordRange)]
+            ),
+            expectedFingerprint: SpeakerAttributionResolver.fingerprint(for: meeting),
+            expectedRevision: 0
+        )
+        // The classification refresh must retain the corrected files it replaces.
+        _ = try await MeetingArtifactStore(
+            speakerAttributionReader: SpeakerAttributionReadService(dbQueue: db.dbQueue)
+        ).materialize(transcription: meeting)
+        let command = try MeetingsCommand.ClassifySubcommand.parse([
+            meeting.id.uuidString, "--add-label", label.id.uuidString, "--json", "--database", dbURL.path,
+        ])
+        _ = try await captureStandardOutput { try await command.run() }
+        let transcript = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: folder.appendingPathComponent(MeetingArtifactStore.transcriptFileName))
+        ) as? [String: Any])
+        XCTAssertEqual(transcript["speakerCorrectionsApplied"] as? Bool, true)
+        XCTAssertEqual(transcript["speakerCorrectionRevision"] as? Int, 1)
+        let exportedWords = try XCTUnwrap(transcript["wordTimestamps"] as? [[String: Any]])
+        XCTAssertEqual(exportedWords.first?["speakerId"] as? String, manualID)
+        let exportedLabels = try XCTUnwrap(transcript["meetingLabels"] as? [[String: Any]])
+        XCTAssertEqual(exportedLabels.first?["name"] as? String, "Reviewed")
+        let markdown = try String(contentsOf: folder.appendingPathComponent(MeetingArtifactStore.markdownFileName))
+        XCTAssertTrue(markdown.contains("Alice"))
+        XCTAssertTrue(markdown.contains("speakerCorrectionsApplied: true"))
+        XCTAssertTrue(markdown.contains("speakerCorrectionRevision: 1"))
+        XCTAssertEqual(try repository.fetch(id: meeting.id)?.wordTimestamps, words)
+    }
+
     func testMeetingClassificationCommandsParse() throws {
         let list = try MeetingsCommand.ListSubcommand.parse([
             "--type", "Customer", "--label", "QBR", "--json",

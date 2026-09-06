@@ -240,7 +240,10 @@ extension MeetingsCommand {
                 for value in addLabel { labels.insert(try findMeetingLabel(value, repo: labelRepo).id) }
                 for value in removeLabel { labels.remove(try findMeetingLabel(value, repo: labelRepo, includeArchived: true).id) }
                 let refresher = MeetingArtifactClassificationRefresher(
-                    promptResultRepository: PromptResultRepository(dbQueue: db.dbQueue)
+                    promptResultRepository: PromptResultRepository(dbQueue: db.dbQueue),
+                    artifactStore: MeetingArtifactStore(
+                        speakerAttributionReader: SpeakerAttributionReadService(dbQueue: db.dbQueue)
+                    )
                 )
                 let service = MeetingClassificationService(dbQueue: db.dbQueue, artifactRefresher: refresher)
                 try await service.update(meetingTypeId: requestedType, labelIds: labels, for: meeting.id)

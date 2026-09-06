@@ -43,6 +43,37 @@ public final class PromptLabelPolicyRepository: PromptLabelPolicyRepositoryProto
         }
     }
 
+    /// Changes one rule without erasing other label exceptions. A nil label
+    /// selects the fallback used when no explicit label rule matches.
+    @discardableResult
+    public func setAvailability(promptId: UUID, labelId: UUID?, isAvailable: Bool) throws -> PromptLabelPolicy {
+        try dbQueue.write { db in
+            let scope: PromptLabelPolicy.ScopeKind = labelId == nil ? .all : .label
+            let now = Date()
+            // With no rules the resolver permits every transcription. Preserve
+            // that implicit fallback when adding the first explicit exception.
+            if labelId != nil,
+                try PromptLabelPolicy.filter(PromptLabelPolicy.Columns.promptId == promptId).fetchCount(db) == 0 {
+                try PromptLabelPolicy(
+                    promptId: promptId, scopeKind: .all, isAvailable: true,
+                    createdAt: now, updatedAt: now
+                ).insert(db)
+            }
+            let existing = try PromptLabelPolicy
+                .filter(PromptLabelPolicy.Columns.promptId == promptId)
+                .filter(PromptLabelPolicy.Columns.scopeKind == scope.rawValue)
+                .filter(PromptLabelPolicy.Columns.labelId == labelId)
+                .fetchOne(db)
+            let policy = PromptLabelPolicy(
+                id: existing?.id ?? UUID(), promptId: promptId, scopeKind: scope,
+                labelId: labelId, isAvailable: isAvailable,
+                createdAt: existing?.createdAt ?? now, updatedAt: now
+            )
+            try policy.save(db)
+            return policy
+        }
+    }
+
     /// Replaces the simple Prompt Manager targeting model atomically. No rows
     /// means "all transcriptions". A non-empty selection writes an unavailable
     /// fallback plus one available rule per selected label.

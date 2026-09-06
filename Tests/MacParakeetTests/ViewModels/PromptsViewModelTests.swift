@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import MacParakeetCore
 @testable import MacParakeetViewModels
 
@@ -50,6 +51,62 @@ final class PromptsViewModelTests: XCTestCase {
             }),
             [customer.id]
         )
+    }
+
+    func testUnrelatedEditsPreserveMigratedPolicyShapes() throws {
+        for shape in 0..<3 {
+            let manager = try DatabaseManager()
+            let prompts = PromptRepository(dbQueue: manager.dbQueue)
+            let labels = MeetingLabelRepository(dbQueue: manager.dbQueue)
+            let policies = PromptLabelPolicyRepository(dbQueue: manager.dbQueue)
+            let label = MeetingLabel(name: "Restricted")
+            try labels.save(label)
+            let prompt = Prompt(name: "Policy shape \(shape)", content: "Original")
+            try prompts.save(prompt)
+            if shape != 2 {
+                try policies.setAvailability(promptId: prompt.id, labelId: nil, isAvailable: shape == 1)
+            }
+            if shape != 0 {
+                // Seed the migrated shape exactly, including no fallback.
+                try manager.dbQueue.write { db in
+                    try PromptLabelPolicy(
+                        promptId: prompt.id, scopeKind: .label, labelId: label.id, isAvailable: shape == 2
+                    ).insert(db)
+                }
+            }
+            let originalPolicies = try policies.fetchPolicies(promptId: prompt.id)
+            let subject = PromptsViewModel()
+            subject.configure(repo: prompts, labelRepository: labels, labelPolicyRepository: policies)
+            subject.beginEditing(prompt)
+            subject.updatePrompt(prompt, name: "Renamed", content: "Revised content")
+            XCTAssertNil(subject.errorMessage)
+            XCTAssertEqual(try policies.fetchPolicies(promptId: prompt.id), originalPolicies)
+            // Non-editor callers must preserve the policy too.
+            let revised = try XCTUnwrap(prompts.fetch(id: prompt.id))
+            subject.updatePrompt(revised, name: "Renamed again", content: "Another revision")
+            XCTAssertEqual(try policies.fetchPolicies(promptId: prompt.id), originalPolicies)
+            let saved = try XCTUnwrap(prompts.fetch(id: prompt.id))
+            for labelIDs in [Set<UUID>(), Set([label.id])] {
+                XCTAssertEqual(
+                    PromptLabelApplicabilityResolver.resolve(
+                        prompt: saved, sourceType: .meeting, transcriptionLabelIDs: labelIDs,
+                        policies: try policies.fetchPolicies(promptId: prompt.id)
+                    ).isAvailable,
+                    PromptLabelApplicabilityResolver.resolve(
+                        prompt: prompt, sourceType: .meeting, transcriptionLabelIDs: labelIDs,
+                        policies: originalPolicies
+                    ).isAvailable
+                )
+            }
+            // An explicit targeting edit still installs the simple picker rules.
+            subject.beginEditing(saved)
+            subject.editingTargetLabelIDs = [label.id]
+            subject.updatePrompt(saved, name: saved.name, content: saved.content)
+            XCTAssertNil(subject.errorMessage)
+            let changed = try policies.fetchPolicies(promptId: prompt.id)
+            XCTAssertTrue(changed.contains { $0.scopeKind == .all && !$0.isAvailable })
+            XCTAssertTrue(changed.contains { $0.labelId == label.id && $0.isAvailable })
+        }
     }
 
     func testAddPromptCreatesCustomSummaryPrompt() {

@@ -629,7 +629,7 @@ private extension CLISpecCommand {
         CLISpecCommand(
             ["prompts", "set"],
             summary:
-                "Update a result or Transform prompt; meeting-note context and meeting policies apply only to results.",
+                "Update a result or Transform prompt; meeting-note context and label availability apply only to results.",
             readOnly: false,
             arguments: [.argument("prompt", summary: "Prompt ID, UUID prefix, or exact name.")],
             options: [
@@ -655,13 +655,13 @@ private extension CLISpecCommand {
                 CLISpecParameter.option("--thinking-mode", valueName: "MODE", summary: "Set versioned thinking mode."),
                 CLISpecParameter.option("--reasoning-effort", valueName: "LEVEL", summary: "Set versioned reasoning effort."),
                 CLISpecParameter.flag("--provider-default-settings", summary: "Clear all versioned inference overrides."),
-                CLISpecParameter.option("--meeting-type", valueName: "TYPE", summary: "Target one meeting-type policy."),
-                CLISpecParameter.flag("--all-meeting-types", summary: "Target the all-types fallback policy."),
+                CLISpecParameter.option("--label", valueName: "LABEL", summary: "Target one label availability rule across transcription sources."),
+                CLISpecParameter.flag("--all-labels", summary: "Target the fallback when no explicit label rule matches."),
                 CLISpecParameter.flag("--available", summary: "Make the targeted policy manually available."),
-                CLISpecParameter.flag("--unavailable", summary: "Make the targeted policy unavailable and non-auto-run."),
+                CLISpecParameter.flag("--unavailable", summary: "Make the targeted label policy unavailable; source auto-run settings are unchanged."),
                 databaseOption,
             ],
-            output: "Updated Prompt or PromptMeetingPolicy object when --json is used."
+            output: "Updated Prompt or PromptLabelPolicy object when --json is used."
         ),
         CLISpecCommand(
             ["prompts", "delete"],

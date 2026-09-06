@@ -242,7 +242,10 @@ artifact paths.
 `transcriptSegments` item may additionally include `speakerSpans`. A span has
 `wordRange`, nullable `speakerId`, and `speakerLabel`; multiple spans preserve
 manual splits that cannot be represented by the segment's legacy single
-speaker fields.
+speaker fields. GUI correction refreshes preserve the resolved projection and
+its revision together; CLI classification refreshes resolve corrections from
+the same database before regenerating files. These refreshes must never replay
+an effective transcription as though it were the automatic baseline.
 
 When classified, the frontmatter also includes the type id/name and complete
 label id/name list. Human-readable details render those values without changing

@@ -118,6 +118,18 @@ with human progress/status kept off stdout.
   affected prompt object; restore creates a new version and never rewrites an
   old one. The new version's `createdAt` and the prompt's `updatedAt` record
   the restoration time.
+- `prompts set --label LABEL --available|--unavailable` updates one active
+  label rule. `--all-labels` updates only the fallback for transcriptions with
+  no matching explicit label rule, across all sources; it preserves label
+  exceptions. Adding the first label rule preserves the previous implicit
+  available fallback; use `--all-labels --unavailable` to restrict unmatched
+  transcriptions. `--json` returns the saved label policy (`id`, `promptId`,
+  `scopeKind`, optional `labelId`, `isAvailable`, `createdAt`, `updatedAt`).
+  Availability is independent of auto-run: configure automatic execution
+  separately with `--source SOURCE --auto-run|--no-auto-run`. The obsolete
+  fork flags `--meeting-type` and `--all-meeting-types` fail with replacement
+  guidance because their former type-scoped semantics cannot be represented
+  faithfully by label availability. They never write inactive legacy policies.
 - `prompts run` checks label availability before provider execution for every
   transcription source, using the same rules as the app. No label targets means
   available everywhere; when targeted, at least one transcription label must

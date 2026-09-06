@@ -405,16 +405,22 @@ extension PromptsCommand {
         @Flag(name: .long, help: "Clear all per-prompt inference settings; creates a version when changed.")
         var providerDefaultSettings = false
 
-        @Option(name: .long, help: "Configure availability for one meeting type UUID, prefix, or name.")
+        @Option(name: .long, help: "Obsolete; use --label to configure active label availability.")
         var meetingType: String?
 
-        @Flag(name: .long, help: "Configure the fallback policy for all meeting types.")
+        @Flag(name: .long, help: "Obsolete; use --all-labels for the active label fallback.")
         var allMeetingTypes = false
 
-        @Flag(name: .long, help: "Make the prompt manually available for the selected meeting policy.")
+        @Option(name: .long, help: "Configure availability for one label UUID, prefix, or name, across sources.")
+        var label: String?
+
+        @Flag(name: .long, help: "Configure the fallback when no explicit label rule matches, across sources.")
+        var allLabels = false
+
+        @Flag(name: .long, help: "Make the prompt available for the selected label policy.")
         var available = false
 
-        @Flag(name: .long, help: "Make the prompt unavailable for the selected meeting policy.")
+        @Flag(name: .long, help: "Make the prompt unavailable for the selected label policy.")
         var unavailable = false
 
         @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
@@ -464,25 +470,32 @@ extension PromptsCommand {
             } catch {
                 throw ValidationError("invalid inference setting: \(error)")
             }
-            if meetingType != nil && allMeetingTypes {
-                throw ValidationError("--meeting-type and --all-meeting-types are mutually exclusive")
+            if meetingType != nil || allMeetingTypes {
+                throw ValidationError(
+                    "Meeting-type policies no longer control prompt execution. Use --label LABEL or "
+                        + "--all-labels with --available/--unavailable. Configure automatic execution "
+                        + "separately with --source meeting --auto-run/--no-auto-run."
+                )
+            }
+            if label != nil && allLabels {
+                throw ValidationError("--label and --all-labels are mutually exclusive")
             }
             if available && unavailable {
                 throw ValidationError("--available and --unavailable are mutually exclusive")
             }
-            let hasPolicyTarget = meetingType != nil || allMeetingTypes
+            let hasPolicyTarget = label != nil || allLabels
             if (available || unavailable) && !hasPolicyTarget {
-                throw ValidationError("--available/--unavailable require --meeting-type or --all-meeting-types")
+                throw ValidationError("--available/--unavailable require --label or --all-labels")
             }
             if hasPolicyTarget {
-                if visible || hidden || source != nil || model != nil || activeModel
+                if visible || hidden || source != nil || autoRun || noAutoRun || model != nil || activeModel
                     || hasInferenceOptions || providerDefaultSettings
                     || includeMeetingNotes || noIncludeMeetingNotes
                 {
-                    throw ValidationError("meeting policy options cannot be combined with visibility, source, or model options")
+                    throw ValidationError("label availability must be configured separately from prompt settings and source auto-run")
                 }
-                if !(available || unavailable || autoRun || noAutoRun) {
-                    throw ValidationError("a meeting policy requires --available, --unavailable, --auto-run, or --no-auto-run")
+                if !(available || unavailable) {
+                    throw ValidationError("a label policy requires --available or --unavailable")
                 }
             }
             // Auto-run requires visible (mirrors PromptRepository.toggleAutoRun).
@@ -544,45 +557,20 @@ extension PromptsCommand {
                     throw ValidationError("meeting-note context is only available for result prompts")
                 }
 
-                if meetingType != nil || allMeetingTypes {
+                if label != nil || allLabels {
                     guard prompt.category == .result else {
-                        throw ValidationError("meeting policies apply only to result prompts")
+                        throw ValidationError("label policies apply only to result prompts")
                     }
-                    let policies = PromptMeetingPolicyRepository(dbQueue: db.dbQueue)
-                    let existing: PromptMeetingPolicy?
-                    let meetingTypeID: UUID?
-                    if let meetingType {
-                        let typeRepo = MeetingTypeRepository(dbQueue: db.dbQueue)
-                        meetingTypeID = try findMeetingType(meetingType, repo: typeRepo).id
-                        existing = try policies.fetchPolicies(promptId: prompt.id).first {
-                            $0.scopeKind == .type && $0.meetingTypeId == meetingTypeID
-                        }
-                    } else {
-                        meetingTypeID = nil
-                        existing = try policies.fetchPolicies(promptId: prompt.id).first {
-                            $0.scopeKind == .all
-                        }
+                    let labelID = try label.map {
+                        try findMeetingLabel(
+                            $0, repo: MeetingLabelRepository(dbQueue: db.dbQueue), includeArchived: true
+                        ).id
                     }
-                    let isAvailable = unavailable ? false : (available || autoRun ? true : existing?.isAvailable ?? true)
-                    let isAutoRun = isAvailable && (autoRun ? true : noAutoRun ? false : existing?.isAutoRun ?? false)
-                    let policy = if let meetingTypeID {
-                        try policies.setPolicy(
-                            promptId: prompt.id,
-                            meetingTypeId: meetingTypeID,
-                            isAvailable: isAvailable,
-                            isAutoRun: isAutoRun,
-                            sortOrder: existing?.sortOrder
-                        )
-                    } else {
-                        try policies.setAllMeetingsPolicy(
-                            promptId: prompt.id,
-                            isAvailable: isAvailable,
-                            isAutoRun: isAutoRun,
-                            sortOrder: existing?.sortOrder
-                        )
-                    }
+                    let policy = try PromptLabelPolicyRepository(dbQueue: db.dbQueue).setAvailability(
+                        promptId: prompt.id, labelId: labelID, isAvailable: available
+                    )
                     if json { try printJSON(policy) }
-                    else { print("Updated meeting policy for '\(prompt.name)'.") }
+                    else { print("Updated label policy for '\(prompt.name)'.") }
                     return
                 }
 

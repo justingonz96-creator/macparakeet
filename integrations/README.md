@@ -768,3 +768,19 @@ OpenClaw, Hermes, or another local agent framework.
 Open an issue at <https://github.com/moona3k/macparakeet/issues> with the
 `integration` label. Include the agent platform, the CLI version
 (`macparakeet-cli --version`), and a minimal repro.
+
+### Updating prompt label availability
+
+Use `prompts set PROMPT --label LABEL --available` (or `--unavailable`) to
+change one label rule. Use `--all-labels --available|--unavailable` to change
+only the fallback when no explicit label rule matches, for every source.
+Existing label exceptions are preserved. A first label rule preserves the
+previous available fallback; set `--all-labels --unavailable` to restrict
+unmatched transcriptions. `--json` returns the saved policy.
+
+The former fork flags `--meeting-type` and `--all-meeting-types` now fail with
+migration guidance: meeting types no longer determine prompt execution.
+Configure source auto-run separately, for example
+`prompts set PROMPT --source meeting --auto-run`. Label availability still
+limits which transcriptions qualify. Editing prompt text or inference settings
+in the app preserves existing policies unless the label selection is changed.

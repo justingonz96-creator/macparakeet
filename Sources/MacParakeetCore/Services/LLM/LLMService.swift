@@ -1485,7 +1485,8 @@ public final class LLMService: LLMServiceProtocol, Sendable {
         case .anthropic:
             return model.hasPrefix("claude-")
         case .gemini:
-            return model.hasPrefix("gemini-")
+            let lowered = model.lowercased()
+            return lowered.hasPrefix("gemini-") || lowered.hasPrefix("gemma-")
         case .openrouter:
             let components = model.split(separator: "/", omittingEmptySubsequences: false)
             return components.count == 2 && components.allSatisfy { !$0.isEmpty }

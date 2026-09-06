@@ -52,6 +52,13 @@ and `spec --json` lives in `spec/contracts/cli-json-v1.md`.
 
 ## Unreleased
 
+- Prompt availability can be updated with `prompts set --label LABEL` or
+  `--all-labels`, plus `--available`/`--unavailable`. Writes now affect the same
+  label rules used by execution and preserve existing exceptions. JSON returns
+  the saved label policy. Source auto-run remains a separate setting.
+- The obsolete fork-only `--meeting-type`/`--all-meeting-types` policy flags
+  fail with migration guidance instead of successfully writing inactive rules.
+
 ### Added
 
 - Speaker-aware export and meeting JSON now include additive

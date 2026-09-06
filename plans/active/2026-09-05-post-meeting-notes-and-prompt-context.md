@@ -541,6 +541,17 @@ The already recorded upstream `v0.7.0` ordered-list limitation was reproduced:
 an authored list starting at `3.` renders visually as `1.`. It remains a known
 presentation limitation rather than a newly introduced regression.
 
+### Review remediation — 2026-09-06
+
+The retained streaming source now creates a new replaying subscription for each
+renderer task, fixing cancellation/reappearance without dropping subsequent
+chunks. The compatibility renderer pin `1f10d528` restores native selectable
+macOS table text, removes the table-wide gesture that intercepts selection, and
+names the always-visible Copy/Download actions. The table selection regression
+failed on the prior pin and passed on the new one. The accessibility action test
+is skipped when the XCTest host exposes no SwiftUI accessibility children; the
+in-app VoiceOver and remaining visual/release checks above are still required.
+
 ## Test Plan
 
 ### Database and repositories

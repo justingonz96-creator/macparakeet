@@ -3040,6 +3040,47 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertEqual(indexedText, ["New transcript"])
     }
 
+    func testRetranscribePreservesMetadataEditedWhileSTTIsSuspended() async throws {
+        let original = Transcription(
+            fileName: "Original meeting", filePath: "/tmp/meeting.wav",
+            rawTranscript: "Old transcript", status: .completed,
+            sourceType: .meeting, userNotes: "Old notes"
+        )
+        try transcriptionRepo.save(original)
+        let type = MeetingType(name: "Customer")
+        try MeetingTypeRepository(dbQueue: dbManager.dbQueue).save(type)
+        let started = expectation(description: "STT suspended")
+        let (release, continuation) = AsyncStream<Void>.makeStream()
+        defer { continuation.finish() }
+        await mockSTT.configure(result: STTResult(text: "New transcript"))
+        await mockSTT.setTranscribeHook {
+            started.fulfill()
+            for await _ in release { break }
+        }
+        let service = try XCTUnwrap(service)
+        let task = Task {
+            try await service.retranscribe(
+                existing: original, fileURL: URL(fileURLWithPath: "/tmp/meeting.wav"), source: .meeting
+            )
+        }
+        await fulfillment(of: [started], timeout: 2)
+        try transcriptionRepo.updateUserNotes(id: original.id, userNotes: "Notes saved during STT")
+        try transcriptionRepo.updateMeetingType(id: original.id, meetingTypeId: type.id)
+        _ = try transcriptionRepo.updateFileName(id: original.id, fileName: "Renamed during STT")
+        try transcriptionRepo.updateFavorite(id: original.id, isFavorite: true)
+        continuation.yield(())
+        let result = try await task.value
+        let persisted = try XCTUnwrap(transcriptionRepo.fetch(id: original.id))
+        for snapshot in [result, persisted] {
+            XCTAssertEqual(snapshot.userNotes, "Notes saved during STT")
+            XCTAssertEqual(snapshot.meetingTypeId, type.id)
+            XCTAssertEqual(snapshot.fileName, "Renamed during STT")
+            XCTAssertEqual(snapshot.derivedTitle, "Renamed during STT")
+            XCTAssertTrue(snapshot.isFavorite)
+            XCTAssertEqual(snapshot.rawTranscript, "New transcript")
+        }
+    }
+
     func testRetranscribeExactSpeakerCountUsesFreshConstrainedServiceAndForcesDiarization() async throws {
         let original = Transcription(
             id: UUID(),

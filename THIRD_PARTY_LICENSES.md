@@ -119,9 +119,10 @@ This project bundles or downloads third-party software components. The following
 
 ### SwiftStreamingMarkdown
 
-- Version: 0.7.0 (pinned release commit)
+- Version: 0.7.0 compatibility fork, pinned at `1f10d5286985349b63145e1193f4f6ad5f7fdfe1`
 - License: MIT License
 - Source: <https://github.com/microsoft/SwiftStreamingMarkdown>
+- Compatibility source: <https://github.com/alfred-sa/SwiftStreamingMarkdown>
 - Used for: Rich Markdown rendering in Prompt Results, Chat, and live Ask
 
 ### swift-markdown

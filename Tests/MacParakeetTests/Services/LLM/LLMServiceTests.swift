@@ -578,6 +578,41 @@ final class LLMServiceTests: XCTestCase {
         XCTAssertEqual(mockClient.chatCompletionCallCount, 0)
     }
 
+    func testPromptResultAcceptsSelectedGemmaModelSnapshotForBothExecutionPaths() async throws {
+        let model = "gemma-3-27b-it"
+        mockConfigStore.config = .gemini(apiKey: "test-key", model: model)
+
+        _ = try await service.generatePromptResultDetailed(
+            transcript: "input", systemPrompt: nil,
+            inferenceSettings: nil, modelOverride: model
+        )
+        XCTAssertEqual(mockClient.chatCompletionCallCount, 1)
+        XCTAssertEqual(mockClient.capturedContext?.providerConfig.modelName, model)
+
+        for try await _ in service.generatePromptResultDetailedStream(
+            transcript: "input", systemPrompt: nil,
+            inferenceSettings: nil, modelOverride: model
+        ) {}
+        XCTAssertEqual(mockClient.chatCompletionStreamCallCount, 1)
+        XCTAssertEqual(mockClient.capturedContext?.providerConfig.modelName, model)
+        XCTAssertEqual(mockConfigStore.config?.modelName, model)
+        XCTAssertEqual(mockClient.listModelsCallCount, 0)
+    }
+
+    func testPromptResultAcceptsGemmaOverrideWithoutMutatingSelectedGeminiModel() async throws {
+        mockConfigStore.config = .gemini(apiKey: "test-key", model: "gemini-2.5-flash")
+
+        _ = try await service.generatePromptResultDetailed(
+            transcript: "input", systemPrompt: nil,
+            inferenceSettings: nil, modelOverride: "gemma-3-27b-it"
+        )
+
+        XCTAssertEqual(mockClient.chatCompletionCallCount, 1)
+        XCTAssertEqual(mockClient.capturedContext?.providerConfig.modelName, "gemma-3-27b-it")
+        XCTAssertEqual(mockClient.capturedContext?.providerConfig.id, .gemini)
+        XCTAssertEqual(mockConfigStore.config?.modelName, "gemini-2.5-flash")
+    }
+
     func testPromptResultAcceptsOllamaAliasAbsentFromDiscovery() async throws {
         mockConfigStore.config = .ollama(model: "mistral")
         mockClient.modelsList = ["mistral:latest"]
