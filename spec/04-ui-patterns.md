@@ -119,7 +119,7 @@ States, all bound to the long-lived `MeetingRecordingPillViewModel` shared with 
 
 The tile body is informational. Only the visible Start and Stop capsules are real SwiftUI `Button`s, and both call the same `toggleRecording` path the menu bar uses. Completing, transcribing, completed, and error states render as inert status surfaces and must not expose button traits or no-op accessibility actions. The floating pill stays visible by default during recording so users who hide the main window keep an active control surface; users can hide it in Settings and continue controlling the live recording from the status menu, hotkey, or Meetings surfaces.
 
-### Library Meetings Filter
+### Library Layouts and Meeting States
 
 When list mode is selected, the view renders a date-grouped list (`Today` / `Yesterday` / `Previous 7 Days` / `Previous 30 Days` / `{Month Year}`) using `MeetingDateGroupHeader` + `MeetingRowCard`. Meeting rows surface saved-audio state directly (`Audio saved`, `Audio removed`, or `Audio missing`) so playback/retranscription expectations are visible before the user opens a menu.
 
