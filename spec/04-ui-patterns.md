@@ -51,7 +51,7 @@ Design philosophy: **Simple, native, stays out of the way.** No chrome, no clutt
 │  🎤 Transcribe   │  [Depends on sidebar selection]           │
 │  🗂 Library      │                                           │
 │  🕒 Dictations   │  - Transcribe: 3-mode capture hub        │
-│  📖 Vocabulary   │  - Library: Grid (or list for Meetings)  │
+│  📖 Vocabulary   │  - Library: Grid or list                 │
 │  ✦ Transforms    │  - Dictations: History list               │
 │  💬 Feedback     │  - Vocabulary: Processing mode + manage   │
 │  ⚙ Settings      │  - Transforms: Rewrite selected text      │
@@ -68,7 +68,7 @@ Minimum window width: 800pt.
 The sidebar uses NavigationSplitView with flat items (icon + label):
 
 - **Transcribe** (`waveform`) -- Capture hub: YouTube card + file drop card + Meeting Recording tile
-- **Library** (`square.grid.2x2`) -- All transcriptions; filter chips switch between thumbnail grid (All/YouTube/Local/Favorites) and date-grouped list (Meetings)
+- **Library** (`square.grid.2x2`) -- All transcriptions; every filter offers the same persistent Grid/List switch
 - **Dictations** (`clock.arrow.circlepath`) -- Flat history list with bottom bar player
 - **Meetings** (`person.2.wave.2`) -- Workflow space for upcoming, live, and saved meeting work; visible when `AppFeatures.meetingRecordingEnabled` is true
 - **Vocabulary** (`book.fill`) -- Processing mode, pipeline guide, custom words & snippets management
@@ -121,7 +121,7 @@ The tile body is informational. Only the visible Start and Stop capsules are rea
 
 ### Library Meetings Filter
 
-When `Library.filter == .meeting`, the view renders a date-grouped list (`Today` / `Yesterday` / `Previous 7 Days` / `Previous 30 Days` / `{Month Year}`) using `MeetingDateGroupHeader` + `MeetingRowCard` instead of the thumbnail grid the other filters use. Meeting rows surface saved-audio state directly (`Audio saved`, `Audio removed`, or `Audio missing`) so playback/retranscription expectations are visible before the user opens a menu.
+When list mode is selected, the view renders a date-grouped list (`Today` / `Yesterday` / `Previous 7 Days` / `Previous 30 Days` / `{Month Year}`) using `MeetingDateGroupHeader` + `MeetingRowCard`. Meeting rows surface saved-audio state directly (`Audio saved`, `Audio removed`, or `Audio missing`) so playback/retranscription expectations are visible before the user opens a menu.
 
 A finalized meeting whose `meetingCaptureReport.quality` is `partial` shows the
 existing **Partial audio** badge in its Library meeting row and the existing
@@ -131,6 +131,12 @@ system source status is `silent`, its message is: “System audio contained no
 audible signal. Microphone audio remains saved.” This state is durable and
 appears after finalization; it does not add a live alert or automatically
 restart ScreenCaptureKit during a meeting.
+
+Every Library filter, including Meetings, exposes a compact Grid/List segmented
+control in the header. The preference persists across launches. List mode reuses the
+date-grouped row presentation and adds the transcription source beside the
+title; search, filters, contextual actions, pagination, and bulk selection
+behave identically in either layout.
 
 Opening an empty processing meeting row must preserve that same lifecycle
 truth. The transcript pane shows an indeterminate "Transcribing meeting"
