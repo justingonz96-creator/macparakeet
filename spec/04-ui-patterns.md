@@ -143,13 +143,15 @@ source beside the title; thumbnail cards also show the source. Search, filters,
 contextual actions, pagination, export, and bulk selection behave identically in
 either layout.
 
-Rows and cards show transcription failure, stopped transcription, and pending
+Thumbnail cards show transcription failure, stopped transcription, and pending
 background transcription independently of saved-audio state. Queued and running
 finalization both use the persisted `processing` status and the existing
 **Transcribing** presentation, never a completed claim. A stale or partial snippet
-must not hide a non-completed status. Card metadata grows to fit lifecycle,
+must not hide a card's non-completed status. Card metadata grows to fit lifecycle,
 saved-audio, recovery, and partial-capture labels rather than clipping them to a
 fixed height.
+List rows retain their existing snippet-first preview behavior, including while
+a meeting with saved transcript text is being retranscribed.
 
 Opening an empty processing meeting row must preserve that same lifecycle
 truth. The transcript pane shows an indeterminate "Transcribing meeting"

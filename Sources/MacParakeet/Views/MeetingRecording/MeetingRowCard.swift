@@ -188,7 +188,13 @@ struct MeetingRowCard<MenuContent: View>: View {
 
     @ViewBuilder
     private var snippetRow: some View {
-        if transcription.status == .processing {
+        if let snippet = displayedSnippet {
+            highlightedText(snippet)
+                .font(DesignSystem.Typography.bodySmall)
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        } else if transcription.status == .processing {
             HStack(spacing: 5) {
                 ParakeetSpinner(.inline)
                     .scaleEffect(0.85)
@@ -207,12 +213,6 @@ struct MeetingRowCard<MenuContent: View>: View {
                 .font(DesignSystem.Typography.bodySmall)
                 .foregroundStyle(DesignSystem.Colors.textTertiary)
                 .lineLimit(1)
-        } else if let snippet = displayedSnippet {
-            highlightedText(snippet)
-                .font(DesignSystem.Typography.bodySmall)
-                .foregroundStyle(DesignSystem.Colors.textSecondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
         }
     }
 
