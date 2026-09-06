@@ -951,7 +951,7 @@ final class PromptResultsViewModelTests: XCTestCase {
         llm.streamTokens = ["ok"]
 
         viewModel.generatePromptResult(transcript: "transcript", transcriptionId: transcriptionID)
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil { self.promptResultRepo.saveCalls.count == 1 }
 
         XCTAssertEqual(promptResultRepo.saveCalls.first?.userNotesSnapshot, "snapshot me")
         XCTAssertFalse(try XCTUnwrap(promptResultRepo.saveCalls.first).includeMeetingNotesSnapshot)
@@ -983,7 +983,7 @@ final class PromptResultsViewModelTests: XCTestCase {
         llm.streamTokens = ["ok"]
 
         viewModel.generatePromptResult(transcript: "transcript", transcriptionId: transcriptionID)
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil { self.promptResultRepo.saveCalls.count == 1 }
 
         XCTAssertTrue(
             try XCTUnwrap(llm.lastSummarySystemPrompt).contains("<meeting_notes>\nLaunch Friday\n</meeting_notes>"))
@@ -1013,7 +1013,7 @@ final class PromptResultsViewModelTests: XCTestCase {
         llm.streamTokens = ["ok"]
 
         viewModel.generatePromptResult(transcript: "transcript", transcriptionId: transcriptionID)
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil { self.promptResultRepo.saveCalls.count == 1 }
 
         XCTAssertEqual(llm.lastSummarySystemPrompt, "Summarize.")
         XCTAssertNil(promptResultRepo.saveCalls.first?.userNotesSnapshot)
@@ -1048,7 +1048,7 @@ final class PromptResultsViewModelTests: XCTestCase {
         llm.streamTokens = ["New"]
 
         _ = viewModel.regeneratePromptResult(existing, transcript: "transcript")
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil { self.promptResultRepo.replaceCalls.count == 1 }
 
         let replacement = try XCTUnwrap(promptResultRepo.replaceCalls.first?.promptResult)
         XCTAssertEqual(replacement.userNotesSnapshot, "Current notes")
