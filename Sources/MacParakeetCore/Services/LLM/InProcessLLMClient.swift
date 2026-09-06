@@ -58,7 +58,8 @@ public final class InProcessLLMClient: LLMClientProtocol, Sendable {
         )
         return ChatCompletionResponse(
             content: generation.content,
-            finishReason: "stop",
+            // The runtime does not distinguish EOS from a token limit.
+            finishReason: nil,
             model: context.providerConfig.modelName,
             generationMetrics: generation.metrics,
             effectiveInferenceSettings: options.effectiveInferenceSettings
@@ -108,7 +109,7 @@ public final class InProcessLLMClient: LLMClientProtocol, Sendable {
                     continuation.yield(.completed(LLMStreamTerminal(
                         provider: context.providerConfig.id.rawValue,
                         model: context.providerConfig.modelName,
-                        stopReason: "stop",
+                        stopReason: nil,
                         effectiveSettings: options.effectiveInferenceSettings
                     )))
                     continuation.finish()

@@ -159,7 +159,9 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
                                 usage = LLMUsage(
                                     promptTokens: value.prompt_tokens,
                                     completionTokens: value.completion_tokens,
-                                    totalTokens: value.total_tokens
+                                    totalTokens: value.total_tokens ?? value.prompt_tokens.flatMap { prompt in
+                                        value.completion_tokens.map { prompt + $0 }
+                                    }
                                 )
                             }
                         }
@@ -336,6 +338,7 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
             model: config.modelName,
             messages: messages.map { OpenAIMessage(role: $0.role.rawValue, content: $0.content) },
             stream: stream,
+            stream_options: config.id == .openai && stream ? OpenAIStreamOptions(include_usage: true) : nil,
             temperature: temperature,
             top_p: topP,
             top_k: supportsCustomOpenAICompatibleOptions ? options.topK : nil,
@@ -527,6 +530,7 @@ struct OpenAIRequestBody: Encodable {
     let model: String
     let messages: [OpenAIMessage]
     let stream: Bool
+    let stream_options: OpenAIStreamOptions?
     let temperature: Double?
     let top_p: Double?
     let top_k: Int?
@@ -535,6 +539,10 @@ struct OpenAIRequestBody: Encodable {
     let chat_template_kwargs: OpenAIChatTemplateKwargs?
     let response_format: OpenAIResponseFormat?
     let options: OllamaRequestOptions?  // Ollama-specific: num_ctx etc.
+}
+
+struct OpenAIStreamOptions: Encodable {
+    let include_usage: Bool
 }
 
 struct OpenAIChatTemplateKwargs: Encodable {
