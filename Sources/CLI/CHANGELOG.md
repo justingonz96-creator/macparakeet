@@ -50,19 +50,6 @@ truth for branching.
 The canonical automation contract for stdout/stderr, envelopes, exit codes,
 and `spec --json` lives in `spec/contracts/cli-json-v1.md`.
 
-## Unreleased
-
-### Added
-
-- Speaker-aware export and meeting JSON now include additive
-  `speakerCorrectionsApplied` and `speakerCorrectionRevision` metadata.
-
-### Fixed
-
-- `export`, `meetings show`, `meetings transcript`, `meetings export`, and
-  meeting-artifact refreshes now render the active speaker corrections instead
-  of silently falling back to automatic diarization.
-
 ### `--json` failure envelope
 
 Any command that accepts `--json` emits this envelope on stdout when the
@@ -104,6 +91,8 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ### Added
 
+- Speaker-aware export and meeting JSON now include additive
+  `speakerCorrectionsApplied` and `speakerCorrectionRevision` metadata.
 - `prompts set <prompt>` gains mutually exclusive `--include-meeting-notes`
   and `--no-include-meeting-notes` flags for result prompts. Prompt JSON gains
   additive Boolean `includeMeetingNotes`, and saved PromptResult JSON gains
@@ -125,6 +114,9 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ### Fixed
 
+- `export`, `meetings show`, `meetings transcript`, `meetings export`, and
+  meeting-artifact refreshes now render the active speaker corrections instead
+  of silently falling back to automatic diarization.
 - Local CLI output normalizes line endings: CRLF collapses to a single LF and
   a bare CR is rewritten to LF instead of passing through unsanitized. This
   closes a terminal-overwrite gap in the existing sanitizer (a wrapped CLI

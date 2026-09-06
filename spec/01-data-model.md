@@ -225,15 +225,20 @@ CREATE TABLE speaker_corrections (
     parentId TEXT,
     sequence INTEGER NOT NULL CHECK (sequence > 0),
     transcriptFingerprint TEXT NOT NULL,
-    operation TEXT NOT NULL,
+    operation TEXT NOT NULL CHECK (
+        operation IN ('rename', 'add', 'assign', 'split', 'unsplit', 'merge', 'remove', 'reset')
+    ),
     payload TEXT NOT NULL,
-    branchState TEXT NOT NULL,
+    branchState TEXT NOT NULL CHECK (branchState IN ('current', 'redo', 'abandoned')),
     createdAt TEXT NOT NULL,
     UNIQUE (transcriptionId, sequence),
     UNIQUE (id, transcriptionId),
     FOREIGN KEY (parentId, transcriptionId)
         REFERENCES speaker_corrections(id, transcriptionId) ON DELETE CASCADE
 );
+
+CREATE INDEX idx_speaker_corrections_replay
+ON speaker_corrections (transcriptionId, transcriptFingerprint, branchState, sequence);
 
 CREATE TABLE speaker_correction_states (
     transcriptionId TEXT PRIMARY KEY NOT NULL
@@ -1354,6 +1359,7 @@ migrator.registerMigration("v0.7-prompts-and-summaries") { db in
 // v0.30 — transcriptions.meetingCaptureReport (optional JSON)
 // v0.31-prompt-inference-settings —
 // prompts.inferenceSettings and summaries.inferenceSettingsSnapshot
+// v0.32-speaker-corrections — speaker_corrections + speaker_correction_states
 // v0.33-prompt-meeting-notes-context —
 // prompts.includeMeetingNotes and summaries.includeMeetingNotesSnapshot
 ```
@@ -1402,6 +1408,7 @@ migrator.registerMigration("v0.7-prompts-and-summaries") { db in
 | `summaries` | v0.7 | Prompt results per transcription (FK → transcriptions, cascade delete; Swift model `PromptResult`) |
 | `prompts.inferenceSettings` | v0.31 | Nullable JSON requested settings for custom result prompts; `NULL` inherits MacParakeet defaults |
 | `summaries.inferenceSettingsSnapshot` | v0.31 | Nullable JSON receipt of effective settings sent after provider/model filtering |
+| `speaker_corrections` / `speaker_correction_states` | v0.32-speaker-corrections | Append-only attribution journal, replay index and persistent transcript-scoped undo/redo cursor |
 | `prompts.includeMeetingNotes` | v0.33-prompt-meeting-notes-context | Result-prompt opt-in for automatic meeting-notes context; non-null, default false |
 | `summaries.includeMeetingNotesSnapshot` | v0.33-prompt-meeting-notes-context | Generation-time receipt of the prompt's notes-context opt-in; non-null, default false |
 | `lifetime_dictation_stats` | v0.7.4 | Singleton lifetime voice-stat counters |
