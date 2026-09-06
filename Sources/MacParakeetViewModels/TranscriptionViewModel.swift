@@ -303,6 +303,9 @@ public final class TranscriptionViewModel {
     private static let configurationError = "Transcription services are unavailable. Please try again."
     private let logger = Logger(subsystem: "com.macparakeet.viewmodels", category: "TranscriptionViewModel")
     private let defaults: UserDefaults
+    private var meetingArtifactRefreshTasks: [UUID: Task<Bool, Never>] = [:]
+    private var meetingArtifactRefreshTokens: [UUID: UUID] = [:]
+    private var speakerAttributionLoadTask: Task<Void, Never>?
     private let meetingArtifactStore: MeetingArtifactStoring
     private let isWhisperModelDownloaded: () -> Bool
     private let isNemotronModelDownloaded: () -> Bool
@@ -1890,13 +1893,23 @@ public final class TranscriptionViewModel {
 
     // MARK: - Speaker Corrections
 
+    /// A notes flush may publish a new row before its correction read finishes.
+    /// AI actions must await that exact read instead of accepting a nil revision.
+    public func waitForCurrentSpeakerAttribution() async -> Bool {
+        let revision = currentTranscriptionRevision
+        await speakerAttributionLoadTask?.value
+        return currentTranscriptionRevision == revision
+            && speakerAttribution != nil
+            && speakerAttributionTranscriptionID == currentTranscription?.id
+    }
+
     public func loadSpeakerAttribution(for transcription: Transcription) {
         let token = UUID()
         speakerAttributionLoadToken = token
         let transcriptionID = transcription.id
         let selectedRevision = currentTranscriptionRevision
         let reader = speakerAttributionReader
-        Task { [weak self, reader] in
+        speakerAttributionLoadTask = Task { [weak self, reader] in
             do {
                 let projection = try await Task.detached(priority: .userInitiated) {
                     if let reader {
@@ -2165,8 +2178,8 @@ public final class TranscriptionViewModel {
 
     private func enqueueMeetingArtifactRefresh(transcriptionID: UUID, generation: Int) {
         guard speakerRenameGenerations[transcriptionID] == generation,
-            let transcriptionRepo,
-            let promptResultRepo
+            transcriptionRepo != nil,
+            promptResultRepo != nil
         else {
             return
         }
@@ -2179,11 +2192,7 @@ public final class TranscriptionViewModel {
             generation
         )
 
-        let artifactStore = meetingArtifactStore
-        let attributionReader = speakerAttributionReader
-        let logger = logger
-        let task = Task.detached(priority: .utility) {
-            [weak self, previousTask, transcriptionRepo, promptResultRepo, artifactStore, attributionReader, logger] in
+        let task = Task.detached(priority: .utility) { [weak self, previousTask] in
             await previousTask?.value
             let shouldMaterialize = await MainActor.run { [weak self] in
                 guard let self else { return false }
@@ -2200,30 +2209,8 @@ public final class TranscriptionViewModel {
 
             var materializedGeneration = generation
             while true {
-                do {
-                    guard let persisted = try transcriptionRepo.fetch(id: transcriptionID),
-                        persisted.sourceType == .meeting,
-                        MeetingArtifactStore.sessionFolderURL(for: persisted) != nil
-                    else {
-                        break
-                    }
-                    let promptResults = try promptResultRepo.fetchAll(transcriptionId: transcriptionID)
-                    if let projection = try attributionReader?.resolve(transcriptionId: transcriptionID) {
-                        _ = try await artifactStore.materialize(
-                            projection: projection,
-                            promptResults: promptResults
-                        )
-                    } else {
-                        _ = try await artifactStore.materialize(
-                            transcription: persisted,
-                            promptResults: promptResults
-                        )
-                    }
-                } catch {
-                    let errorType = TelemetryErrorClassifier.classify(error)
-                    logger.error("speaker_rename_artifact_refresh_failed error_type=\(errorType, privacy: .public)")
-                    break
-                }
+                let refreshed = await self?.refreshMeetingArtifacts(transcriptionID: transcriptionID, requiresSessionFolder: true) ?? false
+                if !refreshed { break }
 
                 let completedTargetGeneration = materializedGeneration
                 let nextGeneration = await MainActor.run { [weak self] () -> Int? in
@@ -2336,25 +2323,46 @@ public final class TranscriptionViewModel {
     /// the caller without rolling back or throwing past the canonical DB write.
     @discardableResult
     private func refreshMeetingArtifacts(transcription: Transcription) async -> Bool {
-        guard let promptResultRepo,
-            transcription.sourceType == .meeting
-        else { return true }
+        guard transcription.sourceType == .meeting else { return true }
+        return await refreshMeetingArtifacts(transcriptionID: transcription.id)
+    }
 
-        do {
-            let artifactStore = meetingArtifactStore
-            _ = try await Task.detached(priority: .utility) {
-                let promptResults = try promptResultRepo.fetchAll(transcriptionId: transcription.id)
-                try await artifactStore.materialize(
-                    transcription: transcription,
-                    promptResults: promptResults
-                )
-            }.value
-            return true
-        } catch {
-            logger.warning(
-                "Failed to refresh meeting artifact for transcription \(transcription.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)"
-            )
-            return false
+    /// All metadata/correction refreshes share one queue per meeting. Read the
+    /// canonical row only after earlier writes finish, so a queued old snapshot
+    /// cannot overwrite more recent notes, names or speaker corrections.
+    private func refreshMeetingArtifacts(transcriptionID: UUID, requiresSessionFolder: Bool = false) async -> Bool {
+        guard let transcriptionRepo, let promptResultRepo else { return true }
+        let previousTask = meetingArtifactRefreshTasks[transcriptionID]
+        let token = UUID()
+        let store = meetingArtifactStore
+        let reader = speakerAttributionReader
+        let logger = logger
+        let task = Task.detached(priority: .utility) {
+            _ = await previousTask?.value
+            do {
+                guard let current = try transcriptionRepo.fetch(id: transcriptionID),
+                    current.sourceType == .meeting
+                else { return true }
+                if requiresSessionFolder && MeetingArtifactStore.sessionFolderURL(for: current) == nil { return true }
+                let results = try promptResultRepo.fetchAll(transcriptionId: transcriptionID)
+                if let projection = try reader?.resolve(transcription: current) {
+                    _ = try await store.materialize(projection: projection, promptResults: results)
+                } else {
+                    _ = try await store.materialize(transcription: current, promptResults: results)
+                }
+                return true
+            } catch {
+                logger.warning("Failed to refresh meeting artifact for transcription \(transcriptionID.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                return false
+            }
         }
+        meetingArtifactRefreshTokens[transcriptionID] = token
+        meetingArtifactRefreshTasks[transcriptionID] = task
+        let refreshed = await task.value
+        if meetingArtifactRefreshTokens[transcriptionID] == token {
+            meetingArtifactRefreshTasks[transcriptionID] = nil
+            meetingArtifactRefreshTokens[transcriptionID] = nil
+        }
+        return refreshed
     }
 }

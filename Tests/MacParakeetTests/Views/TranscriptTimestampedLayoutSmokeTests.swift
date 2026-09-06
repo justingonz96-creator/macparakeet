@@ -215,6 +215,18 @@ final class TranscriptTimestampedLayoutSmokeTests: XCTestCase {
         assertLayoutSettles(view)
     }
 
+    func testChunkedCardsKeepFullLogicalTurnForEveryAction() {
+        let source = segments(count: 49, speakers: ["S1"])
+        let resolved = attribution(for: source)
+        let turn = resolved.turns[0]
+        XCTAssertEqual(turn.segments.count, 49)
+        let cards = identifiedEffectiveSpeakerTurnCards([turn])
+        XCTAssertEqual(cards.map { $0.segments.count }, [24, 24, 1])
+        for card in cards {
+            XCTAssertEqual(card.logicalTurnSegments.map(\.id), turn.segments.map(\.id))
+        }
+    }
+
     func testEffectiveRowsWithoutSpeakersFollowIndividualSegmentsAndSettle() {
         let segments = segments(count: 40, speakers: [nil])
         let attribution = attribution(for: segments)

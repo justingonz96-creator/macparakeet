@@ -2714,14 +2714,15 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(renamedCallbacks.map(\.id), [t.id])
         XCTAssertEqual(renamedCallbacks.map(\.title), ["Design Review"])
 
-        try await waitUntilAsync { await artifactStore.materializeCallCount == 1 }
+        XCTAssertEqual(viewModel.currentTranscription?.derivedTitle, "Design Review")
+        XCTAssertGreaterThan(try XCTUnwrap(viewModel.currentTranscription?.updatedAt), oldUpdatedAt)
+        // Publication succeeds from the committed row even when the separate,
+        // queued artifact refresh cannot reread canonical data. Never publish
+        // a potentially stale artifact snapshot to conceal that read failure.
+        await viewModel.retryCurrentMeetingNotesArtifactRefresh()
         let calls = await artifactStore.materializeCalls
-        let call = try XCTUnwrap(calls.first)
-        XCTAssertEqual(call.transcription.fileName, "Design Review")
-        XCTAssertEqual(call.transcription.derivedTitle, "Design Review")
-        XCTAssertEqual(call.transcription.rawTranscript, persisted.rawTranscript)
-        XCTAssertGreaterThan(call.transcription.updatedAt, oldUpdatedAt)
-        XCTAssertEqual(call.promptResults.map(\.id), [promptResult.id])
+        XCTAssertTrue(calls.isEmpty)
+        XCTAssertNotNil(viewModel.meetingNotesArtifactWarning)
     }
 
     func testRenameCurrentTranscriptionSkipsArtifactRefreshWithoutPromptResultRepo() async throws {
