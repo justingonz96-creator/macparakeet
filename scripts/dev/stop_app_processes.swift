@@ -15,6 +15,9 @@ struct AppExecutableMatcher {
     let paths: Set<String>
 
     init(paths: [String]) throws {
+        guard !paths.isEmpty else {
+            throw ShutdownError("At least one MacParakeet executable path is required.")
+        }
         guard paths.allSatisfy({ $0.hasPrefix("/") }) else {
             throw ShutdownError("Executable paths must be absolute.")
         }
@@ -38,6 +41,23 @@ struct AppExecutableMatcher {
         // executable path components, never a command-line argument or regex.
         return paths.contains(path)
             || path.hasSuffix("/MacParakeet-Dev.app/Contents/MacOS/MacParakeet")
+    }
+}
+
+/// Validate the CLI contract before any process enumeration or quit request.
+struct ShutdownRequest {
+    let timeout: TimeInterval
+    let matcher: AppExecutableMatcher
+
+    init(arguments: [String]) throws {
+        guard arguments.count >= 2 else {
+            throw ShutdownError("Expected a positive timeout and at least one absolute executable path.")
+        }
+        guard let timeout = TimeInterval(arguments[0]), timeout > 0, timeout.isFinite else {
+            throw ShutdownError("Expected a positive timeout followed by absolute executable paths.")
+        }
+        self.timeout = timeout
+        matcher = try AppExecutableMatcher(paths: Array(arguments.dropFirst()))
     }
 }
 
@@ -130,13 +150,10 @@ func registeredApplication(_ process: AppProcess) -> QuitTarget? {
 struct StopMacParakeet {
     static func main() {
         do {
-            let args = Array(CommandLine.arguments.dropFirst())
-            guard let first = args.first, let timeout = TimeInterval(first), timeout > 0, timeout.isFinite else {
-                throw ShutdownError("Expected a positive timeout followed by absolute executable paths.")
-            }
-            let matcher = try AppExecutableMatcher(paths: Array(args.dropFirst()))
+            let request = try ShutdownRequest(arguments: Array(CommandLine.arguments.dropFirst()))
+            let matcher = request.matcher
             let targets = try prepareQuitTargets(processes: processSnapshot(executableNames: matcher.executableNames), matcher: matcher, application: registeredApplication)
-            try quitNormally(targets: targets, timeout: timeout)
+            try quitNormally(targets: targets, timeout: request.timeout)
             // A new app may have launched during the quit dialog or finalization.
             // Refuse to build rather than silently miss it or interrupt it again.
             guard try !processSnapshot(executableNames: matcher.executableNames).contains(where: { matcher.matches($0.executablePath) }) else {

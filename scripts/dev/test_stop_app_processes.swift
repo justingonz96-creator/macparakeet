@@ -36,6 +36,17 @@ struct ShutdownTests {
         try expectFailure("absolute") { _ = try AppExecutableMatcher(paths: ["relative/MacParakeet"]) }
         print("PASS: literal executable paths and Dev bundle scope")
 
+        try expectFailure("At least one") { _ = try AppExecutableMatcher(paths: []) }
+        for arguments in [[], ["10"]] {
+            try expectFailure("at least one") { _ = try ShutdownRequest(arguments: arguments) }
+        }
+        for timeout in ["0", "-1", "nan", "inf", "invalid"] {
+            try expectFailure("positive timeout") { _ = try ShutdownRequest(arguments: [timeout, literal]) }
+        }
+        let request = try ShutdownRequest(arguments: ["0.5", literal])
+        try expect(request.timeout == 0.5 && request.matcher.matches(literal), "Valid CLI arguments must retain timeout and path")
+        print("PASS: empty matcher and missing/invalid CLI arguments rejected before inspection")
+
         var clock: TimeInterval = 0
         var requested = 0
         let delayed = QuitTarget(pid: 101, requestQuit: { requested += 1; return true }, hasExited: { clock >= 0.4 })
