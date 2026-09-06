@@ -109,7 +109,7 @@ final class PromptTemplateRendererTests: XCTestCase {
         XCTAssertNil(assembly.effectiveUserNotes)
     }
 
-    func testSystemPromptAssemblerReceiptMatchesCappedNotesExactly() {
+    func testSystemPromptAssemblerReceiptMatchesCappedNotesExactly() throws {
         let notes = String(repeating: "word ", count: PromptSystemPromptAssembler.userNotesPromptWordCap + 1)
         let assembly = PromptSystemPromptAssembler.assembleDetailed(
             promptContent: "Summarize.",
@@ -118,7 +118,7 @@ final class PromptTemplateRendererTests: XCTestCase {
             userNotes: notes
         )
 
-        let effective = try! XCTUnwrap(assembly.effectiveUserNotes)
+        let effective = try XCTUnwrap(assembly.effectiveUserNotes)
         XCTAssertEqual(effective, PromptSystemPromptAssembler.truncateNotesForPrompt(notes))
         XCTAssertTrue(assembly.systemPrompt.contains("<meeting_notes>\n\(effective)\n</meeting_notes>"))
     }
