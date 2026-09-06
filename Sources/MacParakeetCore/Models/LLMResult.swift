@@ -70,13 +70,23 @@ public struct LLMUsage: Sendable, Codable, Equatable {
 // MARK: - Internal Conversion
 
 extension LLMUsage {
+    /// Provider counters are untrusted. Preserve them without trapping or
+    /// wrapping when a complete total cannot be represented.
+    static func derivedTotal(promptTokens: Int?, completionTokens: Int?) -> Int? {
+        guard let promptTokens, let completionTokens else { return nil }
+        let sum = promptTokens.addingReportingOverflow(completionTokens)
+        return sum.overflow ? nil : sum.partialValue
+    }
+
     /// Build an `LLMUsage` from the internal wire-shaped `TokenUsage`.
-    /// Computes `totalTokens` when both halves are present.
+    /// Computes `totalTokens` only when the sum is representable.
     init(_ tokenUsage: TokenUsage) {
         self.init(
             promptTokens: tokenUsage.promptTokens,
             completionTokens: tokenUsage.completionTokens,
-            totalTokens: tokenUsage.promptTokens + tokenUsage.completionTokens
+            totalTokens: Self.derivedTotal(
+                promptTokens: tokenUsage.promptTokens, completionTokens: tokenUsage.completionTokens
+            )
         )
     }
 }

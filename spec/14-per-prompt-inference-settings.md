@@ -246,7 +246,7 @@ temperature behavior is unchanged.
    rather than losing this metadata after yielding text. Ollama retains its
    existing lenient EOF policy: after non-empty output, an EOF without
    `done:true` emits a receipt using the last observed chunk. Missing stop
-   reason or incomplete usage remains unknown; no-content streams still fail. An
+   reason or missing usage components remain unknown; no-content streams still fail. An
    explicit provider error always fails the stream, including after partial
    output; it never produces a successful terminal receipt.
 
@@ -258,7 +258,9 @@ provider/model identifiers remain unknown instead of being invented.
 
 Native OpenAI streaming requests opt into the terminal usage chunk; compatible
 third-party endpoints keep their existing request shape. A missing total is
-derived only when both input and output counts are available. In-process
+derived only when both input and output counts are available and their sum
+is representable. Overflow leaves the total unknown without discarding either
+component or failing generation. In-process
 runtimes without an actual finish reason leave it unknown, and Local CLI
 receipts omit inference settings because the command does not apply them.
 

@@ -105,7 +105,9 @@ with human progress/status kept off stdout.
 - LLM receipts never infer a normal `stopReason` when the runtime supplies no
   finish reason. Local CLI omits `effectiveSettings`, because inference options
   are not passed to its command. Token usage may derive `totalTokens` from both
-  component counts when the provider omits the total. Explicit streaming
+  component counts when the provider omits the total. A missing component or
+  arithmetic overflow leaves the derived total unknown; available components
+  remain unchanged. Explicit streaming
   provider errors fail the operation even after partial text; they do not
   produce a successful result receipt.
 - `meetings results list|add --json` prompt-result objects include additive

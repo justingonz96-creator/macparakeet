@@ -214,8 +214,14 @@ struct OllamaLLMHTTPAdapter: LLMHTTPAdapter {
         options: ChatCompletionOptions
     ) -> LLMStreamTerminal {
         let usage: LLMUsage?
-        if let prompt = chunk.prompt_eval_count, let completion = chunk.eval_count {
-            usage = LLMUsage(promptTokens: prompt, completionTokens: completion, totalTokens: prompt + completion)
+        if chunk.prompt_eval_count != nil || chunk.eval_count != nil {
+            usage = LLMUsage(
+                promptTokens: chunk.prompt_eval_count,
+                completionTokens: chunk.eval_count,
+                totalTokens: LLMUsage.derivedTotal(
+                    promptTokens: chunk.prompt_eval_count, completionTokens: chunk.eval_count
+                )
+            )
         } else {
             usage = nil
         }
