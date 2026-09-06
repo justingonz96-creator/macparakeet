@@ -281,10 +281,13 @@ public enum LLMStreamEvent: Sendable {
 ```
 
 A successful detailed stream emits exactly one terminal event carrying the
-provider, model, optional usage/stop reason, and effective settings. An error,
-EOF before a valid provider completion, or cancellation produces no successful
-terminal receipt. Existing string-streaming methods remain compatibility
-projections for callers that do not need the receipt.
+provider, model, optional usage/stop reason, and effective settings. An error or
+cancellation produces no successful terminal receipt. EOF before valid provider
+completion also produces no receipt, except for native Ollama: a non-empty stream
+ending without `done: true` is accepted and emits a receipt from the last observed
+chunk. An Ollama error frame still fails, including after text was received.
+Existing string-streaming methods remain compatibility projections for callers
+that do not need the receipt.
 
 ### Service Protocol
 
