@@ -1270,48 +1270,77 @@ final class MockPromptRepository: PromptRepositoryProtocol, @unchecked Sendable 
 // MARK: - MockPromptMeetingPolicyRepository
 
 final class MockPromptMeetingPolicyRepository: PromptMeetingPolicyRepositoryProtocol, @unchecked Sendable {
-    var policiesByPromptID: [UUID: [PromptMeetingPolicy]] = [:]
-    var bulkFetchHandler: ((Set<UUID>) throws -> [PromptMeetingPolicy])?
-    private(set) var bulkFetchCallCount = 0
-    private(set) var singleFetchCallCount = 0
-    private(set) var mutationRanOnMainThread = false
-    private let metricsLock = NSLock()
+    private let stateLock = NSLock()
+    private var storedPolicies: [UUID: [PromptMeetingPolicy]] = [:]
+    private var storedBulkFetchHandler: ((Set<UUID>) throws -> [PromptMeetingPolicy])?
+    private var storedBulkFetchCallCount = 0
+    private var storedSingleFetchCallCount = 0
+    private var storedMutationRanOnMainThread = false
+
+    var policiesByPromptID: [UUID: [PromptMeetingPolicy]] {
+        get { stateLock.withLock { storedPolicies } }
+        set { stateLock.withLock { storedPolicies = newValue } }
+    }
+
+    var bulkFetchHandler: ((Set<UUID>) throws -> [PromptMeetingPolicy])? {
+        get { stateLock.withLock { storedBulkFetchHandler } }
+        set { stateLock.withLock { storedBulkFetchHandler = newValue } }
+    }
+
+    var bulkFetchCallCount: Int { stateLock.withLock { storedBulkFetchCallCount } }
+    var singleFetchCallCount: Int { stateLock.withLock { storedSingleFetchCallCount } }
+    var mutationRanOnMainThread: Bool { stateLock.withLock { storedMutationRanOnMainThread } }
 
     func save(_ policy: PromptMeetingPolicy) throws {
-        var policies = policiesByPromptID[policy.promptId] ?? []
+        stateLock.withLock { saveLocked(policy) }
+    }
+
+    // Call with stateLock held so a scope replacement is one atomic mutation,
+    // matching the production repository's GRDB transaction.
+    private func saveLocked(_ policy: PromptMeetingPolicy) {
+        var policies = storedPolicies[policy.promptId] ?? []
         if let index = policies.firstIndex(where: { $0.id == policy.id }) {
             policies[index] = policy
         } else {
             policies.append(policy)
         }
-        policiesByPromptID[policy.promptId] = policies
+        storedPolicies[policy.promptId] = policies
     }
 
     func fetch(id: UUID) throws -> PromptMeetingPolicy? {
-        policiesByPromptID.values.lazy.flatMap { $0 }.first(where: { $0.id == id })
+        stateLock.withLock { storedPolicies.values.lazy.flatMap { $0 }.first(where: { $0.id == id }) }
     }
 
     func fetchPolicies(promptId: UUID) throws -> [PromptMeetingPolicy] {
-        metricsLock.withLock { singleFetchCallCount += 1 }
-        return policiesByPromptID[promptId] ?? []
+        stateLock.withLock {
+            storedSingleFetchCallCount += 1
+            return storedPolicies[promptId] ?? []
+        }
     }
 
     func fetchPolicies(promptIds: Set<UUID>) throws -> [PromptMeetingPolicy] {
-        metricsLock.withLock { bulkFetchCallCount += 1 }
-        if let bulkFetchHandler {
-            return try bulkFetchHandler(promptIds)
+        let handler = stateLock.withLock {
+            storedBulkFetchCallCount += 1
+            return storedBulkFetchHandler
         }
-        return promptIds.flatMap { policiesByPromptID[$0] ?? [] }
+        // A test hook may suspend a stale read while a newer write completes,
+        // or read this mock's snapshot. Never invoke it while holding the lock.
+        if let handler {
+            return try handler(promptIds)
+        }
+        return stateLock.withLock { promptIds.flatMap { storedPolicies[$0] ?? [] } }
     }
 
     func fetchEffectivePolicy(promptId: UUID, meetingTypeId: UUID?) throws -> PromptMeetingPolicy? {
-        let policies = policiesByPromptID[promptId] ?? []
-        if let meetingTypeId,
-            let exact = policies.first(where: { $0.scopeKind == .type && $0.meetingTypeId == meetingTypeId })
-        {
-            return exact
+        stateLock.withLock {
+            let policies = storedPolicies[promptId] ?? []
+            if let meetingTypeId,
+                let exact = policies.first(where: { $0.scopeKind == .type && $0.meetingTypeId == meetingTypeId })
+            {
+                return exact
+            }
+            return policies.first(where: { $0.scopeKind == .all && $0.meetingTypeId == nil })
         }
-        return policies.first(where: { $0.scopeKind == .all && $0.meetingTypeId == nil })
     }
 
     func setAllMeetingsPolicy(
@@ -1320,18 +1349,20 @@ final class MockPromptMeetingPolicyRepository: PromptMeetingPolicyRepositoryProt
         isAutoRun: Bool,
         sortOrder: Int?
     ) throws -> PromptMeetingPolicy {
-        metricsLock.withLock { mutationRanOnMainThread = Thread.isMainThread }
-        policiesByPromptID[promptId]?.removeAll {
-            $0.scopeKind == .all && $0.meetingTypeId == nil
+        stateLock.withLock {
+            storedMutationRanOnMainThread = Thread.isMainThread
+            storedPolicies[promptId]?.removeAll {
+                $0.scopeKind == .all && $0.meetingTypeId == nil
+            }
+            let policy = PromptMeetingPolicy.allMeetings(
+                promptId: promptId,
+                isAvailable: isAvailable,
+                isAutoRun: isAutoRun,
+                sortOrder: sortOrder
+            )
+            saveLocked(policy)
+            return policy
         }
-        let policy = PromptMeetingPolicy.allMeetings(
-            promptId: promptId,
-            isAvailable: isAvailable,
-            isAutoRun: isAutoRun,
-            sortOrder: sortOrder
-        )
-        try save(policy)
-        return policy
     }
 
     func setPolicy(
@@ -1341,32 +1372,36 @@ final class MockPromptMeetingPolicyRepository: PromptMeetingPolicyRepositoryProt
         isAutoRun: Bool,
         sortOrder: Int?
     ) throws -> PromptMeetingPolicy {
-        metricsLock.withLock { mutationRanOnMainThread = Thread.isMainThread }
-        policiesByPromptID[promptId]?.removeAll {
-            $0.scopeKind == .type && $0.meetingTypeId == meetingTypeId
+        stateLock.withLock {
+            storedMutationRanOnMainThread = Thread.isMainThread
+            storedPolicies[promptId]?.removeAll {
+                $0.scopeKind == .type && $0.meetingTypeId == meetingTypeId
+            }
+            let policy = PromptMeetingPolicy.meetingType(
+                promptId: promptId,
+                meetingTypeId: meetingTypeId,
+                isAvailable: isAvailable,
+                isAutoRun: isAutoRun,
+                sortOrder: sortOrder
+            )
+            saveLocked(policy)
+            return policy
         }
-        let policy = PromptMeetingPolicy.meetingType(
-            promptId: promptId,
-            meetingTypeId: meetingTypeId,
-            isAvailable: isAvailable,
-            isAutoRun: isAutoRun,
-            sortOrder: sortOrder
-        )
-        try save(policy)
-        return policy
     }
 
     func delete(id: UUID) throws -> Bool {
-        for promptID in policiesByPromptID.keys {
-            let previousCount = policiesByPromptID[promptID]?.count ?? 0
-            policiesByPromptID[promptID]?.removeAll { $0.id == id }
-            if policiesByPromptID[promptID]?.count != previousCount { return true }
+        stateLock.withLock {
+            for promptID in storedPolicies.keys {
+                let previousCount = storedPolicies[promptID]?.count ?? 0
+                storedPolicies[promptID]?.removeAll { $0.id == id }
+                if storedPolicies[promptID]?.count != previousCount { return true }
+            }
+            return false
         }
-        return false
     }
 
     func deletePolicies(promptId: UUID) throws {
-        policiesByPromptID[promptId] = nil
+        stateLock.withLock { storedPolicies[promptId] = nil }
     }
 }
 

@@ -465,6 +465,35 @@ final class MeetingsWorkspaceViewModelTests: XCTestCase {
         XCTAssertEqual(policyRepo.singleFetchCallCount, 0)
     }
 
+    func testPromptPolicyMockSerializesConcurrentReadsAndMutations() async throws {
+        let policyRepo = MockPromptMeetingPolicyRepository()
+        let promptID = UUID()
+        try policyRepo.save(.allMeetings(promptId: promptID, isAvailable: true, isAutoRun: false))
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for worker in 0..<8 {
+                group.addTask {
+                    for iteration in 0..<200 {
+                        if worker.isMultiple(of: 2) {
+                            _ = try policyRepo.setAllMeetingsPolicy(
+                                promptId: promptID, isAvailable: true,
+                                isAutoRun: iteration.isMultiple(of: 2), sortOrder: nil
+                            )
+                        } else {
+                            let policies = try policyRepo.fetchPolicies(promptIds: [promptID])
+                            XCTAssertEqual(policies.count, 1, "Scope replacement must be atomic")
+                            XCTAssertEqual(policyRepo.policiesByPromptID[promptID]?.count, 1)
+                        }
+                    }
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        XCTAssertEqual(policyRepo.bulkFetchCallCount, 800)
+        XCTAssertEqual(try policyRepo.fetchPolicies(promptId: promptID).count, 1)
+    }
+
     func testStalePromptPolicyLoadCannotOverwriteNewerMutation() async throws {
         let promptRepo = MockPromptRepository()
         let prompt = makeResultPrompt(name: "Summary", sortOrder: 0)
