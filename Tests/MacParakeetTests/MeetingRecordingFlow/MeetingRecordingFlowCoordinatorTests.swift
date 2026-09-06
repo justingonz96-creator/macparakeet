@@ -613,6 +613,68 @@ final class MeetingRecordingFlowCoordinatorTests: XCTestCase {
         XCTAssertEqual(pillViewModel.state, .recording)
     }
 
+    func testOlderCompletionCannotPresentAfterNewerMeetingHasStoppedAndQueued() async throws {
+        let firstOutput = makeRecordingOutput()
+        let secondOutput = makeRecordingOutput()
+        let recordingService = MeetingRecordingServiceSpy(output: firstOutput)
+        let transcriptionService = MockTranscriptionService()
+        await transcriptionService.holdMeetingFinalization()
+        let settlementHarness = await makeSettlementHarness(transcriptionService: transcriptionService)
+        let pillViewModel = MeetingRecordingPillViewModel()
+        var completedTranscriptions: [Transcription] = []
+        var queuedSelections: [Bool] = []
+        let coordinator = MeetingRecordingFlowCoordinator(
+            meetingRecordingService: recordingService,
+            transcriptionService: transcriptionService,
+            permissionService: MockPermissionService(),
+            transcriptionRepo: settlementHarness.transcriptionRepo,
+            conversationRepo: MockChatConversationRepository(),
+            quickPromptRepo: NoOpQuickPromptRepository(),
+            configStore: NoOpLLMConfigStore(),
+            llmService: nil,
+            pillViewModel: pillViewModel,
+            meetingRecordingSettlement: settlementHarness.settlement,
+            onMenuBarIconUpdate: { _ in },
+            onTranscriptionReady: { _ in },
+            onQueuedTranscriptionReady: { transcription, canPresent in
+                completedTranscriptions.append(transcription)
+                queuedSelections.append(canPresent)
+            }
+        )
+        coordinator.testHook_enterRecording()
+        XCTAssertTrue(coordinator.stopRecording(operationTrigger: .manual))
+        await coordinator.testHook_waitForActionTask()
+        try await waitForMeetingFinalizeCall(on: transcriptionService)
+
+        await recordingService.setOutput(secondOutput)
+        XCTAssertNotNil(coordinator.startRecording(trigger: .manual))
+        try await waitForPillState(pillViewModel, .recording)
+        XCTAssertTrue(coordinator.stopRecording(operationTrigger: .manual))
+        await coordinator.testHook_waitForActionTask()
+        XCTAssertEqual(coordinator.testHook_state, .idle)
+        XCTAssertEqual(coordinator.queuedMeetingTranscriptionIDs.count, 2)
+        XCTAssertTrue(completedTranscriptions.isEmpty)
+
+        await transcriptionService.releaseMeetingFinalization()
+        await coordinator.testHook_waitForMeetingTranscriptionQueue()
+
+        XCTAssertEqual(queuedSelections, [false, true])
+        XCTAssertEqual(
+            completedTranscriptions.map(\.filePath),
+            [firstOutput.mixedAudioURL.path, secondOutput.mixedAudioURL.path]
+        )
+        for transcription in completedTranscriptions {
+            XCTAssertEqual(
+                try settlementHarness.transcriptionRepo.fetch(id: transcription.id)?.status,
+                .completed
+            )
+        }
+        XCTAssertEqual(
+            settlementHarness.lockStore.deletes,
+            [firstOutput.folderURL, secondOutput.folderURL]
+        )
+    }
+
     func testManualStartPassesProbableCalendarSnapshotWithoutChangingTitle() async throws {
         let expectedSnapshot = MeetingCalendarSnapshot(
             confidence: .probable,
@@ -1395,7 +1457,7 @@ private actor MeetingRecordingServiceSpy: MeetingRecordingServiceProtocol {
         let calendarEventSnapshot: MeetingCalendarSnapshot?
     }
 
-    private let output: MeetingRecordingOutput
+    private var output: MeetingRecordingOutput
     private let blocksStart: Bool
     private let stopShouldCancel: Bool
     private let startShouldFail: Bool
@@ -1429,6 +1491,10 @@ private actor MeetingRecordingServiceSpy: MeetingRecordingServiceProtocol {
         self.blocksStart = blocksStart
         self.stopShouldCancel = stopShouldCancel
         self.startShouldFail = startShouldFail
+    }
+
+    func setOutput(_ output: MeetingRecordingOutput) {
+        self.output = output
     }
 
     func startRecording(

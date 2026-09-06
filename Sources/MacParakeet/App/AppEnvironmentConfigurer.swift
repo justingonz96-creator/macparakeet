@@ -502,7 +502,7 @@ final class AppEnvironmentConfigurer {
     /// `autoSave` below is folder export, not repository persistence.
     /// Export, retention, prompts, and both library refreshes run even when
     /// presentation is suppressed; do not add an asynchronous hop before the
-    /// presentation guard, which would stale the queue's recording-state check.
+    /// presentation guard, which would stale the queue's generation/idle check.
     private func handleMeetingTranscriptReady(
         _ transcription: Transcription,
         preferences: AppRuntimePreferencesProtocol,

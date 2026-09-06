@@ -7,6 +7,8 @@ final class MeetingTranscriptionQueue {
     struct Item: Equatable {
         let recording: MeetingRecordingOutput
         let transcriptionID: UUID
+        /// Recording-flow generation that owns this completion's presentation.
+        let recordingGeneration: Int
         let operationContext: ObservabilityOperationContext
         let trigger: TelemetryMeetingOperationTrigger?
         let liveWordCount: Int
@@ -16,6 +18,7 @@ final class MeetingTranscriptionQueue {
         init(
             recording: MeetingRecordingOutput,
             transcriptionID: UUID,
+            recordingGeneration: Int,
             operationContext: ObservabilityOperationContext,
             trigger: TelemetryMeetingOperationTrigger?,
             liveWordCount: Int,
@@ -24,6 +27,7 @@ final class MeetingTranscriptionQueue {
         ) {
             self.recording = recording
             self.transcriptionID = transcriptionID
+            self.recordingGeneration = recordingGeneration
             self.operationContext = operationContext
             self.trigger = trigger
             self.liveWordCount = liveWordCount
@@ -35,6 +39,7 @@ final class MeetingTranscriptionQueue {
             Item(
                 recording: recording,
                 transcriptionID: transcriptionID,
+                recordingGeneration: recordingGeneration,
                 operationContext: operationContext,
                 trigger: trigger,
                 liveWordCount: liveWordCount,
@@ -49,6 +54,7 @@ final class MeetingTranscriptionQueue {
             Item(
                 recording: recording,
                 transcriptionID: transcriptionID,
+                recordingGeneration: recordingGeneration,
                 operationContext: operationContext,
                 trigger: trigger,
                 liveWordCount: liveWordCount,

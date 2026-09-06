@@ -380,6 +380,7 @@ final class MeetingTranscriptionQueueTests: XCTestCase {
         return MeetingTranscriptionQueue.Item(
             recording: output,
             transcriptionID: UUID(),
+            recordingGeneration: 0,
             operationContext: ObservabilityOperationContext(),
             trigger: .manual,
             liveWordCount: 0,
