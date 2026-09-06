@@ -108,7 +108,7 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
     func test_startObserving_routesEachNotificationToItsCallback() async {
         let fx = Fixture()
         let callbacks = expectation(description: "all callbacks fire")
-        callbacks.expectedFulfillmentCount = 15
+        callbacks.expectedFulfillmentCount = 16
         fx.onCallback = { callbacks.fulfill() }
         fx.coordinator.startObserving()
 
