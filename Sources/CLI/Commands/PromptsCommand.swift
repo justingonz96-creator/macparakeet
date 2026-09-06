@@ -472,7 +472,7 @@ extension PromptsCommand {
                 let projection = try speakerAttributionReader.resolve(transcription: automaticTranscript)
                 let transcript = projection.effectiveTranscription
 
-                let transcriptText = transcript.cleanTranscript ?? transcript.rawTranscript ?? ""
+                let transcriptText = TranscriptAIContextFormatter.format(projection: projection)
                 guard !transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw PromptCLIError.emptyTranscript(transcript.fileName)
                 }

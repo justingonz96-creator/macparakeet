@@ -290,79 +290,53 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.saveState, .saved)
     }
 
-    func testFailedSelectionTransitionPreservesPreviousDraftAndRetryState() async {
-        let viewModel = SavedMeetingNotesViewModel()
-        let nextMeetingID = UUID()
-        viewModel.configure(meetingID: meetingID, text: "Meeting A") { _ in false }
-        viewModel.textBinding.wrappedValue = "Unsaved meeting A"
-        let transition = viewModel.beginSelectionTransition()
-
-        let configured = await viewModel.completeSelectionTransition(
-            transition,
-            meetingID: nextMeetingID,
-            text: "Meeting B"
-        ) { _ in true }
-
-        XCTAssertFalse(configured)
-        XCTAssertEqual(viewModel.meetingID, meetingID)
-        XCTAssertEqual(viewModel.text, "Unsaved meeting A")
-        XCTAssertEqual(viewModel.saveState, .failed)
-    }
-
-    func testOlderSelectionTransitionCannotReplaceNewerMeeting() async {
-        let viewModel = SavedMeetingNotesViewModel()
-        let meetingBID = UUID()
-        let meetingCID = UUID()
-        var writesByMeeting: [UUID: [String]] = [:]
-        let saveAStarted = expectation(description: "Meeting A save started")
-        var releaseSaveA: (() -> Void)?
-        viewModel.configure(meetingID: meetingID, text: "Meeting A") { text in
-            writesByMeeting[self.meetingID, default: []].append(text)
-            saveAStarted.fulfill()
-            await withCheckedContinuation { continuation in
-                releaseSaveA = { continuation.resume() }
-            }
-            return true
-        }
-        viewModel.textBinding.wrappedValue = "Updated A"
-
-        let transitionToB = viewModel.beginSelectionTransition()
-        let taskToB = Task { @MainActor in
-            await viewModel.completeSelectionTransition(
-                transitionToB,
-                meetingID: meetingBID,
-                text: "Meeting B"
-            ) { text in
-                writesByMeeting[meetingBID, default: []].append(text)
+    func testFlushesWaitingOnOldWriteCannotPersistReconfiguredMeeting() async {
+        for editNewMeeting in [false, true] {
+            let viewModel = SavedMeetingNotesViewModel()
+            let oldSaveStarted = expectation(description: "Old write started")
+            let secondFlushStarted = expectation(description: "Second flush started")
+            var releaseOldSave: (() -> Void)?
+            viewModel.configure(meetingID: meetingID, text: "A") { _ in
+                oldSaveStarted.fulfill()
+                await withCheckedContinuation { continuation in
+                    releaseOldSave = { continuation.resume() }
+                }
                 return true
             }
-        }
-        await fulfillment(of: [saveAStarted], timeout: 1)
-        let transitionToC = viewModel.beginSelectionTransition()
-        let taskToC = Task { @MainActor in
-            await viewModel.completeSelectionTransition(
-                transitionToC,
-                meetingID: meetingCID,
-                text: "Meeting C"
-            ) { text in
-                writesByMeeting[meetingCID, default: []].append(text)
+            viewModel.textBinding.wrappedValue = "A draft"
+            let firstFlush = Task { @MainActor in await viewModel.flush() }
+            await fulfillment(of: [oldSaveStarted], timeout: 1)
+            let secondFlush = Task { @MainActor in
+                secondFlushStarted.fulfill()
+                return await viewModel.flush()
+            }
+            await fulfillment(of: [secondFlushStarted], timeout: 1)
+
+            let nextMeetingID = UUID()
+            var newWrites: [String] = []
+            viewModel.configure(meetingID: nextMeetingID, text: "B") { text in
+                newWrites.append(text)
                 return true
             }
+            if editNewMeeting {
+                viewModel.textBinding.wrappedValue = "B draft"
+                viewModel.cancelPendingSave()
+            }
+            releaseOldSave?()
+            let firstSaved = await firstFlush.value
+            let secondSaved = await secondFlush.value
+
+            XCTAssertFalse(firstSaved)
+            XCTAssertFalse(secondSaved)
+            XCTAssertTrue(newWrites.isEmpty, "An obsolete flush must not write the replacement meeting")
+            XCTAssertEqual(viewModel.meetingID, nextMeetingID)
+            XCTAssertEqual(viewModel.text, editNewMeeting ? "B draft" : "B")
+            XCTAssertEqual(viewModel.hasUnsavedChanges, editNewMeeting)
+            XCTAssertEqual(viewModel.saveState, editNewMeeting ? .saving : .saved)
+
+            let currentSaved = await viewModel.flush()
+            XCTAssertTrue(currentSaved)
+            XCTAssertEqual(newWrites, editNewMeeting ? ["B draft"] : [])
         }
-        releaseSaveA?()
-
-        let configuredB = await taskToB.value
-        let configuredC = await taskToC.value
-        XCTAssertFalse(configuredB)
-        XCTAssertTrue(configuredC)
-        XCTAssertEqual(viewModel.meetingID, meetingCID)
-        XCTAssertEqual(viewModel.text, "Meeting C")
-
-        viewModel.textBinding.wrappedValue = "Updated C"
-        let flushedC = await viewModel.flush()
-        XCTAssertTrue(flushedC)
-        XCTAssertEqual(writesByMeeting[meetingID], ["Updated A"])
-        XCTAssertNil(writesByMeeting[meetingBID])
-        XCTAssertEqual(writesByMeeting[meetingCID], ["Updated C"])
     }
 }

@@ -119,6 +119,7 @@ struct IdentifiedEffectiveSpeakerTurn: Identifiable {
     let assignment: SpeakerAssignment
     let speakerLabel: String
     let segments: [SpeakerEditableSegment]
+    let logicalTurnSegments: [SpeakerEditableSegment]
 }
 
 func identifiedEffectiveSpeakerTurnCards(
@@ -133,7 +134,8 @@ func identifiedEffectiveSpeakerTurnCards(
                 id: segments[0].id,
                 assignment: turn.assignment,
                 speakerLabel: turn.speakerLabel,
-                segments: segments
+                segments: segments,
+                logicalTurnSegments: turn.segments
             )
         }
     }
@@ -444,7 +446,7 @@ private struct EditableTranscriptTurnCardView<SpeakerLabelContent: View>: View {
     }
 
     private var segmentIDs: [SpeakerEditableSegmentID] {
-        turn.segments.map(\.id)
+        turn.logicalTurnSegments.map(\.id)
     }
 
     private var selectedSegmentCount: Int {
@@ -574,18 +576,18 @@ private struct EditableTranscriptTurnCardView<SpeakerLabelContent: View>: View {
         Menu("Assign this turn to…") {
             ForEach(availableSpeakers.filter { $0.id != speakerID }, id: \.id) { speaker in
                 Button(speaker.label) {
-                    onAssignTurn(turn.segments, .speaker(id: speaker.id))
+                    onAssignTurn(turn.logicalTurnSegments, .speaker(id: speaker.id))
                 }
             }
             if speakerID != nil {
                 Divider()
                 Button("Unassigned") {
-                    onAssignTurn(turn.segments, .unassigned)
+                    onAssignTurn(turn.logicalTurnSegments, .unassigned)
                 }
             }
         }
         Button("New speaker…") {
-            onCreateSpeakerForTurn(turn.segments)
+            onCreateSpeakerForTurn(turn.logicalTurnSegments)
         }
     }
 

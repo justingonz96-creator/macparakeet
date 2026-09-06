@@ -51,6 +51,29 @@ public struct Prompt: Codable, Identifiable, Sendable {
         case transform
     }
 
+    /// Legacy JSON predates the meeting-notes preference. Only an absent key
+    /// defaults to false; malformed or null values remain decoding errors.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        content = try container.decode(String.self, forKey: .content)
+        category = try container.decode(Category.self, forKey: .category)
+        isBuiltIn = try container.decode(Bool.self, forKey: .isBuiltIn)
+        isVisible = try container.decode(Bool.self, forKey: .isVisible)
+        isAutoRun = try container.decode(Bool.self, forKey: .isAutoRun)
+        sortOrder = try container.decode(Int.self, forKey: .sortOrder)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        keyboardShortcut = try container.decodeIfPresent(String.self, forKey: .keyboardShortcut)
+        runningLabel = try container.decodeIfPresent(String.self, forKey: .runningLabel)
+        appliesToSources = try container.decodeIfPresent(Set<Transcription.SourceType>.self, forKey: .appliesToSources)
+        inferenceSettings = try container.decodeIfPresent(PromptInferenceSettings.self, forKey: .inferenceSettings)
+        includeMeetingNotes =
+            container.contains(.includeMeetingNotes)
+            ? try container.decode(Bool.self, forKey: .includeMeetingNotes) : false
+    }
+
     public init(
         id: UUID = UUID(),
         name: String,
@@ -374,7 +397,7 @@ public struct Prompt: Codable, Identifiable, Sendable {
                 defaultShortcut: KeyboardShortcut(
                     modifiers: KeyboardShortcut.ModifierFlag.control.rawValue
                         | KeyboardShortcut.ModifierFlag.option.rawValue,
-                    keyCode: 0x12, // kVK_ANSI_1
+                    keyCode: 0x12,  // kVK_ANSI_1
                     keyLabel: "1"
                 ),
                 runningLabel: "Polishing…",
@@ -398,7 +421,7 @@ public struct Prompt: Codable, Identifiable, Sendable {
                 defaultShortcut: KeyboardShortcut(
                     modifiers: KeyboardShortcut.ModifierFlag.control.rawValue
                         | KeyboardShortcut.ModifierFlag.option.rawValue,
-                    keyCode: 0x13, // kVK_ANSI_2
+                    keyCode: 0x13,  // kVK_ANSI_2
                     keyLabel: "2"
                 ),
                 runningLabel: "Distilling…",
@@ -425,7 +448,7 @@ public struct Prompt: Codable, Identifiable, Sendable {
                 defaultShortcut: KeyboardShortcut(
                     modifiers: KeyboardShortcut.ModifierFlag.control.rawValue
                         | KeyboardShortcut.ModifierFlag.option.rawValue,
-                    keyCode: 0x14, // kVK_ANSI_3
+                    keyCode: 0x14,  // kVK_ANSI_3
                     keyLabel: "3"
                 ),
                 runningLabel: "Deciding…",

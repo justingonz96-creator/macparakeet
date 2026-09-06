@@ -4,13 +4,70 @@ import XCTest
 
 @MainActor
 final class TranscriptNotesActionGateTests: XCTestCase {
+    func testRepeatedNavigationSharesPendingFlushAndNavigatesOnce() async throws {
+        let gate = TranscriptNotesActionGate()
+        let started = expectation(description: "Navigation flush started")
+        var releaseFlush: (() -> Void)?
+        var actions: [String] = []
+        let first = try XCTUnwrap(
+            gate.start(
+                flush: {
+                    started.fulfill()
+                    await withCheckedContinuation { continuation in
+                        releaseFlush = { continuation.resume() }
+                    }
+                    return true
+                }, isCurrent: { true }
+            ) { actions.append("Back") })
+        await fulfillment(of: [started], timeout: 1)
+        for action in ["Back", "New"] {
+            XCTAssertNil(
+                gate.start(
+                    flush: {
+                        XCTFail("Must share the first flush"); return true
+                    }, isCurrent: { true }
+                ) {
+                    actions.append(action)
+                })
+        }
+        releaseFlush?()
+        await first.value
+        XCTAssertEqual(actions, ["Back"])
+    }
+
+    func testObsoleteFailedNavigationCannotChangeReplacementMeetingsTab() async throws {
+        let gate = TranscriptNotesActionGate()
+        let started = expectation(description: "Navigation flush started")
+        var releaseFlush: (() -> Void)?
+        var isCurrent = true
+        let task = try XCTUnwrap(
+            gate.start(
+                flush: {
+                    started.fulfill()
+                    await withCheckedContinuation { continuation in
+                        releaseFlush = { continuation.resume() }
+                    }
+                    return false
+                },
+                isCurrent: { isCurrent },
+                onFailure: { XCTFail("A stale failure cannot select the new meeting's Notes tab") }
+            ) { XCTFail("Failed notes cannot navigate") })
+        await fulfillment(of: [started], timeout: 1)
+        isCurrent = false
+        releaseFlush?()
+        await task.value
+        XCTAssertFalse(gate.isRunning)
+    }
+
     func testFailedFlushDoesNotSubmitAction() async throws {
         let gate = TranscriptNotesActionGate()
+        var didFail = false
         let task = try XCTUnwrap(
-            gate.start(flush: { false }, isCurrent: { true }) {
+            gate.start(flush: { false }, isCurrent: { true }, onFailure: { didFail = true }) {
                 XCTFail("An action cannot use notes that failed to save")
             })
         await task.value
+        XCTAssertTrue(didFail)
         XCTAssertFalse(gate.isRunning)
     }
 

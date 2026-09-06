@@ -281,6 +281,7 @@ final class TranscriptNotesActionGate {
     func start(
         flush: @escaping @MainActor () async -> Bool,
         isCurrent: @escaping @MainActor () -> Bool,
+        onFailure: @escaping @MainActor () -> Void = {},
         action: @escaping @MainActor () async -> Void
     ) -> Task<Void, Never>? {
         guard !isRunning, isCurrent() else { return nil }
@@ -294,9 +295,14 @@ final class TranscriptNotesActionGate {
                     self.task = nil
                 }
             }
-            guard await flush(), !Task.isCancelled,
+            let saved = await flush()
+            guard !Task.isCancelled,
                 self.requestID == id, isCurrent()
             else { return }
+            guard saved else {
+                onFailure()
+                return
+            }
             await action()
         }
         self.task = task
@@ -504,6 +510,7 @@ struct TranscriptResultView: View {
     @State private var richContextLoader = TranscriptRichContextLoader()
     @State private var promptNotesActionGate = TranscriptNotesActionGate()
     @State private var chatNotesActionGate = TranscriptNotesActionGate()
+    @State private var navigationNotesActionGate = TranscriptNotesActionGate()
     @State private var autoScrollPaused = false
     @State private var scrollPauseTask: Task<Void, Never>?
     @State private var scrollMonitor: Any?
@@ -677,6 +684,7 @@ struct TranscriptResultView: View {
     }
 
     private func handleTranscriptionChange() {
+        navigationNotesActionGate.invalidate()
         promptNotesActionGate.invalidate()
         chatNotesActionGate.invalidate()
         richContextLoader.invalidate()
@@ -1293,7 +1301,10 @@ struct TranscriptResultView: View {
         let selectedID = activeTranscription.id
         let notesEditor = savedMeetingNotesViewModel
         promptNotesActionGate.start(
-            flush: { await notesEditor.flush() },
+            flush: {
+                guard await notesEditor.flush() else { return false }
+                return await viewModel.waitForCurrentSpeakerAttribution()
+            },
             isCurrent: {
                 viewModel.currentTranscription?.id == selectedID
                     && savedMeetingNotesViewModel === notesEditor
@@ -2698,8 +2709,7 @@ struct TranscriptResultView: View {
         .onTapGesture {
             guard viewModel.selectedTab != tab else { return }
             if case .notes = viewModel.selectedTab {
-                Task { @MainActor in
-                    guard await savedMeetingNotesViewModel.flush() else { return }
+                startMeetingNotesNavigation(isCurrent: { viewModel.selectedTab == .notes }) {
                     viewModel.selectedTab = tab
                 }
                 return
@@ -4375,6 +4385,7 @@ struct TranscriptResultView: View {
     // MARK: - Segment Cache
 
     private func handleDisappear() {
+        navigationNotesActionGate.invalidate()
         promptNotesActionGate.invalidate()
         chatNotesActionGate.invalidate()
         richContextLoader.invalidate()
@@ -4558,21 +4569,31 @@ struct TranscriptResultView: View {
     }
 
     private func requestMeetingNotesNavigation(_ action: MeetingNotesNavigationAction) {
-        Task { @MainActor in
-            guard await savedMeetingNotesViewModel.flush() else {
-                viewModel.selectedTab = .notes
-                return
-            }
-            performMeetingNotesNavigation(action)
+        let navigate: (() -> Void)?
+        switch action {
+        case .navigateBack: navigate = onBack
+        case .startNewTranscription: navigate = onStartNew
         }
+        startMeetingNotesNavigation { navigate?() }
     }
 
-    private func performMeetingNotesNavigation(_ action: MeetingNotesNavigationAction) {
-        switch action {
-        case .navigateBack:
-            onBack?()
-        case .startNewTranscription:
-            onStartNew?()
+    private func startMeetingNotesNavigation(
+        isCurrent: @escaping @MainActor () -> Bool = { true },
+        action: @escaping @MainActor () -> Void
+    ) {
+        let selectedID = activeTranscription.id
+        let notesEditor = savedMeetingNotesViewModel
+        navigationNotesActionGate.start(
+            flush: { await notesEditor.flush() },
+            isCurrent: {
+                transcription.id == selectedID
+                    && viewModel.currentTranscription?.id == selectedID
+                    && savedMeetingNotesViewModel === notesEditor
+                    && isCurrent()
+            },
+            onFailure: { viewModel.selectedTab = .notes }
+        ) {
+            action()
         }
     }
 

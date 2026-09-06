@@ -179,17 +179,22 @@ public final class PromptsViewModel {
             errorMessage = error.localizedDescription
             return
         }
+        let ownsEditingState = editingPrompt?.id == prompt.id
         let inferenceDraft =
-            editingPrompt?.id == prompt.id
+            ownsEditingState
             ? editingInferenceSettings
             : InferenceSettingsDraft(settings: prompt.inferenceSettings)
         let inferenceSettings: PromptInferenceSettings?
         switch Self.validateInferenceSettings(inferenceDraft) {
         case .valid(let settings):
             inferenceSettings = settings
-            editingInferenceValidationErrors = [:]
+            if ownsEditingState { editingInferenceValidationErrors = [:] }
         case .invalid(let errors):
-            editingInferenceValidationErrors = errors
+            if ownsEditingState {
+                editingInferenceValidationErrors = errors
+            } else {
+                errorMessage = "Open this prompt to correct its inference settings before saving changes."
+            }
             return
         }
 

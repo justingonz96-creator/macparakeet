@@ -225,15 +225,20 @@ CREATE TABLE speaker_corrections (
     parentId TEXT,
     sequence INTEGER NOT NULL CHECK (sequence > 0),
     transcriptFingerprint TEXT NOT NULL,
-    operation TEXT NOT NULL,
+    operation TEXT NOT NULL CHECK (
+        operation IN ('rename', 'add', 'assign', 'split', 'unsplit', 'merge', 'remove', 'reset')
+    ),
     payload TEXT NOT NULL,
-    branchState TEXT NOT NULL,
+    branchState TEXT NOT NULL CHECK (branchState IN ('current', 'redo', 'abandoned')),
     createdAt TEXT NOT NULL,
     UNIQUE (transcriptionId, sequence),
     UNIQUE (id, transcriptionId),
     FOREIGN KEY (parentId, transcriptionId)
         REFERENCES speaker_corrections(id, transcriptionId) ON DELETE CASCADE
 );
+
+CREATE INDEX idx_speaker_corrections_replay
+ON speaker_corrections (transcriptionId, transcriptFingerprint, branchState, sequence);
 
 CREATE TABLE speaker_correction_states (
     transcriptionId TEXT PRIMARY KEY NOT NULL
@@ -432,7 +437,7 @@ Reusable prompt templates for LLM-powered transcript processing. Community
 prompts are seeded during migration; custom prompts support full CRUD.
 Community prompt instruction text remains read-only and rows cannot be deleted,
 but user-owned configuration such as visibility, auto-run scope, and the
-in-progress meeting-notes context preference can be changed.
+meeting-notes context preference can be changed.
 
 ```sql
 CREATE TABLE prompts (
@@ -450,7 +455,7 @@ CREATE TABLE prompts (
     runningLabel TEXT,                                    -- v0.13 Transform progress label override
     appliesToSources TEXT,                                -- v0.20 JSON Set<SourceType> for auto-run scoping; NULL = all sources
     inferenceSettings TEXT,                               -- v0.31 JSON PromptInferenceSettings; NULL = MacParakeet defaults
-    includeMeetingNotes INTEGER NOT NULL DEFAULT 0         -- v0.33: opt-in result-prompt context
+    includeMeetingNotes INTEGER NOT NULL DEFAULT 0         -- v0.33-prompt-meeting-notes-context
 );
 
 CREATE UNIQUE INDEX idx_prompts_name ON prompts(name COLLATE NOCASE);
@@ -477,8 +482,8 @@ CREATE UNIQUE INDEX idx_prompts_name ON prompts(name COLLATE NOCASE);
   the migration, existing-prompt, built-in, and new-prompt default. When true,
   non-empty meeting notes may be appended as a delimited context block unless
   the prompt already places them explicitly through `{{userNotes}}`. Transform
-  rows must remain false. This column is specified for the next additive
-  v0.33 migration and is not considered shipped until final implementation tests pass.
+  rows must remain false. The additive `v0.33-prompt-meeting-notes-context`
+  migration creates this column; release availability follows the normal channel process.
 
 ---
 
@@ -496,7 +501,7 @@ CREATE TABLE summaries (
     extraInstructions TEXT,                                -- User's per-run extra instructions (if any)
     content           TEXT NOT NULL,                       -- The generated summary text
     userNotesSnapshot TEXT,                                -- v0.8: notes used when generating this result
-    includeMeetingNotesSnapshot INTEGER NOT NULL DEFAULT 0, -- v0.33: checkbox receipt
+    includeMeetingNotesSnapshot INTEGER NOT NULL DEFAULT 0, -- v0.33-prompt-meeting-notes-context
     inferenceSettingsSnapshot TEXT,                       -- v0.31: JSON effective settings actually sent
     createdAt         TEXT NOT NULL,                       -- ISO 8601 timestamp
     updatedAt         TEXT NOT NULL                        -- ISO 8601 timestamp
@@ -1352,6 +1357,9 @@ migrator.registerMigration("v0.7-prompts-and-summaries") { db in
 // v0.28 — derived cards + external-content cards_fts (raw SQL)
 // v0.29 — transcriptions.audioTrackOrdinal
 // v0.30 — transcriptions.meetingCaptureReport (optional JSON)
+// v0.31-prompt-inference-settings —
+// prompts.inferenceSettings and summaries.inferenceSettingsSnapshot
+// v0.32-speaker-corrections — speaker_corrections + speaker_correction_states
 // v0.33-prompt-meeting-notes-context —
 // prompts.includeMeetingNotes and summaries.includeMeetingNotesSnapshot
 ```
@@ -1400,8 +1408,9 @@ migrator.registerMigration("v0.7-prompts-and-summaries") { db in
 | `summaries` | v0.7 | Prompt results per transcription (FK → transcriptions, cascade delete; Swift model `PromptResult`) |
 | `prompts.inferenceSettings` | v0.31 | Nullable JSON requested settings for custom result prompts; `NULL` inherits MacParakeet defaults |
 | `summaries.inferenceSettingsSnapshot` | v0.31 | Nullable JSON receipt of effective settings sent after provider/model filtering |
-| `prompts.includeMeetingNotes` | v0.33 | Result-prompt opt-in for automatic meeting-notes context; non-null, default false |
-| `summaries.includeMeetingNotesSnapshot` | v0.33 | Generation-time receipt of the prompt's notes-context opt-in; non-null, default false |
+| `speaker_corrections` / `speaker_correction_states` | v0.32-speaker-corrections | Append-only attribution journal, replay index and persistent transcript-scoped undo/redo cursor |
+| `prompts.includeMeetingNotes` | v0.33-prompt-meeting-notes-context | Result-prompt opt-in for automatic meeting-notes context; non-null, default false |
+| `summaries.includeMeetingNotesSnapshot` | v0.33-prompt-meeting-notes-context | Generation-time receipt of the prompt's notes-context opt-in; non-null, default false |
 | `lifetime_dictation_stats` | v0.7.4 | Singleton lifetime voice-stat counters |
 | `daily_dictation_stats` | v0.11 | Per-day rollup powering Stats-tab heatmap + daily streaks |
 | `transcriptions.recoveredFromCrash` | v0.7.5 | Interrupted meeting recovery marker |

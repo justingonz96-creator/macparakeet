@@ -13,6 +13,12 @@ related prompt results.
 For meeting rows, `transcriptions.meetingArtifactFolderPath` is the durable
 folder locator. `transcriptions.filePath` is only the mixed-audio
 playback/export path and may be cleared by user deletion or retention.
+Transcription completion preserves the current locator values, including clears,
+and aborts when the canonical recording was deleted during processing.
+
+If a notes write commits but its follow-up read fails, the app updates only notes
+in its loaded snapshots and keeps existing artifacts intact until a successful
+refresh can read current metadata. The saved draft is not reported as lost.
 
 Meeting rename refreshes artifacts from the row returned by the rename's
 database transaction, preserving its current transcript, notes, and folder
@@ -95,7 +101,7 @@ The v1 folder can contain these stable filenames:
 - `prompt-results.json`: JSON array of prompt-result records.
 - `prompt-results/`: refreshed directory of per-result Markdown files.
 - `prompt-results/*.md`: filenames use a stable two-digit 1-based index prefix
-plus sanitized prompt-result name.
+  plus sanitized prompt-result name.
 
 Each `prompt-results.json` record preserves the prompt-result snapshots,
 including `userNotesSnapshot`, the additive Boolean
@@ -223,6 +229,11 @@ available, `speakerLabelsIncluded`, `speakerCorrectionsApplied`,
 `speakerCorrectionRevision`, and `promptResultCount`. The body section
 order is: title, optional notes, transcript, optional prompt results, and
 artifact paths.
+
+Legacy v1 `MeetingArtifactSnapshot` JSON without speaker correction keys decodes
+with `speakerCorrectionsApplied = false` and `speakerCorrectionRevision = 0`.
+Metadata and speaker refreshes in the transcription view model share a queue
+per meeting and read the current DB row after earlier materializations finish.
 
 `transcript.json` publishes the effective speaker projection and includes
 `speakerCorrectionsApplied` plus `speakerCorrectionRevision`. Each durable

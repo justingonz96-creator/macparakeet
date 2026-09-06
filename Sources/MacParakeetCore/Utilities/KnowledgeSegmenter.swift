@@ -2,7 +2,7 @@ import Foundation
 
 /// Frozen versioned rules for deriving the rebuildable transcript search layer.
 public enum KnowledgeSegmenter {
-    public static let currentVersion = 3
+    public static let currentVersion = 4
 
     private static let targetMinimumScalars = 200
     private static let targetMaximumScalars = 500
@@ -187,7 +187,7 @@ public enum KnowledgeSegmenter {
                     effectiveAttribution.words[
                         run.wordRange.startIndex..<run.wordRange.endIndexExclusive
                     ]
-                )
+                ).filter { !$0.word.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                 guard let text = joinedWordText(words) else { continue }
                 let speaker: String?
                 switch run.assignment {

@@ -185,7 +185,7 @@ CREATE TABLE summaries (
 CREATE INDEX idx_summaries_transcription_id ON summaries(transcriptionId);
 ```
 
-**Why snapshot instead of reference:** Prompts can be edited or deleted after a result is generated. The result should always know exactly what instructions produced it. `promptName` is for display; `promptContent`, `userNotesSnapshot`, and `includeMeetingNotesSnapshot` are for reproducibility. The Boolean remains meaningful when the generation had no notes, because regenerate can apply that captured preference to notes added later.
+**Why snapshot instead of reference:** Prompts can be edited or deleted after a result is generated. The result should always know exactly what instructions produced it. `promptName` is for display; `promptContent`, `userNotesSnapshot`, `includeMeetingNotesSnapshot`, and `inferenceSettingsSnapshot` are for reproducibility. The settings snapshot records the effective provider/model-filtered receipt. The Boolean remains meaningful when the generation had no notes, because regenerate can apply that captured preference to notes added later.
 
 Custom result prompts may also carry typed generation settings. The prompt row
 stores the requested `PromptInferenceSettings`; a queued generation copies that

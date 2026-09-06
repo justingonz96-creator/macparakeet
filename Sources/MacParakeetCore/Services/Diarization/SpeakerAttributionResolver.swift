@@ -634,7 +634,7 @@ public enum SpeakerAttributionResolver {
         _ segments: [SpeakerEditableSegment],
         speakers: [SpeakerInfo]
     ) -> [EffectiveSpeakerTurn] {
-        let labels = Dictionary(uniqueKeysWithValues: speakers.map { ($0.id, $0.label) })
+        let labels = Dictionary(speakers.map { ($0.id, $0.label) }, uniquingKeysWith: { first, _ in first })
         var turns: [EffectiveSpeakerTurn] = []
         for segment in segments {
             if let last = turns.last, last.assignment == segment.assignment {
@@ -732,8 +732,12 @@ private struct ReplayState {
 
     init(transcription: Transcription) {
         speakers = transcription.speakers ?? []
+        // Automatic nil timings inherit the preceding speaker, matching the
+        // baseline segmenter. An explicit correction can still assign nil.
+        var currentSpeakerID: String?
         assignments = (transcription.wordTimestamps ?? []).map { word in
-            word.speakerId.map { .speaker(id: $0) } ?? .unassigned
+            if let speakerID = word.speakerId { currentSpeakerID = speakerID }
+            return currentSpeakerID.map { .speaker(id: $0) } ?? .unassigned
         }
     }
 }
