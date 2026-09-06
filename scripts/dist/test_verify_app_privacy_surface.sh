@@ -40,6 +40,7 @@ chmod +x "$FAKE_BIN/codesign"
 make_app() {
   local name="$1"
   local local_networking="$2"
+  local cgnat_exception="${3:-true}"
   local app_path="$TMP_DIR/${name}.app"
   local plist_path="$app_path/Contents/Info.plist"
 
@@ -53,6 +54,19 @@ make_app() {
     /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' "$plist_path"
     /usr/libexec/PlistBuddy \
       -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool $local_networking" \
+      "$plist_path"
+  fi
+  if [[ "$cgnat_exception" == "arbitrary" ]]; then
+    /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' "$plist_path" >/dev/null 2>&1 || true
+    /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true' "$plist_path"
+    cgnat_exception="true"
+  fi
+  if [[ "$cgnat_exception" != "missing" ]]; then
+    /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' "$plist_path" >/dev/null 2>&1 || true
+    /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains dict' "$plist_path"
+    /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains:100.64.0.0/10 dict' "$plist_path"
+    /usr/libexec/PlistBuddy \
+      -c "Add :NSAppTransportSecurity:NSExceptionDomains:100.64.0.0/10:NSExceptionAllowsInsecureHTTPLoads bool $cgnat_exception" \
       "$plist_path"
   fi
 
@@ -107,5 +121,17 @@ assert_fail_contains \
   "local networking explicitly denied" \
   "$(make_app denied false)" \
   "NSAppTransportSecurity:NSAllowsLocalNetworking"
+assert_fail_contains \
+  "CGNAT http exception missing" \
+  "$(make_app no_cgnat true missing)" \
+  "NSAppTransportSecurity:NSExceptionDomains:100.64.0.0/10:NSExceptionAllowsInsecureHTTPLoads"
+assert_fail_contains \
+  "CGNAT http exception explicitly denied" \
+  "$(make_app cgnat_denied true false)" \
+  "NSAppTransportSecurity:NSExceptionDomains:100.64.0.0/10:NSExceptionAllowsInsecureHTTPLoads"
+assert_fail_contains \
+  "arbitrary loads must stay disabled" \
+  "$(make_app arbitrary true arbitrary)" \
+  "NSAppTransportSecurity:NSAllowsArbitraryLoads"
 
 echo "verify_app_privacy_surface fixture tests passed"
