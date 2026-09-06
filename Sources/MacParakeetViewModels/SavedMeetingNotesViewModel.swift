@@ -9,10 +9,6 @@ import SwiftUI
 @MainActor
 @Observable
 public final class SavedMeetingNotesViewModel {
-    public struct SelectionTransition: Equatable, Sendable {
-        fileprivate let token: UUID
-    }
-
     public enum SaveState: Equatable, Sendable {
         case saved
         case saving
@@ -61,7 +57,6 @@ public final class SavedMeetingNotesViewModel {
     private var inFlightToken: UUID?
     private var inFlightRevision: Int?
     private var configurationToken = UUID()
-    private var selectionTransitionToken = UUID()
     private var revision = 0
     private var savedRevision = 0
     private let waitForDebounce: (Duration) async throws -> Void
@@ -89,7 +84,6 @@ public final class SavedMeetingNotesViewModel {
         inFlightToken = nil
         inFlightRevision = nil
         configurationToken = UUID()
-        selectionTransitionToken = UUID()
         self.meetingID = meetingID
         self.persist = persist
         self.isMeetingDeleted = isMeetingDeleted
@@ -98,35 +92,6 @@ public final class SavedMeetingNotesViewModel {
         revision = 0
         savedRevision = 0
         saveState = .saved
-    }
-
-    /// Invalidates any older selection change before it can suspend in
-    /// `flush()`. The returned token must still be current when the save
-    /// completes before the editor can be rebound to another meeting.
-    public func beginSelectionTransition() -> SelectionTransition {
-        let transition = SelectionTransition(token: UUID())
-        selectionTransitionToken = transition.token
-        return transition
-    }
-
-    /// Saves the current meeting before binding the editor to a newly selected
-    /// one. A failed save preserves the old draft and retry state; an obsolete
-    /// transition cannot overwrite a newer selection.
-    @discardableResult
-    public func completeSelectionTransition(
-        _ transition: SelectionTransition,
-        meetingID: UUID,
-        text: String?,
-        persist: @escaping (String) async -> Bool
-    ) async -> Bool {
-        guard await flush() else { return false }
-        guard selectionTransitionToken == transition.token else { return false }
-        configure(meetingID: meetingID, text: text, persist: persist)
-        return true
-    }
-
-    public func invalidateSelectionTransition() {
-        selectionTransitionToken = UUID()
     }
 
     /// Cancels the idle timer and waits until the latest draft is persisted.
@@ -149,6 +114,7 @@ public final class SavedMeetingNotesViewModel {
         }
         guard configurationToken == activeConfigurationToken else { return false }
         while revision != savedRevision {
+            guard configurationToken == activeConfigurationToken else { return false }
             guard await persistCurrentRevision() else {
                 guard configurationToken == activeConfigurationToken else { return false }
                 // Deletion can race the initial existence check and the write.
@@ -215,9 +181,13 @@ public final class SavedMeetingNotesViewModel {
     }
 
     private func persistCurrentRevision() async -> Bool {
+        guard hasUnsavedChanges else { return true }
+        let activeConfigurationToken = configurationToken
         if let inFlightTask {
             let awaitedRevision = inFlightRevision
             let saved = await inFlightTask.value
+            guard configurationToken == activeConfigurationToken else { return false }
+            guard hasUnsavedChanges else { return true }
             if awaitedRevision != revision {
                 return await persistCurrentRevision()
             }
@@ -230,7 +200,6 @@ public final class SavedMeetingNotesViewModel {
         let savingRevision = revision
         let savingText = text
         let token = UUID()
-        let activeConfigurationToken = configurationToken
         saveState = .saving
         let task = Task { @MainActor [weak self] in
             let saved = await persist(savingText)
@@ -254,7 +223,8 @@ public final class SavedMeetingNotesViewModel {
         inFlightToken = token
         inFlightRevision = savingRevision
         inFlightTask = task
-        return await task.value
+        let saved = await task.value
+        return configurationToken == activeConfigurationToken && saved
     }
 
     private static func wordCount(for text: String) -> Int {

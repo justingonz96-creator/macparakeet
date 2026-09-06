@@ -26,9 +26,10 @@ final class InProcessLLMClientTests: XCTestCase {
         let response = try await client.chatCompletion(
             messages: [ChatMessage(role: .user, content: "Summarize.")],
             context: LLMExecutionContext(providerConfig: .inProcessLocal(model: "test-model")),
-            options: .default
+            options: ChatCompletionOptions(maxTokens: 2)
         )
 
+        XCTAssertNil(response.finishReason, "The runtime does not report whether the token limit caused completion")
         XCTAssertEqual(response.content, "hello local")
         XCTAssertEqual(response.model, "test-model")
         XCTAssertEqual(response.generationMetrics?.tokensPerSecond, 42)
@@ -508,7 +509,7 @@ final class InProcessLLMClientTests: XCTestCase {
         }
         XCTAssertEqual(terminal.provider, "inProcessLocal")
         XCTAssertEqual(terminal.model, "stream-test")
-        XCTAssertEqual(terminal.stopReason, "stop")
+        XCTAssertNil(terminal.stopReason)
         XCTAssertEqual(terminal.effectiveSettings, settings)
     }
 

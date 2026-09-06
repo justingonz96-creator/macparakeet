@@ -87,15 +87,13 @@ struct OllamaLLMHTTPAdapter: LLMHTTPAdapter {
                     for try await line in bytes.lines {
                         try Task.checkCancellation()
 
-                        guard !line.isEmpty,
-                              let data = line.data(using: .utf8),
-                              let chunk = try? JSONDecoder().decode(OllamaChatResponse.self, from: data) else {
-                            continue
-                        }
-
-                        // Check for errors
-                        if let error = chunk.error {
+                        guard !line.isEmpty, let data = line.data(using: .utf8) else { continue }
+                        // Error-only frames omit the required chat response fields.
+                        if let error = try? JSONDecoder().decode(StreamErrorResponse.self, from: data).error {
                             throw LLMHTTPErrorMapper.mapStreamingError(message: error)
+                        }
+                        guard let chunk = try? JSONDecoder().decode(OllamaChatResponse.self, from: data) else {
+                            continue
                         }
 
                         let content = chunk.message.content
@@ -161,12 +159,12 @@ struct OllamaLLMHTTPAdapter: LLMHTTPAdapter {
                     var lastChunk: OllamaChatResponse?
                     for try await line in bytes.lines {
                         try Task.checkCancellation()
-                        guard !line.isEmpty,
-                            let data = line.data(using: .utf8),
-                            let chunk = try? JSONDecoder().decode(OllamaChatResponse.self, from: data)
-                        else { continue }
-                        if let error = chunk.error {
+                        guard !line.isEmpty, let data = line.data(using: .utf8) else { continue }
+                        if let error = try? JSONDecoder().decode(StreamErrorResponse.self, from: data).error {
                             throw LLMHTTPErrorMapper.mapStreamingError(message: error)
+                        }
+                        guard let chunk = try? JSONDecoder().decode(OllamaChatResponse.self, from: data) else {
+                            continue
                         }
                         lastChunk = chunk
                         if !chunk.message.content.isEmpty {

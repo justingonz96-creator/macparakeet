@@ -4,6 +4,8 @@
 > notes-context snapshots, and lifecycle/action gates are included in this branch.
 > Rich Markdown rendering is a separate upstream PR; its design and historical
 > fork QA findings below do not certify a renderer included in this branch.
+> Notes are proposed in [#959](https://github.com/moona3k/macparakeet/pull/959);
+> the separate renderer proposal is [#957](https://github.com/moona3k/macparakeet/pull/957).
 > **Priority:** P2
 > **Date:** 2026-09-05
 > **Issues:** [#889](https://github.com/moona3k/macparakeet/issues/889),
@@ -347,11 +349,13 @@ assembly remains unchanged.
 
 ## Follow-up Workstream — Rich Markdown Prompt Results
 
-> **Status:** IMPLEMENTED / LOCALLY VERIFIED on 2026-09-05 — added during
-> implementation of the notes slice and explicitly approved in the same plan.
-> Its implementation remains separate from Phases 1–5 above.
+> **Historical fork workstream — 2026-09-05:** Renderer code was implemented and
+> locally exercised alongside the notes work, but acceptance QA remained
+> partial: real-app checks found the accessibility blockers recorded below.
+> This separate workstream was approved in the same plan and is outside
+> Phases 1–5. Its upstream extraction is #957, not the notes-only #959.
 
-### Goal and current gap
+### Original goal and gap — 2026-09-05
 
 Render Prompt Results such as Summary as structured GitHub-Flavored Markdown,
 including real tables and visual task lists, instead of exposing Markdown
@@ -518,7 +522,7 @@ Passed in the real app:
 - accessibility exposure for headings, links, and checked/unchecked task state;
 - pointer reveal of table Copy and Download actions.
 
-Blocking findings:
+Blocking findings at that commit:
 
 - Direct table-cell selection is unavailable on macOS: the upstream table is
   exposed as a non-selectable accessibility text element even though the outer
@@ -527,7 +531,7 @@ Blocking findings:
   user-facing label such as “Download table”. This fails the table-action
   VoiceOver gate. The Copy action is labelled correctly.
 
-Still to run after those blockers are fixed:
+Checks outstanding at that historical renderer QA snapshot:
 
 - live partial/streaming Prompt Result and live Ask visual smoke tests;
 - keyboard activation of an allowed link;
