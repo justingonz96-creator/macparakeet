@@ -503,6 +503,17 @@ machines below 16 GB, downloads the verified Qwen3 model to
 `Application Support/MacParakeet/LLMModels/`, verifies size + SHA-256 hashes,
 tests the in-process runtime, and only then saves `.inProcessLocal`.
 
+The setup header and settings card describe the saved provider: a failed test
+of an unsaved draft does not mark the working saved provider as disconnected.
+Test Connection never saves a draft; Save remains a separate action. A saved
+configuration is shown as ready without implying that connectivity was tested.
+Credential writes/deletes must succeed before replacing provider metadata.
+Local CLI settings are encoded before committing the provider switch, so an
+encoding failure leaves the previous provider and CLI settings intact.
+Failed Save or Clear keeps the working configuration and reports an error
+without notifying consumers or resetting formatter preferences. Successful
+transitions update the view model's committed state before notifying consumers.
+
 ```
 ┌─────────────────────────────────────────────┐
 │  AI                                          │
