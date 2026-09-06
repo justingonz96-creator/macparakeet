@@ -227,15 +227,16 @@ struct CardsGenerationReport: Encodable {
     mutating func add(_ usage: LLMUsage?) {
         promptTokenTotal.add(usage?.promptTokens)
         completionTokenTotal.add(usage?.completionTokens)
-        if usage?.totalTokens == nil,
-            let prompt = usage?.promptTokens, let completion = usage?.completionTokens,
-            prompt.addingReportingOverflow(completion).overflow
-        {
-            // The individual receipt could not represent its total. Do not
-            // report the remaining receipts as a complete batch total.
-            combinedTokenTotal.invalidate()
-        } else {
-            combinedTokenTotal.add(usage?.totalTokens)
+        if let total = usage?.totalTokens {
+            combinedTokenTotal.add(total)
+        } else if let prompt = usage?.promptTokens, let completion = usage?.completionTokens {
+            let sum = prompt.addingReportingOverflow(completion)
+            if sum.overflow {
+                // Do not report the remaining receipts as a complete batch total.
+                combinedTokenTotal.invalidate()
+            } else {
+                combinedTokenTotal.add(sum.partialValue)
+            }
         }
     }
 
