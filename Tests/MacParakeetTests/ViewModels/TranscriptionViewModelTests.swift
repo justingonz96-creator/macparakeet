@@ -1859,8 +1859,14 @@ final class TranscriptionViewModelTests: XCTestCase {
     func testArtifactRetryDoesNotSuppressOverlappingNotesWriteFailure() async throws {
         let meeting = Transcription(fileName: "Meeting", sourceType: .meeting, userNotes: "Original")
         mockRepo.transcriptions = [meeting]
-        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel = TranscriptionViewModel(meetingArtifactStore: RecordingMeetingArtifactStore(shouldFail: true))
+        viewModel.configure(
+            transcriptionService: mockService, transcriptionRepo: mockRepo, promptResultRepo: mockPromptResultRepo
+        )
         viewModel.currentTranscription = meeting
+        let firstSaved = await viewModel.updateCurrentMeetingNotes(to: "Original")
+        XCTAssertTrue(firstSaved)
+        XCTAssertNotNil(viewModel.meetingNotesArtifactWarning, "Expose the actual artifact Retry button before editing again")
         let writeStarted = expectation(description: "Database write held")
         let releaseWrite = DispatchSemaphore(value: 0)
         defer { releaseWrite.signal() }
