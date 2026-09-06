@@ -7,7 +7,7 @@ final class PromptCodableCompatibilityTests: XCTestCase {
     func testLegacyPromptDefaultsMissingNotesPreferenceToFalse() throws {
         let data = Data(
             """
-            {"id":"3B902BE2-9E61-4147-AEC5-837685D6313B","name":"Legacy", 
+            {"id":"3B902BE2-9E61-4147-AEC5-837685D6313B","name":"Legacy",
              "content":"Summarize","category":"summary","isBuiltIn":false,
              "isVisible":true,"isAutoRun":true,"sortOrder":3,"createdAt":100,"updatedAt":200}
             """.utf8)
