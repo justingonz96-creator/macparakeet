@@ -210,9 +210,9 @@ struct AnthropicLLMHTTPAdapter: LLMHTTPAdapter {
                                 ? LLMUsage(
                                     promptTokens: promptTokens,
                                     completionTokens: completionTokens,
-                                    totalTokens: promptTokens.flatMap { prompt in
-                                        completionTokens.map { prompt + $0 }
-                                    }
+                                    totalTokens: LLMUsage.derivedTotal(
+                                        promptTokens: promptTokens, completionTokens: completionTokens
+                                    )
                                 )
                                 : nil
                             continuation.yield(.completed(LLMStreamTerminal(

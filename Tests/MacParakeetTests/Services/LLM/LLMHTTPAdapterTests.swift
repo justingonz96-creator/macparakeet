@@ -804,6 +804,9 @@ final class LLMHTTPAdapterTests: XCTestCase {
             (#"{"prompt_tokens":3,"completion_tokens":1,"total_tokens":9}"#, 9),
             (#"{"prompt_tokens":3}"#, nil),
             (#"{"completion_tokens":1}"#, nil),
+            ("{\"prompt_tokens\":\(Int.max),\"completion_tokens\":1}", nil),
+            ("{\"prompt_tokens\":\(Int.max),\"completion_tokens\":0}", Int.max),
+            ("{\"prompt_tokens\":\(Int.max),\"completion_tokens\":1,\"total_tokens\":9}", 9),
         ]
         for (usage, expectedTotal) in cases {
             AdapterRequestURLProtocol.handler = { request in
@@ -820,6 +823,9 @@ final class LLMHTTPAdapterTests: XCTestCase {
             ))
             guard case .completed(let terminal) = events.last else { return XCTFail("Expected terminal receipt") }
             XCTAssertNotNil(terminal.usage)
+            let reported = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(usage.utf8)) as? [String: Any])
+            XCTAssertEqual(terminal.usage?.promptTokens, reported["prompt_tokens"] as? Int)
+            XCTAssertEqual(terminal.usage?.completionTokens, reported["completion_tokens"] as? Int)
             XCTAssertEqual(terminal.usage?.totalTokens, expectedTotal, usage)
         }
     }
@@ -941,7 +947,48 @@ final class LLMHTTPAdapterTests: XCTestCase {
         guard case .completed(let terminal) = events.last else { return XCTFail("Expected EOF receipt") }
         XCTAssertEqual(terminal.model, "actual-model")
         XCTAssertNil(terminal.stopReason)
-        XCTAssertNil(terminal.usage)
+        XCTAssertEqual(terminal.usage?.promptTokens, 5)
+        XCTAssertNil(terminal.usage?.completionTokens)
+        XCTAssertNil(terminal.usage?.totalTokens)
+    }
+
+    func testOllamaStreamingUsageHandlesOverflowAtDoneAndLenientEOF() async throws {
+        for done in [true, false] {
+            AdapterRequestURLProtocol.handler = { request in
+                let body = "{\"model\":\"test\",\"message\":{\"content\":\"Hello\",\"role\":\"assistant\"},\"done\":\(done),\"prompt_eval_count\":\(Int.max),\"eval_count\":1}\n"
+                return (self.okResponse(for: request), Data(body.utf8))
+            }
+            let events = try await collectDetailed(ollamaAdapter.chatCompletionDetailedStream(
+                messages: goldenMessages, config: .ollama(model: "test"), options: .default
+            ))
+            guard case .completed(let terminal) = events.last else { return XCTFail("Expected successful receipt") }
+            XCTAssertEqual(terminal.usage?.promptTokens, Int.max)
+            XCTAssertEqual(terminal.usage?.completionTokens, 1)
+            XCTAssertNil(terminal.usage?.totalTokens)
+        }
+    }
+
+    func testAnthropicStreamingUsageHandlesOverflow() async throws {
+        AdapterRequestURLProtocol.handler = { request in
+            let body = """
+                data: {"type":"message_start","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":\(Int.max)}}}
+
+                data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}
+
+                data: {"type":"message_delta","usage":{"output_tokens":1}}
+
+                data: {"type":"message_stop"}
+
+                """
+            return (self.okResponse(for: request), Data(body.utf8))
+        }
+        let events = try await collectDetailed(anthropicAdapter.chatCompletionDetailedStream(
+            messages: goldenMessages, config: .anthropic(apiKey: "test"), options: .default
+        ))
+        guard case .completed(let terminal) = events.last else { return XCTFail("Expected successful receipt") }
+        XCTAssertEqual(terminal.usage?.promptTokens, Int.max)
+        XCTAssertEqual(terminal.usage?.completionTokens, 1)
+        XCTAssertNil(terminal.usage?.totalTokens)
     }
 
     func testOllamaErrorOnlyFramesFailBothStreamsBeforeAndAfterContent() async throws {

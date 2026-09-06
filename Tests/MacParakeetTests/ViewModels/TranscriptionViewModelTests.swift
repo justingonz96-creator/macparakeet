@@ -2010,6 +2010,87 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(try mockRepo.fetch(id: background.id)?.userNotes, "Saved background")
     }
 
+    func testSwitchingMeetingsClearsOwnedNotesBannerAndPreservesFailedDraft() async throws {
+        let previous = Transcription(fileName: "Previous", sourceType: .meeting)
+        let next = Transcription(fileName: "Next", sourceType: .meeting)
+        mockRepo.transcriptions = [previous, next]
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.currentTranscription = previous
+        let subject = try XCTUnwrap(viewModel)
+        let coordinator = SavedMeetingNotesCoordinator()
+        let editor = coordinator.editor(meetingID: previous.id, text: nil) { text in
+            await subject.updateMeetingNotes(for: previous, to: text)
+        }
+        editor.textBinding.wrappedValue = "Unsaved previous draft"
+        editor.cancelPendingSave()
+        mockRepo.saveError = NSError(domain: "notes-write", code: 1)
+        let savedPrevious = await editor.flush()
+        XCTAssertFalse(savedPrevious)
+        XCTAssertNotNil(viewModel.errorMessage)
+
+        viewModel.currentTranscription = next
+
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertNil(viewModel.errorDetail)
+        XCTAssertEqual(editor.saveState, .failed)
+        XCTAssertEqual(editor.text, "Unsaved previous draft")
+        XCTAssertTrue(editor.hasUnsavedChanges)
+        XCTAssertTrue(coordinator.hasUnsavedChanges)
+        mockRepo.saveError = nil
+        let savedNext = await viewModel.updateMeetingNotes(for: next, to: "Saved next draft")
+        XCTAssertTrue(savedNext)
+        XCTAssertNil(viewModel.errorMessage)
+        viewModel.currentTranscription = previous
+        let reopened = coordinator.editor(meetingID: previous.id, text: nil) { _ in
+            XCTFail("The retained editor must keep its original persistence closure")
+            return false
+        }
+        XCTAssertTrue(reopened === editor)
+        XCTAssertEqual(reopened.saveState, .failed)
+        XCTAssertTrue(reopened.hasUnsavedChanges)
+    }
+
+    func testUpdatingSameMeetingMetadataKeepsOwnedNotesBanner() async throws {
+        var meeting = Transcription(fileName: "Meeting", sourceType: .meeting)
+        mockRepo.transcriptions = [meeting]
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.currentTranscription = meeting
+        mockRepo.saveError = NSError(domain: "notes-write", code: 1)
+        let saved = await viewModel.updateMeetingNotes(for: meeting, to: "Unsaved draft")
+        XCTAssertFalse(saved)
+        let failureMessage = try XCTUnwrap(viewModel.errorMessage)
+
+        meeting.fileName = "Updated metadata for same meeting"
+        meeting.userNotes = "Previously persisted notes"
+        viewModel.currentTranscription = meeting
+
+        XCTAssertEqual(viewModel.errorMessage, failureMessage)
+        XCTAssertEqual(viewModel.currentTranscription?.id, meeting.id)
+    }
+
+    func testSwitchingMeetingsPreservesUnrelatedDiagnosticAfterNotesFailure() async throws {
+        let previous = Transcription(fileName: "Previous", sourceType: .meeting)
+        let next = Transcription(fileName: "Next", sourceType: .meeting)
+        mockRepo.transcriptions = [previous, next]
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.currentTranscription = previous
+        mockRepo.saveError = NSError(domain: "notes-write", code: 1)
+        let saved = await viewModel.updateMeetingNotes(for: previous, to: "Unsaved draft")
+        XCTAssertFalse(saved)
+        let headline = try XCTUnwrap(viewModel.errorMessage)
+        viewModel.setError(message: headline, detail: "Another feature owns this identical headline")
+
+        viewModel.currentTranscription = next
+
+        XCTAssertEqual(viewModel.errorMessage, headline)
+        XCTAssertEqual(viewModel.errorDetail, "Another feature owns this identical headline")
+        mockRepo.saveError = nil
+        let nextSaved = await viewModel.updateMeetingNotes(for: next, to: "Saved next draft")
+        XCTAssertTrue(nextSaved)
+        XCTAssertEqual(viewModel.errorMessage, headline)
+        XCTAssertEqual(viewModel.errorDetail, "Another feature owns this identical headline")
+    }
+
     func testAutosavingAnotherMeetingPreservesVisibleMeetingNotesError() async throws {
         let visible = Transcription(fileName: "Visible", sourceType: .meeting)
         let background = Transcription(fileName: "Background", sourceType: .meeting)

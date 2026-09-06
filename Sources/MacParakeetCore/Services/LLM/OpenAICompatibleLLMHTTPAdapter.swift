@@ -159,9 +159,9 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
                                 usage = LLMUsage(
                                     promptTokens: value.prompt_tokens,
                                     completionTokens: value.completion_tokens,
-                                    totalTokens: value.total_tokens ?? value.prompt_tokens.flatMap { prompt in
-                                        value.completion_tokens.map { prompt + $0 }
-                                    }
+                                    totalTokens: value.total_tokens ?? LLMUsage.derivedTotal(
+                                        promptTokens: value.prompt_tokens, completionTokens: value.completion_tokens
+                                    )
                                 )
                             }
                         }
