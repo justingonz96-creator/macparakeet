@@ -896,6 +896,49 @@ final class LLMServiceTests: XCTestCase {
         )
     }
 
+    func testOllamaPromptResultsUseConfiguredContextWindowInBothPaths() async throws {
+        mockConfigStore.config = .ollama(model: "qwen3")
+        let transcript = String(repeating: "x", count: 80_000)
+        for maxTokens: Int? in [nil, 2048] {
+            let settings = maxTokens.map { PromptInferenceSettings(maxTokens: $0) }
+            let expectedInputCharacters = (OllamaLLMHTTPAdapter.contextWindowTokens - (maxTokens ?? 0)) * 7 / 2
+            _ = try await service.generatePromptResultDetailed(
+                transcript: transcript, systemPrompt: "S", inferenceSettings: settings
+            )
+            XCTAssertEqual(mockClient.capturedMessages.reduce(0) { $0 + $1.content.count }, expectedInputCharacters)
+            XCTAssertEqual(mockClient.capturedOptions?.maxTokens, maxTokens)
+            for try await _ in service.generatePromptResultDetailedStream(
+                transcript: transcript, systemPrompt: "S", inferenceSettings: settings
+            ) {}
+            XCTAssertEqual(mockClient.capturedMessages.reduce(0) { $0 + $1.content.count }, expectedInputCharacters)
+            XCTAssertEqual(mockClient.capturedOptions?.maxTokens, maxTokens)
+        }
+    }
+
+    func testOllamaPromptResultsRejectOutputThatFillsContextBeforeDispatchInBothPaths() async {
+        mockConfigStore.config = .ollama(model: "qwen3")
+        let settings = PromptInferenceSettings(maxTokens: OllamaLLMHTTPAdapter.contextWindowTokens)
+        do {
+            _ = try await service.generatePromptResultDetailed(
+                transcript: "input", systemPrompt: "S", inferenceSettings: settings
+            )
+            XCTFail("Expected output occupying the full context to fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("leave no room for prompt input"))
+        }
+        do {
+            for try await _ in service.generatePromptResultDetailedStream(
+                transcript: "input", systemPrompt: "S", inferenceSettings: settings
+            ) {}
+            XCTFail("Expected output occupying the full context to fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("leave no room for prompt input"))
+        }
+        XCTAssertEqual(mockClient.chatCompletionCallCount, 0)
+        XCTAssertTrue(mockClient.capturedMessages.isEmpty)
+        XCTAssertNil(mockClient.capturedOptions)
+    }
+
     func testAnthropicPromptResultsReserveInheritedOutputLimitInBothPaths() async throws {
         mockConfigStore.config = .anthropic(apiKey: "test-key", model: "claude-sonnet-4-5")
         let transcript = String(repeating: "x", count: LLMService.cloudContextBudget)

@@ -337,3 +337,13 @@ verification, per repository guidance.
 3. LLM service streaming terminal metadata and queue/result snapshots.
 4. Prompt Library controls, validation, compatibility note, and popover summary.
 5. Regression suite and one manual OpenAI-compatible llama.cpp meeting-summary test.
+
+### Ollama prompt-result context budget
+
+Native Ollama prompt results use the same 8,192-token context window configured
+by the HTTP adapter (`num_ctx`) in both streaming and non-streaming paths. Input
+assembly uses the existing 3.5-character-per-token estimate and reserves the
+effective requested output allowance first. An output allowance that fills the
+window is rejected before dispatch. This is a character estimate, not tokenizer
+accounting; other providers retain their existing budgets. See the
+[Ollama parameter reference](https://docs.ollama.com/modelfile#valid-parameters-and-values).

@@ -1,6 +1,8 @@
 import Foundation
 
 struct OllamaLLMHTTPAdapter: LLMHTTPAdapter {
+    static let contextWindowTokens = 8192
+
     private let transport: LLMHTTPTransport
     private let openAICompatibleFallbackAdapter: OpenAICompatibleLLMHTTPAdapter
 
@@ -263,7 +265,7 @@ struct OllamaLLMHTTPAdapter: LLMHTTPAdapter {
             stream: stream,
             think: usesPromptInferenceSettings && options.thinkingMode == .enabled,
             options: OllamaRequestOptions(
-                num_ctx: 8192,
+                num_ctx: Self.contextWindowTokens,
                 temperature: usesPromptInferenceSettings ? options.temperature : nil,
                 top_p: usesPromptInferenceSettings ? options.topP : nil,
                 top_k: usesPromptInferenceSettings ? options.topK : nil,
