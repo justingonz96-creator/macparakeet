@@ -122,6 +122,47 @@ final class PromptInferenceSettingsTests: XCTestCase {
         XCTAssertEqual(overlaid.maxTokens, 512)
     }
 
+    func testOptionsOverlayAndReceiptPreserveConversationIdentity() {
+        let conversationID = UUID()
+        let baseline = ChatCompletionOptions(temperature: 0.7, conversationID: conversationID)
+        let settings = PromptInferenceSettings(topP: 0.9)
+
+        XCTAssertEqual(baseline.applying(nil).conversationID, conversationID)
+        XCTAssertEqual(baseline.applying(settings).conversationID, conversationID)
+        XCTAssertEqual(
+            baseline.withInferenceReceipt(usesPromptInferenceSettings: true, effectiveSettings: settings).conversationID,
+            conversationID
+        )
+    }
+
+    func testCapabilityFilteringPreservesConversationIdentityForEveryProvider() {
+        let requestedSettings: [PromptInferenceSettings?] = [
+            nil,
+            PromptInferenceSettings(temperature: 0.2, topP: 0.9),
+            PromptInferenceSettings(thinkingMode: .enabled),
+        ]
+        let conversationIDs: [UUID?] = [nil, UUID()]
+        for provider in LLMProviderID.allCases {
+            let config = LLMProviderConfig(
+                id: provider,
+                baseURL: URL(string: "https://example.com/v1")!,
+                apiKey: nil,
+                modelName: "claude-haiku-4-5",
+                isLocal: false
+            )
+            for conversationID in conversationIDs {
+                for requested in requestedSettings {
+                    let resolution = PromptInferenceCapabilityResolver.resolve(
+                        config: config,
+                        baseline: ChatCompletionOptions(temperature: 0.7, conversationID: conversationID),
+                        requested: requested
+                    )
+                    XCTAssertEqual(resolution.options.conversationID, conversationID, provider.rawValue)
+                }
+            }
+        }
+    }
+
     func testEffectiveReceiptIncludesInheritedValuesActuallySent() {
         let custom = PromptInferenceCapabilityResolver.resolve(
             config: .openaiCompatible(
@@ -143,6 +184,67 @@ final class PromptInferenceSettingsTests: XCTestCase {
             requested: nil
         )
         XCTAssertNil(openAIReasoning.effectiveSettings)
+    }
+
+    func testAnthropicTopPReplacesInheritedTemperatureAndRegeneratesUnchanged() {
+        let config = LLMProviderConfig.anthropic(apiKey: "key", model: "claude-haiku-4-5")
+        for topP in [0.0, 0.9] {
+            let resolution = PromptInferenceCapabilityResolver.resolve(
+                config: config,
+                requested: PromptInferenceSettings(topP: topP)
+            )
+
+            XCTAssertNil(resolution.options.temperature)
+            XCTAssertEqual(resolution.options.topP, topP)
+            XCTAssertTrue(resolution.unsupportedSettings.isEmpty)
+            XCTAssertEqual(
+                resolution.effectiveSettings,
+                PromptInferenceSettings(topP: topP, maxTokens: 4096)
+            )
+            XCTAssertEqual(resolution.options.effectiveInferenceSettings, resolution.effectiveSettings)
+
+            let regenerated = PromptInferenceCapabilityResolver.resolve(
+                config: config,
+                requested: resolution.effectiveSettings
+            )
+            XCTAssertNil(regenerated.options.temperature)
+            XCTAssertEqual(regenerated.effectiveSettings, resolution.effectiveSettings)
+        }
+    }
+
+    func testAnthropicTopPWinsOverExplicitTemperatureAndReportsOmission() {
+        let resolution = PromptInferenceCapabilityResolver.resolve(
+            config: .anthropic(apiKey: "key", model: "claude-sonnet-4-6"),
+            requested: PromptInferenceSettings(temperature: 0.2, topP: 0.9)
+        )
+
+        XCTAssertNil(resolution.options.temperature)
+        XCTAssertEqual(resolution.options.topP, 0.9)
+        XCTAssertEqual(resolution.unsupportedSettings, [.temperature])
+        XCTAssertEqual(resolution.effectiveSettings, PromptInferenceSettings(topP: 0.9, maxTokens: 4096))
+    }
+
+    func testAnthropicWithoutTopPPreservesHistoricalSampling() {
+        let config = LLMProviderConfig.anthropic(apiKey: "key", model: "claude-haiku-4-5")
+        let defaultResolution = PromptInferenceCapabilityResolver.resolve(config: config, requested: nil)
+        XCTAssertEqual(defaultResolution.options.temperature, 0.7)
+        XCTAssertNil(defaultResolution.options.topP)
+        XCTAssertEqual(
+            defaultResolution.effectiveSettings,
+            PromptInferenceSettings(temperature: 0.7, maxTokens: 4096)
+        )
+
+        let explicitResolution = PromptInferenceCapabilityResolver.resolve(
+            config: config,
+            requested: PromptInferenceSettings(temperature: 0.2)
+        )
+        XCTAssertEqual(explicitResolution.options.temperature, 0.2)
+        XCTAssertNil(explicitResolution.options.topP)
+        XCTAssertTrue(explicitResolution.unsupportedSettings.isEmpty)
+        XCTAssertEqual(
+            explicitResolution.effectiveSettings,
+            PromptInferenceSettings(temperature: 0.2, maxTokens: 4096)
+        )
     }
 
     func testCustomOpenAICompatibleSupportsEverySetting() {

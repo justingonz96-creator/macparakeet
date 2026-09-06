@@ -649,8 +649,38 @@ final class LLMHTTPAdapterTests: XCTestCase {
         try assertJSONBody(
             try XCTUnwrap(capturedRequest),
             equals: """
-                {"max_tokens":4096,"messages":[{"content":"Hello","role":"user"}],"model":"claude-sonnet-4-6","stream":false,"system":"System","temperature":0.2,"top_p":0.9}
+                {"max_tokens":4096,"messages":[{"content":"Hello","role":"user"}],"model":"claude-sonnet-4-6","stream":false,"system":"System","top_p":0.9}
                 """
+        )
+    }
+
+    func testAnthropicTopPRequestAndReceiptOmitInheritedTemperature() async throws {
+        var capturedRequest: URLRequest?
+        AdapterRequestURLProtocol.handler = { request in
+            capturedRequest = request
+            return (self.okResponse(for: request), self.validAnthropicResponseData())
+        }
+        let config = LLMProviderConfig.anthropic(apiKey: "key", model: "claude-haiku-4-5")
+        let resolution = PromptInferenceCapabilityResolver.resolve(
+            config: config,
+            requested: PromptInferenceSettings(topP: 0.9)
+        )
+
+        let response = try await anthropicAdapter.chatCompletion(
+            messages: goldenMessages,
+            config: config,
+            options: resolution.options
+        )
+
+        try assertJSONBody(
+            try XCTUnwrap(capturedRequest),
+            equals: """
+                {"max_tokens":4096,"messages":[{"content":"Hello","role":"user"}],"model":"claude-haiku-4-5","stream":false,"system":"System","top_p":0.9}
+                """
+        )
+        XCTAssertEqual(
+            response.effectiveInferenceSettings,
+            PromptInferenceSettings(topP: 0.9, maxTokens: 4096)
         )
     }
 
@@ -741,7 +771,9 @@ final class LLMHTTPAdapterTests: XCTestCase {
     }
 
     func testAnthropicDetailedStreamEmitsTerminalMetadata() async throws {
+        var capturedRequest: URLRequest?
         AdapterRequestURLProtocol.handler = { request in
+            capturedRequest = request
             let data = Data(
                 """
                 data: {"type":"message_start","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":8,"output_tokens":0}}}
@@ -756,13 +788,24 @@ final class LLMHTTPAdapterTests: XCTestCase {
             return (self.okResponse(for: request), data)
         }
 
+        let config = LLMProviderConfig.anthropic(apiKey: "test", model: "claude-sonnet-4-6")
+        let resolution = PromptInferenceCapabilityResolver.resolve(
+            config: config,
+            requested: PromptInferenceSettings(topP: 0.9)
+        )
         let events = try await collectDetailed(
             anthropicAdapter.chatCompletionDetailedStream(
                 messages: goldenMessages,
-                config: .anthropic(apiKey: "test", model: "claude-sonnet-4-6"),
-                options: .default
+                config: config,
+                options: resolution.options
             ))
 
+        try assertJSONBody(
+            try XCTUnwrap(capturedRequest),
+            equals: """
+                {"max_tokens":4096,"messages":[{"content":"Hello","role":"user"}],"model":"claude-sonnet-4-6","stream":true,"system":"System","top_p":0.9}
+                """
+        )
         XCTAssertEqual(events.filter { $0.isTerminal }.count, 1)
         guard case .completed(let terminal) = events.last else {
             return XCTFail("Expected terminal event")
@@ -771,6 +814,7 @@ final class LLMHTTPAdapterTests: XCTestCase {
         XCTAssertEqual(terminal.usage?.promptTokens, 8)
         XCTAssertEqual(terminal.usage?.completionTokens, 2)
         XCTAssertEqual(terminal.usage?.totalTokens, 10)
+        XCTAssertEqual(terminal.effectiveSettings, PromptInferenceSettings(topP: 0.9, maxTokens: 4096))
     }
 
     func testOllamaDetailedStreamEmitsTerminalOnlyAfterDone() async throws {

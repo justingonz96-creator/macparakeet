@@ -183,7 +183,7 @@ configured value when a model rejects it.
 | Custom OpenAI-compatible, including llama.cpp | `temperature`, `top_p`, `top_k`, `max_tokens`; thinking and optional effort map to `chat_template_kwargs.enable_thinking` and `chat_template_kwargs.reasoning_effort` |
 | Native Ollama | `temperature`, `top_p`, `top_k`, `num_predict` inside `options`; thinking maps to top-level `think`; reasoning effort is initially unsupported |
 | Native OpenAI | `temperature` and `top_p` when model-compatible; output budget uses the adapter's existing `max_tokens` / `max_completion_tokens` policy; omit `top_k` and thinking |
-| Native Anthropic | `temperature`, `top_p`, and `max_tokens` when model-compatible; omit `top_k` and thinking |
+| Native Anthropic | `temperature` or `top_p`, and `max_tokens` when model-compatible; Top P takes precedence over explicit or inherited temperature; omit `top_k` and thinking |
 | Gemini / OpenRouter / LM Studio | Map fields explicitly supported by the existing endpoint contract; omit the rest |
 | In-process MLX / local CLI | Apply only fields supported by the runtime/CLI contract; report the rest as unsupported |
 
@@ -223,6 +223,12 @@ Provider adaptation returns both the serialized request and an effective
 settings value. The latter is what `PromptResult.inferenceSettingsSnapshot`
 stores. This prevents a result from claiming that a setting was used when the
 adapter omitted it.
+
+For native Anthropic, setting Top P suppresses temperature, including the
+inherited `0.7` default. If both are configured, Top P wins and temperature is
+reported as unsupported for that combination. The effective snapshot contains
+only Top P, so regeneration preserves this choice. With Top P unset, historical
+temperature behavior is unchanged.
 
 ## Service and view-model flow
 

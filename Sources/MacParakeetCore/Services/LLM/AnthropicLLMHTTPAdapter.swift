@@ -317,7 +317,10 @@ struct AnthropicLLMHTTPAdapter: LLMHTTPAdapter {
         // follow suit. Send it only to the frozen set of legacy models that
         // still accept it, so callers that want low-variance output (e.g.
         // knowledge-card JSON at 0.1) keep it where it works.
-        if let temp = options.temperature, Self.modelAcceptsTemperature(config.modelName) {
+        // Match the capability resolver even for direct adapter callers:
+        // Top P takes precedence because newer sampling-capable Claude models
+        // reject requests containing both temperature and top_p.
+        if options.topP == nil, let temp = options.temperature, Self.modelAcceptsTemperature(config.modelName) {
             body["temperature"] = temp
         }
         if let topP = options.topP, AnthropicModelPolicy.acceptsSampling(model: config.modelName) {

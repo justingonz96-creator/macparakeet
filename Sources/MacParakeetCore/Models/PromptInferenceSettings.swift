@@ -138,11 +138,17 @@ public enum PromptInferenceCapabilityResolver {
         requested: PromptInferenceSettings?
     ) -> PromptInferenceResolution {
         let requested = requested?.normalized
-        let supported = supportedFields(for: config)
-        let explicitlyConfigured = configuredFields(in: requested)
-        let unsupported = explicitlyConfigured.subtracting(supported)
+        var supported = supportedFields(for: config)
 
         var resolvedOptions = legacyBaseline(config: config, baseline: baseline).applying(requested)
+        // Anthropic accepts one sampling control at a time. Top P wins over
+        // both an explicit temperature and the inherited 0.7 default, so a
+        // saved Top P receipt also remains stable when regenerated.
+        if config.id == .anthropic, resolvedOptions.topP != nil {
+            supported.remove(.temperature)
+        }
+        let explicitlyConfigured = configuredFields(in: requested)
+        let unsupported = explicitlyConfigured.subtracting(supported)
         if config.id == .ollama, requested?.thinkingMode ?? .providerDefault == .providerDefault {
             resolvedOptions = ChatCompletionOptions(
                 temperature: resolvedOptions.temperature,
@@ -151,7 +157,8 @@ public enum PromptInferenceCapabilityResolver {
                 maxTokens: resolvedOptions.maxTokens,
                 thinkingMode: .disabled,
                 reasoningEffort: nil,
-                responseFormat: resolvedOptions.responseFormat
+                responseFormat: resolvedOptions.responseFormat,
+                conversationID: resolvedOptions.conversationID
             )
         }
 
@@ -223,7 +230,8 @@ public enum PromptInferenceCapabilityResolver {
             maxTokens: supported.contains(.maxTokens) ? options.maxTokens : nil,
             thinkingMode: supported.contains(.thinkingMode) ? options.thinkingMode : .providerDefault,
             reasoningEffort: supported.contains(.reasoningEffort) ? options.reasoningEffort : nil,
-            responseFormat: options.responseFormat
+            responseFormat: options.responseFormat,
+            conversationID: options.conversationID
         )
     }
 
@@ -234,7 +242,8 @@ public enum PromptInferenceCapabilityResolver {
         guard config.id == .ollama else { return baseline }
         return ChatCompletionOptions(
             thinkingMode: .disabled,
-            responseFormat: baseline.responseFormat
+            responseFormat: baseline.responseFormat,
+            conversationID: baseline.conversationID
         )
     }
 

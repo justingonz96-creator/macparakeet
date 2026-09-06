@@ -192,7 +192,8 @@ public struct ChatCompletionOptions: Sendable, Equatable {
             reasoningEffort: resolvedReasoningEffort,
             usesPromptInferenceSettings: usesPromptInferenceSettings,
             effectiveInferenceSettings: effectiveInferenceSettings,
-            responseFormat: responseFormat
+            responseFormat: responseFormat,
+            conversationID: conversationID
         )
     }
 
@@ -209,7 +210,8 @@ public struct ChatCompletionOptions: Sendable, Equatable {
             reasoningEffort: reasoningEffort,
             usesPromptInferenceSettings: usesPromptInferenceSettings,
             effectiveInferenceSettings: effectiveSettings,
-            responseFormat: responseFormat
+            responseFormat: responseFormat,
+            conversationID: conversationID
         )
     }
 }
