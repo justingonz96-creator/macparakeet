@@ -2955,7 +2955,11 @@ struct TranscriptResultView: View {
                     } else if generation.content.isEmpty {
                         SummarySkeletonView()
                     } else {
-                        MarkdownContentView(generation.content, font: DesignSystem.Typography.bodyLarge)
+                        MarkdownContentView(
+                            generation.content,
+                            font: DesignSystem.Typography.bodyLarge,
+                            isStreaming: generation.state == .streaming
+                        )
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -3525,7 +3529,7 @@ struct TranscriptResultView: View {
                                 .foregroundStyle(DesignSystem.Colors.onAccent)
                                 .textSelection(.enabled)
                         } else {
-                            MarkdownContentView(message.content)
+                            MarkdownContentView(message.content, isStreaming: message.isStreaming)
                         }
                     }
                     .padding(.horizontal, 14)

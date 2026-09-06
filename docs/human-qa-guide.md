@@ -48,6 +48,19 @@ To QA a specific PR branch, run that script from inside **that branch's checkout
 worktree** — SwiftPM pins build paths per worktree, so build from where the branch
 actually lives.
 
+The script intentionally passes `-skipMacroValidation` to `xcodebuild` because
+the canonical `SwiftStreamingMarkdown` renderer includes the approved
+`EquatableMacros` plugin transitively. If a hand-written Xcode command fails
+with `Macro “EquatableMacros” ... must be enabled before it can be used`, do
+not install or substitute a renderer: rerun `scripts/dev/run_app.sh`, or keep
+that flag in the equivalent Xcode invocation.
+
+The script also stops every existing MacParakeet process **before** rebuilding
+or re-signing the Dev bundle. Never reorder that shutdown after bundle wrapping:
+modifying a signed executable while macOS is running it can terminate the app
+later with `SIGKILL (Code Signature Invalid)`, often when the next menu or sheet
+loads code from the changed page.
+
 **Or** QA the Sparkle release candidate DMG — closest to what users receive. Use this
 for release-gating checks (signing, notarization, first-run onboarding, auto-update).
 
