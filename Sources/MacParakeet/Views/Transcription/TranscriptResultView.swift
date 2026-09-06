@@ -3945,10 +3945,7 @@ struct TranscriptResultView: View {
             isSpeakerEditing: editingSpeakers,
             isSpeakerActionDisabled: viewModel.isApplyingSpeakerCorrection,
             selectedSegmentIDs: speakerSelection.selectedIDs,
-            effectiveIsSegmentActive: { segmentID in
-                guard let segment = attribution?.editableSegments.first(where: { $0.id == segmentID }) else {
-                    return false
-                }
+            effectiveIsSegmentActive: { segment in
                 let currentMs = playerViewModel.currentTimeMs
                 return playerViewModel.playbackMode != .none
                     && currentMs > 0
@@ -4169,6 +4166,7 @@ struct TranscriptResultView: View {
         let colorMap = cachedSpeakerColorMap.isEmpty ? buildSpeakerColorMap() : cachedSpeakerColorMap
         let speakerStats = viewModel.speakerAttribution?.statistics
             ?? cachedSpeakerStats
+        let mutationsDisabled = viewModel.speakerAttribution == nil || viewModel.isApplyingSpeakerCorrection
 
         VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
             Button {
@@ -4216,7 +4214,7 @@ struct TranscriptResultView: View {
                         Label("Add speaker", systemImage: "plus")
                     }
                     .parakeetAction(.secondary)
-                    .disabled(viewModel.isApplyingSpeakerCorrection)
+                    .disabled(mutationsDisabled)
                 }
                 ForEach(speakers, id: \.id) { speaker in
                     let stats = speakerStats[speaker.id]
@@ -4304,6 +4302,7 @@ struct TranscriptResultView: View {
                         .menuStyle(.borderlessButton)
                         .fixedSize()
                         .accessibilityLabel("Actions for \(speaker.label)")
+                        .disabled(mutationsDisabled)
                     }
                     .padding(DesignSystem.Spacing.md)
                     .background(

@@ -221,7 +221,7 @@ struct TranscriptTimestampedContentView<SpeakerLabelContent: View>: View {
     var isSpeakerEditing = false
     var isSpeakerActionDisabled = false
     var selectedSegmentIDs: Set<SpeakerEditableSegmentID> = []
-    var effectiveIsSegmentActive: (SpeakerEditableSegmentID) -> Bool = { _ in false }
+    var effectiveIsSegmentActive: (SpeakerEditableSegment) -> Bool = { _ in false }
     var effectiveHighlightRanges: [SpeakerEditableSegmentID: [NSRange]] = [:]
     var effectiveCurrentHighlight: (id: SpeakerEditableSegmentID, range: NSRange)? = nil
     var onSelectSegment: (SpeakerEditableSegmentID) -> Void = { _ in }
@@ -370,7 +370,7 @@ struct TranscriptTimestampedContentView<SpeakerLabelContent: View>: View {
                 startMs: segment.startMs,
                 text: segment.text,
                 timestampText: timestampLabel(segment.startMs),
-                isActive: effectiveIsSegmentActive(segment.id),
+                isActive: effectiveIsSegmentActive(segment),
                 isSeekable: isTimestampSeekable,
                 bodyFont: bodyFont,
                 showRowBackground: true,
@@ -503,7 +503,10 @@ private struct EditableTranscriptTurnCardView<SpeakerLabelContent: View>: View {
             VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
                 ForEach(turn.segments) { segment in
                     ZStack(alignment: .topLeading) {
-                        effectiveTimestampScrollAnchor(id: segment.id)
+                        // The card owns its first segment's scroll identity.
+                        if segment.id != turn.id {
+                            effectiveTimestampScrollAnchor(id: segment.id)
+                        }
                         TranscriptSegmentRow(
                             startMs: segment.startMs,
                             text: segment.text,
