@@ -24,6 +24,7 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         var youtubeTranscriptionHotkeyTriggerCount = 0
         var appearanceModeCount = 0
         var menuBarOnlyCount = 0
+        var menuBarIconVisibilityCount = 0
         var showIdlePillCount = 0
         var showDiscoverCount = 0
         var showMeetingRecordingPillCount = 0
@@ -71,6 +72,10 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
                 self.menuBarOnlyCount += 1
                 self.onCallback?()
             },
+            onMenuBarIconVisibilityChanged: { [unowned self] in
+                self.menuBarIconVisibilityCount += 1
+                self.onCallback?()
+            },
             onShowIdlePillChanged: { [unowned self] in
                 self.showIdlePillCount += 1
                 self.onCallback?()
@@ -116,6 +121,7 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         fx.center.post(name: .macParakeetYouTubeTranscriptionHotkeyTriggerDidChange, object: nil)
         fx.center.post(name: .macParakeetAppearanceModeDidChange, object: nil)
         fx.center.post(name: .macParakeetMenuBarOnlyModeDidChange, object: nil)
+        fx.center.post(name: .macParakeetMenuBarIconVisibilityDidChange, object: nil)
         fx.center.post(name: .macParakeetShowIdlePillDidChange, object: nil)
         fx.center.post(name: .macParakeetShowDiscoverDidChange, object: nil)
         fx.center.post(name: .macParakeetShowMeetingRecordingPillDidChange, object: nil)
@@ -135,6 +141,7 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         XCTAssertEqual(fx.youtubeTranscriptionHotkeyTriggerCount, 1)
         XCTAssertEqual(fx.appearanceModeCount, 1)
         XCTAssertEqual(fx.menuBarOnlyCount, 1)
+        XCTAssertEqual(fx.menuBarIconVisibilityCount, 1)
         XCTAssertEqual(fx.showIdlePillCount, 1)
         XCTAssertEqual(fx.showDiscoverCount, 1)
         XCTAssertEqual(fx.showMeetingRecordingPillCount, 1)
@@ -180,6 +187,7 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         fx.center.post(name: .macParakeetYouTubeTranscriptionHotkeyTriggerDidChange, object: nil)
         fx.center.post(name: .macParakeetAppearanceModeDidChange, object: nil)
         fx.center.post(name: .macParakeetMenuBarOnlyModeDidChange, object: nil)
+        fx.center.post(name: .macParakeetMenuBarIconVisibilityDidChange, object: nil)
         fx.center.post(name: .macParakeetShowIdlePillDidChange, object: nil)
         fx.center.post(name: .macParakeetShowDiscoverDidChange, object: nil)
         fx.center.post(name: .macParakeetShowMeetingRecordingPillDidChange, object: nil)
@@ -199,6 +207,7 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         XCTAssertEqual(fx.youtubeTranscriptionHotkeyTriggerCount, 0)
         XCTAssertEqual(fx.appearanceModeCount, 0)
         XCTAssertEqual(fx.menuBarOnlyCount, 0)
+        XCTAssertEqual(fx.menuBarIconVisibilityCount, 0)
         XCTAssertEqual(fx.showIdlePillCount, 0)
         XCTAssertEqual(fx.showDiscoverCount, 0)
         XCTAssertEqual(fx.showMeetingRecordingPillCount, 0)
@@ -283,6 +292,7 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         XCTAssertEqual(fx.youtubeTranscriptionHotkeyTriggerCount, 0)
         XCTAssertEqual(fx.appearanceModeCount, 0)
         XCTAssertEqual(fx.menuBarOnlyCount, 0)
+        XCTAssertEqual(fx.menuBarIconVisibilityCount, 0)
         XCTAssertEqual(fx.showIdlePillCount, 0)
         XCTAssertEqual(fx.showDiscoverCount, 0)
         XCTAssertEqual(fx.meetingAudioRetentionCount, 0)

@@ -63,6 +63,15 @@ final class SettingsSearchIndexTests: XCTestCase {
         )
     }
 
+    func testHideMenuBarIconQueryFindsStartupSetting() {
+        let results = SettingsSearchIndex.matches("hide menu bar icon")
+
+        XCTAssertTrue(
+            results.contains(where: { $0.id == "system.startup" }),
+            "Menu bar icon visibility should land on the Startup card"
+        )
+    }
+
     func testDiscoverQueryFindsShowDiscoverSetting() {
         let results = SettingsSearchIndex.matches("discover")
 

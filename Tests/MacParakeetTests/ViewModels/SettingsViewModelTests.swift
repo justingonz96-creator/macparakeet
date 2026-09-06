@@ -209,6 +209,7 @@ final class SettingsViewModelTests: XCTestCase {
 
     func testDefaultValues() {
         XCTAssertFalse(viewModel.launchAtLogin, "launchAtLogin should default to false")
+        XCTAssertTrue(viewModel.showMenuBarIcon, "showMenuBarIcon should default to true")
         XCTAssertFalse(viewModel.menuBarOnlyMode, "menuBarOnlyMode should default to false")
         XCTAssertEqual(viewModel.appAppearanceMode, .system, "appAppearanceMode should default to System")
         XCTAssertTrue(viewModel.showIdlePill, "showIdlePill should default to true")
@@ -279,6 +280,7 @@ final class SettingsViewModelTests: XCTestCase {
         let vm = SettingsViewModel(defaults: testDefaults)
 
         XCTAssertTrue(vm.launchAtLogin)
+        XCTAssertTrue(vm.showMenuBarIcon)
         XCTAssertTrue(vm.menuBarOnlyMode)
         XCTAssertEqual(vm.appAppearanceMode, .dark)
         XCTAssertFalse(vm.showIdlePill)
@@ -868,9 +870,68 @@ final class SettingsViewModelTests: XCTestCase {
     }
 
     func testSettingMenuBarOnlyModePersists() {
-        viewModel.menuBarOnlyMode = true
+        viewModel.setMenuBarOnlyMode(true)
 
         XCTAssertTrue(testDefaults.bool(forKey: AppPreferences.menuBarOnlyModeKey))
+    }
+
+    func testSettingMenuBarIconVisibilityPersistsPostsNotificationAndEmitsTelemetry() {
+        let telemetry = SettingsTelemetrySpy()
+        Telemetry.configure(telemetry)
+        let expectation = expectation(forNotification: .macParakeetMenuBarIconVisibilityDidChange, object: nil)
+
+        viewModel.setMenuBarIconHidden(true)
+
+        wait(for: [expectation], timeout: 1.0)
+        XCTAssertFalse(testDefaults.bool(forKey: AppPreferences.showMenuBarIconKey))
+        let settings = telemetry.snapshot().compactMap { event -> TelemetrySettingName? in
+            guard case .settingChanged(let setting, _) = event else { return nil }
+            return setting
+        }
+        XCTAssertEqual(settings, [.menuBarIcon])
+    }
+
+    func testHidingMenuBarIconDisablesMenuBarOnlyMode() {
+        viewModel.setMenuBarOnlyMode(true)
+
+        viewModel.setMenuBarIconHidden(true)
+
+        XCTAssertFalse(viewModel.menuBarOnlyMode)
+        XCTAssertFalse(viewModel.showMenuBarIcon)
+        XCTAssertFalse(testDefaults.bool(forKey: AppPreferences.menuBarOnlyModeKey))
+        XCTAssertFalse(testDefaults.bool(forKey: AppPreferences.showMenuBarIconKey))
+    }
+
+    func testEnablingMenuBarOnlyModeRestoresHiddenMenuBarIcon() {
+        viewModel.setMenuBarIconHidden(true)
+
+        viewModel.setMenuBarOnlyMode(true)
+
+        XCTAssertTrue(viewModel.menuBarOnlyMode)
+        XCTAssertTrue(viewModel.showMenuBarIcon)
+        XCTAssertTrue(testDefaults.bool(forKey: AppPreferences.menuBarOnlyModeKey))
+        XCTAssertTrue(testDefaults.bool(forKey: AppPreferences.showMenuBarIconKey))
+    }
+
+    func testInitRepairsPersistedStateThatWouldHideBothAppSurfaces() {
+        testDefaults.set(false, forKey: AppPreferences.showMenuBarIconKey)
+        testDefaults.set(true, forKey: AppPreferences.menuBarOnlyModeKey)
+
+        let vm = SettingsViewModel(defaults: testDefaults)
+
+        XCTAssertTrue(vm.menuBarOnlyMode)
+        XCTAssertTrue(vm.showMenuBarIcon)
+        XCTAssertTrue(testDefaults.bool(forKey: AppPreferences.showMenuBarIconKey))
+    }
+
+    func testInitLoadsHiddenMenuBarIconWhenDockModeIsEnabled() {
+        testDefaults.set(false, forKey: AppPreferences.showMenuBarIconKey)
+        testDefaults.set(false, forKey: AppPreferences.menuBarOnlyModeKey)
+
+        let vm = SettingsViewModel(defaults: testDefaults)
+
+        XCTAssertFalse(vm.menuBarOnlyMode)
+        XCTAssertFalse(vm.showMenuBarIcon)
     }
 
     func testSettingAppAppearanceModePersistsPostsNotificationAndEmitsTelemetry() {
@@ -2721,7 +2782,7 @@ final class SettingsViewModelTests: XCTestCase {
     func testSettingsRoundTrip() {
         // Set everything to non-default values
         viewModel.launchAtLogin = true
-        viewModel.menuBarOnlyMode = true
+        viewModel.setMenuBarOnlyMode(true)
         viewModel.appAppearanceMode = .dark
         viewModel.showIdlePill = false
         viewModel.silenceAutoStop = true
@@ -2736,6 +2797,7 @@ final class SettingsViewModelTests: XCTestCase {
         let vm2 = SettingsViewModel(defaults: testDefaults)
 
         XCTAssertTrue(vm2.launchAtLogin)
+        XCTAssertTrue(vm2.showMenuBarIcon)
         XCTAssertTrue(vm2.menuBarOnlyMode)
         XCTAssertEqual(vm2.appAppearanceMode, .dark)
         XCTAssertFalse(vm2.showIdlePill)

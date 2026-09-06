@@ -326,6 +326,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onMenuBarOnlyModeChanged: { [weak self] in
             self?.windowCoordinator.applyActivationPolicyFromSettings()
         },
+        onMenuBarIconVisibilityChanged: { [weak self] in
+            guard let self else { return }
+            self.menuBarCoordinator.setMenuBarIconVisible(self.settingsViewModel.showMenuBarIcon)
+        },
         onShowIdlePillChanged: { [weak self] in
             self?.handleShowIdlePillChange()
         },
@@ -367,7 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyAppAppearance()
         startEnvironmentSetup()
         menuBarCoordinator.setupMainMenu()
-        menuBarCoordinator.setupMenuBar()
+        menuBarCoordinator.setMenuBarIconVisible(settingsViewModel.showMenuBarIcon)
         settingsObserverCoordinator.startObserving()
         windowCoordinator.applyActivationPolicyFromSettings()
         setupDiscoverContent()

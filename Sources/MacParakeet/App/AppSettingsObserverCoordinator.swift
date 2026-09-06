@@ -15,6 +15,7 @@ final class AppSettingsObserverCoordinator {
     private let onYouTubeTranscriptionHotkeyTriggerChanged: () -> Void
     private let onAppearanceModeChanged: () -> Void
     private let onMenuBarOnlyModeChanged: () -> Void
+    private let onMenuBarIconVisibilityChanged: () -> Void
     private let onShowIdlePillChanged: () -> Void
     private let onShowDiscoverChanged: () -> Void
     private let onShowMeetingRecordingPillChanged: () -> Void
@@ -33,6 +34,7 @@ final class AppSettingsObserverCoordinator {
             (.macParakeetYouTubeTranscriptionHotkeyTriggerDidChange, { $0.onYouTubeTranscriptionHotkeyTriggerChanged() }),
             (.macParakeetAppearanceModeDidChange, { $0.onAppearanceModeChanged() }),
             (.macParakeetMenuBarOnlyModeDidChange, { $0.onMenuBarOnlyModeChanged() }),
+            (.macParakeetMenuBarIconVisibilityDidChange, { $0.onMenuBarIconVisibilityChanged() }),
             (.macParakeetShowIdlePillDidChange, { $0.onShowIdlePillChanged() }),
             (.macParakeetShowMeetingRecordingPillDidChange, { $0.onShowMeetingRecordingPillChanged() }),
             (.macParakeetInstantDictationDidChange, { $0.onInstantDictationChanged() }),
@@ -51,6 +53,7 @@ final class AppSettingsObserverCoordinator {
         onYouTubeTranscriptionHotkeyTriggerChanged: @escaping () -> Void,
         onAppearanceModeChanged: @escaping () -> Void,
         onMenuBarOnlyModeChanged: @escaping () -> Void,
+        onMenuBarIconVisibilityChanged: @escaping () -> Void,
         onShowIdlePillChanged: @escaping () -> Void,
         onShowDiscoverChanged: @escaping () -> Void,
         onShowMeetingRecordingPillChanged: @escaping () -> Void,
@@ -68,6 +71,7 @@ final class AppSettingsObserverCoordinator {
         self.onYouTubeTranscriptionHotkeyTriggerChanged = onYouTubeTranscriptionHotkeyTriggerChanged
         self.onAppearanceModeChanged = onAppearanceModeChanged
         self.onMenuBarOnlyModeChanged = onMenuBarOnlyModeChanged
+        self.onMenuBarIconVisibilityChanged = onMenuBarIconVisibilityChanged
         self.onShowIdlePillChanged = onShowIdlePillChanged
         self.onShowDiscoverChanged = onShowDiscoverChanged
         self.onShowMeetingRecordingPillChanged = onShowMeetingRecordingPillChanged
