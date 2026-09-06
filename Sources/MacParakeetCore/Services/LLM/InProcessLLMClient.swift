@@ -45,6 +45,11 @@ public final class InProcessLLMClient: LLMClientProtocol, Sendable {
         runtime.isAvailable
     }
 
+    /// Internal observation for deterministic queue-lifecycle verification.
+    var queuedGenerationCount: Int {
+        get async { await lifetimeCoordinator.queuedGenerationCount }
+    }
+
     public func chatCompletion(
         messages: [ChatMessage],
         context: LLMExecutionContext,
@@ -584,6 +589,8 @@ private actor LocalLLMLifetimeCoordinator {
     private var unloadInProgress = false
     private var activeGenerationID: UUID?
     private var waitingGenerations: [WaitingGeneration] = []
+
+    var queuedGenerationCount: Int { waitingGenerations.count }
 
     func beginGeneration() async throws -> LocalLLMGenerationLease {
         try Task.checkCancellation()
