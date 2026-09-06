@@ -917,7 +917,7 @@ final class MeetingRecordingServiceTests: XCTestCase {
         XCTAssertTrue(log.contains("rejected_delay_estimates=0"))
     }
 
-    func testStopRecordingPersistsQualifyingSilentSystemTrackAsPartial() async throws {
+    func testStopRecordingPersistsQualifyingSilentSystemTrackAsHealthy() async throws {
         let wallClock = MeetingTestWallClock(now: Date(timeIntervalSince1970: 1_700_000_000))
         let captureService = MockMeetingAudioCaptureService(
             startReport: MeetingAudioCaptureStartReport(
@@ -926,7 +926,7 @@ final class MeetingRecordingServiceTests: XCTestCase {
         )
         let service = MeetingRecordingService(
             audioCaptureService: captureService,
-            audioConverter: MockMeetingAudioFileConverter(),
+            audioConverter: MockMeetingAudioFileConverter(copyFirstInputAsMix: true),
             sttTranscriber: CountingMeetingSTTClient(),
             micConditionerFactory: { PassthroughMicConditioner() },
             wallClockNow: { wallClock.now }
@@ -948,7 +948,7 @@ final class MeetingRecordingServiceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: output.folderURL) }
 
         let report = try XCTUnwrap(output.captureReport)
-        XCTAssertEqual(report.quality, .partial)
+        XCTAssertEqual(report.quality, .healthy)
         XCTAssertEqual(report.source(for: .microphone)?.status, .complete)
         XCTAssertEqual(report.source(for: .system)?.status, .silent)
 
@@ -963,7 +963,7 @@ final class MeetingRecordingServiceTests: XCTestCase {
             log.split(whereSeparator: \.isNewline)
                 .last { $0.contains("meeting_recording_health session=\(output.sessionID.uuidString)") }
         )
-        XCTAssertTrue(healthLine.contains("capture_quality=partial"), String(healthLine))
+        XCTAssertTrue(healthLine.contains("capture_quality=healthy"), String(healthLine))
         XCTAssertTrue(healthLine.contains("system_capture_status=silent"), String(healthLine))
         XCTAssertTrue(healthLine.contains("system_signal=silent"), String(healthLine))
     }
@@ -4375,6 +4375,12 @@ private final class PendingSourceReadGuard: FileManager {
 }
 
 private final class MockMeetingAudioFileConverter: AudioFileConverting, @unchecked Sendable {
+    private let copyFirstInputAsMix: Bool
+
+    init(copyFirstInputAsMix: Bool = false) {
+        self.copyFirstInputAsMix = copyFirstInputAsMix
+    }
+
     func convert(fileURL: URL) async throws -> URL {
         fileURL
     }
@@ -4384,6 +4390,10 @@ private final class MockMeetingAudioFileConverter: AudioFileConverting, @uncheck
         outputURL: URL,
         sourceAlignment: MeetingSourceAlignment?
     ) async throws {
+        if copyFirstInputAsMix, let firstInput = inputURLs.first {
+            try FileManager.default.copyItem(at: firstInput, to: outputURL)
+            return
+        }
         FileManager.default.createFile(atPath: outputURL.path, contents: Data("mixed".utf8))
     }
 }
