@@ -736,11 +736,17 @@ final class LLMHTTPAdapterTests: XCTestCase {
 
     func testOpenAIDetailedStreamEmitsOneTerminalReceipt() async throws {
         AdapterRequestURLProtocol.handler = { request in
+            let body = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: XCTUnwrap(self.bodyData(from: request))) as? [String: Any]
+            )
+            XCTAssertEqual((body["stream_options"] as? [String: Bool])?["include_usage"], true)
             let data = Data(
                 """
                 data: {"model":"gpt-4.1","choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
 
-                data: {"model":"gpt-4.1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}
+                data: {"model":"gpt-4.1","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+                data: {"model":"gpt-4.1","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}
 
                 data: [DONE]
 
@@ -768,6 +774,54 @@ final class LLMHTTPAdapterTests: XCTestCase {
         XCTAssertEqual(terminal.stopReason, "stop")
         XCTAssertEqual(terminal.usage?.totalTokens, 4)
         XCTAssertEqual(terminal.effectiveSettings, settings)
+    }
+
+    func testStreamUsageIsRequestedOnlyForNativeOpenAIStreaming() throws {
+        for provider in [LLMProviderID.openai, .openaiCompatible, .gemini, .openrouter, .lmstudio, .ollama] {
+            for streaming in [false, true] {
+                let config = LLMProviderConfig(
+                    id: provider, baseURL: URL(string: "https://example.test/v1")!,
+                    apiKey: "test", modelName: "test-model", isLocal: false
+                )
+                let request = try openAIAdapter.buildRequest(
+                    messages: goldenMessages, config: config, options: .default, stream: streaming
+                )
+                let body = try XCTUnwrap(
+                    JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any]
+                )
+                if provider == .openai && streaming {
+                    XCTAssertEqual((body["stream_options"] as? [String: Bool])?["include_usage"], true)
+                } else {
+                    XCTAssertNil(body["stream_options"], "Unexpected stream options for \(provider), stream=\(streaming)")
+                }
+            }
+        }
+    }
+
+    func testCompatibleStreamDerivesTotalOnlyWhenBothCountsArePresent() async throws {
+        let cases: [(String, Int?)] = [
+            (#"{"prompt_tokens":3,"completion_tokens":1}"#, 4),
+            (#"{"prompt_tokens":3,"completion_tokens":1,"total_tokens":9}"#, 9),
+            (#"{"prompt_tokens":3}"#, nil),
+            (#"{"completion_tokens":1}"#, nil),
+        ]
+        for (usage, expectedTotal) in cases {
+            AdapterRequestURLProtocol.handler = { request in
+                let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n"
+                    + "data: {\"choices\":[],\"usage\":\(usage)}\n\ndata: [DONE]\n\n"
+                return (self.okResponse(for: request), Data(body.utf8))
+            }
+            let config = LLMProviderConfig(
+                id: .openaiCompatible, baseURL: URL(string: "https://example.test/v1")!,
+                apiKey: "test", modelName: "test-model", isLocal: false
+            )
+            let events = try await collectDetailed(openAIAdapter.chatCompletionDetailedStream(
+                messages: goldenMessages, config: config, options: .default
+            ))
+            guard case .completed(let terminal) = events.last else { return XCTFail("Expected terminal receipt") }
+            XCTAssertNotNil(terminal.usage)
+            XCTAssertEqual(terminal.usage?.totalTokens, expectedTotal, usage)
+        }
     }
 
     func testAnthropicDetailedStreamEmitsTerminalMetadata() async throws {
@@ -888,6 +942,44 @@ final class LLMHTTPAdapterTests: XCTestCase {
         XCTAssertEqual(terminal.model, "actual-model")
         XCTAssertNil(terminal.stopReason)
         XCTAssertNil(terminal.usage)
+    }
+
+    func testOllamaErrorOnlyFramesFailBothStreamsBeforeAndAfterContent() async throws {
+        let chunk = #"{"model":"test","message":{"role":"assistant","content":"Partial"},"done":false}"#
+        for prefix in ["", chunk + "\n"] {
+            AdapterRequestURLProtocol.handler = { request in
+                let body = prefix + #"{"error":"model failed to generate"}"# + "\n"
+                return (self.okResponse(for: request), Data(body.utf8))
+            }
+            var text: [String] = []
+            do {
+                for try await chunk in ollamaAdapter.chatCompletionStream(
+                    messages: goldenMessages, config: .ollama(model: "test"), options: .default
+                ) {
+                    text.append(chunk)
+                }
+                XCTFail("Provider errors must fail the legacy stream")
+            } catch let error as LLMError {
+                guard case .streamingError(let detail) = error else { return XCTFail("Unexpected error: \(error)") }
+                XCTAssertEqual(detail, "model failed to generate")
+            }
+            XCTAssertEqual(text, prefix.isEmpty ? [] : ["Partial"])
+
+            var events: [LLMStreamEvent] = []
+            do {
+                for try await event in ollamaAdapter.chatCompletionDetailedStream(
+                    messages: goldenMessages, config: .ollama(model: "test"), options: .default
+                ) {
+                    events.append(event)
+                }
+                XCTFail("Provider errors must fail the detailed stream")
+            } catch let error as LLMError {
+                guard case .streamingError(let detail) = error else { return XCTFail("Unexpected error: \(error)") }
+                XCTAssertEqual(detail, "model failed to generate")
+            }
+            XCTAssertEqual(events, prefix.isEmpty ? [] : [.text("Partial")])
+            XCTAssertFalse(events.contains { $0.isTerminal }, "A provider failure must never produce a success receipt")
+        }
     }
 
     func testOllamaDetailedStreamRejectsEOFWithoutContent() async throws {

@@ -896,6 +896,27 @@ final class LLMServiceTests: XCTestCase {
         )
     }
 
+    func testAnthropicPromptResultsReserveInheritedOutputLimitInBothPaths() async throws {
+        mockConfigStore.config = .anthropic(apiKey: "test-key", model: "claude-sonnet-4-5")
+        let transcript = String(repeating: "x", count: LLMService.cloudContextBudget)
+        let result = try await service.generatePromptResultDetailed(
+            transcript: transcript,
+            systemPrompt: "S"
+        )
+        let expectedInputCharacters = LLMService.cloudContextBudget - 4096 * 7 / 2
+        XCTAssertEqual(mockClient.capturedMessages.reduce(0) { $0 + $1.content.count }, expectedInputCharacters)
+        XCTAssertNil(mockClient.capturedOptions?.maxTokens, "Preserve the adapter's inherited wire default")
+        XCTAssertEqual(result.effectiveSettings?.maxTokens, 4096)
+
+        for try await _ in service.generatePromptResultDetailedStream(
+            transcript: transcript,
+            systemPrompt: "S",
+            inferenceSettings: nil
+        ) {}
+        XCTAssertEqual(mockClient.capturedMessages.reduce(0) { $0 + $1.content.count }, expectedInputCharacters)
+        XCTAssertNil(mockClient.capturedOptions?.maxTokens)
+    }
+
     func testLMStudioPromptResultReservesCeilingThreePointFiveCharactersPerOutputToken() async throws {
         mockConfigStore.config = .lmstudio(model: "qwen/qwen3-4b-2507")
 
@@ -912,6 +933,8 @@ final class LLMServiceTests: XCTestCase {
     }
 
     func testLMStudioPromptResultRejectsOutputBudgetThatLeavesNoInputBeforeCallingClient() async {
+        let telemetry = LLMTelemetrySpy()
+        Telemetry.configure(telemetry)
         mockConfigStore.config = .lmstudio(model: "qwen/qwen3-4b-2507")
 
         do {
@@ -930,6 +953,14 @@ final class LLMServiceTests: XCTestCase {
 
         XCTAssertEqual(mockClient.chatCompletionCallCount, 0)
         XCTAssertTrue(mockClient.capturedMessages.isEmpty)
+        let operations = llmOperationProps(in: telemetry.snapshot())
+        XCTAssertEqual(operations.count, 1)
+        XCTAssertEqual(operations.first?["feature"], "prompt_result")
+        XCTAssertEqual(operations.first?["provider"], "lmstudio")
+        XCTAssertEqual(operations.first?["streaming"], "false")
+        XCTAssertEqual(operations.first?["outcome"], "failure")
+        XCTAssertNotNil(operations.first?["error_type"])
+        XCTAssertNil(operations.first?["input_truncated"])
     }
 
     func testLMStudioPromptResultBoundsRenderedSystemPromptContainingTranscript() async throws {

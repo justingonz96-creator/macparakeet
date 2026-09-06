@@ -195,10 +195,12 @@ public struct ChatCompletionOptions: Sendable {
     public let topP: Double?
     public let topK: Int?
     public let maxTokens: Int?
-    public let responseFormat: ChatResponseFormat?
-    public let conversationID: UUID? // nil for a one-shot; header-only, not JSON
     public let thinkingMode: PromptInferenceSettings.ThinkingMode
     public let reasoningEffort: PromptInferenceSettings.ReasoningEffort?
+    public let usesPromptInferenceSettings: Bool
+    public let effectiveInferenceSettings: PromptInferenceSettings?
+    public let responseFormat: ChatResponseFormat?
+    public let conversationID: UUID? // nil for a one-shot; header-only, not JSON
 }
 
 public struct ChatCompletionResponse: Sendable {
@@ -257,7 +259,7 @@ capability contract is:
 | Provider path | Prompt-result settings accepted |
 | --- | --- |
 | Native OpenAI | `temperature` and `topP` when model policy permits them; `maxTokens` through the existing token-key policy |
-| Native Anthropic | `temperature`, `topP`, and `maxTokens` when accepted by the model policy |
+| Native Anthropic | `maxTokens` is always supported; `temperature` and `topP` depend on the model's sampling policy. When `topP` is set, it takes precedence and temperature is omitted, including inherited temperature |
 | Native Ollama | Temperature, top-p, top-k, output tokens, and thinking; numeric values use Ollama `options`, thinking uses top-level `think`; reasoning effort is unsupported |
 | Custom OpenAI-compatible | All six settings; thinking uses `chat_template_kwargs.enable_thinking`, and optional effort uses `chat_template_kwargs.reasoning_effort` only while thinking is enabled |
 | Gemini, OpenRouter, LM Studio | `temperature` and `maxTokens` initially |

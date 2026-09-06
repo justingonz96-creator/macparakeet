@@ -89,16 +89,6 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ## [Unreleased]
 
-### Fixed
-
-- Local CLI output normalizes line endings: CRLF collapses to a single LF and
-  a bare CR is rewritten to LF instead of passing through unsanitized. This
-  closes a terminal-overwrite gap in the existing sanitizer (a wrapped CLI
-  could no longer emit a bare CR to visually overwrite prior sanitized
-  output); readable content, including intentional newlines, is preserved.
-
-## [3.2.0] — 2026-09-04
-
 ### Added
 
 - In progress, pending final validation: `prompts set <prompt>` gains mutually
@@ -120,6 +110,19 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
   ignore both fields, and unset/legacy values omit them. Meeting result
   JSON and materialized `prompt-results.json` also preserve that receipt as
   additive optional `inferenceSettingsSnapshot`.
+
+### Fixed
+
+- Local CLI output normalizes line endings: CRLF collapses to a single LF and
+  a bare CR is rewritten to LF instead of passing through unsanitized. This
+  closes a terminal-overwrite gap in the existing sanitizer (a wrapped CLI
+  could no longer emit a bare CR to visually overwrite prior sanitized
+  output); readable content, including intentional newlines, is preserved.
+
+## [3.2.0] — 2026-09-04
+
+### Added
+
 - `meetings artifact --json` and envelope output may now include the additive
   optional `meetingCaptureReport` field with frame-derived meeting capture
   quality, elapsed/playable durations, and per-source coverage. Legacy meetings
