@@ -150,6 +150,7 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
     var updateSpeakersError: Error?
     var updateSpeakersHandler: (@Sendable (UUID, [SpeakerInfo]?) throws -> Void)?
     var userNotesReadBackError: Error?
+    var userNotesUpdateHandler: (@Sendable () throws -> Void)?
     private var failNextUserNotesReadBack = false
     var saveError: Error?
 
@@ -283,6 +284,7 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
 
     @discardableResult
     func updateUserNotes(id: UUID, userNotes: String?) throws -> Bool {
+        try userNotesUpdateHandler?()
         guard var transcription = transcriptions.first(where: { $0.id == id }) else {
             return false
         }

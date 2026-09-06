@@ -1769,7 +1769,10 @@ fields.
 - [x] Queue, retry, regenerate, and saved-result snapshots remain reproducible.
 - [x] Focused tests pass.
 - [ ] Manual end-to-end app verification is still required before release.
-- [x] The final full Swift suite passes.
+- [ ] Current integrated full-suite validation is not green: the 2026-09-06
+  audit recorded one long-transcript layout-settling failure. Its isolated
+  eight-test rerun and the subsequent focused correction suites passed; the
+  full suite was not repeated under the once-per-task rule.
 
 ### F38: Slash Commands in Notes
 
