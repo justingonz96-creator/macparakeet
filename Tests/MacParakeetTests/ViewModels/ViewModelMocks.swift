@@ -154,6 +154,17 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
     private var failNextUserNotesReadBack = false
     var saveError: Error?
 
+    func savePreservingUserMetadata(
+        _ transcription: Transcription, originalFileName: String
+    ) throws -> Transcription {
+        // This fixture's callers serialize access, as they do for save/update.
+        let merged = try mergingCompletionForTest(
+            transcription, current: fetch(id: transcription.id), originalFileName: originalFileName
+        )
+        try save(merged)
+        return merged
+    }
+
     func save(_ transcription: Transcription) throws {
         if let saveError {
             throw saveError

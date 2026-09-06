@@ -13,6 +13,12 @@ related prompt results.
 For meeting rows, `transcriptions.meetingArtifactFolderPath` is the durable
 folder locator. `transcriptions.filePath` is only the mixed-audio
 playback/export path and may be cleared by user deletion or retention.
+Transcription completion preserves the current locator values, including clears,
+and aborts when the canonical recording was deleted during processing.
+
+If a notes write commits but its follow-up read fails, the app updates only notes
+in its loaded snapshots and keeps existing artifacts intact until a successful
+refresh can read current metadata. The saved draft is not reported as lost.
 
 Meeting rename refreshes artifacts from the row returned by the rename's
 database transaction, preserving its current transcript, notes, and folder

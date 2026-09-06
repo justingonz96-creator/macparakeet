@@ -137,6 +137,7 @@ public final class TranscriptionViewModel {
     public private(set) var errorMessage: String?
     private var currentErrorID = UUID()
     private var meetingNotesErrorID: UUID?
+    private var meetingNotesErrorMeetingID: UUID?
     /// Rich, copyable diagnostic for the most recent URL-download failure: the
     /// terse `errorMessage` headline plus the source link and environment. Only
     /// ever shown/copied on explicit user action (the banner's copy button), so —
@@ -262,7 +263,7 @@ public final class TranscriptionViewModel {
     // Queue-tail identity includes artifact retries; error ownership belongs
     // only to note writes so an artifact retry cannot suppress their failures.
     private var meetingNotesSaveToken: UUID?
-    private var meetingNotesSaveRequestToken: UUID?
+    private var meetingNotesSaveRequestTokens: [UUID: UUID] = [:]
     private var meetingNotesArtifactWarnings: [UUID: String] = [:]
     private var dropPendingCount = 0
     private var dropCollectedURLs: [URL] = []
@@ -1599,21 +1600,22 @@ public final class TranscriptionViewModel {
     ) async -> Bool {
         guard transcription.sourceType == .meeting else { return false }
         guard let repo = transcriptionRepo else {
-            reportMissingConfiguration("transcriptionRepo", action: "updateCurrentMeetingNotes")
+            reportMissingConfiguration("transcriptionRepo", action: "updateMeetingNotes")
             return false
         }
 
-        let normalizedNotes = newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let normalizedNotes =
+            newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? nil
             : newText
         let previousTask = meetingNotesSaveTask
         let token = UUID()
         meetingNotesSaveToken = token
-        meetingNotesSaveRequestToken = token
+        meetingNotesSaveRequestTokens[transcription.id] = token
         let operation = Task { @MainActor [weak self, previousTask, repo, transcription, normalizedNotes] in
             _ = await previousTask?.value
             guard let self else { return false }
-            self.clearMeetingNotesError()
+            self.clearMeetingNotesError(for: transcription.id)
             do {
                 let persistence = try await Task.detached(priority: .utility) {
                     let updated = try repo.updateUserNotes(
@@ -1627,17 +1629,32 @@ public final class TranscriptionViewModel {
                 }.value
                 guard persistence.updated else {
                     if self.currentTranscription?.id == transcription.id,
-                        self.meetingNotesSaveRequestToken == token
+                        self.meetingNotesSaveRequestTokens[transcription.id] == token
                     {
                         self.setMeetingNotesError(
-                            message: "This meeting no longer exists and its notes could not be saved.")
+                            message: "This meeting no longer exists and its notes could not be saved.",
+                            meetingID: transcription.id)
                     }
                     return false
                 }
-                var committed = persistence.fetched ?? transcription
-                if persistence.fetched == nil {
-                    committed.userNotes = normalizedNotes
-                    committed.updatedAt = Date()
+                guard let committed = persistence.fetched else {
+                    // The write succeeded. Only patch notes in current UI snapshots:
+                    // the editor's captured row can predate a rename, favorite or chat edit.
+                    let committedAt = Date()
+                    if self.currentTranscription?.id == transcription.id {
+                        self.currentTranscription?.userNotes = normalizedNotes
+                        if let updatedAt = self.currentTranscription?.updatedAt {
+                            self.currentTranscription?.updatedAt = max(updatedAt, committedAt)
+                        }
+                    }
+                    if let index = self.transcriptions.firstIndex(where: { $0.id == transcription.id }) {
+                        self.transcriptions[index].userNotes = normalizedNotes
+                        self.transcriptions[index].updatedAt = max(self.transcriptions[index].updatedAt, committedAt)
+                    }
+                    // Without an authoritative snapshot, leave existing artifacts intact.
+                    self.meetingNotesArtifactWarnings[transcription.id] =
+                        "Notes were saved, but the meeting files could not be refreshed."
+                    return true
                 }
                 if self.currentTranscription?.id == committed.id {
                     self.currentTranscription = committed
@@ -1647,16 +1664,21 @@ public final class TranscriptionViewModel {
                 }
 
                 let refreshed = await self.refreshMeetingArtifacts(transcription: committed)
-                self.meetingNotesArtifactWarnings[committed.id] = refreshed
+                self.meetingNotesArtifactWarnings[committed.id] =
+                    refreshed
                     ? nil
                     : "Notes were saved, but the meeting files could not be refreshed."
                 return true
             } catch {
-                self.logger.error("Failed to persist meeting notes error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)")
+                self.logger.error(
+                    "Failed to persist meeting notes error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+                )
                 if self.currentTranscription?.id == transcription.id,
-                    self.meetingNotesSaveRequestToken == token
+                    self.meetingNotesSaveRequestTokens[transcription.id] == token
                 {
-                    self.setMeetingNotesError(message: "Failed to save meeting notes: \(error.localizedDescription)")
+                    self.setMeetingNotesError(
+                        message: "Failed to save meeting notes: \(error.localizedDescription)",
+                        meetingID: transcription.id)
                 }
                 return false
             }
@@ -1667,19 +1689,25 @@ public final class TranscriptionViewModel {
             meetingNotesSaveTask = nil
             meetingNotesSaveToken = nil
         }
+        if meetingNotesSaveRequestTokens[transcription.id] == token {
+            meetingNotesSaveRequestTokens[transcription.id] = nil
+        }
         return saved
     }
 
-    private func setMeetingNotesError(message: String) {
+    private func setMeetingNotesError(message: String, meetingID: UUID) {
         setError(message: message)
         meetingNotesErrorID = currentErrorID
+        meetingNotesErrorMeetingID = meetingID
     }
 
-    private func clearMeetingNotesError() {
+    private func clearMeetingNotesError(for meetingID: UUID) {
+        guard meetingNotesErrorMeetingID == meetingID else { return }
         if meetingNotesErrorID == currentErrorID {
             clearError()
         }
         meetingNotesErrorID = nil
+        meetingNotesErrorMeetingID = nil
     }
 
     public func retryCurrentMeetingNotesArtifactRefresh() async {
