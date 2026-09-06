@@ -112,17 +112,17 @@ final class AppWindowCoordinator: NSObject, NSWindowDelegate {
     }
 
     func applyActivationPolicyFromSettings() {
-        let menuBarOnly = settingsViewModel.menuBarOnlyMode
-        let wasMainWindowVisible = mainWindow?.isVisible ?? false
-        let mode: NSApplication.ActivationPolicy = menuBarOnly ? .accessory : .regular
-        NSApp.setActivationPolicy(mode)
+        NSApp.setActivationPolicy(Self.activationPolicy(
+            menuBarOnlyMode: settingsViewModel.menuBarOnlyMode,
+            hasVisiblePrimaryWindow: hasVisiblePrimaryWindow
+        ))
+    }
 
-        // macOS hides all windows when switching to .accessory policy.
-        // Re-show the main window so the user isn't surprised by it disappearing.
-        if menuBarOnly && wasMainWindowVisible {
-            mainWindow?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-        }
+    static func activationPolicy(
+        menuBarOnlyMode: Bool,
+        hasVisiblePrimaryWindow: Bool
+    ) -> NSApplication.ActivationPolicy {
+        menuBarOnlyMode && !hasVisiblePrimaryWindow ? .accessory : .regular
     }
 
     func makeDockMenu() -> NSMenu {
