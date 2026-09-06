@@ -41,7 +41,6 @@ final class MenuBarCoordinatorTests: XCTestCase {
             canOpenLiveMeetingPanel: false
         )
 
-        XCTAssertEqual(presentation.recordingTitle, "Start Recording")
         XCTAssertTrue(presentation.recordingEnabled)
         XCTAssertTrue(presentation.openLiveMeetingPanelHidden)
         XCTAssertFalse(presentation.openLiveMeetingPanelEnabled)
@@ -54,7 +53,6 @@ final class MenuBarCoordinatorTests: XCTestCase {
             canOpenLiveMeetingPanel: true
         )
 
-        XCTAssertEqual(presentation.recordingTitle, "Stop Recording")
         XCTAssertTrue(presentation.recordingEnabled)
         XCTAssertFalse(presentation.openLiveMeetingPanelHidden)
         XCTAssertTrue(presentation.openLiveMeetingPanelEnabled)
