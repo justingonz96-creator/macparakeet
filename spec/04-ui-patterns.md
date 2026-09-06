@@ -1238,6 +1238,10 @@ checked/unchecked task items, fenced code, and horizontally scrollable tables.
 The surrounding pane owns vertical scrolling; wide Markdown blocks must not
 expand the transcript detail or live-meeting panel.
 
+Each streaming renderer subscribes to a fresh snapshot stream and immediately
+receives the latest content. Closing or hiding a pane cancels only that
+subscription; returning to it must continue rendering new snapshots.
+
 Generated Markdown remains read-only and selectable. Task boxes communicate
 their checked state but are not controls. Headings and table cells preserve the
 renderer accessibility structure. Fonts and colors map to `DesignSystem` and

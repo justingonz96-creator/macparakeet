@@ -997,7 +997,11 @@ public final class TranscriptionViewModel {
                 updatedResult.userNotes = original.userNotes
                 updatedResult.updatedAt = Date()
                 do {
-                    try transcriptionRepo?.save(updatedResult)
+                    if let transcriptionRepo {
+                        updatedResult = try transcriptionRepo.savePreservingUserMetadata(
+                            updatedResult, originalFileName: original.fileName
+                        )
+                    }
                     promptResultsViewModel?.generateKnowledgeCard(
                         transcriptionId: updatedResult.id
                     )
@@ -2154,13 +2158,17 @@ public final class TranscriptionViewModel {
                         break
                     }
                     let promptResults = try promptResultRepo.fetchAll(transcriptionId: transcriptionID)
-                    let materializedTranscription = try attributionReader?
-                        .resolve(transcriptionId: transcriptionID)?
-                        .effectiveTranscription ?? persisted
-                    _ = try await artifactStore.materialize(
-                        transcription: materializedTranscription,
-                        promptResults: promptResults
-                    )
+                    if let projection = try attributionReader?.resolve(transcriptionId: transcriptionID) {
+                        _ = try await artifactStore.materialize(
+                            projection: projection,
+                            promptResults: promptResults
+                        )
+                    } else {
+                        _ = try await artifactStore.materialize(
+                            transcription: persisted,
+                            promptResults: promptResults
+                        )
+                    }
                 } catch {
                     let errorType = TelemetryErrorClassifier.classify(error)
                     logger.error("speaker_rename_artifact_refresh_failed error_type=\(errorType, privacy: .public)")

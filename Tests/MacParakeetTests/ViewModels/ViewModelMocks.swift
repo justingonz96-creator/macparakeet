@@ -438,6 +438,12 @@ final class MockLaunchAtLoginService: LaunchAtLoginControlling {
 // MARK: - MockTranscriptionService
 
 actor MockTranscriptionService: SpeakerConfiguredRetranscriptionService {
+    private var transcribeHook: (@Sendable () async -> Void)?
+
+    func setTranscribeHook(_ hook: @escaping @Sendable () async -> Void) {
+        transcribeHook = hook
+    }
+
     var transcribeResult: Transcription?
     var transcribeError: Error?
     var meetingFinalizationError: Error?
@@ -532,6 +538,7 @@ actor MockTranscriptionService: SpeakerConfiguredRetranscriptionService {
         onProgress: (@Sendable (TranscriptionProgress) -> Void)? = nil
     ) async throws -> Transcription {
         transcribeCallCount += 1
+        await transcribeHook?()
         lastFileURL = fileURL
         lastSource = source
         let fileName = fileURL.lastPathComponent
@@ -576,6 +583,7 @@ actor MockTranscriptionService: SpeakerConfiguredRetranscriptionService {
         onProgress: (@Sendable (TranscriptionProgress) -> Void)? = nil
     ) async throws -> Transcription {
         transcribeCallCount += 1
+        await transcribeHook?()
         lastMeetingRecording = recording
         lastSource = .meeting
 
