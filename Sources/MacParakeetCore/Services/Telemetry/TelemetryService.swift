@@ -39,6 +39,29 @@ private actor TelemetryFlushGate {
     }
 }
 
+/// Bridges structured task cancellation to the synchronously admitted URL task.
+private final class TelemetryRequestCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: URLSessionDataTask?
+    private var cancelled = false
+
+    func install(_ task: URLSessionDataTask) {
+        let shouldCancel = lock.withLock {
+            self.task = task
+            return cancelled
+        }
+        if shouldCancel { task.cancel() }
+    }
+
+    func cancel() {
+        let task = lock.withLock {
+            cancelled = true
+            return self.task
+        }
+        task?.cancel()
+    }
+}
+
 // MARK: - Implementation
 
 public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendable {
@@ -46,6 +69,9 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
     private let lock = NSLock()
     private let flushGate = TelemetryFlushGate()
     private var queue: [TelemetryEvent] = []
+    // Clearing consent invalidates snapshots already removed from the queue,
+    // including retries and batches that have not been admitted for dispatch.
+    private var queueGeneration: UInt64 = 0
     private var flushTimer: Timer?
     private var lifecycleObserver: NSObjectProtocol?
 
@@ -139,12 +165,18 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
     }
 
     public func send(_ event: TelemetryEventSpec) {
-        guard isEnabled() || event.name == .telemetryOptedOut else { return }
+        guard let generation = queueGeneration(ifAllowed: event.name) else { return }
 
         let telemetryEvent = makeTelemetryEvent(from: event)
 
         let shouldFlush: Bool
         lock.lock()
+        guard generation == queueGeneration,
+            isEnabled() || event.name == .telemetryOptedOut
+        else {
+            lock.unlock()
+            return
+        }
         queue.append(telemetryEvent)
         if queue.count > Self.maxQueueSize {
             queue.removeFirst(queue.count - Self.maxQueueSize)
@@ -159,12 +191,15 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
 
     @discardableResult
     public func sendAndFlush(_ event: TelemetryEventSpec) async -> Bool {
-        guard isEnabled() || event.name == .telemetryOptedOut else { return true }
+        guard let generation = queueGeneration(ifAllowed: event.name) else { return true }
 
         let telemetryEvent = makeTelemetryEvent(from: event)
 
         await flushGate.enter()
-        enqueue(telemetryEvent)
+        guard enqueue(telemetryEvent, generation: generation) else {
+            await flushGate.leave()
+            return true  // Intentionally discarded by an opt-out while waiting.
+        }
         let failedEventIds = await flushQueuedEvents()
         await flushGate.leave()
 
@@ -179,16 +214,19 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
 
     public func clearQueue() {
         lock.lock()
+        queueGeneration &+= 1
         queue.removeAll()
         lock.unlock()
     }
 
     private func flushQueuedEvents() async -> Set<String> {
-        let events = takeQueuedEvents()
+        let (events, generation) = takeQueuedEvents()
         guard !events.isEmpty else { return [] }
-        let failedEvents = await sendBatches(events, using: session, timeoutInterval: requestTimeoutInterval)
-        requeueFailedEvents(failedEvents)
-        return Set(failedEvents.map(\.eventId))
+        let failedEvents = await sendBatches(
+            events, generation: generation, using: session, timeoutInterval: requestTimeoutInterval
+        )
+        let retainedFailures = requeueFailedEvents(failedEvents, generation: generation)
+        return Set(retainedFailures.map(\.eventId))
     }
 
     // MARK: - Internal (for testing)
@@ -199,33 +237,62 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
         return queue.count
     }
 
+    // Set before starting a flush in tests to exercise the encoding/admission gap.
+    var beforeRequestAdmission: (@Sendable () -> Void)?
+
     // MARK: - Private
 
-    private func enqueue(_ event: TelemetryEvent) {
+    private func queueGeneration(ifAllowed event: TelemetryEventName) -> UInt64? {
         lock.lock()
+        defer { lock.unlock() }
+        guard isEnabled() || event == .telemetryOptedOut else { return nil }
+        return queueGeneration
+    }
+
+    private func enqueue(_ event: TelemetryEvent, generation: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard generation == queueGeneration,
+            isEnabled() || event.event == TelemetryEventName.telemetryOptedOut.rawValue
+        else { return false }
         queue.append(event)
         if queue.count > Self.maxQueueSize {
             queue.removeFirst(queue.count - Self.maxQueueSize)
         }
-        lock.unlock()
+        return true
     }
 
-    private func takeQueuedEvents() -> [TelemetryEvent] {
+    private func takeQueuedEvents() -> ([TelemetryEvent], UInt64) {
         lock.lock()
+        defer { lock.unlock() }
         let events = queue
         queue.removeAll()
-        lock.unlock()
-        return events
+        return (events, queueGeneration)
     }
 
-    private func requeueFailedEvents(_ events: [TelemetryEvent]) {
-        guard !events.isEmpty else { return }
+    private func requeueFailedEvents(_ events: [TelemetryEvent], generation: UInt64) -> [TelemetryEvent] {
+        guard !events.isEmpty else { return [] }
         lock.lock()
-        queue.insert(contentsOf: events, at: 0)
+        defer { lock.unlock() }
+        guard generation == queueGeneration else { return [] }
+        let retained = eventsAllowedByConsent(events)
+        queue.insert(contentsOf: retained, at: 0)
         if queue.count > Self.maxQueueSize {
             queue.removeLast(queue.count - Self.maxQueueSize)
         }
-        lock.unlock()
+        return retained
+    }
+
+    /// Called under `lock`; only the final opt-out event may be sent while disabled.
+    private func eventsAllowedByConsent(_ events: [TelemetryEvent]) -> [TelemetryEvent] {
+        isEnabled() ? events : events.filter { $0.event == TelemetryEventName.telemetryOptedOut.rawValue }
+    }
+
+    private func eventsAllowedForDispatch(_ events: [TelemetryEvent], generation: UInt64) -> [TelemetryEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard generation == queueGeneration else { return [] }
+        return eventsAllowedByConsent(events)
     }
 
     private func makeTelemetryEvent(from event: TelemetryEventSpec) -> TelemetryEvent {
@@ -270,6 +337,7 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
             ))
         }
         let events = queue
+        let generation = queueGeneration
         queue.removeAll()
         lock.unlock()
 
@@ -281,7 +349,9 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
                 completion.signal()
                 return
             }
-            _ = await self.sendBatches(events, using: session, timeoutInterval: Self.terminationRequestTimeout)
+            _ = await self.sendBatches(
+                events, generation: generation, using: session, timeoutInterval: Self.terminationRequestTimeout
+            )
             completion.signal()
         }
         _ = completion.wait(timeout: .now() + Self.terminationFlushMaxWait)
@@ -289,6 +359,7 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
 
     private func sendBatches(
         _ events: [TelemetryEvent],
+        generation: UInt64,
         using session: URLSession,
         timeoutInterval: TimeInterval
     ) async -> [TelemetryEvent] {
@@ -299,7 +370,8 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
 
         for batchStart in stride(from: 0, to: events.count, by: Self.maxBatchSize) {
             let batchEnd = min(batchStart + Self.maxBatchSize, events.count)
-            let batchEvents = Array(events[batchStart..<batchEnd])
+            let batchEvents = eventsAllowedForDispatch(Array(events[batchStart..<batchEnd]), generation: generation)
+            guard !batchEvents.isEmpty else { continue }
             let payload = TelemetryPayload(events: batchEvents)
 
             guard let body = try? encoder.encode(payload) else {
@@ -314,7 +386,8 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
             request.httpBody = body
             request.timeoutInterval = timeoutInterval
 
-            let sent = await sendAsync(request, using: session)
+            beforeRequestAdmission?()
+            let sent = await sendAsync(request, events: batchEvents, generation: generation, using: session)
             if !sent {
                 failedEvents.append(contentsOf: batchEvents)
             }
@@ -323,17 +396,38 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
         return failedEvents
     }
 
-    private func sendAsync(_ request: URLRequest, using session: URLSession) async -> Bool {
-        do {
-            let (_, response) = try await session.data(for: request)
-            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                logger.warning("Telemetry server returned \(http.statusCode)")
-                return false
+    private func sendAsync(
+        _ request: URLRequest, events: [TelemetryEvent], generation: UInt64, using session: URLSession
+    ) async -> Bool {
+        let cancellation = TelemetryRequestCancellation()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                // Encoding can race with opt-out. Admit and resume under the
+                // same lock as clearQueue, so no stale request starts afterward.
+                lock.withLock {
+                    guard generation == queueGeneration,
+                        isEnabled() || events.allSatisfy({ $0.event == TelemetryEventName.telemetryOptedOut.rawValue })
+                    else {
+                        continuation.resume(returning: true)
+                        return
+                    }
+                    let task = session.dataTask(with: request) { [logger] _, response, error in
+                        if let error {
+                            logger.debug("Telemetry flush failed: \(error.localizedDescription)")
+                            continuation.resume(returning: false)
+                        } else if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                            logger.warning("Telemetry server returned \(http.statusCode)")
+                            continuation.resume(returning: false)
+                        } else {
+                            continuation.resume(returning: true)
+                        }
+                    }
+                    cancellation.install(task)
+                    task.resume()
+                }
             }
-            return true
-        } catch {
-            logger.debug("Telemetry flush failed: \(error.localizedDescription)")
-            return false
+        } onCancel: {
+            cancellation.cancel()
         }
     }
 
