@@ -20,6 +20,7 @@
 | **TODO** | Not started. Drift-check before executing. |
 | **EXECUTOR-READY** | Self-contained, verified, a cheap model can run it now. |
 | **PR OPEN** | Implemented and locally verified; hosted checks/review remain. |
+| **EXTRACTED FOR UPSTREAM REVIEW** | A feature slice has been isolated from the fork for upstream review. Its PR defines included dependencies; retained historical records do not certify unrelated features or current CI. |
 | **IMPLEMENTED** | Code is present on the named branch; `ON MAIN` identifies integration, not stable release. `QA REMAINDER` leaves only the named verification open. |
 | **PARTIAL** | Some implementation is present; a defined remainder is open. `PRODUCT GATE` or `OWNER GATE` identifies the decision still required before continuing or broadening availability. |
 | **ON HOLD** | Deliberately parked (usually pending telemetry/decision). |

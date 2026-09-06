@@ -95,7 +95,7 @@ The v1 folder can contain these stable filenames:
 - `prompt-results.json`: JSON array of prompt-result records.
 - `prompt-results/`: refreshed directory of per-result Markdown files.
 - `prompt-results/*.md`: filenames use a stable two-digit 1-based index prefix
-plus sanitized prompt-result name.
+  plus sanitized prompt-result name.
 
 Each `prompt-results.json` record preserves the prompt-result snapshots,
 including `userNotesSnapshot`, the additive Boolean
