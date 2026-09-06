@@ -548,11 +548,25 @@ extension PromptsCommand {
                 let repo = PromptRepository(dbQueue: db.dbQueue)
 
                 let meetingNotesFlagSpecified = includeMeetingNotes || noIncludeMeetingNotes
-                var prompt = try findPrompt(
-                    idOrName: idOrName,
-                    repo: repo,
-                    categories: [.result, .transform]
-                )
+                var prompt: Prompt
+                if meetingNotesFlagSpecified {
+                    // A full UUID remains an explicit identity, even when a
+                    // result happens to use that UUID as its display name.
+                    if let id = UUID(uuidString: idOrName.trimmingCharacters(in: .whitespacesAndNewlines)),
+                        let exact = try repo.fetch(id: id) {
+                        prompt = exact
+                    } else {
+                        do {
+                            prompt = try findPrompt(idOrName: idOrName, repo: repo, category: .result)
+                        } catch CLILookupError.notFound(_) {
+                            // Widen only to explain a transform-only match.
+                            // Never replace an ambiguous result lookup.
+                            prompt = try findPrompt(idOrName: idOrName, repo: repo, categories: [.result, .transform])
+                        }
+                    }
+                } else {
+                    prompt = try findPrompt(idOrName: idOrName, repo: repo, categories: [.result, .transform])
+                }
                 if meetingNotesFlagSpecified, prompt.category != .result {
                     throw ValidationError("meeting-note context is only available for result prompts")
                 }

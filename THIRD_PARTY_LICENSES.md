@@ -134,12 +134,14 @@ This project bundles or downloads third-party software components. The following
 
 ### HighlightSwift
 
+- Revision: `99c431b38a1444a5fd6a4978307fbbefe3a7af53`
 - License: MIT License
 - Source: <https://github.com/appstefan/highlightswift>
 - Used for: Fenced-code syntax highlighting through SwiftStreamingMarkdown
 
 ### iosMath
 
+- Revision: `ba9ab7729b151329c54fd895a7c1859981d9484c`
 - License: MIT License
 - Source: <https://github.com/junyan72/iosMath>
 - Used for: Transitive math-rendering support in SwiftStreamingMarkdown

@@ -222,6 +222,15 @@ enum MarkdownContentConfiguration {
     }
 }
 
+/// Writes the unchanged Markdown source without blocking the UI actor.
+enum MarkdownTableExporter {
+    static func write(_ content: String, to destination: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try content.write(to: destination, atomically: true, encoding: .utf8)
+        }.value
+    }
+}
+
 private final class MarkdownContentInteractionListener: MarkdownListener {
     static let shared = MarkdownContentInteractionListener()
 
@@ -235,13 +244,26 @@ private final class MarkdownContentInteractionListener: MarkdownListener {
     }
 
     func onTableDownloadTap(content: String) async {
-        await MainActor.run {
+        let destination = await MainActor.run { () -> URL? in
             let panel = NSSavePanel()
             panel.title = "Export Markdown table"
             panel.nameFieldStringValue = "table.md"
             panel.allowedContentTypes = [.plainText]
-            guard panel.runModal() == .OK, let url = panel.url else { return }
-            try? content.write(to: url, atomically: true, encoding: .utf8)
+            guard panel.runModal() == .OK else { return nil }
+            return panel.url
+        }
+        guard let destination else { return }
+        do {
+            try await MarkdownTableExporter.write(content, to: destination)
+        } catch {
+            await MainActor.run {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "Export Failed"
+                alert.informativeText = error.localizedDescription
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
         }
     }
 

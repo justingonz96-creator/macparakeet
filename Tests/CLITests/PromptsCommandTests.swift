@@ -690,6 +690,68 @@ final class PromptsCommandTests: XCTestCase {
         XCTAssertEqual(payload["includeMeetingNotes"] as? Bool, true)
     }
 
+    func testMeetingNotesLookupPrefersResultsWithoutLosingExactUUIDIdentity() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notes-lookup-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databasePath = directory.appendingPathComponent("test.db").path
+        let manager = try DatabaseManager(path: databasePath)
+        let repository = PromptRepository(dbQueue: manager.dbQueue)
+        let result = Prompt(
+            id: UUID(uuidString: "CCDDEEFF-1111-1111-1111-111111111111")!,
+            name: "Result prefix target", content: "Result"
+        )
+        let transform = Prompt(
+            id: UUID(uuidString: "CCDDEEFF-2222-2222-2222-222222222222")!,
+            name: "Transform prefix target", content: "Transform", category: .transform
+        )
+        try repository.save(result)
+        try repository.save(transform)
+        for flag in ["--include-meeting-notes", "--no-include-meeting-notes"] {
+            let command = try PromptsCommand.SetSubcommand.parse([
+                "CCDDEEFF", flag, "--database", databasePath,
+            ])
+            try command.run()
+            XCTAssertEqual(try repository.fetch(id: result.id)?.includeMeetingNotes, flag == "--include-meeting-notes")
+            XCTAssertEqual(try repository.fetch(id: transform.id)?.includeMeetingNotes, false)
+        }
+
+        // A result name that resembles only a transform's prefix still
+        // resolves as a name within the result-specific notes operation.
+        let namedResult = Prompt(name: "CCDDEEFF-2222", content: "Named result")
+        try repository.save(namedResult)
+        let namedCommand = try PromptsCommand.SetSubcommand.parse([
+            namedResult.name, "--include-meeting-notes", "--database", databasePath,
+        ])
+        try namedCommand.run()
+        XCTAssertEqual(try repository.fetch(id: namedResult.id)?.includeMeetingNotes, true)
+
+        // Exact UUID precedence must still reject a transform, rather than
+        // modifying a result with a display name equal to that UUID.
+        let uuidNamedResult = Prompt(name: transform.id.uuidString, content: "UUID display name")
+        try repository.save(uuidNamedResult)
+        let exactCommand = try PromptsCommand.SetSubcommand.parse([
+            transform.id.uuidString, "--include-meeting-notes", "--database", databasePath,
+        ])
+        XCTAssertThrowsError(try exactCommand.run()) { error in
+            XCTAssertTrue(String(describing: error).contains("only available for result prompts"))
+        }
+        XCTAssertEqual(try repository.fetch(id: uuidNamedResult.id)?.includeMeetingNotes, false)
+
+        // Ambiguity among results must not fall through to wider lookup.
+        try repository.save(Prompt(
+            id: UUID(uuidString: "CCDDEEFF-3333-3333-3333-333333333333")!,
+            name: "Second result", content: "Result"
+        ))
+        let ambiguous = try PromptsCommand.SetSubcommand.parse([
+            "CCDDEEFF", "--include-meeting-notes", "--database", databasePath,
+        ])
+        XCTAssertThrowsError(try ambiguous.run()) { error in
+            guard case CLILookupError.ambiguous = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+    }
+
     func testSetMeetingNotesFlagRejectsTransformPrompt() throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("prompts-notes-transform-cli-\(UUID().uuidString)")

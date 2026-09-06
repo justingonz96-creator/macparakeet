@@ -146,6 +146,8 @@ public final class TranscriptionViewModel {
     /// The error-banner headline. Mutated only via `setError`/`clearError` so it
     /// can never drift out of sync with `errorDetail`.
     public private(set) var errorMessage: String?
+    private var currentErrorID = UUID()
+    private var meetingNotesErrorID: UUID?
     /// Rich, copyable diagnostic for the most recent URL-download failure: the
     /// terse `errorMessage` headline plus the source link and environment. Only
     /// ever shown/copied on explicit user action (the banner's copy button), so —
@@ -165,6 +167,7 @@ public final class TranscriptionViewModel {
     /// under a later, unrelated error — the single choke point that keeps the two
     /// in sync (the copy button reads `errorDetail ?? errorMessage`).
     public func setError(message: String?, detail: String? = nil) {
+        currentErrorID = UUID()
         errorMessage = message
         errorDetail = detail
     }
@@ -289,7 +292,10 @@ public final class TranscriptionViewModel {
     private var speakerRenameArtifactRefreshRequestedGenerations: [UUID: Int] = [:]
     private var speakerRenameArtifactRefreshCompletedGenerations: [UUID: Int] = [:]
     private var meetingNotesSaveTask: Task<Bool, Never>?
+    // Queue-tail identity includes artifact retries; error ownership belongs
+    // only to note writes so an artifact retry cannot suppress their failures.
     private var meetingNotesSaveToken: UUID?
+    private var meetingNotesSaveRequestToken: UUID?
     private var meetingNotesArtifactWarnings: [UUID: String] = [:]
     private var dropPendingCount = 0
     private var dropCollectedURLs: [URL] = []
@@ -1683,10 +1689,11 @@ public final class TranscriptionViewModel {
         let previousTask = meetingNotesSaveTask
         let token = UUID()
         meetingNotesSaveToken = token
+        meetingNotesSaveRequestToken = token
         let operation = Task { @MainActor [weak self, previousTask, repo, transcription, normalizedNotes] in
             _ = await previousTask?.value
             guard let self else { return false }
-            self.clearError()
+            self.clearMeetingNotesError()
             do {
                 let persistence = try await Task.detached(priority: .utility) {
                     let updated = try repo.updateUserNotes(
@@ -1700,8 +1707,10 @@ public final class TranscriptionViewModel {
                 }.value
                 guard persistence.updated else {
                     if self.currentTranscription?.id == transcription.id,
-                       self.meetingNotesSaveToken == token {
-                        self.setError(message: "This meeting no longer exists and its notes could not be saved.")
+                        self.meetingNotesSaveRequestToken == token
+                    {
+                        self.setMeetingNotesError(
+                            message: "This meeting no longer exists and its notes could not be saved.")
                     }
                     return false
                 }
@@ -1725,8 +1734,9 @@ public final class TranscriptionViewModel {
             } catch {
                 self.logger.error("Failed to persist meeting notes error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)")
                 if self.currentTranscription?.id == transcription.id,
-                   self.meetingNotesSaveToken == token {
-                    self.setError(message: "Failed to save meeting notes: \(error.localizedDescription)")
+                    self.meetingNotesSaveRequestToken == token
+                {
+                    self.setMeetingNotesError(message: "Failed to save meeting notes: \(error.localizedDescription)")
                 }
                 return false
             }
@@ -1738,6 +1748,18 @@ public final class TranscriptionViewModel {
             meetingNotesSaveToken = nil
         }
         return saved
+    }
+
+    private func setMeetingNotesError(message: String) {
+        setError(message: message)
+        meetingNotesErrorID = currentErrorID
+    }
+
+    private func clearMeetingNotesError() {
+        if meetingNotesErrorID == currentErrorID {
+            clearError()
+        }
+        meetingNotesErrorID = nil
     }
 
     public func retryCurrentMeetingNotesArtifactRefresh() async {
