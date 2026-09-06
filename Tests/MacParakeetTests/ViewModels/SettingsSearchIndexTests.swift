@@ -63,6 +63,15 @@ final class SettingsSearchIndexTests: XCTestCase {
         )
     }
 
+    func testHideMenuBarIconQueryFindsStartupSetting() {
+        let results = SettingsSearchIndex.matches("hide menu bar icon")
+
+        XCTAssertTrue(
+            results.contains(where: { $0.id == "system.startup" }),
+            "Menu bar icon visibility should land on the Startup card"
+        )
+    }
+
     func testTitleMatches() {
         let results = SettingsSearchIndex.matches("Speech Engine")
         XCTAssertTrue(results.contains(where: { $0.id == "engine.selector" }))
@@ -161,6 +170,44 @@ final class SettingsSearchIndexTests: XCTestCase {
             } else {
                 XCTAssertFalse(ids.contains("meeting.floatingControls"), "Query \(query) should not reveal hidden meeting settings")
             }
+        }
+    }
+
+    func testMeetingEndBehaviorQueriesFindNewToggles() {
+        let openQueries = ["auto open", "steal focus", "bring forward", "stay in background"]
+        for query in openQueries {
+            let ids = Set(SettingsSearchIndex.matches(query).map(\.id))
+            if AppFeatures.meetingRecordingEnabled {
+                XCTAssertTrue(ids.contains("meeting.openAppAfterEnd"), "Query \(query) should find open-app toggle")
+            } else {
+                XCTAssertFalse(ids.contains("meeting.openAppAfterEnd"), "Query \(query) should not reveal hidden meeting settings")
+            }
+        }
+
+        let notifyQueries = ["chime", "transcript ready", "meeting notification"]
+        for query in notifyQueries {
+            let ids = Set(SettingsSearchIndex.matches(query).map(\.id))
+            if AppFeatures.meetingRecordingEnabled {
+                XCTAssertTrue(ids.contains("meeting.notifyOnEnd"), "Query \(query) should find notify toggle")
+            } else {
+                XCTAssertFalse(ids.contains("meeting.notifyOnEnd"), "Query \(query) should not reveal hidden meeting settings")
+            }
+        }
+    }
+
+    /// The meeting gate is derived from the card anchor, so this holds for
+    /// rows added later without anyone remembering to update a list.
+    func testMeetingGateCoversEveryRowInTheMeetingCard() {
+        let meetingRows = SettingsSearchIndex.entries.filter { $0.cardAnchor == "meeting" }
+
+        if AppFeatures.meetingRecordingEnabled {
+            XCTAssertFalse(meetingRows.isEmpty, "The meeting card should contribute search rows when enabled")
+        } else {
+            XCTAssertTrue(meetingRows.isEmpty, "No row may survive into search when the meeting card is hidden")
+            XCTAssertFalse(
+                SettingsSearchIndex.entries.contains { $0.id == "system.permissions.screen" },
+                "Screen-recording permission exists for meeting recording and must be gated with it"
+            )
         }
     }
 
@@ -283,6 +330,8 @@ final class SettingsSearchIndexTests: XCTestCase {
             "meeting",
             "meeting.hotkey",
             "meeting.floatingControls",
+            "meeting.openAppAfterEnd",
+            "meeting.notifyOnEnd",
             "meeting.speakerDetection",
             "meeting.autoStop",
             "meeting.calendar",

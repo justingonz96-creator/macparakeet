@@ -935,6 +935,7 @@ final class MeetingRecordingFlowCoordinator {
                             MeetingTranscriptionQueue.Item(
                                 recording: output,
                                 transcriptionID: prepared.id,
+                                recordingGeneration: gen,
                                 operationContext: operationContext,
                                 trigger: operationTrigger,
                                 liveWordCount: liveWordCount,
@@ -1588,7 +1589,12 @@ final class MeetingRecordingFlowCoordinator {
                 liveWordCount: item.liveWordCount,
                 liveTranscriptLagged: item.liveTranscriptLagged
             )
-            onQueuedTranscriptionReady(transcription, stateMachine.state == .idle)
+            // Idle alone is insufficient: a newer meeting may already have
+            // stopped and queued behind this one. Only the current generation
+            // can present; every completed item still runs background effects.
+            let canPresent = stateMachine.state == .idle
+                && item.recordingGeneration == stateMachine.generation
+            onQueuedTranscriptionReady(transcription, canPresent)
 
         case .failure(let item, let error):
             Telemetry.send(
@@ -1615,6 +1621,7 @@ final class MeetingRecordingFlowCoordinator {
 
     private func makeRetryQueueItem(from transcription: Transcription) async throws -> MeetingTranscriptionQueue.Item {
         let repo = transcriptionRepo
+        let recordingGeneration = stateMachine.generation
         return try await Task.detached(priority: .userInitiated) {
             let latest = try repo.fetch(id: transcription.id) ?? transcription
             guard latest.sourceType == .meeting else {
@@ -1644,6 +1651,7 @@ final class MeetingRecordingFlowCoordinator {
             return MeetingTranscriptionQueue.Item(
                 recording: recording,
                 transcriptionID: latest.id,
+                recordingGeneration: recordingGeneration,
                 operationContext: ObservabilityOperationContext(),
                 trigger: nil,
                 liveWordCount: 0,

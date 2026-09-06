@@ -221,6 +221,7 @@ final class MeetingFinalizationReconcilerTests: XCTestCase {
         let item = MeetingTranscriptionQueue.Item(
             recording: recording,
             transcriptionID: transcriptionID,
+            recordingGeneration: 0,
             operationContext: ObservabilityOperationContext(),
             trigger: .manual,
             liveWordCount: 0,

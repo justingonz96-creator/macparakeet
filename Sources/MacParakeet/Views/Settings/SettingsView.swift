@@ -979,9 +979,23 @@ struct SettingsView: View {
                 Divider()
 
                 settingsToggleRow(
+                    title: "Hide menu bar icon",
+                    detail: "Remove MacParakeet from the menu bar. The Dock icon stays available.",
+                    isOn: Binding(
+                        get: { !viewModel.showMenuBarIcon },
+                        set: { viewModel.setMenuBarIconHidden($0) }
+                    )
+                )
+
+                Divider()
+
+                settingsToggleRow(
                     title: "Menu bar only mode",
                     detail: "Hide the Dock icon and run from the menu bar only.",
-                    isOn: $viewModel.menuBarOnlyMode
+                    isOn: Binding(
+                        get: { viewModel.menuBarOnlyMode },
+                        set: { viewModel.setMenuBarOnlyMode($0) }
+                    )
                 )
             }
         }
@@ -1216,6 +1230,23 @@ struct SettingsView: View {
                     detail: "Shows the small recording pill while a meeting is active. Turn this off to control recording from the menu bar, hotkey, or Meetings tab.",
                     isOn: $viewModel.showMeetingRecordingPill
                 )
+
+                Divider()
+
+                settingsToggleRow(
+                    title: "Open app when meeting ends",
+                    detail: "Brings MacParakeet forward showing the transcript when a recording finishes. Turn this off to keep working — the meeting saves to your library in the background.",
+                    isOn: $viewModel.openAppAfterMeetingEnd
+                )
+
+                Divider()
+
+                settingsToggleRow(
+                    title: "Notify when transcript is ready",
+                    detail: "Plays a chime and shows a notification when a meeting finishes transcribing in the background. Applies when the app isn't set to open automatically.",
+                    isOn: $viewModel.notifyOnMeetingEnd
+                )
+                .disabled(viewModel.openAppAfterMeetingEnd)
 
                 Divider()
 

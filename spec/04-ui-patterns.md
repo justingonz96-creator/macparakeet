@@ -51,7 +51,7 @@ Design philosophy: **Simple, native, stays out of the way.** No chrome, no clutt
 │  🎤 Transcribe   │  [Depends on sidebar selection]           │
 │  🗂 Library      │                                           │
 │  🕒 Dictations   │  - Transcribe: 3-mode capture hub        │
-│  📖 Vocabulary   │  - Library: Grid (or list for Meetings)  │
+│  📖 Vocabulary   │  - Library: Grid or list                 │
 │  ✦ Transforms    │  - Dictations: History list               │
 │  💬 Feedback     │  - Vocabulary: Processing mode + manage   │
 │  ⚙ Settings      │  - Transforms: Rewrite selected text      │
@@ -68,7 +68,7 @@ Minimum window width: 800pt.
 The sidebar uses NavigationSplitView with flat items (icon + label):
 
 - **Transcribe** (`waveform`) -- Capture hub: YouTube card + file drop card + Meeting Recording tile
-- **Library** (`square.grid.2x2`) -- All transcriptions; filter chips switch between thumbnail grid (All/YouTube/Local/Favorites) and date-grouped list (Meetings)
+- **Library** (`square.grid.2x2`) -- All transcriptions; every filter offers the same persistent Grid/List switch
 - **Dictations** (`clock.arrow.circlepath`) -- Flat history list with bottom bar player
 - **Meetings** (`person.2.wave.2`) -- Workflow space for upcoming, live, and saved meeting work; visible when `AppFeatures.meetingRecordingEnabled` is true
 - **Vocabulary** (`book.fill`) -- Processing mode, pipeline guide, custom words & snippets management
@@ -119,18 +119,39 @@ States, all bound to the long-lived `MeetingRecordingPillViewModel` shared with 
 
 The tile body is informational. Only the visible Start and Stop capsules are real SwiftUI `Button`s, and both call the same `toggleRecording` path the menu bar uses. Completing, transcribing, completed, and error states render as inert status surfaces and must not expose button traits or no-op accessibility actions. The floating pill stays visible by default during recording so users who hide the main window keep an active control surface; users can hide it in Settings and continue controlling the live recording from the status menu, hotkey, or Meetings surfaces.
 
-### Library Meetings Filter
+### Library Layouts and Meeting States
 
-When `Library.filter == .meeting`, the view renders a date-grouped list (`Today` / `Yesterday` / `Previous 7 Days` / `Previous 30 Days` / `{Month Year}`) using `MeetingDateGroupHeader` + `MeetingRowCard` instead of the thumbnail grid the other filters use. Meeting rows surface saved-audio state directly (`Audio saved`, `Audio removed`, or `Audio missing`) so playback/retranscription expectations are visible before the user opens a menu.
+When list mode is selected, the view renders a date-grouped list (`Today` / `Yesterday` / `Previous 7 Days` / `Previous 30 Days` / `{Month Year}`) using `MeetingDateGroupHeader` + `MeetingRowCard`. Meeting rows surface saved-audio state directly (`Audio saved`, `Audio removed`, or `Audio missing`) so playback/retranscription expectations are visible before the user opens a menu.
 
 A finalized meeting whose `meetingCaptureReport.quality` is `partial` shows the
-existing **Partial audio** badge in its Library meeting row and the existing
-**Partial meeting audio** banner in transcript detail. The shared presentation
-explains elapsed versus captured duration and each degraded source. When the
-system source status is `silent`, its message is: “System audio contained no
-audible signal. Microphone audio remains saved.” This state is durable and
-appears after finalization; it does not add a live alert or automatically
-restart ScreenCaptureKit during a meeting.
+existing **Partial audio** badge in both its Library row and thumbnail card, and
+the existing **Partial meeting audio** banner in transcript detail. The shared
+presentation explains elapsed versus captured duration and each degraded source.
+Healthy silent system audio adds no warning; silence also adds no extra message
+when another source has a genuine capture failure. Missing, interrupted, failed,
+or short capture and playback fallback remain visible. This state is durable and
+appears after finalization; it does not add a live alert or automatically restart
+ScreenCaptureKit during a meeting.
+
+Every Library filter, including Meetings, exposes a compact Grid/List segmented
+control in the header. With no stored choice, Meetings uses the date-grouped list
+and other Library contexts use the grid. Browsing and switching filters do not
+save a preference. An explicit Grid or List choice is global across Library
+contexts and persists across launches; the separate Meetings workspace is unchanged.
+List mode reuses the date-grouped row presentation and adds the transcription
+source beside the title; thumbnail cards also show the source. Search, filters,
+contextual actions, pagination, export, and bulk selection behave identically in
+either layout.
+
+Thumbnail cards show transcription failure, stopped transcription, and pending
+background transcription independently of saved-audio state. Queued and running
+finalization both use the persisted `processing` status and the existing
+**Transcribing** presentation, never a completed claim. A stale or partial snippet
+must not hide a card's non-completed status. Card metadata grows to fit lifecycle,
+saved-audio, recovery, and partial-capture labels rather than clipping them to a
+fixed height.
+List rows retain their existing snippet-first preview behavior, including while
+a meeting with saved transcript text is being retranscribed.
 
 Opening an empty processing meeting row must preserve that same lifecycle
 truth. The transcript pane shows an indeterminate "Transcribing meeting"
@@ -628,7 +649,9 @@ During concurrent dictation + meeting recording:
 ### Behavior
 
 - Left-click opens the menu
-- The menu bar icon is always visible when the app is running
+- The menu bar icon is visible by default and can be hidden under Settings → System → Startup while the Dock icon remains available
+- The two Startup toggles resolve their conflict symmetrically: enabling Menu bar only mode restores the menu icon, while hiding the menu icon turns Menu bar only mode off
+- Restoring a hidden icon immediately reflects the current idle, recording, or processing state
 - "Recent Transcriptions" submenu shows last 5 transcriptions with relative timestamps
 - Clicking a recent transcription opens the main window to that transcription's detail
 
@@ -830,10 +853,10 @@ Row anatomy:
 
 Settings open in the content area when "Settings" is selected in the sidebar. The current information architecture is a four-tab shell with a persistent header, search field, and status-aware tab badges:
 
-- **Modes** — Audio Input, Dictation, Transcription, and Meeting Recording cards. The Meeting Recording card groups start/stop automation under an "Automatic recording" subsection as two parallel on/off toggles: a calendar-driven "Start recording automatically" adaptive row (requests Calendar access in context, then becomes a plain on/off toggle that reveals an elevated sub-panel — matching the "Also save meetings to a folder" disclosure — holding the `.notify` vs `.autoStart` mode segmented control plus the reminder, event-filter, and per-calendar controls; `.off` is the toggle's unchecked state; `AppFeatures.calendarEnabled = true`) paired with an activity-driven "Stop recording automatically" toggle (`AppFeatures.meetingAutoStopEnabled = true`). Both halves use the same toggle idiom so the lifecycle pair reads as symmetric. The meeting folder disclosure distinguishes complete managed meeting artifacts from the selected-format file saved to the chosen folder, shows the resolved managed-artifact path, and warns when the chosen folder is unavailable or not writable. TXT and Markdown additionally expose independent toggles for one timestamp per reading paragraph, speaker labels, and meeting details; those toggles affect only the folder copy.
+- **Modes** — Audio Input, Dictation, Transcription, and Meeting Recording cards. The Meeting Recording card groups start/stop automation under an "Automatic recording" subsection as two parallel on/off toggles: a calendar-driven "Start recording automatically" adaptive row (requests Calendar access in context, then becomes a plain on/off toggle that reveals an elevated sub-panel — matching the "Also save meetings to a folder" disclosure — holding the `.notify` vs `.autoStart` mode segmented control plus the reminder, event-filter, and per-calendar controls; `.off` is the toggle's unchecked state; `AppFeatures.calendarEnabled = true`) paired with an activity-driven "Stop recording automatically" toggle (`AppFeatures.meetingAutoStopEnabled = true`). Both halves use the same toggle idiom so the lifecycle pair reads as symmetric. Below the floating-controls toggle sits a meeting-end pair: **Open app when meeting ends** (default on; off preserves the user's focus and workspace while the meeting completes, including an in-place refresh of its already-open detail) and **Notify when transcript is ready** (default on; a quiet-completion chime plus a banner only while backgrounded, disabled while auto-open is on without changing its saved value — see F47 in `spec/02-features.md`). The meeting folder disclosure distinguishes complete managed meeting artifacts from the selected-format file saved to the chosen folder, shows the resolved managed-artifact path, and warns when the chosen folder is unavailable or not writable. TXT and Markdown additionally expose independent toggles for one timestamp per reading paragraph, speaker labels, and meeting details; those toggles affect only the folder copy.
 - **Engine** — One Speech Engine card with the primary engine tiles and an inline optional recordings/files override, followed by per-engine model/language controls and local model status/management.
 - **AI** — Optional provider setup for summaries, transcript chat, prompt actions, and live Ask.
-- **System** — Appearance, startup, permissions, storage, updates, privacy/telemetry, onboarding reset, about, and fenced Reset & Cleanup actions.
+- **System** — Appearance; a Startup card with Launch at login, Hide menu bar icon, and Menu bar only mode; permissions; storage; updates; privacy/telemetry; onboarding reset; about; and fenced Reset & Cleanup actions.
 
 `SettingsRootViewModel` owns active-tab persistence and search state. `SettingsSearchIndex` provides cross-tab search results and includes calendar entries while `AppFeatures.calendarEnabled` is `true` (currently enabled; they surface once Calendar access is granted), and hides them when the flag is off. The legacy card sketches below are retained only as historical content references; their grouping is not the current v0.6 IA.
 
