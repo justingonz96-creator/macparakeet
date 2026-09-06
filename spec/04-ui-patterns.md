@@ -1094,6 +1094,11 @@ Button to re-run onboarding flow: "Run Onboarding Again..."
 
 A curated content feed displayed as a sidebar item with a full-page content view. Discover surfaces tips, quotes, affirmations, and sponsored items fetched from a remote JSON feed (`macparakeet.com/api/discover.json`) with local cache fallback and a bundled default. The feature is included by default; setting `MACPARAKEET_DISABLE_DISCOVER=1` at compile time excludes its code, resources, and UI.
 
+When Discover is compiled in, refresh starts at app launch, independently of
+page selection and the telemetry setting. There is no runtime visibility or
+network toggle. Cached and bundled content supports offline display; it does
+not disable the launch request.
+
 ### Sidebar Card
 
 When compiled in, the Discover item is **not** part of the regular sidebar `List`. It renders as a pinned card below the sidebar list via `.safeAreaInset(edge: .bottom)`. This keeps it visually distinct and always visible regardless of scroll position.
