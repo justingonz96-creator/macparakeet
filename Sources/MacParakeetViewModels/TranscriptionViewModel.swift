@@ -116,6 +116,9 @@ public final class TranscriptionViewModel {
             currentTranscriptionRevision &+= 1
             let transcriptionChanged = oldValue?.id != currentTranscription?.id
             if transcriptionChanged {
+                if let previousID = oldValue?.id {
+                    clearMeetingNotesError(for: previousID)
+                }
                 selectedTab = .transcript
             }
             if transcriptionChanged || currentTranscription == nil {
