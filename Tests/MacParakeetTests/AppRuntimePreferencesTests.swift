@@ -403,6 +403,18 @@ final class AppRuntimePreferencesTests: XCTestCase {
         XCTAssertEqual(AppPreferences.appearanceMode(defaults: defaults), .dark)
     }
 
+    func testMenuBarIconDefaultsToVisibleAndReadsPersistedChoice() {
+        let suite = "app-runtime-prefs-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        XCTAssertTrue(AppPreferences.isMenuBarIconVisible(defaults: defaults))
+
+        defaults.set(false, forKey: AppPreferences.showMenuBarIconKey)
+
+        XCTAssertFalse(AppPreferences.isMenuBarIconVisible(defaults: defaults))
+    }
+
     func testFirstDictationFlagPersistsAcrossInstances() {
         let suite = "app-runtime-prefs-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

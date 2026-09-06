@@ -540,6 +540,7 @@ public enum TelemetrySettingName: String, Sendable, Equatable {
     case audioRetention = "audio_retention"
     case appAppearance = "app_appearance"
     case menuBarOnly = "menu_bar_only"
+    case menuBarIcon = "menu_bar_icon"
     case hidePill = "hide_pill"
     case saveTranscriptionAudio = "save_transcription_audio"
     case saveMeetingAudio = "save_meeting_audio"

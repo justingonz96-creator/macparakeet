@@ -979,9 +979,23 @@ struct SettingsView: View {
                 Divider()
 
                 settingsToggleRow(
+                    title: "Hide menu bar icon",
+                    detail: "Remove MacParakeet from the menu bar. The Dock icon stays available.",
+                    isOn: Binding(
+                        get: { !viewModel.showMenuBarIcon },
+                        set: { viewModel.setMenuBarIconHidden($0) }
+                    )
+                )
+
+                Divider()
+
+                settingsToggleRow(
                     title: "Menu bar only mode",
                     detail: "Hide the Dock icon and run from the menu bar only.",
-                    isOn: $viewModel.menuBarOnlyMode
+                    isOn: Binding(
+                        get: { viewModel.menuBarOnlyMode },
+                        set: { viewModel.setMenuBarOnlyMode($0) }
+                    )
                 )
             }
         }

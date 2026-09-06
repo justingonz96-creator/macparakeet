@@ -628,7 +628,9 @@ During concurrent dictation + meeting recording:
 ### Behavior
 
 - Left-click opens the menu
-- The menu bar icon is always visible when the app is running
+- The menu bar icon is visible by default and can be hidden under Settings → System → Startup while the Dock icon remains available
+- The two Startup toggles resolve their conflict symmetrically: enabling Menu bar only mode restores the menu icon, while hiding the menu icon turns Menu bar only mode off
+- Restoring a hidden icon immediately reflects the current idle, recording, or processing state
 - "Recent Transcriptions" submenu shows last 5 transcriptions with relative timestamps
 - Clicking a recent transcription opens the main window to that transcription's detail
 
@@ -833,7 +835,7 @@ Settings open in the content area when "Settings" is selected in the sidebar. Th
 - **Modes** — Audio Input, Dictation, Transcription, and Meeting Recording cards. The Meeting Recording card groups start/stop automation under an "Automatic recording" subsection as two parallel on/off toggles: a calendar-driven "Start recording automatically" adaptive row (requests Calendar access in context, then becomes a plain on/off toggle that reveals an elevated sub-panel — matching the "Also save meetings to a folder" disclosure — holding the `.notify` vs `.autoStart` mode segmented control plus the reminder, event-filter, and per-calendar controls; `.off` is the toggle's unchecked state; `AppFeatures.calendarEnabled = true`) paired with an activity-driven "Stop recording automatically" toggle (`AppFeatures.meetingAutoStopEnabled = true`). Both halves use the same toggle idiom so the lifecycle pair reads as symmetric. The meeting folder disclosure distinguishes complete managed meeting artifacts from the selected-format file saved to the chosen folder, shows the resolved managed-artifact path, and warns when the chosen folder is unavailable or not writable. TXT and Markdown additionally expose independent toggles for one timestamp per reading paragraph, speaker labels, and meeting details; those toggles affect only the folder copy.
 - **Engine** — One Speech Engine card with the primary engine tiles and an inline optional recordings/files override, followed by per-engine model/language controls and local model status/management.
 - **AI** — Optional provider setup for summaries, transcript chat, prompt actions, and live Ask.
-- **System** — Appearance, startup, permissions, storage, updates, privacy/telemetry, onboarding reset, about, and fenced Reset & Cleanup actions.
+- **System** — Appearance; a Startup card with Launch at login, Hide menu bar icon, and Menu bar only mode; permissions; storage; updates; privacy/telemetry; onboarding reset; about; and fenced Reset & Cleanup actions.
 
 `SettingsRootViewModel` owns active-tab persistence and search state. `SettingsSearchIndex` provides cross-tab search results and includes calendar entries while `AppFeatures.calendarEnabled` is `true` (currently enabled; they surface once Calendar access is granted), and hides them when the flag is off. The legacy card sketches below are retained only as historical content references; their grouping is not the current v0.6 IA.
 
