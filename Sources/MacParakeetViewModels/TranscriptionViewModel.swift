@@ -1552,6 +1552,22 @@ public final class TranscriptionViewModel {
 
     // MARK: - Transcript Editing
 
+    private enum MeetingNotesReadError: Error {
+        case repositoryUnavailable
+    }
+
+    /// A missing row means the meeting was deleted, including by another
+    /// process. Throwing reads must never be treated as permission to discard
+    /// a pending draft during navigation or application termination.
+    public func isMeetingDeleted(id: UUID) async throws -> Bool {
+        guard let repo = transcriptionRepo else {
+            throw MeetingNotesReadError.repositoryUnavailable
+        }
+        return try await Task.detached(priority: .utility) {
+            try repo.fetch(id: id) == nil
+        }.value
+    }
+
     /// Persists the current saved meeting's notes. SQLite remains canonical;
     /// meeting artifacts are refreshed after the committed row has been
     /// synchronized into both detail and list state. Saves are serialized so

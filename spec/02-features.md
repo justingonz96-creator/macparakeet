@@ -1722,6 +1722,15 @@ with Saving/Saved/Error feedback and Retry. This keeps the user-authored
 editorial layer separate from the factual transcript. Notes are backed by
 canonical `transcriptions.userNotes`; blank saves become `NULL` and refresh the
 derived meeting artifacts. Non-meeting transcriptions do not expose the tab.
+Each meeting keeps its own editor. Unsaved drafts remain available after a
+selection change or window close; an unsuccessful save cannot bind the next
+meeting to the previous meeting's notes. Normal app termination waits for all
+pending saved-meeting notes before proceeding with any live-recording quit
+confirmation. A save failure cancels quit and offers Retry or Keep Open.
+If a successful database read confirms the meeting was deleted, including
+through the CLI, its pending draft no longer blocks quit. Database read errors
+keep the draft and continue to block quit. A still-open deleted meeting keeps
+the draft readable for copying and labels it as unsaved to the deleted meeting.
 Every result prompt, including read-only built-ins, exposes an
 **Include meeting notes as context** checkbox. It defaults off for all existing
 and new prompts and is not available for Transforms.

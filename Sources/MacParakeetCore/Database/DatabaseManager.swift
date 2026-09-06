@@ -1367,9 +1367,9 @@ public final class DatabaseManager: Sendable {
             }
         }
 
-        // v0.32 — Per-result-prompt opt-in for adding meeting notes to LLM
+        // v0.33 — Per-result-prompt opt-in for adding meeting notes to LLM
         // context, plus the immutable preference receipt on saved results.
-        migrator.registerMigration("v0.32-prompt-meeting-notes-context") { db in
+        migrator.registerMigration("v0.33-prompt-meeting-notes-context") { db in
             let promptColumns = try db.columns(in: "prompts").map(\.name)
             if !promptColumns.contains("includeMeetingNotes") {
                 try db.alter(table: "prompts") { t in

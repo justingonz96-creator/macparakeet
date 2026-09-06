@@ -33,7 +33,7 @@ Empty notes leave the assembled prompt byte-identical regardless of checkbox
 state. Chat/Ask behavior is unchanged and continues to include the latest
 committed non-empty meeting notes at send time without a new toggle.
 
-Migration `v0.32-prompt-meeting-notes-context` adds two non-null Boolean
+Migration `v0.33-prompt-meeting-notes-context` adds two non-null Boolean
 columns, both defaulting to `false`, to record the current preference and its
 generation receipt:
 

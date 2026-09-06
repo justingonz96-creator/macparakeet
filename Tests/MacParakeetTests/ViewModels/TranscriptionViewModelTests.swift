@@ -1726,6 +1726,89 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertNotNil(viewModel.errorMessage)
     }
 
+    func testDeletedMeetingDraftDoesNotBlockQuit() async throws {
+        let meeting = Transcription(
+            fileName: "Deleted through another process",
+            status: .completed,
+            sourceType: .meeting,
+            userNotes: "Original"
+        )
+        mockRepo.transcriptions = [meeting]
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        let notesViewModel = try XCTUnwrap(viewModel)
+        let coordinator = SavedMeetingNotesCoordinator()
+        let editor = coordinator.editor(
+            meetingID: meeting.id,
+            text: meeting.userNotes,
+            isMeetingDeleted: {
+                try await notesViewModel.isMeetingDeleted(id: meeting.id)
+            }
+        ) { text in
+            await notesViewModel.updateMeetingNotes(for: meeting, to: text)
+        }
+        editor.textBinding.wrappedValue = "Pending notes"
+        editor.cancelPendingSave()
+        // No coordinator notification: this models deletion through the CLI.
+        XCTAssertTrue(try mockRepo.delete(id: meeting.id))
+        let replied = expectation(description: "Quit allowed after confirmed deletion")
+
+        XCTAssertTrue(coordinator.prepareToQuit { saved in
+            XCTAssertTrue(saved)
+            replied.fulfill()
+        })
+        await fulfillment(of: [replied], timeout: 1)
+
+        XCTAssertFalse(coordinator.hasUnsavedChanges)
+        XCTAssertEqual(editor.saveState, .deleted)
+        XCTAssertNil(try mockRepo.fetch(id: meeting.id))
+    }
+
+    func testMeetingNotesReadFailureKeepsQuitBlockedUntilDeletionCanBeConfirmed() async throws {
+        let meeting = Transcription(
+            fileName: "Unreadable meeting",
+            status: .completed,
+            sourceType: .meeting,
+            userNotes: "Original"
+        )
+        mockRepo.transcriptions = [meeting]
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        let notesViewModel = try XCTUnwrap(viewModel)
+        let coordinator = SavedMeetingNotesCoordinator()
+        let editor = coordinator.editor(
+            meetingID: meeting.id,
+            text: meeting.userNotes,
+            isMeetingDeleted: {
+                try await notesViewModel.isMeetingDeleted(id: meeting.id)
+            }
+        ) { text in
+            await notesViewModel.updateMeetingNotes(for: meeting, to: text)
+        }
+        editor.textBinding.wrappedValue = "Do not discard on an I/O error"
+        editor.cancelPendingSave()
+        XCTAssertTrue(try mockRepo.delete(id: meeting.id))
+        mockRepo.fetchError = NSError(domain: "database-read", code: 1)
+        let blocked = expectation(description: "Quit remains blocked after failed DB read")
+
+        XCTAssertTrue(coordinator.prepareToQuit { saved in
+            XCTAssertFalse(saved)
+            blocked.fulfill()
+        })
+        await fulfillment(of: [blocked], timeout: 1)
+        XCTAssertTrue(coordinator.hasUnsavedChanges)
+        XCTAssertEqual(editor.text, "Do not discard on an I/O error")
+        XCTAssertEqual(editor.saveState, .failed)
+
+        mockRepo.fetchError = nil
+        let retried = expectation(description: "Quit allowed when deletion can be confirmed")
+        XCTAssertTrue(coordinator.prepareToQuit { saved in
+            XCTAssertTrue(saved)
+            retried.fulfill()
+        })
+        await fulfillment(of: [retried], timeout: 1)
+        XCTAssertFalse(coordinator.hasUnsavedChanges)
+        XCTAssertEqual(editor.saveState, .deleted)
+    }
+
     func testUpdateCurrentMeetingNotesSucceedsWhenReadBackFailsAfterCommit() async throws {
         let meeting = Transcription(
             fileName: "Design Review",

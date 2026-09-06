@@ -236,6 +236,49 @@ private enum MeetingNotesNavigationAction {
     case startNewTranscription
 }
 
+/// Keeps a user action tied to the selection that initiated its notes flush.
+/// Cancelling the action does not cancel the independently owned draft save.
+@MainActor
+@Observable
+final class TranscriptNotesActionGate {
+    private var requestID: UUID?
+    private var task: Task<Void, Never>?
+
+    var isRunning: Bool { requestID != nil }
+
+    @discardableResult
+    func start(
+        flush: @escaping @MainActor () async -> Bool,
+        isCurrent: @escaping @MainActor () -> Bool,
+        action: @escaping @MainActor () async -> Void
+    ) -> Task<Void, Never>? {
+        guard !isRunning, isCurrent() else { return nil }
+        let id = UUID()
+        requestID = id
+        let task = Task<Void, Never> { @MainActor [weak self] in
+            guard let self, self.requestID == id else { return }
+            defer {
+                if self.requestID == id {
+                    self.requestID = nil
+                    self.task = nil
+                }
+            }
+            guard await flush(), !Task.isCancelled,
+                self.requestID == id, isCurrent()
+            else { return }
+            await action()
+        }
+        self.task = task
+        return task
+    }
+
+    func invalidate() {
+        requestID = nil
+        task?.cancel()
+        task = nil
+    }
+}
+
 /// Records the user's engine choice from the retranscribe popover so the
 /// confirmation alert can be presented in a *separate* render cycle from
 /// the popover dismissal — chaining popover → alert in the same cycle on
@@ -418,6 +461,8 @@ struct TranscriptResultView: View {
     @State private var cachedSpeakerStats: [String: SpeakerStatistics] = [:]
     @State private var segmentCacheRequestID = UUID()
     @State private var richContextLoader = TranscriptRichContextLoader()
+    @State private var promptNotesActionGate = TranscriptNotesActionGate()
+    @State private var chatNotesActionGate = TranscriptNotesActionGate()
     @State private var autoScrollPaused = false
     @State private var scrollPauseTask: Task<Void, Never>?
     @State private var scrollMonitor: Any?
@@ -562,6 +607,8 @@ struct TranscriptResultView: View {
     }
 
     private func handleTranscriptionChange() {
+        promptNotesActionGate.invalidate()
+        chatNotesActionGate.invalidate()
         richContextLoader.invalidate()
         Task {
             playerViewModel.cleanup()
@@ -581,11 +628,7 @@ struct TranscriptResultView: View {
         editingTranscript = false
         transcriptDraft = ""
         transcriptEditError = nil
-        let nextTranscription = activeTranscription
-        let notesTransition = savedMeetingNotesViewModel.beginSelectionTransition()
-        Task { @MainActor in
-            await transitionSavedMeetingNotes(to: nextTranscription, transition: notesTransition)
-        }
+        configureSavedMeetingNotes(for: activeTranscription)
         transcriptDisplayModeBeforeEdit = nil
         editingSpeakerId = nil
         editingSpeakerLabel = ""
@@ -611,19 +654,6 @@ struct TranscriptResultView: View {
         promptResultsViewModel.loadPromptResults(transcriptionId: transcription.id)
         chatViewModel.loadTranscript(transcriptText, transcriptionId: viewModel.currentTranscription?.id)
         scheduleRichAIContextLoad()
-    }
-
-    private func handleDisappear() {
-        richContextLoader.invalidate()
-        Task { @MainActor in
-            _ = await savedMeetingNotesViewModel.flush()
-        }
-        playerViewModel.cleanup()
-        if let monitor = scrollMonitor {
-            NSEvent.removeMonitor(monitor)
-            scrollMonitor = nil
-        }
-        scrollPauseTask?.cancel()
     }
 
     @ViewBuilder
@@ -1120,28 +1150,41 @@ struct TranscriptResultView: View {
     private func startPromptContextAction(
         _ action: @escaping @MainActor (String) -> Void
     ) {
-        let transcription = activeTranscription
-        let mode = currentAIContextMode
-        let revision = viewModel.currentTranscriptionRevision
-        let preparation = richContextLoader.startPromptAction(
-            transcription: transcription,
-            mode: mode,
-            contentRevision: revision,
-            isCurrent: { request in
-                viewModel.currentTranscriptionRevision == request.contentRevision
-                    && (viewModel.currentTranscription?.id ?? transcription.id)
-                        == request.transcriptionID
-                    && currentAIContextMode == request.mode
-            },
-            onStale: {
-                guard viewModel.currentTranscription?.id == transcription.id else { return }
-                promptResultsViewModel.errorMessage =
-                    "The transcript or AI context changed while preparing this prompt. Please try again."
-            },
-            action: action
-        )
-        if preparation != nil {
-            promptResultsViewModel.errorMessage = nil
+        let selectedID = activeTranscription.id
+        let notesEditor = savedMeetingNotesViewModel
+        promptNotesActionGate.start(
+            flush: { await notesEditor.flush() },
+            isCurrent: {
+                viewModel.currentTranscription?.id == selectedID
+                    && savedMeetingNotesViewModel === notesEditor
+                    && notesEditor.saveState != .deleted
+            }
+        ) {
+            // Persisting notes publishes a new transcription revision. Capture
+            // the immutable context only after that intentional update.
+            let transcription = activeTranscription
+            let mode = currentAIContextMode
+            let revision = viewModel.currentTranscriptionRevision
+            let preparation = richContextLoader.startPromptAction(
+                transcription: transcription,
+                mode: mode,
+                contentRevision: revision,
+                isCurrent: { request in
+                    viewModel.currentTranscriptionRevision == request.contentRevision
+                        && viewModel.currentTranscription?.id == request.transcriptionID
+                        && currentAIContextMode == request.mode
+                },
+                onStale: {
+                    guard viewModel.currentTranscription?.id == transcription.id else { return }
+                    promptResultsViewModel.errorMessage =
+                        "The transcript or AI context changed while preparing this prompt. Please try again."
+                },
+                action: action
+            )
+            if let preparation {
+                promptResultsViewModel.errorMessage = nil
+                await preparation.value
+            }
         }
     }
 
@@ -2231,7 +2274,11 @@ struct TranscriptResultView: View {
                 }
             }
 
-            TextEditor(text: savedMeetingNotesViewModel.textBinding)
+            TextEditor(text: savedMeetingNotesViewModel.textBinding(for: activeTranscription.id))
+                .disabled(
+                    savedMeetingNotesViewModel.meetingID != activeTranscription.id
+                        || savedMeetingNotesViewModel.saveState == .deleted
+                )
                 .font(DesignSystem.Typography.body)
                 .foregroundStyle(DesignSystem.Colors.textPrimary)
                 .scrollContentBackground(.hidden)
@@ -2295,6 +2342,9 @@ struct TranscriptResultView: View {
     @ViewBuilder
     private var meetingNotesSaveStatus: some View {
         switch savedMeetingNotesViewModel.saveState {
+        case .deleted:
+            Label("Meeting deleted — notes were not saved", systemImage: "trash")
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
         case .saved:
             Label("Saved", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(DesignSystem.Colors.successGreen)
@@ -2559,7 +2609,7 @@ struct TranscriptResultView: View {
                         .parakeetAction(.secondary)
                         .controlSize(.small)
                         .disabled(
-                            richContextLoader.preparingPromptContext
+                            promptNotesActionGate.isRunning || richContextLoader.preparingPromptContext
                                 || !promptResultsViewModel.canGeneratePromptResult
                                 || transcriptText.isEmpty
                         )
@@ -2851,7 +2901,7 @@ struct TranscriptResultView: View {
                 .controlSize(.regular)
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(
-                    richContextLoader.preparingPromptContext
+                    promptNotesActionGate.isRunning || richContextLoader.preparingPromptContext
                         || !promptResultsViewModel.canGenerateManualPromptResult
                         || transcriptText.isEmpty
                 )
@@ -3016,6 +3066,7 @@ struct TranscriptResultView: View {
                                 .onSubmit {
                                     if !chatVM.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                         && chatVM.canSendMessage && !chatVM.isStreaming
+                                        && !chatNotesActionGate.isRunning
                                     {
                                         sendChatMessage(chatVM)
                                     }
@@ -3051,7 +3102,7 @@ struct TranscriptResultView: View {
                             } else {
                                 let canSend =
                                     !chatVM.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                    && chatVM.canSendMessage
+                                    && chatVM.canSendMessage && !chatNotesActionGate.isRunning
                                 Button {
                                     sendChatMessage(chatVM)
                                 } label: {
@@ -3133,6 +3184,7 @@ struct TranscriptResultView: View {
             Spacer()
 
             Button {
+                chatNotesActionGate.invalidate()
                 chatVM.newChat()
             } label: {
                 Label("New Chat", systemImage: "plus.bubble")
@@ -3160,6 +3212,7 @@ struct TranscriptResultView: View {
 
                     if hoveredConversationId == conversation.id {
                         Button {
+                            chatNotesActionGate.invalidate()
                             chatVM.deleteConversation(conversation)
                             if chatVM.conversations.isEmpty {
                                 showConversationPopover = false
@@ -3188,6 +3241,7 @@ struct TranscriptResultView: View {
                     }
                 }
                 .onTapGesture {
+                    chatNotesActionGate.invalidate()
                     chatVM.switchConversation(conversation)
                     showConversationPopover = false
                 }
@@ -3495,6 +3549,7 @@ struct TranscriptResultView: View {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(DesignSystem.Colors.textPrimary)
+                        .disabled(chatNotesActionGate.isRunning)
                     }
                 }
             }
@@ -3757,6 +3812,22 @@ struct TranscriptResultView: View {
 
     // MARK: - Segment Cache
 
+    private func handleDisappear() {
+        promptNotesActionGate.invalidate()
+        chatNotesActionGate.invalidate()
+        richContextLoader.invalidate()
+        let notesEditor = savedMeetingNotesViewModel
+        Task<Void, Never> { @MainActor in
+            _ = await notesEditor.flush()
+        }
+        playerViewModel.cleanup()
+        if let monitor = scrollMonitor {
+            NSEvent.removeMonitor(monitor)
+            scrollMonitor = nil
+        }
+        scrollPauseTask?.cancel()
+    }
+
     private func scheduleRichAIContextLoad() {
         let transcription = activeTranscription
         let mode = currentAIContextMode
@@ -3907,6 +3978,7 @@ struct TranscriptResultView: View {
     }
 
     private var normalizedMeetingNotesDraft: String? {
+        guard savedMeetingNotesViewModel.meetingID == activeTranscription.id else { return nil }
         let notes = savedMeetingNotesViewModel.text
         guard !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return notes
@@ -3932,66 +4004,33 @@ struct TranscriptResultView: View {
     }
 
     private func configureSavedMeetingNotes(for transcription: Transcription) {
-        guard transcription.sourceType == .meeting else {
-            savedMeetingNotesViewModel.cancelPendingSave()
-            return
+        let previousEditor = savedMeetingNotesViewModel
+        if transcription.sourceType == .meeting {
+            savedMeetingNotesViewModel = SavedMeetingNotesCoordinator.shared.editor(
+                meetingID: transcription.id,
+                text: transcription.userNotes,
+                isMeetingDeleted: { [viewModel, transcription] in
+                    try await viewModel.isMeetingDeleted(id: transcription.id)
+                }
+            ) { [viewModel, transcription] text in
+                await viewModel.updateMeetingNotes(for: transcription, to: text)
+            }
+        } else {
+            savedMeetingNotesViewModel = SavedMeetingNotesViewModel()
         }
-        savedMeetingNotesViewModel.configure(meetingID: transcription.id, text: transcription.userNotes) { [viewModel, transcription] text in
-            await viewModel.updateMeetingNotes(for: transcription, to: text)
-        }
-    }
-
-    private func transitionSavedMeetingNotes(
-        to transcription: Transcription,
-        transition: SavedMeetingNotesViewModel.SelectionTransition
-    ) async {
-        guard transcription.sourceType == .meeting else {
-            _ = await savedMeetingNotesViewModel.flush()
-            return
-        }
-        _ = await savedMeetingNotesViewModel.completeSelectionTransition(
-            transition,
-            meetingID: transcription.id,
-            text: transcription.userNotes
-        ) { [viewModel, transcription] text in
-            await viewModel.updateMeetingNotes(for: transcription, to: text)
+        // Bind the new meeting immediately; a failed old save remains owned by
+        // the coordinator and can be retried on reopening or before quit.
+        if previousEditor !== savedMeetingNotesViewModel, previousEditor.hasUnsavedChanges {
+            Task { @MainActor in
+                _ = await previousEditor.flush()
+            }
         }
     }
 
     private func retrySavedMeetingNotes() {
-        let currentMeeting = activeTranscription
-        guard savedMeetingNotesViewModel.meetingID != currentMeeting.id else {
-            Task { await savedMeetingNotesViewModel.retry() }
-            return
-        }
-        let transition = savedMeetingNotesViewModel.beginSelectionTransition()
+        let notesEditor = savedMeetingNotesViewModel
         Task { @MainActor in
-            await transitionSavedMeetingNotes(to: currentMeeting, transition: transition)
-        }
-    }
-
-    private func generateSelectedPromptResult() {
-        Task { @MainActor in
-            guard await savedMeetingNotesViewModel.flush() else { return }
-            showGeneratePopover = false
-            if let generationID = promptResultsViewModel.generatePromptResult(
-                transcript: currentAIContextText,
-                transcriptionId: transcription.id
-            ) {
-                viewModel.selectedTab = .generation(id: generationID)
-            }
-        }
-    }
-
-    private func regeneratePromptResult(_ promptResult: PromptResult) {
-        Task { @MainActor in
-            guard await savedMeetingNotesViewModel.flush() else { return }
-            if let generationID = promptResultsViewModel.regeneratePromptResult(
-                promptResult,
-                transcript: currentAIContextText
-            ) {
-                viewModel.selectedTab = .generation(id: generationID)
-            }
+            await notesEditor.retry()
         }
     }
 
@@ -3999,8 +4038,20 @@ struct TranscriptResultView: View {
         _ chatViewModel: TranscriptChatViewModel,
         richPrompt: String? = nil
     ) {
-        Task { @MainActor in
-            guard await savedMeetingNotesViewModel.flush() else { return }
+        let selectedID = activeTranscription.id
+        let notesEditor = savedMeetingNotesViewModel
+        let inputText = chatViewModel.inputText
+        let conversationID = chatViewModel.currentConversation?.id
+        chatNotesActionGate.start(
+            flush: { await notesEditor.flush() },
+            isCurrent: {
+                viewModel.currentTranscription?.id == selectedID
+                    && savedMeetingNotesViewModel === notesEditor
+                    && notesEditor.saveState != .deleted
+                    && chatViewModel.currentConversation?.id == conversationID
+                    && chatViewModel.inputText == inputText
+            }
+        ) {
             chatViewModel.sendMessage(richPrompt: richPrompt)
             chatInputFocused = true
         }

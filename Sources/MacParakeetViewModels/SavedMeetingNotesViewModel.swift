@@ -17,6 +17,7 @@ public final class SavedMeetingNotesViewModel {
         case saved
         case saving
         case failed
+        case deleted
     }
 
     public static let debounceInterval: Duration = .milliseconds(500)
@@ -26,6 +27,11 @@ public final class SavedMeetingNotesViewModel {
     public private(set) var saveState: SaveState = .saved
     public private(set) var meetingID: UUID?
 
+    public var hasUnsavedChanges: Bool { revision != savedRevision }
+
+    /// The app retains dirty editors independently of a particular window.
+    var onUnsavedChangesChange: (() -> Void)?
+
     public var textBinding: Binding<String> {
         Binding(
             get: { [weak self] in self?.text ?? "" },
@@ -33,7 +39,23 @@ public final class SavedMeetingNotesViewModel {
         )
     }
 
+    /// SwiftUI can render a new selection before its onChange handler runs.
+    /// Never expose or mutate a previous meeting's notes in that interval.
+    public func textBinding(for displayedMeetingID: UUID) -> Binding<String> {
+        Binding(
+            get: { [weak self] in
+                guard let self, self.meetingID == displayedMeetingID else { return "" }
+                return self.text
+            },
+            set: { [weak self] newValue in
+                guard let self, self.meetingID == displayedMeetingID else { return }
+                self.applyEdit(newValue)
+            }
+        )
+    }
+
     private var persist: ((String) async -> Bool)?
+    private var isMeetingDeleted: (() async throws -> Bool)?
     private var debounceTask: Task<Void, Never>?
     private var inFlightTask: Task<Bool, Never>?
     private var inFlightToken: UUID?
@@ -57,6 +79,7 @@ public final class SavedMeetingNotesViewModel {
     public func configure(
         meetingID: UUID,
         text: String?,
+        isMeetingDeleted: (() async throws -> Bool)? = nil,
         persist: @escaping (String) async -> Bool
     ) {
         debounceTask?.cancel()
@@ -69,6 +92,7 @@ public final class SavedMeetingNotesViewModel {
         selectionTransitionToken = UUID()
         self.meetingID = meetingID
         self.persist = persist
+        self.isMeetingDeleted = isMeetingDeleted
         self.text = text ?? ""
         wordCount = Self.wordCount(for: self.text)
         revision = 0
@@ -112,9 +136,51 @@ public final class SavedMeetingNotesViewModel {
     public func flush() async -> Bool {
         debounceTask?.cancel()
         debounceTask = nil
-        while revision != savedRevision {
-            guard await persistCurrentRevision() else { return false }
+        guard hasUnsavedChanges else { return true }
+        let activeConfigurationToken = configurationToken
+        do {
+            if try await retireDraftIfMeetingWasDeleted() { return true }
+        } catch {
+            guard configurationToken == activeConfigurationToken else { return false }
+            // A failed read is not proof of deletion. Keep the draft for retry.
+            guard hasUnsavedChanges else { return true }
+            saveState = .failed
+            return false
         }
+        guard configurationToken == activeConfigurationToken else { return false }
+        while revision != savedRevision {
+            guard await persistCurrentRevision() else {
+                guard configurationToken == activeConfigurationToken else { return false }
+                // Deletion can race the initial existence check and the write.
+                do {
+                    return try await retireDraftIfMeetingWasDeleted()
+                } catch {
+                    guard configurationToken == activeConfigurationToken else { return false }
+                    saveState = .failed
+                    return false
+                }
+            }
+        }
+        return configurationToken == activeConfigurationToken
+    }
+
+    /// Only an authoritative, successful database read may retire the draft.
+    /// Keep its text readable for copying while the old detail view is open.
+    private func retireDraftIfMeetingWasDeleted() async throws -> Bool {
+        guard let isMeetingDeleted else { return false }
+        let activeConfigurationToken = configurationToken
+        let wasDeleted = try await isMeetingDeleted()
+        guard configurationToken == activeConfigurationToken, wasDeleted else { return false }
+        debounceTask?.cancel()
+        debounceTask = nil
+        configurationToken = UUID()
+        inFlightTask?.cancel()
+        inFlightTask = nil
+        inFlightToken = nil
+        inFlightRevision = nil
+        savedRevision = revision
+        saveState = .deleted
+        onUnsavedChangesChange?()
         return true
     }
 
@@ -129,10 +195,12 @@ public final class SavedMeetingNotesViewModel {
     }
 
     private func applyEdit(_ newValue: String) {
+        guard saveState != .deleted else { return }
         text = newValue
         wordCount = Self.wordCount(for: newValue)
         revision += 1
         saveState = .saving
+        onUnsavedChangesChange?()
         scheduleDebounce()
     }
 
@@ -172,6 +240,7 @@ public final class SavedMeetingNotesViewModel {
                 if self.revision == savingRevision {
                     self.saveState = .saved
                 }
+                self.onUnsavedChangesChange?()
             } else if self.revision == savingRevision {
                 self.saveState = .failed
             }
