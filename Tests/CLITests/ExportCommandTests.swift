@@ -140,6 +140,22 @@ final class ExportCommandTests: XCTestCase {
         XCTAssertEqual(speakers.first?["label"] as? String, "Dana")
         XCTAssertEqual(payload["speakerCorrectionsApplied"] as? Bool, true)
         XCTAssertEqual(payload["speakerCorrectionRevision"] as? Int, 1)
+        let txt = try ExportCommand.parse([
+            transcription.id.uuidString, "--format", "txt", "--stdout", "--database", dbURL.path
+        ])
+        let text = try await captureStandardOutput { try await txt.run() }
+        XCTAssertTrue(text.contains("Dana"))
+        XCTAssertFalse(text.contains("Speaker 1"))
+        XCTAssertTrue(text.contains("Hello."))
+        let prompt = Prompt(name: "Speaker identity regression", content: "Echo the transcript.")
+        try PromptRepository(dbQueue: manager.dbQueue).save(prompt)
+        let run = try PromptsCommand.RunSubcommand.parse([
+            prompt.id.uuidString, "--transcription", transcription.id.uuidString,
+            "--provider", "cli", "--command", "/bin/cat", "--no-store", "--database", dbURL.path
+        ])
+        let context = try await captureStandardOutput { try await run.run() }
+        XCTAssertTrue(context.contains("Dana:"))
+        XCTAssertFalse(context.contains("Speaker 1:"))
     }
 
     func testJSONStdoutEmitsFailureEnvelopeForLookupMiss() async throws {

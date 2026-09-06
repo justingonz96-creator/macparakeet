@@ -85,7 +85,7 @@ struct ExportCommand: AsyncParsableCommand {
     ) throws -> String {
         switch format {
         case .txt:
-            return exportService.formatForClipboard(projection: projection)
+            return exportService.formatPlainText(projection: projection)
         case .markdown:
             return exportService.formatMarkdown(projection: projection)
         case .srt:
