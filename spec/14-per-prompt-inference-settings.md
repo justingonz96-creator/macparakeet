@@ -246,7 +246,7 @@ temperature behavior is unchanged.
    rather than losing this metadata after yielding text. Ollama retains its
    existing lenient EOF policy: after non-empty output, an EOF without
    `done:true` emits a receipt using the last observed chunk. Missing stop
-   reason or incomplete usage remains unknown; no-content streams still fail. An
+   reason or missing usage components remain unknown; no-content streams still fail. An
    explicit provider error always fails the stream, including after partial
    output; it never produces a successful terminal receipt.
 
@@ -258,7 +258,9 @@ provider/model identifiers remain unknown instead of being invented.
 
 Native OpenAI streaming requests opt into the terminal usage chunk; compatible
 third-party endpoints keep their existing request shape. A missing total is
-derived only when both input and output counts are available. In-process
+derived only when both input and output counts are available and their sum
+is representable. Overflow leaves the total unknown without discarding either
+component or failing generation. In-process
 runtimes without an actual finish reason leave it unknown, and Local CLI
 receipts omit inference settings because the command does not apply them.
 
@@ -337,3 +339,13 @@ verification, per repository guidance.
 3. LLM service streaming terminal metadata and queue/result snapshots.
 4. Prompt Library controls, validation, compatibility note, and popover summary.
 5. Regression suite and one manual OpenAI-compatible llama.cpp meeting-summary test.
+
+### Ollama prompt-result context budget
+
+Native Ollama prompt results use the same 8,192-token context window configured
+by the HTTP adapter (`num_ctx`) in both streaming and non-streaming paths. Input
+assembly uses the existing 3.5-character-per-token estimate and reserves the
+effective requested output allowance first. An output allowance that fills the
+window is rejected before dispatch. This is a character estimate, not tokenizer
+accounting; other providers retain their existing budgets. See the
+[Ollama parameter reference](https://docs.ollama.com/modelfile#valid-parameters-and-values).

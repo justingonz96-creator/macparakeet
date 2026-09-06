@@ -24,6 +24,22 @@ final class LLMResultTests: XCTestCase {
         XCTAssertEqual(usage.totalTokens, 0)
     }
 
+    func testTokenUsageTotalsPreserveComponentsAtIntegerBounds() {
+        let cases: [(Int, Int, Int?)] = [
+            (Int.max, 1, nil), (Int.min, -1, nil),
+            (Int.max, 0, Int.max), (Int.max - 1, 1, Int.max), (12, 34, 46),
+        ]
+        for (prompt, completion, total) in cases {
+            let usage = LLMUsage(TokenUsage(promptTokens: prompt, completionTokens: completion))
+            XCTAssertEqual(usage.promptTokens, prompt)
+            XCTAssertEqual(usage.completionTokens, completion)
+            XCTAssertEqual(usage.totalTokens, total)
+        }
+        XCTAssertNil(LLMUsage.derivedTotal(promptTokens: Int.max, completionTokens: nil))
+        XCTAssertNil(LLMUsage.derivedTotal(promptTokens: nil, completionTokens: 1))
+        XCTAssertNil(LLMUsage.derivedTotal(promptTokens: nil, completionTokens: nil))
+    }
+
     // MARK: - LLMResult init from ChatCompletionResponse
 
     func testLLMResultFromResponseStampsProviderAndLatency() {

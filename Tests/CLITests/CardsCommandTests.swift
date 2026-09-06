@@ -126,6 +126,47 @@ final class CardsCommandTests: XCTestCase {
         XCTAssertEqual(report.exitCode, .failure)
     }
 
+    func testCardsGenerationReportKeepsOverflowUnknownAfterLaterReceipts() throws {
+        var report = CardsGenerationReport(selection: "stale", selected: 4)
+        report.add(LLMUsage(promptTokens: Int.max, completionTokens: 0, totalTokens: Int.max))
+        report.add(LLMUsage(promptTokens: 1, completionTokens: 1, totalTokens: 2))
+        report.add(nil)
+        report.add(LLMUsage(promptTokens: 5, completionTokens: 2, totalTokens: 7))
+        XCTAssertNil(report.promptTokens)
+        XCTAssertEqual(report.completionTokens, 3)
+        XCTAssertNil(report.totalTokens)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any])
+        XCTAssertTrue(object["promptTokens"] is NSNull)
+        XCTAssertEqual(object["completionTokens"] as? Int, 3)
+        XCTAssertTrue(object["totalTokens"] is NSNull)
+    }
+
+    func testCardsGenerationReportPropagatesUnrepresentableReceiptTotal() {
+        var report = CardsGenerationReport(selection: "stale", selected: 3)
+        report.add(LLMUsage(promptTokens: 0, completionTokens: 2, totalTokens: 2))
+        report.add(LLMUsage(promptTokens: Int.max, completionTokens: 1))
+        report.add(LLMUsage(promptTokens: 0, completionTokens: 4, totalTokens: 4))
+        XCTAssertEqual(report.promptTokens, Int.max)
+        XCTAssertEqual(report.completionTokens, 7)
+        XCTAssertNil(report.totalTokens)
+    }
+
+    func testCardsGenerationReportPreservesRepresentableBoundsAndPartialCounts() {
+        var report = CardsGenerationReport(selection: "stale", selected: 3)
+        report.add(nil)
+        report.add(LLMUsage(promptTokens: Int.max - 1))
+        report.add(LLMUsage(promptTokens: 1, completionTokens: 2, totalTokens: 3))
+        XCTAssertEqual(report.promptTokens, Int.max)
+        XCTAssertEqual(report.completionTokens, 2)
+        XCTAssertEqual(report.totalTokens, 3)
+
+        var negative = CardsGenerationReport(selection: "stale", selected: 3)
+        negative.add(LLMUsage(completionTokens: Int.min))
+        negative.add(LLMUsage(completionTokens: -1))
+        negative.add(LLMUsage(completionTokens: 5))
+        XCTAssertNil(negative.completionTokens)
+    }
+
     func testRootParserRoutesCardsSubcommands() throws {
         XCTAssertTrue(try CLI.parseAsRoot(["cards", "list", "--json"]) is CardsListCommand)
         XCTAssertTrue(try CLI.parseAsRoot(["cards", "generate", "--stale"]) is CardsGenerateCommand)
