@@ -82,6 +82,8 @@ with human progress/status kept off stdout.
   Token accumulators that overflow remain `null` for the rest of the batch;
   later receipts cannot restart a misleading partial total. An individual
   receipt whose component sum overflowed also makes the batch total unknown.
+  An explicit receipt total takes precedence; when it is absent and both
+  component counts exist, their checked sum contributes to the batch total.
   For `--stale`, `selected` is the prefiltered missing/stale subset, not every
   completed transcription. Successful backfills also rebuild `cards_fts`.
 - `--envelope` success output uses `{ ok, command, data, meta }` and does not

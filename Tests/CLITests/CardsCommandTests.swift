@@ -141,6 +141,24 @@ final class CardsCommandTests: XCTestCase {
         XCTAssertTrue(object["totalTokens"] is NSNull)
     }
 
+    func testCardsGenerationReportDerivesMissingTotalFromCompleteReceipt() throws {
+        var report = CardsGenerationReport(selection: "stale", selected: 2)
+        report.add(LLMUsage(promptTokens: 0, completionTokens: 2, totalTokens: 2))
+        report.add(LLMUsage(promptTokens: 3, completionTokens: 4))
+        XCTAssertEqual(report.promptTokens, 3)
+        XCTAssertEqual(report.completionTokens, 6)
+        XCTAssertEqual(report.totalTokens, 9)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any])
+        XCTAssertEqual(object["totalTokens"] as? Int, 9)
+    }
+
+    func testCardsGenerationReportPrefersExplicitTotalToComponentSum() {
+        var report = CardsGenerationReport(selection: "stale", selected: 2)
+        report.add(LLMUsage(promptTokens: 3, completionTokens: 4, totalTokens: 20))
+        report.add(LLMUsage(promptTokens: 1, completionTokens: 2))
+        XCTAssertEqual(report.totalTokens, 23)
+    }
+
     func testCardsGenerationReportPropagatesUnrepresentableReceiptTotal() {
         var report = CardsGenerationReport(selection: "stale", selected: 3)
         report.add(LLMUsage(promptTokens: 0, completionTokens: 2, totalTokens: 2))
