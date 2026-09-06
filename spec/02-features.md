@@ -1942,16 +1942,19 @@ MacParakeet's brand is privacy. These are non-negotiable.
 | No accounts | No email, no login, no registration |
 | No cloud STT | All speech recognition runs locally on Apple Silicon; Parakeet is default and Nemotron/Cohere/WhisperKit are optional |
 | User-controlled storage | Saved audio follows the relevant dictation/file/media/meeting storage setting; meeting audio is retained by default, with explicit deletion/retention choices |
-| Network surfaces | Model/helper setup, media/podcast imports, configured LLM features, opt-out telemetry/crash reporting, updates, explicit submissions/activation, and the independent launch-time Discover feed request |
+| Network surfaces | Model/helper setup, media/podcast imports, configured LLM features, opt-out telemetry/crash reporting, updates, explicit submissions/activation, and the independent default-on Discover feed (Settings opt-out) |
 
 **What local-first means:**
 - Parakeet, Nemotron, and Cohere STT run locally via FluidAudio CoreML; WhisperKit also runs locally when selected
 - Captured audio is not sent to an STT or LLM service
 - Text stays local unless configured AI features or explicit user/agent delivery sends it elsewhere
 - Core workflows can run offline after model setup; local providers can keep LLM inference on-device
-- Discover requests its public feed at every app launch, even with telemetry off
-  and without opening the page. It uses cached/bundled content offline. There
-  is no global no-network toggle, and release-readiness work leaves it unchanged.
+- Discover requests its public feed at app launch by default, even with telemetry off
+  and without opening the page. It uses cached/bundled content offline. Settings →
+  System → Appearance → **Show Discover in the sidebar** independently controls
+  Discover: turning it off hides the card, cancels pending feed requests, clears
+  the displayed feed, and stops new loads until re-enabled. There is no global
+  no-network toggle.
 
 ---
 

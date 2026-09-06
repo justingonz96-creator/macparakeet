@@ -26,6 +26,7 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         var menuBarOnlyCount = 0
         var menuBarIconVisibilityCount = 0
         var showIdlePillCount = 0
+        var showDiscoverCount = 0
         var showMeetingRecordingPillCount = 0
         var instantDictationCount = 0
         var microphoneSelectionCount = 0
@@ -79,6 +80,10 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
                 self.showIdlePillCount += 1
                 self.onCallback?()
             },
+            onShowDiscoverChanged: { [unowned self] in
+                self.showDiscoverCount += 1
+                self.onCallback?()
+            },
             onShowMeetingRecordingPillChanged: { [unowned self] in
                 self.showMeetingRecordingPillCount += 1
                 self.onCallback?()
@@ -118,6 +123,7 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         fx.center.post(name: .macParakeetMenuBarOnlyModeDidChange, object: nil)
         fx.center.post(name: .macParakeetMenuBarIconVisibilityDidChange, object: nil)
         fx.center.post(name: .macParakeetShowIdlePillDidChange, object: nil)
+        fx.center.post(name: .macParakeetShowDiscoverDidChange, object: nil)
         fx.center.post(name: .macParakeetShowMeetingRecordingPillDidChange, object: nil)
         fx.center.post(name: .macParakeetInstantDictationDidChange, object: nil)
         fx.center.post(name: .macParakeetMicrophoneSelectionDidChange, object: nil)
@@ -137,10 +143,31 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         XCTAssertEqual(fx.menuBarOnlyCount, 1)
         XCTAssertEqual(fx.menuBarIconVisibilityCount, 1)
         XCTAssertEqual(fx.showIdlePillCount, 1)
+        XCTAssertEqual(fx.showDiscoverCount, 1)
         XCTAssertEqual(fx.showMeetingRecordingPillCount, 1)
         XCTAssertEqual(fx.instantDictationCount, 1)
         XCTAssertEqual(fx.microphoneSelectionCount, 1)
         XCTAssertEqual(fx.meetingAudioRetentionCount, 1)
+    }
+
+    func test_discoverPreferenceTransitionsAreNotCoalesced() {
+        let fx = Fixture()
+        var showDiscover = true
+        var appliedPreferences: [Bool] = []
+        fx.onCallback = { appliedPreferences.append(showDiscover) }
+        fx.coordinator.startObserving()
+        defer { fx.coordinator.stopObserving() }
+
+        // No actor yield between changes: disabling must take effect before
+        // re-enabling, rather than all callbacks reading the final value.
+        showDiscover = false
+        fx.center.post(name: .macParakeetShowDiscoverDidChange, object: nil)
+        showDiscover = true
+        fx.center.post(name: .macParakeetShowDiscoverDidChange, object: nil)
+        showDiscover = false
+        fx.center.post(name: .macParakeetShowDiscoverDidChange, object: nil)
+
+        XCTAssertEqual(appliedPreferences, [false, true, false])
     }
 
     func test_stopObserving_removesAllObservers() async {
@@ -162,6 +189,7 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         fx.center.post(name: .macParakeetMenuBarOnlyModeDidChange, object: nil)
         fx.center.post(name: .macParakeetMenuBarIconVisibilityDidChange, object: nil)
         fx.center.post(name: .macParakeetShowIdlePillDidChange, object: nil)
+        fx.center.post(name: .macParakeetShowDiscoverDidChange, object: nil)
         fx.center.post(name: .macParakeetShowMeetingRecordingPillDidChange, object: nil)
         fx.center.post(name: .macParakeetInstantDictationDidChange, object: nil)
         fx.center.post(name: .macParakeetMicrophoneSelectionDidChange, object: nil)
@@ -181,6 +209,7 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         XCTAssertEqual(fx.menuBarOnlyCount, 0)
         XCTAssertEqual(fx.menuBarIconVisibilityCount, 0)
         XCTAssertEqual(fx.showIdlePillCount, 0)
+        XCTAssertEqual(fx.showDiscoverCount, 0)
         XCTAssertEqual(fx.showMeetingRecordingPillCount, 0)
         XCTAssertEqual(fx.instantDictationCount, 0)
         XCTAssertEqual(fx.microphoneSelectionCount, 0)
@@ -265,6 +294,7 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         XCTAssertEqual(fx.menuBarOnlyCount, 0)
         XCTAssertEqual(fx.menuBarIconVisibilityCount, 0)
         XCTAssertEqual(fx.showIdlePillCount, 0)
+        XCTAssertEqual(fx.showDiscoverCount, 0)
         XCTAssertEqual(fx.meetingAudioRetentionCount, 0)
     }
 }

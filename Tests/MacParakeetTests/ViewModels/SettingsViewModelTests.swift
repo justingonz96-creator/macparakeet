@@ -1291,6 +1291,26 @@ final class SettingsViewModelTests: XCTestCase {
         wait(for: [expectation], timeout: 1.0)
     }
 
+    func testShowDiscoverDefaultsToTrue() {
+        // Fresh defaults with no key set — existing users keep Discover visible.
+        let vm = SettingsViewModel(defaults: testDefaults)
+        XCTAssertTrue(vm.showDiscover)
+    }
+
+    func testShowDiscoverPreferenceSurvivesReload() {
+        viewModel.showDiscover = false
+        XCTAssertFalse(SettingsViewModel(defaults: testDefaults).showDiscover)
+
+        viewModel.showDiscover = true
+        XCTAssertTrue(SettingsViewModel(defaults: testDefaults).showDiscover)
+    }
+
+    func testShowDiscoverPostsNotificationOnChange() {
+        let expectation = expectation(forNotification: Notification.Name("macparakeet.showDiscoverDidChange"), object: nil)
+        viewModel.showDiscover = false
+        wait(for: [expectation], timeout: 1.0)
+    }
+
     func testProcessingModePersists() {
         viewModel.processingMode = Dictation.ProcessingMode.clean.rawValue
         XCTAssertEqual(testDefaults.string(forKey: "processingMode"), Dictation.ProcessingMode.clean.rawValue)
