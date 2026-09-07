@@ -702,6 +702,20 @@ cat >"$INFO_PLIST" <<EOF
   <dict>
     <key>NSAllowsLocalNetworking</key>
     <true/>
+    <!-- Settings lets an opted-in user point an OpenAI-compatible provider at
+         plain http on private IPv4/IPv6, link-local, .local, and CGNAT
+         100.64.0.0/10 (Tailscale) hosts. ATS already exempts the first four
+         but blocks cleartext to 100.64.0.0/10, and NSAllowsLocalNetworking
+         does not lift that. This exception matches the validator's allowlist
+         exactly; public hosts and addresses stay blocked. Issue #922. -->
+    <key>NSExceptionDomains</key>
+    <dict>
+      <key>100.64.0.0/10</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key>
+        <true/>
+      </dict>
+    </dict>
   </dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>MacParakeet needs microphone access for dictation.</string>

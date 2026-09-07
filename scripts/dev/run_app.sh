@@ -159,6 +159,17 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'PLIST'
     <dict>
         <key>NSAllowsLocalNetworking</key>
         <true/>
+        <!-- Keep in sync with scripts/dist/build_app_bundle.sh: ATS blocks
+             cleartext http to CGNAT 100.64.0.0/10 (Tailscale) even with
+             NSAllowsLocalNetworking, while the Settings validator allows it. -->
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>100.64.0.0/10</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+            </dict>
+        </dict>
     </dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>MacParakeet needs microphone access for voice dictation.</string>
