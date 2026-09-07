@@ -107,6 +107,18 @@ jobs:
           mkdir -p .ci-logs
           set -o pipefail
           ./scripts/dist/build_app_bundle.sh 2>&1 | tee .ci-logs/release-bundle-smoke.log
+          swift - dist/MacParakeet.app/Contents/Resources/SwiftStreamingMarkdown_SwiftStreamingMarkdown.bundle <<'SWIFT'
+          import AppKit
+          guard let bundle = Bundle(path: CommandLine.arguments[1]),
+                bundle.bundleIdentifier != nil,
+                bundle.url(forResource: "Assets", withExtension: "car") != nil,
+                NSColor(named: "Colors/Copilot/Theme/Foreground/Primary/450", bundle: bundle) != nil,
+                bundle.image(forResource: "Copy") != nil,
+                bundle.image(forResource: "downloadArrow") != nil else {
+              fatalError("Packaged Markdown colors and action icons must resolve without build-directory resources")
+          }
+          print("Packaged Markdown assets resolve")
+          SWIFT
 
       - name: Swift Concurrency Safety
         timeout-minutes: 15
