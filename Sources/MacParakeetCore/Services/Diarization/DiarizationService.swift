@@ -132,12 +132,15 @@ actor FluidOfflineDiarizer: OfflineDiarizerManaging {
     /// `ModelHub.loadModels`, but it parses `plda-parameters.json` afterwards,
     /// outside that recovery, so a present-but-malformed file would fail every
     /// attempt. Mirror `OfflineDiarizerManager.prepareModels(directory:)` for
-    /// exactly that case: on an identified PLDA metadata failure purge the
-    /// diarizer repo directory once and reload. Everything else (download
-    /// errors, which ModelHub already retried or deliberately preserved;
-    /// cancellation, including Cocoa user-cancelled errors and cancellations
-    /// wrapped as underlying errors; offline mode, where a reload cannot
-    /// succeed) keeps the cache and propagates.
+    /// exactly that case. Provenance is established on disk, not from the
+    /// error's shape (FluidAudio's tree lister also surfaces
+    /// `JSONSerialization` errors for truncated network responses): after a
+    /// failed load the PLDA file in the diarizer directory is validated, and
+    /// only when it is missing or unreadable is the repo purged once and
+    /// reloaded. Cancellation (including Cocoa user-cancelled errors and
+    /// cancellations wrapped as underlying errors), download errors that
+    /// ModelHub already retried or deliberately preserved, and offline mode
+    /// keep the cache and propagate.
     static func loadWithRecovery<T: Sendable>(
         directory: URL,
         offlineMode: Bool = ModelHub.offlineMode,
@@ -146,44 +149,55 @@ actor FluidOfflineDiarizer: OfflineDiarizerManaging {
         do {
             return try await load()
         } catch {
-            guard shouldPurgeCache(after: error, offlineMode: offlineMode) else { throw error }
+            guard shouldPurgeCache(after: error, directory: directory, offlineMode: offlineMode) else { throw error }
             DiarizationService.clearModelCache(directory: directory)
             return try await load()
         }
     }
 
-    static func shouldPurgeCache(after error: Error, offlineMode: Bool) -> Bool {
+    static func shouldPurgeCache(after error: Error, directory: URL, offlineMode: Bool) -> Bool {
         if offlineMode { return false }
         if isCancellation(error) { return false }
-        return isPLDAMetadataFailure(error)
+        if error is URLError || error is DownloadError { return false }
+        return !pldaParametersAreValid(in: directory)
     }
 
     /// `CancellationError`, Cocoa `NSUserCancelledError`, or either of those
-    /// anywhere in the `NSUnderlyingErrorKey` chain.
+    /// anywhere in the `NSUnderlyingErrorKey` chain. The walk stops after
+    /// eight levels or when an underlying error repeats its parent (domain,
+    /// code, description), which covers the self-referencing chains some
+    /// frameworks build.
     static func isCancellation(_ error: Error) -> Bool {
         var current: Error? = error
-        var depth = 0
-        while let candidate = current, depth < 8 {
+        var seen = Set<String>()
+        while let candidate = current, seen.count < 8 {
             if candidate is CancellationError { return true }
             let nsError = candidate as NSError
             if nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError { return true }
+            guard seen.insert("\(nsError.domain)#\(nsError.code)#\(nsError.localizedDescription)").inserted else { break }
             current = nsError.userInfo[NSUnderlyingErrorKey] as? Error
-            depth += 1
         }
         return false
     }
 
-    /// The failures `OfflineDiarizerModels.loadPLDAPsi` produces for a
-    /// present-but-unreadable `plda-parameters.json`: its own
-    /// `processingFailed` messages that mention PLDA, `JSONSerialization`'s
-    /// Cocoa parse error, or a `DecodingError`.
-    static func isPLDAMetadataFailure(_ error: Error) -> Bool {
-        if error is DecodingError { return true }
-        if case OfflineDiarizationError.processingFailed(let message) = error {
-            return message.localizedCaseInsensitiveContains("plda")
+    /// Validates `plda-parameters.json` in the diarizer repo directory with the
+    /// shape `OfflineDiarizerModels.loadPLDAPsi` reads: a JSON object whose
+    /// `tensors.psi.data_base64` is a non-empty base64 string.
+    static func pldaParametersAreValid(in directory: URL) -> Bool {
+        let fileURL = DiarizationService.modelCacheDirectory(directory: directory)
+            .appendingPathComponent("plda-parameters.json", isDirectory: false)
+        guard
+            let data = try? Data(contentsOf: fileURL),
+            let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let tensors = root["tensors"] as? [String: Any],
+            let psi = tensors["psi"] as? [String: Any],
+            let base64 = psi["data_base64"] as? String,
+            let decoded = Data(base64Encoded: base64, options: [.ignoreUnknownCharacters]),
+            !decoded.isEmpty
+        else {
+            return false
         }
-        let nsError = error as NSError
-        return nsError.domain == NSCocoaErrorDomain && nsError.code == NSPropertyListReadCorruptError
+        return true
     }
 }
 
@@ -324,7 +338,11 @@ public actor DiarizationService: DiarizationServiceProtocol {
             // while the shared load keeps running for the other waiters.
             try await Self.awaitCancellable(task)
         } catch {
-            if !(error is CancellationError), preparation == task { preparation = nil }
+            // A cancelled waiter leaves the shared task in place for the other
+            // callers. Any error the shared task itself produced, including a
+            // CancellationError thrown by the loader, must not be reused.
+            let waiterWasCancelled = Task.isCancelled && error is CancellationError
+            if !waiterWasCancelled, preparation == task { preparation = nil }
             throw error
         }
         modelsReady = true

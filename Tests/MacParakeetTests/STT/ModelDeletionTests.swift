@@ -1,4 +1,5 @@
 import XCTest
+import FluidAudio
 @testable import MacParakeetCore
 
 /// Covers the pure file-removal cores behind per-model delete. The telemetry
@@ -144,6 +145,28 @@ final class ModelDeletionTests: XCTestCase {
                 atPath: cacheRoot.appendingPathComponent("parakeet_unified_preprocessor.mlmodelc").path
             )
         )
+    }
+
+    func testNemotronEnglishCacheCompletenessRequiresEveryDownloadedFile() throws {
+        let tierDir = tempRoot.appendingPathComponent("nemotron-streaming/1120ms", isDirectory: true)
+        try FileManager.default.createDirectory(at: tierDir, withIntermediateDirectories: true)
+        // Readiness gate files only: the engine can load, but the pre-gate download must still run.
+        for fileName in [ModelNames.NemotronStreaming.metadata, ModelNames.NemotronStreaming.encoderInt8File] {
+            let url = tierDir.appendingPathComponent(fileName)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "x".write(to: url, atomically: true, encoding: .utf8)
+        }
+        XCTAssertTrue(NemotronEnglishEngine.isModelCached(cacheRoot: tierDir))
+        XCTAssertFalse(NemotronEnglishEngine.isModelCacheComplete(cacheRoot: tierDir))
+
+        for fileName in ModelNames.NemotronStreaming.requiredModels {
+            let url = tierDir.appendingPathComponent(fileName)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: url.path) {
+                try "x".write(to: url, atomically: true, encoding: .utf8)
+            }
+        }
+        XCTAssertTrue(NemotronEnglishEngine.isModelCacheComplete(cacheRoot: tierDir))
     }
 
     // MARK: - Nemotron repo file removal

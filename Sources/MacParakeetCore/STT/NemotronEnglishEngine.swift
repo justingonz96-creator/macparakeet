@@ -60,7 +60,10 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
                 )
             },
             modelDownloader: { directory, progressHandler in
-                guard !Self.isModelCached() else { return }
+                // Check FluidAudio's complete required set, not just the
+                // metadata + encoder readiness gate, so a partial cache is
+                // completed here and never downloaded under the inference gate.
+                guard !Self.isModelCacheComplete(cacheRoot: Self.defaultCacheRoot()) else { return }
                 try await ModelHub.download(
                     .nemotronStreaming1120,
                     to: directory,
@@ -305,6 +308,14 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
     /// the encoder is the manager's own download gate, and without metadata the
     /// manager would silently fall back to `NemotronStreamingConfig()`'s 2240 ms
     /// chunk geometry — the wrong tier for this build.
+    /// Every file `ModelHub.download(.nemotronStreaming1120)` fetches is present.
+    nonisolated static func isModelCacheComplete(cacheRoot: URL) -> Bool {
+        let fileManager = FileManager.default
+        return ModelNames.NemotronStreaming.requiredModels.allSatisfy { fileName in
+            fileManager.fileExists(atPath: cacheRoot.appendingPathComponent(fileName).path)
+        }
+    }
+
     nonisolated static func isModelCached(cacheRoot: URL) -> Bool {
         let fileManager = FileManager.default
         let metadata = cacheRoot.appendingPathComponent(ModelNames.NemotronStreaming.metadata)

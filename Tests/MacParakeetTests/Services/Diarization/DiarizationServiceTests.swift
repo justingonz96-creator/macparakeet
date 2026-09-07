@@ -241,6 +241,25 @@ final class DiarizationServiceTests: XCTestCase {
         XCTAssertEqual(processed, 2)
     }
 
+    func testLoaderCancellationIsNotReusedByTheNextCall() async throws {
+        let manager = RecordingOfflineDiarizerManager(result: DiarizationResult(segments: []))
+        // The loader itself is cancelled once (not the waiter); the next call must retry.
+        await manager.setPrepareErrors([CancellationError()])
+        let service = DiarizationService(manager: manager, modelsDirectory: FileManager.default.temporaryDirectory)
+
+        do {
+            _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"))
+            XCTFail("expected the loader's CancellationError")
+        } catch is CancellationError {}
+
+        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav"))
+
+        let prepared = await manager.preparedDirectories.count
+        let ready = await service.isReady()
+        XCTAssertEqual(prepared, 2, "a shared task that failed with CancellationError must not be reused")
+        XCTAssertTrue(ready)
+    }
+
     func testFailedPreparationIsRetriedByTheNextCall() async throws {
         let manager = RecordingOfflineDiarizerManager(result: DiarizationResult(segments: []))
         await manager.setPrepareErrors([OfflineDiarizationError.modelNotLoaded("first")])
@@ -291,12 +310,14 @@ final class DiarizationServiceTests: XCTestCase {
 
     // MARK: - Cache recovery around OfflineDiarizerModels.load
 
-    private func makeDiarizerCache() throws -> URL {
+    private static let validPLDAJSON = #"{"tensors":{"psi":{"shape":[2],"dtype":"float32","data_base64":"AACAPwAAAEA="}}}"#
+
+    private func makeDiarizerCache(pldaContents: String = "not json") throws -> URL {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let repo = DiarizationService.modelCacheDirectory(directory: base)
         try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
-        try "not json".write(to: repo.appendingPathComponent("plda-parameters.json"), atomically: true, encoding: .utf8)
+        try pldaContents.write(to: repo.appendingPathComponent("plda-parameters.json"), atomically: true, encoding: .utf8)
         return base
     }
 
@@ -362,8 +383,9 @@ final class DiarizationServiceTests: XCTestCase {
             // ModelHub already retried these and chose to preserve the cache.
             DownloadError.invalidArtifact(path: "Embedding.mlmodelc", reason: "truncated"),
             DownloadError.rateLimited(statusCode: 429, message: "slow down"),
-            OfflineDiarizationError.modelNotLoaded("Segmentation.mlmodelc"),
         ]
+        // Preserved even though the on-disk PLDA file is corrupt: these errors
+        // are never grounds for deleting a cache.
         for error in preserved {
             let base = try makeDiarizerCache()
             defer { try? FileManager.default.removeItem(at: base) }
@@ -398,8 +420,49 @@ final class DiarizationServiceTests: XCTestCase {
             } catch {}
             XCTAssertEqual(attempts.withLock { $0 }, 1)
             XCTAssertTrue(FileManager.default.fileExists(atPath: repo.path), "offline mode must keep the cache")
-            XCTAssertFalse(FluidOfflineDiarizer.shouldPurgeCache(after: failure, offlineMode: true))
+            XCTAssertFalse(FluidOfflineDiarizer.shouldPurgeCache(after: failure, directory: base, offlineMode: true))
         }
+    }
+
+    func testParseErrorWithValidPLDAFileKeepsTheCache() async throws {
+        // FluidAudio's tree lister also surfaces JSONSerialization errors for
+        // truncated network responses; a parse error alone proves nothing, and
+        // neither does an unrelated model-load failure.
+        for failure in pldaFailures() + [OfflineDiarizationError.modelNotLoaded("Segmentation.mlmodelc")] {
+            let base = try makeDiarizerCache(pldaContents: Self.validPLDAJSON)
+            defer { try? FileManager.default.removeItem(at: base) }
+            let repo = DiarizationService.modelCacheDirectory(directory: base)
+            let attempts = OSAllocatedUnfairLock(initialState: 0)
+
+            do {
+                _ = try await FluidOfflineDiarizer.loadWithRecovery(directory: base, offlineMode: false) { () throws -> String in
+                    attempts.withLock { $0 += 1 }
+                    throw failure
+                }
+                XCTFail("expected \(failure) to propagate")
+            } catch {}
+            XCTAssertEqual(attempts.withLock { $0 }, 1, "\(failure) must not retry when the PLDA file is valid")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: repo.path), "a valid PLDA file must never be purged")
+        }
+        XCTAssertTrue(FluidOfflineDiarizer.pldaParametersAreValid(in: try makeDiarizerCache(pldaContents: Self.validPLDAJSON)))
+        XCTAssertFalse(FluidOfflineDiarizer.pldaParametersAreValid(in: try makeDiarizerCache(pldaContents: "{}")))
+        XCTAssertFalse(FluidOfflineDiarizer.pldaParametersAreValid(in: try makeDiarizerCache(pldaContents: #"{"tensors":{"psi":{"data_base64":""}}}"#)))
+    }
+
+    func testMissingPLDAFilePurgesAndReloads() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let repo = DiarizationService.modelCacheDirectory(directory: base)
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let attempts = OSAllocatedUnfairLock(initialState: 0)
+
+        let value = try await FluidOfflineDiarizer.loadWithRecovery(directory: base, offlineMode: false) { () throws -> String in
+            let attempt = attempts.withLock { $0 += 1; return $0 }
+            if attempt == 1 { throw OfflineDiarizationError.processingFailed("PLDA parameters file not found") }
+            return "loaded"
+        }
+        XCTAssertEqual(value, "loaded")
+        XCTAssertEqual(attempts.withLock { $0 }, 2)
     }
 
     func testCancellationDetectionFollowsTheUnderlyingErrorChain() {
@@ -410,7 +473,11 @@ final class DiarizationServiceTests: XCTestCase {
         ])
         XCTAssertTrue(FluidOfflineDiarizer.isCancellation(nested))
         XCTAssertFalse(FluidOfflineDiarizer.isCancellation(URLError(.timedOut)))
-        XCTAssertFalse(FluidOfflineDiarizer.isPLDAMetadataFailure(OfflineDiarizationError.processingFailed("segmentation output empty")))
+        // A self-referencing chain terminates instead of looping.
+        let selfReferencing = NSError(domain: "Loop", code: 1, userInfo: [
+            NSUnderlyingErrorKey: NSError(domain: "Loop", code: 1, userInfo: nil),
+        ])
+        XCTAssertFalse(FluidOfflineDiarizer.isCancellation(selfReferencing))
     }
 }
 
