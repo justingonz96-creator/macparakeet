@@ -272,13 +272,20 @@ final class DiarizationServiceTests: XCTestCase {
         }
         try await holderAcquired.wait()
 
+        // `made` fires from inside the service once the preparation task has
+        // been created (it is created right after the factory call); the task
+        // then blocks on the gate the holder owns.
+        let made = AsyncPermit(value: 0)
+        factory.madeSignal = made
         let preparation = Task { try await service.prepareModels() }
+        try await made.wait()
         for _ in 0..<50 { await Task.yield() }
         var preparedWhileHeld = 0
         for manager in factory.managers {
             preparedWhileHeld += await manager.preparedDirectories.count
         }
-        XCTAssertEqual(preparedWhileHeld, 0, "preparation must not start while another inference holds the permit")
+        XCTAssertEqual(factory.managers.count, 1, "the preparation task exists")
+        XCTAssertEqual(preparedWhileHeld, 0, "preparation must not run while another inference holds the permit")
 
         holderRelease.signal()
         try await holder.value
@@ -322,6 +329,8 @@ private final class RecordingManagerFactory: @unchecked Sendable {
     private(set) var managers: [RecordingOfflineDiarizerManager] = []
     var prepareErrors: [Error] = []
     var prepareSignals: (entered: AsyncPermit, release: AsyncPermit)?
+    /// Signalled each time `make(for:)` runs, i.e. when the service creates a preparation task.
+    var madeSignal: AsyncPermit?
 
     init(result: DiarizationResult) {
         self.result = result
@@ -334,6 +343,7 @@ private final class RecordingManagerFactory: @unchecked Sendable {
         let error: Error? = prepareErrors.isEmpty ? nil : prepareErrors.removeFirst()
         let manager = RecordingOfflineDiarizerManager(result: result, prepareError: error, signals: prepareSignals)
         managers.append(manager)
+        madeSignal?.signal()
         return manager
     }
 }
