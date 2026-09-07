@@ -227,7 +227,11 @@ not final-transcription completion:
 - `MeetingRecordingRecoveryService.discard(_:)`: user discard of an incomplete
   recovery removes the session folder. If a completed transcription already
   exists, discard preserves the folder/audio and uses settlement to delete only
-  the lock.
+  the lock. Discard first claims finalization ownership using the current
+  on-disk lock, so a stale recovery dialog cannot delete audio now owned by
+  another live process or an active same-process finalization lease. A missing
+  folder remains a successful no-op. Failed deletion or settlement restores the
+  prior lock while the folder remains, preserving retryability.
 
 ## Non-Stable Fields
 
