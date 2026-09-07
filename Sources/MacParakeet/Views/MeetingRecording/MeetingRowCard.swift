@@ -1,4 +1,5 @@
 import MacParakeetCore
+import MacParakeetViewModels
 import SwiftUI
 
 /// Single row in the Meetings list. Apple-minimal layout: title + snippet on
@@ -9,7 +10,7 @@ struct MeetingRowCard<MenuContent: View>: View {
     var searchText: String = ""
     var isSelected: Bool = false
     var showsSelectionControls: Bool = false
-    var showsSource = false
+    var sourceLabelStyle: LibrarySourceLabelStyle = .hidden
     var isRetrying: Bool = false
     var onTap: () -> Void
     var onRetry: (() -> Void)? = nil
@@ -145,7 +146,7 @@ struct MeetingRowCard<MenuContent: View>: View {
                 .contentTransition(.opacity)
                 .layoutPriority(1)
 
-            if showsSource {
+            if sourceLabelStyle != .hidden {
                 sourceInline
             }
 
@@ -160,12 +161,11 @@ struct MeetingRowCard<MenuContent: View>: View {
     }
 
     private var sourceInline: some View {
-        let source = TranscriptionSourceDisplay.resolve(for: transcription)
-        return Label(source.collapsedText, systemImage: source.systemImage)
-            .font(DesignSystem.Typography.micro.weight(.medium))
-            .foregroundStyle(source.tint)
-            .lineLimit(1)
-            .fixedSize()
+        TranscriptionSourceLabel(
+            source: TranscriptionSourceDisplay.resolve(for: transcription),
+            style: sourceLabelStyle,
+            font: DesignSystem.Typography.micro.weight(.medium)
+        )
     }
 
     @ViewBuilder

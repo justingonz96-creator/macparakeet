@@ -86,4 +86,44 @@ final class TranscriptionSourceDisplayTests: XCTestCase {
         XCTAssertEqual(TranscriptionSourceDisplay.resolve(for: local).collapsedText, "Local")
         XCTAssertEqual(TranscriptionSourceDisplay.resolve(for: meeting).collapsedText, "Meeting")
     }
+
+    // MARK: - Which glyphs can stand alone
+
+    /// Under the Video filter the word is dropped and the mark carries the
+    /// source. That only works for real logos, so the split has to hold.
+    func testPlatformMarksStandAloneAndGenericGlyphsDoNot() {
+        for branded in [TranscriptionSourceDisplay.youtube, .x, .vimeo, .facebook, .tiktok, .instagram] {
+            XCTAssertTrue(
+                branded.markIsSelfEvident,
+                "\(branded.collapsedText) is a logo people already read as the brand"
+            )
+        }
+        for generic in [TranscriptionSourceDisplay.meeting, .localFile, .podcast, .audioURL, .mediaURL] {
+            XCTAssertFalse(
+                generic.markIsSelfEvident,
+                "\(generic.collapsedText) is a plain SF Symbol and names no source without its text"
+            )
+        }
+    }
+
+    /// A SoundCloud upload and a Twitch VOD both live under the Video filter
+    /// but resolve to generic glyphs, so collapsing them to an icon would drop
+    /// the audio-versus-video distinction rather than remove a repetition.
+    func testVideoFilterSourcesThatMustKeepTheirText() {
+        let soundcloud = Transcription(
+            fileName: "set.m4a",
+            sourceURL: "https://soundcloud.com/artist/track",
+            sourceType: .youtube
+        )
+        let twitch = Transcription(
+            fileName: "vod.m4a",
+            sourceURL: "https://www.twitch.tv/videos/123456789",
+            sourceType: .youtube
+        )
+
+        XCTAssertEqual(TranscriptionSourceDisplay.resolve(for: soundcloud), .audioURL)
+        XCTAssertEqual(TranscriptionSourceDisplay.resolve(for: twitch), .mediaURL)
+        XCTAssertFalse(TranscriptionSourceDisplay.resolve(for: soundcloud).markIsSelfEvident)
+        XCTAssertFalse(TranscriptionSourceDisplay.resolve(for: twitch).markIsSelfEvident)
+    }
 }

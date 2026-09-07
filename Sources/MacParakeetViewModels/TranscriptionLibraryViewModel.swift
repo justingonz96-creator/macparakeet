@@ -16,6 +16,51 @@ public enum TranscriptionLibraryScope: Sendable {
     case meetings
 }
 
+/// How much of a row/card's source attribution is worth drawing.
+///
+/// A source label that repeats the active filter is noise: browsing Podcasts
+/// and reading "Podcast" on every card answers a question the filter already
+/// answered. The label only earns its place when the current context leaves
+/// the source genuinely open.
+public enum LibrarySourceLabelStyle: String, Sendable, Equatable, CaseIterable {
+    /// Icon and text. The context admits several unrelated sources, so the
+    /// label is the only thing separating a meeting from a podcast episode.
+    case full
+    /// Icon alone. The context narrows the source to one family whose members
+    /// are told apart by a recognizable platform mark, so the word is
+    /// redundant with both the filter and the glyph.
+    case iconOnly
+    /// Nothing. The context admits exactly one source, so the label can only
+    /// restate the filter.
+    case hidden
+}
+
+extension TranscriptionLibraryScope {
+    /// Resolved against `(scope, filter)` rather than the filter alone: the
+    /// Meetings workspace shows only meetings whatever its filter says, so
+    /// even Favorites is fully determined there.
+    ///
+    /// Kept in step with `makeQuery(offset:)`, which maps the same pairs onto
+    /// a stored `SourceType`. A pair whose query pins one `SourceType` that
+    /// resolves to exactly one display is `.hidden`; the shared URL source
+    /// type resolves to nine different platforms, so it is `.iconOnly`.
+    public func sourceLabelStyle(for filter: LibraryFilter) -> LibrarySourceLabelStyle {
+        switch self {
+        case .meetings:
+            return .hidden
+        case .all:
+            switch filter {
+            case .all, .favorites:
+                return .full
+            case .youtube:
+                return .iconOnly
+            case .podcast, .local, .meeting:
+                return .hidden
+            }
+        }
+    }
+}
+
 public typealias LibrarySortOrder = TranscriptionLibrarySortOrder
 
 /// Date-based bucket used to group meeting/library rows under headers like

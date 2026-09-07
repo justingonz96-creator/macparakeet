@@ -43,6 +43,21 @@ enum TranscriptionSourceDisplay: Equatable {
         }
     }
 
+    /// Whether the glyph alone identifies the source.
+    ///
+    /// The platform marks are logos people already read as the brand, so the
+    /// word beside them adds nothing. The rest are plain SF Symbols — a
+    /// waveform or a film frame names no source on its own — and must keep
+    /// their text wherever the surrounding context does not supply it.
+    var markIsSelfEvident: Bool {
+        switch self {
+        case .youtube, .x, .vimeo, .facebook, .tiktok, .instagram:
+            return true
+        case .meeting, .localFile, .podcast, .audioURL, .mediaURL:
+            return false
+        }
+    }
+
     var collapsedText: String {
         switch self {
         case .meeting: return "Meeting"
