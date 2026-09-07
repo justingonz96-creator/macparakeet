@@ -25,7 +25,12 @@ public final class SavedMeetingNotesViewModel {
 
     public var hasUnsavedChanges: Bool { revision != savedRevision }
 
-    /// The app retains dirty editors independently of a particular window.
+    /// Includes derived work deferred until navigation, an AI action, or quit.
+    public var hasPendingFlush: Bool {
+        hasUnsavedChanges || (onFlush != nil && flushedRevision != savedRevision)
+    }
+
+    /// The app retains editors with pending work independently of a window.
     var onUnsavedChangesChange: (() -> Void)?
 
     public var textBinding: Binding<String> {
@@ -51,6 +56,9 @@ public final class SavedMeetingNotesViewModel {
     }
 
     private var persist: ((String) async -> Bool)?
+    private var onFlush: (() async -> Void)?
+    private var flushTask: Task<Void, Never>?
+    private var flushedRevision = 0
     private var isMeetingDeleted: (() async throws -> Bool)?
     private var debounceTask: Task<Void, Never>?
     private var inFlightTask: Task<Bool, Never>?
@@ -75,6 +83,7 @@ public final class SavedMeetingNotesViewModel {
         meetingID: UUID,
         text: String?,
         isMeetingDeleted: (() async throws -> Bool)? = nil,
+        onFlush: (() async -> Void)? = nil,
         persist: @escaping (String) async -> Bool
     ) {
         debounceTask?.cancel()
@@ -83,7 +92,11 @@ public final class SavedMeetingNotesViewModel {
         inFlightTask = nil
         inFlightToken = nil
         inFlightRevision = nil
+        flushTask?.cancel()
+        flushTask = nil
+        flushedRevision = 0
         configurationToken = UUID()
+        self.onFlush = onFlush
         self.meetingID = meetingID
         self.persist = persist
         self.isMeetingDeleted = isMeetingDeleted
@@ -101,31 +114,55 @@ public final class SavedMeetingNotesViewModel {
     public func flush() async -> Bool {
         debounceTask?.cancel()
         debounceTask = nil
-        guard hasUnsavedChanges else { return true }
+        guard hasPendingFlush else { return true }
         let activeConfigurationToken = configurationToken
-        do {
-            if try await retireDraftIfMeetingWasDeleted() { return true }
-        } catch {
-            guard configurationToken == activeConfigurationToken else { return false }
-            // A failed read is not proof of deletion. Keep the draft for retry.
-            guard hasUnsavedChanges else { return true }
-            saveState = .failed
-            return false
-        }
-        guard configurationToken == activeConfigurationToken else { return false }
-        while revision != savedRevision {
-            guard configurationToken == activeConfigurationToken else { return false }
-            guard await persistCurrentRevision() else {
+        if hasUnsavedChanges {
+            do {
+                if try await retireDraftIfMeetingWasDeleted() { return true }
+            } catch {
                 guard configurationToken == activeConfigurationToken else { return false }
-                // Deletion can race the initial existence check and the write.
-                do {
-                    return try await retireDraftIfMeetingWasDeleted()
-                } catch {
-                    guard configurationToken == activeConfigurationToken else { return false }
+                // A failed read is not proof of deletion. Keep the draft for retry.
+                if hasUnsavedChanges {
                     saveState = .failed
                     return false
                 }
             }
+        }
+        guard configurationToken == activeConfigurationToken else { return false }
+        while hasPendingFlush {
+            while hasUnsavedChanges {
+                guard configurationToken == activeConfigurationToken else { return false }
+                guard await persistCurrentRevision() else {
+                    guard configurationToken == activeConfigurationToken else { return false }
+                    // Deletion can race the initial existence check and the write.
+                    do {
+                        return try await retireDraftIfMeetingWasDeleted()
+                    } catch {
+                        guard configurationToken == activeConfigurationToken else { return false }
+                        saveState = .failed
+                        return false
+                    }
+                }
+            }
+            if let onFlush, flushedRevision != savedRevision {
+                if let flushTask {
+                    await flushTask.value
+                } else {
+                    let flushingRevision = savedRevision
+                    let task = Task { @MainActor [weak self] in
+                        await onFlush()
+                        guard let self, self.configurationToken == activeConfigurationToken else { return }
+                        self.flushedRevision = flushingRevision
+                        self.flushTask = nil
+                        self.onUnsavedChangesChange?()
+                    }
+                    flushTask = task
+                    await task.value
+                }
+            }
+            guard configurationToken == activeConfigurationToken else { return false }
+            // An edit during the callback remains pending and is drained before
+            // the action proceeds. Concurrent callers share the same callback.
         }
         return configurationToken == activeConfigurationToken
     }
@@ -144,7 +181,10 @@ public final class SavedMeetingNotesViewModel {
         inFlightTask = nil
         inFlightToken = nil
         inFlightRevision = nil
+        flushTask?.cancel()
+        flushTask = nil
         savedRevision = revision
+        flushedRevision = revision
         saveState = .deleted
         onUnsavedChangesChange?()
         return true

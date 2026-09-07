@@ -2891,7 +2891,7 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(mockRepo.updateFileNameCalls[0].fileName, "Design Review")
     }
 
-    func testRenameCurrentTranscriptionPublishesCommittedRowWithoutFollowupFetch() async throws {
+    func testRenameCurrentTranscriptionPublishesCommittedRowAndRefreshesCanonicalArtifacts() async throws {
         let artifactStore = RecordingMeetingArtifactStore()
         viewModel = TranscriptionViewModel(meetingArtifactStore: artifactStore)
         let oldUpdatedAt = Date(timeIntervalSince1970: 1_000)
@@ -2920,7 +2920,6 @@ final class TranscriptionViewModelTests: XCTestCase {
         var persisted = t
         persisted.rawTranscript = "A newer persisted transcript."
         mockRepo.transcriptions = [persisted]
-        mockRepo.fetchError = LocalTitleRenameTestError.persistenceFailed
         var renamedCallbacks: [MeetingRename] = []
         viewModel.onMeetingRenamed = { renamedCallbacks.append($0) }
 
@@ -2940,6 +2939,51 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(call.transcription.rawTranscript, persisted.rawTranscript)
         XCTAssertGreaterThan(call.transcription.updatedAt, oldUpdatedAt)
         XCTAssertEqual(call.promptResults.map(\.id), [promptResult.id])
+    }
+
+    func testRenameCurrentTranscriptionPublishesCommittedRowWhenArtifactReadFails() {
+        let meeting = Transcription(fileName: "Old", status: .completed, sourceType: .meeting)
+        mockRepo.transcriptions = [meeting]
+        mockRepo.fetchError = LocalTitleRenameTestError.persistenceFailed
+        viewModel.configure(
+            transcriptionService: mockService, transcriptionRepo: mockRepo,
+            promptResultRepo: mockPromptResultRepo
+        )
+        viewModel.currentTranscription = meeting
+        var renamedTitles: [String] = []
+        viewModel.onMeetingRenamed = { renamedTitles.append($0.title) }
+
+        viewModel.renameCurrentTranscription(to: "New")
+
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertEqual(viewModel.currentTranscription?.fileName, "New")
+        XCTAssertEqual(mockRepo.transcriptions.first?.fileName, "New")
+        XCTAssertEqual(renamedTitles, ["New"])
+    }
+
+    func testDebouncedNotesWritesDeferArtifactsUntilExplicitRefresh() async {
+        let store = RecordingMeetingArtifactStore()
+        viewModel = TranscriptionViewModel(meetingArtifactStore: store)
+        let meeting = Transcription(fileName: "Meeting", status: .completed, sourceType: .meeting)
+        mockRepo.transcriptions = [meeting]
+        viewModel.configure(
+            transcriptionService: mockService, transcriptionRepo: mockRepo,
+            promptResultRepo: mockPromptResultRepo
+        )
+        viewModel.currentTranscription = meeting
+
+        for text in ["First", "Latest"] {
+            let saved = await viewModel.updateMeetingNotes(for: meeting, to: text, refreshArtifacts: false)
+            XCTAssertTrue(saved)
+        }
+        XCTAssertEqual(mockRepo.transcriptions.first?.userNotes, "Latest")
+        let beforeFlush = await store.materializeCallCount
+        XCTAssertEqual(beforeFlush, 0)
+
+        await viewModel.refreshMeetingNotesArtifacts(for: meeting.id)
+        let calls = await store.materializeCalls
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.transcription.userNotes, "Latest")
     }
 
     func testRenameCurrentTranscriptionSkipsArtifactRefreshWithoutPromptResultRepo() async throws {

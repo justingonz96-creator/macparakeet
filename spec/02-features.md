@@ -1734,8 +1734,9 @@ notes automatically. Every saved meeting exposes a dedicated, always-editable
 `Notes` tab after `Transcript`. Changes auto-save after a 500 ms idle debounce,
 with Saving/Saved/Error feedback and Retry. This keeps the user-authored
 editorial layer separate from the factual transcript. Notes are backed by
-canonical `transcriptions.userNotes`; blank saves become `NULL` and refresh the
-derived meeting artifacts. Non-meeting transcriptions do not expose the tab.
+canonical `transcriptions.userNotes`; blank saves become `NULL`. Derived meeting
+artifacts refresh at navigation, prompt/chat and ordinary-quit flushes rather
+than every debounce tick. Non-meeting transcriptions do not expose the tab.
 Each meeting keeps its own editor. Unsaved drafts remain available after a
 selection change or window close; an unsuccessful save cannot bind the next
 meeting to the previous meeting's notes. Normal app termination waits for all

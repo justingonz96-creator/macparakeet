@@ -1182,11 +1182,13 @@ struct TranscriptResultView: View {
                     viewModel.currentTranscriptionRevision == request.contentRevision
                         && viewModel.currentTranscription?.id == request.transcriptionID
                         && currentAIContextMode == request.mode
+                        && savedMeetingNotesViewModel === notesEditor
+                        && !notesEditor.hasUnsavedChanges
                 },
                 onStale: {
                     guard viewModel.currentTranscription?.id == transcription.id else { return }
                     promptResultsViewModel.errorMessage =
-                        "The transcript or AI context changed while preparing this prompt. Please try again."
+                        "The transcript, notes, or AI context changed while preparing this prompt. Please try again."
                 },
                 action: action
             )
@@ -4034,16 +4036,19 @@ struct TranscriptResultView: View {
                 text: transcription.userNotes,
                 isMeetingDeleted: { [viewModel, transcription] in
                     try await viewModel.isMeetingDeleted(id: transcription.id)
+                },
+                onFlush: { [viewModel, transcription] in
+                    await viewModel.refreshMeetingNotesArtifacts(for: transcription.id)
                 }
             ) { [viewModel, transcription] text in
-                await viewModel.updateMeetingNotes(for: transcription, to: text)
+                await viewModel.updateMeetingNotes(for: transcription, to: text, refreshArtifacts: false)
             }
         } else {
             savedMeetingNotesViewModel = SavedMeetingNotesViewModel()
         }
         // Bind the new meeting immediately; a failed old save remains owned by
         // the coordinator and can be retried on reopening or before quit.
-        if previousEditor !== savedMeetingNotesViewModel, previousEditor.hasUnsavedChanges {
+        if previousEditor !== savedMeetingNotesViewModel, previousEditor.hasPendingFlush {
             Task { @MainActor in
                 _ = await previousEditor.flush()
             }

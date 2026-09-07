@@ -129,6 +129,39 @@ final class SavedMeetingNotesCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.hasUnsavedChanges)
     }
 
+    func testQuitRefreshesDatabaseCleanEditorRetainedAfterAutosave() async {
+        let coordinator = SavedMeetingNotesCoordinator()
+        let meetingID = UUID()
+        let saved = expectation(description: "Database autosave completed")
+        let replied = expectation(description: "Quit replied after derived refresh")
+        var refreshCount = 0
+        var editor: SavedMeetingNotesViewModel? = coordinator.editor(
+            meetingID: meetingID, text: nil,
+            onFlush: { refreshCount += 1 }
+        ) { _ in
+            saved.fulfill()
+            return true
+        }
+        editor?.textBinding.wrappedValue = "Durable notes"
+        await fulfillment(of: [saved], timeout: 2)
+        XCTAssertFalse(editor?.hasUnsavedChanges ?? true)
+        XCTAssertEqual(refreshCount, 0)
+        XCTAssertTrue(coordinator.hasUnsavedChanges)
+        weak var retained = editor
+        editor = nil
+        XCTAssertNotNil(retained)
+        let reopened = coordinator.editor(meetingID: meetingID, text: "Durable notes") { _ in true }
+        XCTAssertTrue(reopened === retained)
+        XCTAssertTrue(coordinator.prepareToQuit { allowed in
+            XCTAssertTrue(allowed)
+            XCTAssertEqual(refreshCount, 1)
+            replied.fulfill()
+        })
+        await fulfillment(of: [replied], timeout: 1)
+        XCTAssertFalse(coordinator.hasUnsavedChanges)
+        XCTAssertFalse(reopened.hasPendingFlush)
+    }
+
     func testFailedQuitKeepsDraftAvailableForRetry() async {
         let coordinator = SavedMeetingNotesCoordinator()
         let meetingID = UUID()

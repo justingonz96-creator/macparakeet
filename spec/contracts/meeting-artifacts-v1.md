@@ -36,7 +36,10 @@ refresh.
 - `macparakeet-cli meetings artifact`: refreshes and returns the artifact
   snapshot.
 - Meeting notes and prompt-result write paths: refresh artifact views after
-  user notes or agent-authored results change.
+  user notes or agent-authored results change. The saved-meeting editor saves
+  notes to SQLite on debounce and refreshes these derived files when leaving
+  Notes or the detail view, before a prompt/chat action, or on ordinary quit.
+  CLI note writes continue to refresh immediately.
 
 ## Consumers
 

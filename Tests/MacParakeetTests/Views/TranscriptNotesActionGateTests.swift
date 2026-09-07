@@ -1,4 +1,5 @@
 import XCTest
+import MacParakeetViewModels
 @testable import MacParakeet
 @testable import MacParakeetCore
 
@@ -176,4 +177,34 @@ final class TranscriptNotesActionGateTests: XCTestCase {
         XCTAssertFalse(gate.isRunning)
         XCTAssertFalse(loader.preparingPromptContext)
     }
+    func testUnsavedNotesEditRejectsPreparedPromptContext() async throws {
+        let notes = SavedMeetingNotesViewModel()
+        let meeting = Transcription(fileName: "Meeting", rawTranscript: "Speech", status: .completed)
+        notes.configure(meetingID: meeting.id, text: "Original") { _ in true }
+        let started = expectation(description: "Context formatting suspended")
+        let (release, continuation) = AsyncStream<Void>.makeStream()
+        let loader = TranscriptRichContextLoader { _, _ in
+            started.fulfill()
+            for await _ in release { break }
+            return "Prepared context"
+        }
+        var rejected = false
+        var submitted = false
+        let preparation = try XCTUnwrap(loader.startPromptAction(
+            transcription: meeting, mode: .richTranscript, contentRevision: 1,
+            isCurrent: { _ in !notes.hasUnsavedChanges },
+            onStale: { rejected = true },
+            action: { _ in submitted = true }
+        ))
+        await fulfillment(of: [started], timeout: 1)
+        notes.textBinding.wrappedValue = "Edited while preparing"
+        notes.cancelPendingSave()
+        continuation.yield(())
+        continuation.finish()
+        await preparation.value
+
+        XCTAssertTrue(rejected)
+        XCTAssertFalse(submitted)
+    }
+
 }

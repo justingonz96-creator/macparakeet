@@ -12,6 +12,7 @@ public final class SavedMeetingNotesCoordinator {
 
     public init() {}
 
+    /// Includes durable notes whose derived files still need a flush.
     public var hasUnsavedChanges: Bool { !drafts.isEmpty }
 
     /// One pending AppKit termination decision owns the eventual reply.
@@ -21,6 +22,7 @@ public final class SavedMeetingNotesCoordinator {
         meetingID: UUID,
         text: String?,
         isMeetingDeleted: (() async throws -> Bool)? = nil,
+        onFlush: (() async -> Void)? = nil,
         persist: @escaping (String) async -> Bool
     ) -> SavedMeetingNotesViewModel {
         if let draft = drafts[meetingID] {
@@ -31,11 +33,12 @@ public final class SavedMeetingNotesCoordinator {
             meetingID: meetingID,
             text: text,
             isMeetingDeleted: isMeetingDeleted,
+            onFlush: onFlush,
             persist: persist
         )
         editor.onUnsavedChangesChange = { [weak self, weak editor] in
             guard let self, let editor else { return }
-            if editor.hasUnsavedChanges {
+            if editor.hasPendingFlush {
                 self.drafts[meetingID] = editor
             } else if self.drafts[meetingID] === editor {
                 self.drafts[meetingID] = nil

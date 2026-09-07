@@ -181,6 +181,88 @@ final class SavedMeetingNotesViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.saveState, .saved)
     }
 
+    func testDebouncedWritesDeferDerivedWorkUntilExplicitFlush() async {
+        let clock = ManualDebounceClock()
+        let viewModel = SavedMeetingNotesViewModel(waitForDebounce: clock.sleep)
+        var persistedText = ""
+        var flushedTexts: [String] = []
+        viewModel.configure(
+            meetingID: meetingID, text: nil,
+            onFlush: { flushedTexts.append(persistedText) }
+        ) { text in
+            persistedText = text
+            return true
+        }
+        for text in ["First", "Second", "Latest notes"] {
+            let started = expectation(description: "Debounce started")
+            let saved = expectation(description: "Database save completed")
+            clock.onSleep = { started.fulfill() }
+            viewModel.onUnsavedChangesChange = {
+                if !viewModel.hasUnsavedChanges { saved.fulfill() }
+            }
+            viewModel.textBinding.wrappedValue = text
+            await fulfillment(of: [started], timeout: 1)
+            clock.advance()
+            await fulfillment(of: [saved], timeout: 1)
+            XCTAssertEqual(persistedText, text)
+            XCTAssertTrue(flushedTexts.isEmpty)
+            XCTAssertFalse(viewModel.hasUnsavedChanges)
+            XCTAssertTrue(viewModel.hasPendingFlush)
+        }
+        viewModel.onUnsavedChangesChange = nil
+        let flushed = await viewModel.flush()
+        XCTAssertTrue(flushed)
+        XCTAssertEqual(flushedTexts, ["Latest notes"])
+        XCTAssertFalse(viewModel.hasPendingFlush)
+        let repeated = await viewModel.flush()
+        XCTAssertTrue(repeated)
+        XCTAssertEqual(flushedTexts, ["Latest notes"])
+    }
+
+    func testConcurrentFlushesShareCallbackAndDrainEditsMadeDuringIt() async {
+        let viewModel = SavedMeetingNotesViewModel()
+        let callbackStarted = expectation(description: "First callback started")
+        let secondFlushStarted = expectation(description: "Concurrent flush started")
+        var releaseCallback: (() -> Void)?
+        var persistedText = ""
+        var flushedTexts: [String] = []
+        viewModel.configure(
+            meetingID: meetingID, text: nil,
+            onFlush: {
+                flushedTexts.append(persistedText)
+                if flushedTexts.count == 1 {
+                    callbackStarted.fulfill()
+                    await withCheckedContinuation { continuation in
+                        releaseCallback = { continuation.resume() }
+                    }
+                }
+            }
+        ) { text in
+            persistedText = text
+            return true
+        }
+        viewModel.textBinding.wrappedValue = "First"
+        let first = Task { await viewModel.flush() }
+        await fulfillment(of: [callbackStarted], timeout: 1)
+        XCTAssertFalse(viewModel.hasUnsavedChanges)
+        XCTAssertTrue(viewModel.hasPendingFlush)
+        let second = Task {
+            secondFlushStarted.fulfill()
+            return await viewModel.flush()
+        }
+        await fulfillment(of: [secondFlushStarted], timeout: 1)
+        viewModel.textBinding.wrappedValue = "Latest"
+        viewModel.cancelPendingSave()
+        releaseCallback?()
+        let firstSaved = await first.value
+        let secondSaved = await second.value
+        XCTAssertTrue(firstSaved)
+        XCTAssertTrue(secondSaved)
+        XCTAssertEqual(flushedTexts, ["First", "Latest"])
+        XCTAssertEqual(persistedText, "Latest")
+        XCTAssertFalse(viewModel.hasPendingFlush)
+    }
+
     func testFlushPersistsImmediatelyAndCancelsDebounce() async {
         let clock = ManualDebounceClock()
         let debounceStarted = expectation(description: "Debounce started")

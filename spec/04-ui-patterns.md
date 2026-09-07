@@ -193,15 +193,19 @@ factual transcript pane. The tab always shows an editable plaintext
 existing 7,500-word soft-cap warning. The separate 8,000-word cap bounds notes
 sent to prompt assembly; it does not truncate stored notes.
 
-Changes auto-save after a 500 ms idle debounce. A quiet status reports Saving,
+Changes auto-save to SQLite after a 500 ms idle debounce. A quiet status reports Saving,
 Saved, or a retryable failure; the editor stays writable during persistence.
 Leaving the tab, leaving the detail page, or starting an LLM action flushes the
-latest draft. Chat and result prompts never start after a failed flush, so they
+latest draft and refreshes the derived meeting files once. Ordinary quit also
+flushes pending file refreshes, including drafts already saved to SQLite.
+The debounce does not rebuild transcript or prompt-result files. Chat and result
+prompts never start after a failed database flush, so they
 cannot receive stale notes. Saving blank or whitespace-only text clears the
 canonical value. Database success remains authoritative even if the
 derived-artifact refresh reports a separate retryable warning. Successive
-saves use database last-writer-wins semantics, while artifact refresh remains
-ordered/latest-wins so stale completion cannot overwrite newer files.
+saves use database last-writer-wins semantics. Notes, title and speaker rename
+refreshes are ordered per meeting and reread the committed row before writing.
+Other producers, including the CLI, retain their existing refresh behavior.
 
 A notes-save error banner belongs to the selected meeting. Selecting another
 recording dismisses that banner while retaining the failed draft and its retry

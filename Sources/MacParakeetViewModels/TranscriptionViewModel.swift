@@ -1601,7 +1601,8 @@ public final class TranscriptionViewModel {
     @discardableResult
     public func updateMeetingNotes(
         for transcription: Transcription,
-        to newText: String
+        to newText: String,
+        refreshArtifacts: Bool = true
     ) async -> Bool {
         guard transcription.sourceType == .meeting else { return false }
         guard let repo = transcriptionRepo else {
@@ -1657,8 +1658,10 @@ public final class TranscriptionViewModel {
                         self.transcriptions[index].updatedAt = max(self.transcriptions[index].updatedAt, committedAt)
                     }
                     // Without an authoritative snapshot, leave existing artifacts intact.
-                    self.meetingNotesArtifactWarnings[transcription.id] =
-                        "Notes were saved, but the meeting files could not be refreshed."
+                    if refreshArtifacts {
+                        self.meetingNotesArtifactWarnings[transcription.id] =
+                            "Notes were saved, but the meeting files could not be refreshed."
+                    }
                     return true
                 }
                 if self.currentTranscription?.id == committed.id {
@@ -1668,11 +1671,12 @@ public final class TranscriptionViewModel {
                     self.transcriptions[index] = committed
                 }
 
-                let refreshed = await self.refreshMeetingArtifacts(transcription: committed)
-                self.meetingNotesArtifactWarnings[committed.id] =
-                    refreshed
-                    ? nil
-                    : "Notes were saved, but the meeting files could not be refreshed."
+                if refreshArtifacts {
+                    let refreshed = await self.refreshMeetingArtifacts(transcription: committed)
+                    self.meetingNotesArtifactWarnings[committed.id] = refreshed
+                        ? nil
+                        : "Notes were saved, but the meeting files could not be refreshed."
+                }
                 return true
             } catch {
                 self.logger.error(
@@ -1716,23 +1720,29 @@ public final class TranscriptionViewModel {
     }
 
     public func retryCurrentMeetingNotesArtifactRefresh() async {
-        guard let transcription = currentTranscription,
-              transcription.sourceType == .meeting,
-              let repo = transcriptionRepo
-        else { return }
+        guard let meetingID = currentTranscription?.id else { return }
+        await refreshMeetingNotesArtifacts(for: meetingID)
+    }
+
+    /// Refresh derived files at an explicit editor flush, after debounced DB saves.
+    public func refreshMeetingNotesArtifacts(for meetingID: UUID) async {
+        guard let repo = transcriptionRepo else { return }
         let previousTask = meetingNotesSaveTask
         let token = UUID()
         meetingNotesSaveToken = token
-        let operation = Task { @MainActor [weak self, previousTask, repo, transcription] in
+        let operation = Task { @MainActor [weak self, previousTask, repo] in
             _ = await previousTask?.value
             guard let self else { return false }
             do {
                 let fetched = try await Task.detached(priority: .utility) {
-                    try repo.fetch(id: transcription.id)
+                    try repo.fetch(id: meetingID)
                 }.value
                 guard let persisted = fetched,
                       persisted.sourceType == .meeting
-                else { return false }
+                else {
+                    self.meetingNotesArtifactWarnings[meetingID] = nil
+                    return false
+                }
                 let refreshed = await self.refreshMeetingArtifacts(transcription: persisted)
                 self.meetingNotesArtifactWarnings[persisted.id] = refreshed
                     ? nil
@@ -1740,7 +1750,7 @@ public final class TranscriptionViewModel {
                 return refreshed
             } catch {
                 self.logger.warning("Failed to retry meeting artifact refresh error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)")
-                self.meetingNotesArtifactWarnings[transcription.id] =
+                self.meetingNotesArtifactWarnings[meetingID] =
                     "Notes were saved, but the meeting files could not be refreshed."
                 return false
             }
