@@ -390,19 +390,8 @@ struct TranscriptResultView: View {
     @State private var playerViewModel = MediaPlayerViewModel()
     @State private var showVideoPanel = false
     @State private var lastScrolledSegmentMs: Int = -1
-    // Cached transcript data — recomputed only when transcription.id changes, not on every playback tick
-    @State private var cachedSegments: [TranscriptSegment] = []
-    /// Total timed rows (cards' segments or flat segments); drives the lazy/non-lazy choice.
-    /// `nil` means the detached cache build is still pending, which must use
-    /// the conservative lazy layout so a large first-open never renders eagerly.
-    @State private var cachedTranscriptRowCount: Int?
-    @State private var cachedIdentifiedTurnCards: [IdentifiedSpeakerTurn] = []
-    @State private var cachedHasSpeakers: Bool = false
-    @State private var cachedSpeakerColorMap: [String: Color] = [:]
-    @State private var cachedSpeakerLabelMap: [String: String] = [:]
-    @State private var cachedSegmentStartMs: [Int] = []  // sorted, for binary search
-    @State private var cachedSpeakerStats: [String: SpeakerStatistics] = [:]
-    @State private var segmentCacheRequestID = UUID()
+    @State private var segmentCache = TranscriptSegmentCache()
+
     @State private var richContextLoader = TranscriptRichContextLoader()
     @State private var autoScrollPaused = false
     @State private var scrollPauseTask: Task<Void, Never>?
@@ -3645,6 +3634,19 @@ struct TranscriptResultView: View {
 
     // MARK: - Segment Cache
 
+    private var displayedSegmentCache: TranscriptSegmentCache.Snapshot? {
+        segmentCache.snapshot(for: activeTranscription.id)
+    }
+
+    private var cachedSegments: [TranscriptSegment] { displayedSegmentCache?.payload.segments ?? [] }
+    private var cachedTranscriptRowCount: Int? { segmentCache.rowCount(for: activeTranscription.id) }
+    private var cachedIdentifiedTurnCards: [IdentifiedSpeakerTurn] { displayedSegmentCache?.identifiedTurnCards ?? [] }
+    private var cachedHasSpeakers: Bool { displayedSegmentCache?.payload.hasSpeakers ?? false }
+    private var cachedSpeakerColorMap: [String: Color] { displayedSegmentCache?.speakerColorMap ?? [:] }
+    private var cachedSpeakerLabelMap: [String: String] { displayedSegmentCache?.payload.speakerLabelMap ?? [:] }
+    private var cachedSegmentStartMs: [Int] { displayedSegmentCache?.segmentStartMs ?? [] }
+    private var cachedSpeakerStats: [String: SpeakerStatistics] { displayedSegmentCache?.payload.speakerStats ?? [:] }
+
     private func scheduleRichAIContextLoad() {
         let transcription = activeTranscription
         let mode = currentAIContextMode
@@ -3670,15 +3672,12 @@ struct TranscriptResultView: View {
         let speakers = activeTranscription.speakers
         let diarizationSegments = activeTranscription.diarizationSegments
         let transcriptionID = activeTranscription.id
-        let requestID = UUID()
-        segmentCacheRequestID = requestID
+        let requestID = segmentCache.beginRebuild(transcriptionID: transcriptionID)
 
         guard let words, !words.isEmpty else {
             applyEmptySegmentCache()
             return
         }
-
-        cachedTranscriptRowCount = nil
 
         Task {
             let payload = await Task.detached(priority: .userInitiated) {
@@ -3688,37 +3687,21 @@ struct TranscriptResultView: View {
                     diarizationSegments: diarizationSegments
                 )
             }.value
-            guard segmentCacheRequestID == requestID else { return }
             guard activeTranscription.id == transcriptionID else { return }
-            applySegmentCache(payload)
+            guard
+                segmentCache.apply(
+                    payload,
+                    transcriptionID: transcriptionID,
+                    requestID: requestID,
+                    speakerColorMap: buildSpeakerColorMap()
+                )
+            else { return }
+            if findBarVisible { rebuildFindBlocks() }
         }
     }
 
-    private func applySegmentCache(_ payload: TranscriptSegmentCachePayload) {
-        cachedSegments = payload.segments
-        cachedHasSpeakers = payload.hasSpeakers
-        cachedSpeakerLabelMap = payload.speakerLabelMap
-        cachedSpeakerStats = payload.speakerStats
-        cachedTranscriptRowCount = payload.rowCount
-        cachedSegmentStartMs = payload.segments.map(\.startMs)
-        cachedSpeakerColorMap = buildSpeakerColorMap()
-        cachedIdentifiedTurnCards =
-            payload.hasSpeakers
-            ? identifiedSpeakerTurnCards(payload.speakerTurns)
-            : []
-        if findBarVisible { rebuildFindBlocks() }
-    }
-
     private func applyEmptySegmentCache() {
-        segmentCacheRequestID = UUID()
-        cachedSegments = []
-        cachedTranscriptRowCount = 0
-        cachedIdentifiedTurnCards = []
-        cachedHasSpeakers = false
-        cachedSpeakerColorMap = [:]
-        cachedSpeakerLabelMap = [:]
-        cachedSpeakerStats = [:]
-        cachedSegmentStartMs = []
+        segmentCache.clear(transcriptionID: activeTranscription.id)
         if findBarVisible { rebuildFindBlocks() }
     }
 
@@ -4441,7 +4424,72 @@ private struct EngineBadge: View {
     }
 }
 
-private struct TranscriptSegmentCachePayload: Sendable {
+/// Owns the timed rows and the row actions derived from one prepared snapshot.
+/// Request identity preserves the existing late-publication guard independently
+/// from the active-record check at the view's asynchronous boundary.
+@MainActor
+struct TranscriptSegmentCache {
+    struct Snapshot {
+        let payload: TranscriptSegmentCachePayload
+        let identifiedTurnCards: [IdentifiedSpeakerTurn]
+        let segmentStartMs: [Int]
+        let speakerColorMap: [String: Color]
+    }
+
+    private var transcriptionID: UUID?
+    private var requestID = UUID()
+    private var published: Snapshot?
+    private var isPreparing = true
+
+    mutating func beginRebuild(transcriptionID: UUID) -> UUID {
+        if self.transcriptionID != transcriptionID {
+            published = nil
+        }
+        self.transcriptionID = transcriptionID
+        requestID = UUID()
+        isPreparing = true
+        return requestID
+    }
+
+    func snapshot(for transcriptionID: UUID) -> Snapshot? {
+        // The new detail may render before onChange schedules its rebuild.
+        guard self.transcriptionID == transcriptionID else { return nil }
+        return published
+    }
+
+    /// A pending count remains unknown so long first-opens never become eager.
+    func rowCount(for transcriptionID: UUID) -> Int? {
+        guard self.transcriptionID == transcriptionID else { return nil }
+        return isPreparing ? nil : published?.payload.rowCount ?? 0
+    }
+
+    @discardableResult
+    mutating func apply(
+        _ payload: TranscriptSegmentCachePayload,
+        transcriptionID: UUID,
+        requestID: UUID,
+        speakerColorMap: [String: Color]
+    ) -> Bool {
+        guard self.transcriptionID == transcriptionID, self.requestID == requestID else { return false }
+        published = Snapshot(
+            payload: payload,
+            identifiedTurnCards: payload.hasSpeakers ? identifiedSpeakerTurnCards(payload.speakerTurns) : [],
+            segmentStartMs: payload.segments.map(\.startMs),
+            speakerColorMap: speakerColorMap
+        )
+        isPreparing = false
+        return true
+    }
+
+    mutating func clear(transcriptionID: UUID) {
+        self.transcriptionID = transcriptionID
+        requestID = UUID()
+        published = nil
+        isPreparing = false
+    }
+}
+
+struct TranscriptSegmentCachePayload: Sendable {
     let segments: [TranscriptSegment]
     let speakerTurns: [SpeakerTurn]
     let speakerStats: [String: SpeakerStatistics]
