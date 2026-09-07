@@ -80,7 +80,10 @@ extension OfflineDiarizerManager: OfflineDiarizerManaging {
     }
 }
 
-// @unchecked Sendable: all access is serialized through DiarizationService actor isolation.
+// @unchecked Sendable: a manager is published to callers only after its
+// preparation task has completed, its configuration is immutable after init,
+// and `process` reads the initialized models with request-local state. No
+// caller mutates a manager after publication.
 extension OfflineDiarizerManager: @retroactive @unchecked Sendable {}
 
 public actor DiarizationService: DiarizationServiceProtocol {
@@ -88,6 +91,7 @@ public actor DiarizationService: DiarizationServiceProtocol {
 
     private let makeManager: ManagerFactory
     private let modelsDirectory: URL
+    private let inferenceGate: ANEInferenceGate
     /// Constraint the service was constructed with (CLI `--speaker-*` flags).
     /// When set it wins over any per-call hint.
     private let explicitConstraint: SpeakerDiarizationConstraint?
@@ -129,11 +133,13 @@ public actor DiarizationService: DiarizationServiceProtocol {
     init(
         makeManager: @escaping ManagerFactory,
         modelsDirectory: URL,
-        explicitConstraint: SpeakerDiarizationConstraint? = nil
+        explicitConstraint: SpeakerDiarizationConstraint? = nil,
+        inferenceGate: ANEInferenceGate = .shared
     ) {
         self.makeManager = makeManager
         self.modelsDirectory = modelsDirectory.standardizedFileURL
         self.explicitConstraint = explicitConstraint
+        self.inferenceGate = inferenceGate
     }
 
     public func diarize(
@@ -151,7 +157,7 @@ public actor DiarizationService: DiarizationServiceProtocol {
             // scheduler, so it must not overlap an in-flight ASR inference, which
             // intermittently SIGBUSes the shared Neural Engine queue on macOS 14.
             // See `ANEInferenceGate`.
-            fluidResult = try await ANEInferenceGate.shared.withExclusiveAccess {
+            fluidResult = try await inferenceGate.withExclusiveAccess {
                 try await manager.process(audioURL: audioURL)
             }
         } catch let error as OfflineDiarizationError where error.isNoSpeechDetected {
@@ -218,8 +224,15 @@ public actor DiarizationService: DiarizationServiceProtocol {
         } else {
             let manager = makeManager(constraint)
             let directory = modelsDirectory
+            let inferenceGate = self.inferenceGate
             task = Task {
-                try await manager.prepareModels(at: directory)
+                // FluidAudio prewarms the segmentation and embedding models
+                // inside `prepareModels`, which is Neural Engine inference, so
+                // preparation takes the gate on its own, before and separately
+                // from the `process` acquisition above (never nested).
+                try await inferenceGate.withExclusiveAccess {
+                    try await manager.prepareModels(at: directory)
+                }
                 return manager
             }
             managers[constraint] = task

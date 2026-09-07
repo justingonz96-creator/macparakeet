@@ -62,7 +62,10 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
             modelDownloader: { directory, progressHandler in
                 // Check FluidAudio's complete required set, not just the
                 // metadata + encoder readiness gate, so a partial cache is
-                // completed here and never downloaded under the inference gate.
+                // completed here rather than under the inference gate. This is
+                // an existence check: an existing but truncated `.mlmodelc`
+                // bundle passes it and is repaired by `loadModels`'s own
+                // purge-and-retry, which then downloads under the gate.
                 guard !Self.isModelCacheComplete(cacheRoot: Self.defaultCacheRoot()) else { return }
                 try await ModelHub.download(
                     .nemotronStreaming1120,

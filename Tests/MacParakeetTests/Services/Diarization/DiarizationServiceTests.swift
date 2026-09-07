@@ -248,6 +248,48 @@ final class DiarizationServiceTests: XCTestCase {
         XCTAssertEqual(processed, 2)
     }
 
+    func testPreparationTakesTheInferenceGate() async throws {
+        // FluidAudio prewarms models inside prepareModels, so preparation must
+        // wait for an in-flight inference on macOS 14 like process() does.
+        let gate = ANEInferenceGate(serializationRequired: true)
+        let factory = RecordingManagerFactory(result: DiarizationResult(segments: []))
+        let entered = AsyncPermit(value: 0)
+        let release = AsyncPermit(value: 0)
+        factory.prepareSignals = (entered, release)
+        let service = DiarizationService(
+            makeManager: { constraint in factory.make(for: constraint) },
+            modelsDirectory: FileManager.default.temporaryDirectory,
+            inferenceGate: gate
+        )
+
+        let holderAcquired = AsyncPermit(value: 0)
+        let holderRelease = AsyncPermit(value: 0)
+        let holder = Task {
+            try await gate.withExclusiveAccess {
+                holderAcquired.signal()
+                try await holderRelease.wait()
+            }
+        }
+        try await holderAcquired.wait()
+
+        let preparation = Task { try await service.prepareModels() }
+        for _ in 0..<50 { await Task.yield() }
+        var preparedWhileHeld = 0
+        for manager in factory.managers {
+            preparedWhileHeld += await manager.preparedDirectories.count
+        }
+        XCTAssertEqual(preparedWhileHeld, 0, "preparation must not start while another inference holds the permit")
+
+        holderRelease.signal()
+        try await holder.value
+        try await entered.wait()
+        release.signal()
+        try await preparation.value
+
+        let ready = await service.isReady()
+        XCTAssertTrue(ready)
+    }
+
     func testFailedPreparationIsRetriedByTheNextCall() async throws {
         let factory = RecordingManagerFactory(result: DiarizationResult(segments: []))
         factory.prepareErrors = [OfflineDiarizationError.modelNotLoaded("first"), CancellationError()]
