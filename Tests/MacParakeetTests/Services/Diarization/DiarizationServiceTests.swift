@@ -1,6 +1,5 @@
 import XCTest
 import FluidAudio
-import os
 @testable import MacParakeetCore
 
 final class DiarizationServiceTests: XCTestCase {
@@ -93,6 +92,8 @@ final class DiarizationServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: repoDirectory.path))
     }
 
+    // MARK: - Configuration
+
     func testHighAccuracyConfigUsesAsyncSettings() {
         let config = DiarizationService.highAccuracyConfig
         let fast = OfflineDiarizerConfig.default
@@ -149,11 +150,25 @@ final class DiarizationServiceTests: XCTestCase {
         XCTAssertEqual(config.clustering.maxSpeakers, 4)
     }
 
+    // MARK: - Manager preparation
+
+    private func makeService(
+        factory: RecordingManagerFactory,
+        explicitConstraint: SpeakerDiarizationConstraint? = nil,
+        directory: URL = FileManager.default.temporaryDirectory
+    ) -> DiarizationService {
+        DiarizationService(
+            makeManager: { constraint in factory.make(for: constraint) },
+            modelsDirectory: directory,
+            explicitConstraint: explicitConstraint
+        )
+    }
+
     func testDiarizePreparesModelsUsingCustomDirectoryBeforeColdStartInference() async throws {
         let customDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .standardizedFileURL
-        let manager = RecordingOfflineDiarizerManager(result: DiarizationResult(segments: [
+        let factory = RecordingManagerFactory(result: DiarizationResult(segments: [
             TimedSpeakerSegment(
                 speakerId: "speaker_0",
                 embedding: [],
@@ -162,14 +177,16 @@ final class DiarizationServiceTests: XCTestCase {
                 qualityScore: 0.9
             ),
         ]))
-        let service = DiarizationService(manager: manager, modelsDirectory: customDirectory)
+        let service = makeService(factory: factory, directory: customDirectory)
         let audioURL = URL(fileURLWithPath: "/tmp/test.wav")
 
         let result = try await service.diarize(audioURL: audioURL)
+        let manager = try XCTUnwrap(factory.managers.first)
         let preparedDirectories = await manager.preparedDirectories
         let processedAudioURLs = await manager.processedAudioURLs
         let ready = await service.isReady()
 
+        XCTAssertEqual(factory.constraints, [nil])
         XCTAssertEqual(preparedDirectories, [customDirectory])
         XCTAssertEqual(processedAudioURLs, [audioURL])
         XCTAssertEqual(result.speakerCount, 1)
@@ -178,353 +195,139 @@ final class DiarizationServiceTests: XCTestCase {
         XCTAssertTrue(ready)
     }
 
-    func testDiarizePassesPerCallSpeakerConstraintToManager() async throws {
-        let manager = RecordingOfflineDiarizerManager(result: DiarizationResult(segments: []))
-        let service = DiarizationService(
-            manager: manager,
-            modelsDirectory: FileManager.default.temporaryDirectory
-        )
+    func testEachDistinctConstraintGetsItsOwnPreparedManagerOnce() async throws {
+        let factory = RecordingManagerFactory(result: DiarizationResult(segments: []))
+        let service = makeService(factory: factory)
 
         _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"))
-        _ = try await service.diarize(
-            audioURL: URL(fileURLWithPath: "/tmp/b.wav"),
-            speakerConstraint: .range(min: 2, max: 4)
-        )
+        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav"), speakerConstraint: .range(min: 1, max: 3))
+        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/c.wav"), speakerConstraint: .range(min: 1, max: 3))
+        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/d.wav"))
 
-        let constraints = await manager.receivedConstraints
-        XCTAssertEqual(constraints, [nil, .range(min: 2, max: 4)])
+        XCTAssertEqual(factory.constraints, [nil, .range(min: 1, max: 3)])
+        let processedPerManager = await factory.managers.asyncMap { await $0.processedAudioURLs.count }
+        XCTAssertEqual(processedPerManager, [2, 2])
     }
 
     func testExplicitConstraintWinsOverPerCallHint() async throws {
-        let manager = RecordingOfflineDiarizerManager(result: DiarizationResult(segments: []))
-        let service = DiarizationService(
-            manager: manager,
-            modelsDirectory: FileManager.default.temporaryDirectory,
-            explicitConstraint: .exact(3)
-        )
+        let factory = RecordingManagerFactory(result: DiarizationResult(segments: []))
+        let service = makeService(factory: factory, explicitConstraint: .exact(3))
 
-        _ = try await service.diarize(
-            audioURL: URL(fileURLWithPath: "/tmp/a.wav"),
-            speakerConstraint: .range(min: 1, max: 2)
-        )
+        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"), speakerConstraint: .range(min: 1, max: 2))
+        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav"))
 
-        // The explicit constraint already lives in the manager's base config,
-        // so the per-call hint is dropped rather than layered on top.
-        let constraints = await manager.receivedConstraints
-        XCTAssertEqual(constraints, [nil])
+        // The explicit constraint lives in the factory's config; the hint is
+        // dropped rather than producing a second manager.
+        XCTAssertEqual(factory.constraints, [nil])
+        let explicit = await service.explicitSpeakerConstraint()
+        XCTAssertEqual(explicit, .exact(3))
     }
 
-    // MARK: - Model preparation concurrency
-
     func testOverlappingColdDiarizeCallsShareOnePreparation() async throws {
-        let manager = RecordingOfflineDiarizerManager(result: DiarizationResult(segments: []))
+        let factory = RecordingManagerFactory(result: DiarizationResult(segments: []))
         let entered = AsyncPermit(value: 0)
         let release = AsyncPermit(value: 0)
-        await manager.setPrepareSignals(entered: entered, release: release)
-        let service = DiarizationService(manager: manager, modelsDirectory: FileManager.default.temporaryDirectory)
+        factory.prepareSignals = (entered, release)
+        let service = makeService(factory: factory)
 
         let first = Task { try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav")) }
         try await entered.wait()
         let second = Task { try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav")) }
         // Give the second caller the chance to (wrongly) start its own preparation.
         for _ in 0..<50 { await Task.yield() }
-        let inFlight = await manager.preparedDirectories.count
-        XCTAssertEqual(inFlight, 1, "the second cold caller must await the first load, not start its own")
+        XCTAssertEqual(factory.managers.count, 1, "the second cold caller must await the first load, not start its own")
 
         release.signal()
         _ = try await first.value
         _ = try await second.value
 
+        let manager = try XCTUnwrap(factory.managers.first)
         let prepared = await manager.preparedDirectories.count
         let processed = await manager.processedAudioURLs.count
         XCTAssertEqual(prepared, 1)
         XCTAssertEqual(processed, 2)
     }
 
-    func testLoaderCancellationIsNotReusedByTheNextCall() async throws {
-        let manager = RecordingOfflineDiarizerManager(result: DiarizationResult(segments: []))
-        // The loader itself is cancelled once (not the waiter); the next call must retry.
-        await manager.setPrepareErrors([CancellationError()])
-        let service = DiarizationService(manager: manager, modelsDirectory: FileManager.default.temporaryDirectory)
-
-        do {
-            _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"))
-            XCTFail("expected the loader's CancellationError")
-        } catch is CancellationError {}
-
-        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav"))
-
-        let prepared = await manager.preparedDirectories.count
-        let ready = await service.isReady()
-        XCTAssertEqual(prepared, 2, "a shared task that failed with CancellationError must not be reused")
-        XCTAssertTrue(ready)
-    }
-
     func testFailedPreparationIsRetriedByTheNextCall() async throws {
-        let manager = RecordingOfflineDiarizerManager(result: DiarizationResult(segments: []))
-        await manager.setPrepareErrors([OfflineDiarizationError.modelNotLoaded("first")])
-        let service = DiarizationService(manager: manager, modelsDirectory: FileManager.default.temporaryDirectory)
+        let factory = RecordingManagerFactory(result: DiarizationResult(segments: []))
+        factory.prepareErrors = [OfflineDiarizationError.modelNotLoaded("first"), CancellationError()]
+        let service = makeService(factory: factory)
 
-        do {
-            _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"))
-            XCTFail("expected the first preparation to fail")
-        } catch {}
-        let readyAfterFailure = await service.isReady()
-        XCTAssertFalse(readyAfterFailure)
+        for _ in 0..<2 {
+            do {
+                _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"))
+                XCTFail("expected the preparation to fail")
+            } catch {}
+            let ready = await service.isReady()
+            XCTAssertFalse(ready)
+        }
 
+        // FluidAudio's own recovery ran inside prepareModels; a failed task,
+        // including one that failed with CancellationError, is not reused.
         _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav"))
 
-        let prepared = await manager.preparedDirectories.count
+        XCTAssertEqual(factory.managers.count, 3)
         let ready = await service.isReady()
-        XCTAssertEqual(prepared, 2)
         XCTAssertTrue(ready)
-    }
-
-    func testCancelledCallerReturnsWhileTheLoadIsStillBlocked() async throws {
-        let manager = RecordingOfflineDiarizerManager(result: DiarizationResult(segments: []))
-        let entered = AsyncPermit(value: 0)
-        let release = AsyncPermit(value: 0)
-        await manager.setPrepareSignals(entered: entered, release: release)
-        let service = DiarizationService(manager: manager, modelsDirectory: FileManager.default.temporaryDirectory)
-
-        let cancelled = Task { try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav")) }
-        try await entered.wait()
-        cancelled.cancel()
-
-        // Must complete before the loader is released.
-        do {
-            _ = try await cancelled.value
-            XCTFail("expected CancellationError")
-        } catch is CancellationError {
-        } catch {
-            XCTFail("unexpected error \(error)")
-        }
-        let stillBlocked = await manager.releasedCount
-        XCTAssertEqual(stillBlocked, 0, "the shared load was still blocked when the cancelled caller returned")
-
-        release.signal()
-        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav"))
-        let prepared = await manager.preparedDirectories.count
-        XCTAssertEqual(prepared, 1, "the load that was in flight is reused by the next caller")
-    }
-
-    // MARK: - Cache recovery around OfflineDiarizerModels.load
-
-    private static let validPLDAJSON = #"{"tensors":{"psi":{"shape":[2],"dtype":"float32","data_base64":"AACAPwAAAEA="}}}"#
-
-    private func makeDiarizerCache(pldaContents: String = "not json") throws -> URL {
-        let base = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let repo = DiarizationService.modelCacheDirectory(directory: base)
-        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
-        try pldaContents.write(to: repo.appendingPathComponent("plda-parameters.json"), atomically: true, encoding: .utf8)
-        return base
-    }
-
-    private func pldaFailures() -> [Error] {
-        [
-            OfflineDiarizationError.processingFailed("Failed to decode PLDA psi parameters"),
-            DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "bad plda json")),
-            NSError(domain: NSCocoaErrorDomain, code: NSPropertyListReadCorruptError, userInfo: nil),
-        ]
-    }
-
-    func testMalformedPLDAMetadataPurgesTheDiarizerCacheOnceAndReloads() async throws {
-        for failure in pldaFailures() {
-            let base = try makeDiarizerCache()
-            defer { try? FileManager.default.removeItem(at: base) }
-            let repo = DiarizationService.modelCacheDirectory(directory: base)
-            let attempts = OSAllocatedUnfairLock(initialState: 0)
-
-            let value = try await FluidOfflineDiarizer.loadWithRecovery(directory: base, offlineMode: false) { () throws -> String in
-                let attempt = attempts.withLock { $0 += 1; return $0 }
-                if attempt == 1 {
-                    XCTAssertTrue(FileManager.default.fileExists(atPath: repo.path))
-                    throw failure
-                }
-                XCTAssertFalse(FileManager.default.fileExists(atPath: repo.path), "the repo directory is purged before the retry")
-                return "loaded"
-            }
-
-            XCTAssertEqual(value, "loaded")
-            XCTAssertEqual(attempts.withLock { $0 }, 2, "\(failure)")
-        }
-    }
-
-    func testRecoveryGivesUpAfterTheSecondFailure() async throws {
-        let base = try makeDiarizerCache()
-        defer { try? FileManager.default.removeItem(at: base) }
-        let attempts = OSAllocatedUnfairLock(initialState: 0)
-
-        do {
-            _ = try await FluidOfflineDiarizer.loadWithRecovery(directory: base, offlineMode: false) { () throws -> String in
-                attempts.withLock { $0 += 1 }
-                throw OfflineDiarizationError.processingFailed("Failed to decode PLDA psi parameters")
-            }
-            XCTFail("expected the second failure to propagate")
-        } catch {}
-        XCTAssertEqual(attempts.withLock { $0 }, 2)
-    }
-
-    func testDownloadTransientAndCancellationErrorsKeepTheCache() async throws {
-        let wrappedCancellation = NSError(
-            domain: "MacParakeetTests",
-            code: 1,
-            userInfo: [NSUnderlyingErrorKey: NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError, userInfo: nil)]
-        )
-        let preserved: [Error] = [
-            CancellationError(),
-            NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError, userInfo: nil),
-            wrappedCancellation,
-            URLError(.notConnectedToInternet),
-            DownloadError.networkDisabled(operation: "download"),
-            DownloadError.modelMissing(repo: "speaker-diarization", missing: ["Segmentation.mlmodelc"]),
-            DownloadError.stalled(path: "Embedding.mlmodelc", window: 30),
-            // ModelHub already retried these and chose to preserve the cache.
-            DownloadError.invalidArtifact(path: "Embedding.mlmodelc", reason: "truncated"),
-            DownloadError.rateLimited(statusCode: 429, message: "slow down"),
-        ]
-        // Preserved even though the on-disk PLDA file is corrupt: these errors
-        // are never grounds for deleting a cache.
-        for error in preserved {
-            let base = try makeDiarizerCache()
-            defer { try? FileManager.default.removeItem(at: base) }
-            let repo = DiarizationService.modelCacheDirectory(directory: base)
-            let attempts = OSAllocatedUnfairLock(initialState: 0)
-
-            do {
-                _ = try await FluidOfflineDiarizer.loadWithRecovery(directory: base, offlineMode: false) { () throws -> String in
-                    attempts.withLock { $0 += 1 }
-                    throw error
-                }
-                XCTFail("expected \(error) to propagate")
-            } catch {}
-            XCTAssertEqual(attempts.withLock { $0 }, 1, "\(error) must not trigger a retry")
-            XCTAssertTrue(FileManager.default.fileExists(atPath: repo.path), "\(error) must not purge the cache")
-        }
-    }
-
-    func testOfflineModeNeverPurgesEvenForPLDAFailures() async throws {
-        for failure in pldaFailures() {
-            let base = try makeDiarizerCache()
-            defer { try? FileManager.default.removeItem(at: base) }
-            let repo = DiarizationService.modelCacheDirectory(directory: base)
-            let attempts = OSAllocatedUnfairLock(initialState: 0)
-
-            do {
-                _ = try await FluidOfflineDiarizer.loadWithRecovery(directory: base, offlineMode: true) { () throws -> String in
-                    attempts.withLock { $0 += 1 }
-                    throw failure
-                }
-                XCTFail("expected \(failure) to propagate")
-            } catch {}
-            XCTAssertEqual(attempts.withLock { $0 }, 1)
-            XCTAssertTrue(FileManager.default.fileExists(atPath: repo.path), "offline mode must keep the cache")
-            XCTAssertFalse(FluidOfflineDiarizer.shouldPurgeCache(after: failure, directory: base, offlineMode: true))
-        }
-    }
-
-    func testParseErrorWithValidPLDAFileKeepsTheCache() async throws {
-        // FluidAudio's tree lister also surfaces JSONSerialization errors for
-        // truncated network responses; a parse error alone proves nothing, and
-        // neither does an unrelated model-load failure.
-        for failure in pldaFailures() + [OfflineDiarizationError.modelNotLoaded("Segmentation.mlmodelc")] {
-            let base = try makeDiarizerCache(pldaContents: Self.validPLDAJSON)
-            defer { try? FileManager.default.removeItem(at: base) }
-            let repo = DiarizationService.modelCacheDirectory(directory: base)
-            let attempts = OSAllocatedUnfairLock(initialState: 0)
-
-            do {
-                _ = try await FluidOfflineDiarizer.loadWithRecovery(directory: base, offlineMode: false) { () throws -> String in
-                    attempts.withLock { $0 += 1 }
-                    throw failure
-                }
-                XCTFail("expected \(failure) to propagate")
-            } catch {}
-            XCTAssertEqual(attempts.withLock { $0 }, 1, "\(failure) must not retry when the PLDA file is valid")
-            XCTAssertTrue(FileManager.default.fileExists(atPath: repo.path), "a valid PLDA file must never be purged")
-        }
-        XCTAssertTrue(FluidOfflineDiarizer.pldaParametersAreValid(in: try makeDiarizerCache(pldaContents: Self.validPLDAJSON)))
-        XCTAssertFalse(FluidOfflineDiarizer.pldaParametersAreValid(in: try makeDiarizerCache(pldaContents: "{}")))
-        XCTAssertFalse(FluidOfflineDiarizer.pldaParametersAreValid(in: try makeDiarizerCache(pldaContents: #"{"tensors":{"psi":{"data_base64":""}}}"#)))
-    }
-
-    func testMissingPLDAFilePurgesAndReloads() async throws {
-        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let repo = DiarizationService.modelCacheDirectory(directory: base)
-        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: base) }
-        let attempts = OSAllocatedUnfairLock(initialState: 0)
-
-        let value = try await FluidOfflineDiarizer.loadWithRecovery(directory: base, offlineMode: false) { () throws -> String in
-            let attempt = attempts.withLock { $0 += 1; return $0 }
-            if attempt == 1 { throw OfflineDiarizationError.processingFailed("PLDA parameters file not found") }
-            return "loaded"
-        }
-        XCTAssertEqual(value, "loaded")
-        XCTAssertEqual(attempts.withLock { $0 }, 2)
-    }
-
-    func testCancellationDetectionFollowsTheUnderlyingErrorChain() {
-        let nested = NSError(domain: "Outer", code: 5, userInfo: [
-            NSUnderlyingErrorKey: NSError(domain: "Middle", code: 6, userInfo: [
-                NSUnderlyingErrorKey: CancellationError(),
-            ]),
-        ])
-        XCTAssertTrue(FluidOfflineDiarizer.isCancellation(nested))
-        XCTAssertFalse(FluidOfflineDiarizer.isCancellation(URLError(.timedOut)))
-        // A self-referencing chain terminates instead of looping.
-        let selfReferencing = NSError(domain: "Loop", code: 1, userInfo: [
-            NSUnderlyingErrorKey: NSError(domain: "Loop", code: 1, userInfo: nil),
-        ])
-        XCTAssertFalse(FluidOfflineDiarizer.isCancellation(selfReferencing))
     }
 }
 
-private actor RecordingOfflineDiarizerManager: OfflineDiarizerManaging {
-    let result: DiarizationResult
-    var preparedDirectories: [URL] = []
-    var processedAudioURLs: [URL] = []
-    var receivedConstraints: [SpeakerDiarizationConstraint?] = []
-    private var enteredSignal: AsyncPermit?
-    private var releaseBlocker: AsyncPermit?
-    private var prepareErrors: [Error] = []
-    /// Number of times a blocked preparation was released.
-    var releasedCount = 0
+/// Builds one recording fake manager per requested constraint.
+private final class RecordingManagerFactory: @unchecked Sendable {
+    private let lock = NSLock()
+    private let result: DiarizationResult
+    private(set) var constraints: [SpeakerDiarizationConstraint?] = []
+    private(set) var managers: [RecordingOfflineDiarizerManager] = []
+    var prepareErrors: [Error] = []
+    var prepareSignals: (entered: AsyncPermit, release: AsyncPermit)?
 
     init(result: DiarizationResult) {
         self.result = result
     }
 
-    /// `entered` is signalled when preparation starts; preparation then waits
-    /// on `release` so the test controls exactly when the load finishes.
-    func setPrepareSignals(entered: AsyncPermit, release: AsyncPermit) {
-        enteredSignal = entered
-        releaseBlocker = release
+    func make(for constraint: SpeakerDiarizationConstraint?) -> any OfflineDiarizerManaging {
+        lock.lock()
+        defer { lock.unlock() }
+        constraints.append(constraint)
+        let error: Error? = prepareErrors.isEmpty ? nil : prepareErrors.removeFirst()
+        let manager = RecordingOfflineDiarizerManager(result: result, prepareError: error, signals: prepareSignals)
+        managers.append(manager)
+        return manager
     }
+}
 
-    func setPrepareErrors(_ errors: [Error]) {
-        prepareErrors = errors
+private actor RecordingOfflineDiarizerManager: OfflineDiarizerManaging {
+    let result: DiarizationResult
+    private let prepareError: Error?
+    private let signals: (entered: AsyncPermit, release: AsyncPermit)?
+    var preparedDirectories: [URL] = []
+    var processedAudioURLs: [URL] = []
+
+    init(result: DiarizationResult, prepareError: Error?, signals: (entered: AsyncPermit, release: AsyncPermit)?) {
+        self.result = result
+        self.prepareError = prepareError
+        self.signals = signals
     }
 
     func prepareModels(at directory: URL) async throws {
         preparedDirectories.append(directory)
-        if !prepareErrors.isEmpty {
-            throw prepareErrors.removeFirst()
-        }
-        enteredSignal?.signal()
-        if let releaseBlocker {
-            try await releaseBlocker.wait()
-            releasedCount += 1
+        if let prepareError { throw prepareError }
+        if let signals {
+            signals.entered.signal()
+            try await signals.release.wait()
         }
     }
 
-    func process(
-        audioURL: URL,
-        speakerConstraint: SpeakerDiarizationConstraint?
-    ) async throws -> DiarizationResult {
+    func process(audioURL: URL) async throws -> DiarizationResult {
         processedAudioURLs.append(audioURL)
-        receivedConstraints.append(speakerConstraint)
         return result
+    }
+}
+
+private extension Array {
+    func asyncMap<T>(_ transform: (Element) async -> T) async -> [T] {
+        var values: [T] = []
+        for element in self { values.append(await transform(element)) }
+        return values
     }
 }

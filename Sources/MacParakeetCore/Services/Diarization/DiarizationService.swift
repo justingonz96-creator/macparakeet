@@ -1,6 +1,5 @@
 import FluidAudio
 import Foundation
-import os
 
 public struct MacParakeetDiarizationResult: Sendable {
     public let segments: [SpeakerSegment]
@@ -43,9 +42,8 @@ public protocol DiarizationServiceProtocol: Sendable {
     func isReady() async -> Bool
     func hasCachedModels() async -> Bool
     /// The constraint the service was constructed with (CLI `--speaker-*`
-    /// flags), or `nil`. Callers that would otherwise skip clustering must
-    /// check this first so an explicit user constraint always reaches the
-    /// diarizer.
+    /// flags), or `nil`. Callers use it to report which policy actually
+    /// applied.
     func explicitSpeakerConstraint() async -> SpeakerDiarizationConstraint?
 }
 
@@ -69,148 +67,40 @@ extension DiarizationServiceProtocol {
 
 protocol OfflineDiarizerManaging: AnyObject, Sendable {
     func prepareModels(at directory: URL) async throws
-    func process(
-        audioURL: URL,
-        speakerConstraint: SpeakerDiarizationConstraint?
-    ) async throws -> DiarizationResult
+    func process(audioURL: URL) async throws -> DiarizationResult
 }
 
-/// FluidAudio-backed diarizer that loads the CoreML models once and runs each
-/// request through an `OfflineDiarizerManager` built for that request's
-/// speaker constraint. Managers are cheap (configuration plus a reference to
-/// the shared models), so a per-meeting attendee prior costs no extra model
-/// load or download.
-actor FluidOfflineDiarizer: OfflineDiarizerManaging {
-    private let baseConfig: OfflineDiarizerConfig
-    /// One in-flight or completed load; concurrent cold callers await the
-    /// same task instead of each downloading, repairing, and compiling.
-    private var loadTask: Task<OfflineDiarizerModels, Error>?
-
-    init(config: OfflineDiarizerConfig) {
-        self.baseConfig = config
-    }
-
+extension OfflineDiarizerManager: OfflineDiarizerManaging {
     func prepareModels(at directory: URL) async throws {
-        _ = try await models(at: directory)
+        try await prepareModels(directory: directory)
     }
 
-    func process(
-        audioURL: URL,
-        speakerConstraint: SpeakerDiarizationConstraint?
-    ) async throws -> DiarizationResult {
-        guard let loadTask else {
-            throw OfflineDiarizationError.modelNotLoaded("offline-diarizer")
-        }
-        let models = try await loadTask.value
-        let manager = OfflineDiarizerManager(
-            config: DiarizationService.applying(speakerConstraint, to: baseConfig)
-        )
-        manager.initialize(models: models)
-        return try await manager.process(audioURL)
-    }
-
-    private func models(at directory: URL) async throws -> OfflineDiarizerModels {
-        if let loadTask {
-            return try await loadTask.value
-        }
-        let task = Task {
-            try await Self.loadWithRecovery(directory: directory) {
-                try await OfflineDiarizerModels.load(from: directory)
-            }
-        }
-        loadTask = task
-        do {
-            return try await task.value
-        } catch {
-            // A failed load must not poison later attempts.
-            if loadTask == task { loadTask = nil }
-            throw error
-        }
-    }
-
-    /// `OfflineDiarizerModels.load` recovers compiled-model failures inside
-    /// `ModelHub.loadModels`, but it parses `plda-parameters.json` afterwards,
-    /// outside that recovery, so a present-but-malformed file would fail every
-    /// attempt. Mirror `OfflineDiarizerManager.prepareModels(directory:)` for
-    /// exactly that case. Provenance is established on disk, not from the
-    /// error's shape (FluidAudio's tree lister also surfaces
-    /// `JSONSerialization` errors for truncated network responses): after a
-    /// failed load the PLDA file in the diarizer directory is validated, and
-    /// only when it is missing or unreadable is the repo purged once and
-    /// reloaded. Cancellation (including Cocoa user-cancelled errors and
-    /// cancellations wrapped as underlying errors), download errors that
-    /// ModelHub already retried or deliberately preserved, and offline mode
-    /// keep the cache and propagate.
-    static func loadWithRecovery<T: Sendable>(
-        directory: URL,
-        offlineMode: Bool = ModelHub.offlineMode,
-        load: () async throws -> T
-    ) async throws -> T {
-        do {
-            return try await load()
-        } catch {
-            guard shouldPurgeCache(after: error, directory: directory, offlineMode: offlineMode) else { throw error }
-            DiarizationService.clearModelCache(directory: directory)
-            return try await load()
-        }
-    }
-
-    static func shouldPurgeCache(after error: Error, directory: URL, offlineMode: Bool) -> Bool {
-        if offlineMode { return false }
-        if isCancellation(error) { return false }
-        if error is URLError || error is DownloadError { return false }
-        return !pldaParametersAreValid(in: directory)
-    }
-
-    /// `CancellationError`, Cocoa `NSUserCancelledError`, or either of those
-    /// anywhere in the `NSUnderlyingErrorKey` chain. The walk stops after
-    /// eight levels or when an underlying error repeats its parent (domain,
-    /// code, description), which covers the self-referencing chains some
-    /// frameworks build.
-    static func isCancellation(_ error: Error) -> Bool {
-        var current: Error? = error
-        var seen = Set<String>()
-        while let candidate = current, seen.count < 8 {
-            if candidate is CancellationError { return true }
-            let nsError = candidate as NSError
-            if nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError { return true }
-            guard seen.insert("\(nsError.domain)#\(nsError.code)#\(nsError.localizedDescription)").inserted else { break }
-            current = nsError.userInfo[NSUnderlyingErrorKey] as? Error
-        }
-        return false
-    }
-
-    /// Validates `plda-parameters.json` in the diarizer repo directory with the
-    /// shape `OfflineDiarizerModels.loadPLDAPsi` reads: a JSON object whose
-    /// `tensors.psi.data_base64` is a non-empty base64 string.
-    static func pldaParametersAreValid(in directory: URL) -> Bool {
-        let fileURL = DiarizationService.modelCacheDirectory(directory: directory)
-            .appendingPathComponent("plda-parameters.json", isDirectory: false)
-        guard
-            let data = try? Data(contentsOf: fileURL),
-            let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-            let tensors = root["tensors"] as? [String: Any],
-            let psi = tensors["psi"] as? [String: Any],
-            let base64 = psi["data_base64"] as? String,
-            let decoded = Data(base64Encoded: base64, options: [.ignoreUnknownCharacters]),
-            !decoded.isEmpty
-        else {
-            return false
-        }
-        return true
+    func process(audioURL: URL) async throws -> DiarizationResult {
+        try await process(audioURL)
     }
 }
+
+// @unchecked Sendable: all access is serialized through DiarizationService actor isolation.
+extension OfflineDiarizerManager: @retroactive @unchecked Sendable {}
 
 public actor DiarizationService: DiarizationServiceProtocol {
-    private let manager: any OfflineDiarizerManaging
+    typealias ManagerFactory = @Sendable (SpeakerDiarizationConstraint?) -> any OfflineDiarizerManaging
+
+    private let makeManager: ManagerFactory
     private let modelsDirectory: URL
     /// Constraint the service was constructed with (CLI `--speaker-*` flags).
     /// When set it wins over any per-call hint.
     private let explicitConstraint: SpeakerDiarizationConstraint?
+    /// One prepared `OfflineDiarizerManager` per distinct constraint, keyed by
+    /// the effective constraint. FluidAudio's `prepareModels(directory:)` owns
+    /// download, corrupt-cache purge, and retry; concurrent cold callers await
+    /// the same task, and a failed task is dropped so the next call retries.
+    /// Each distinct constraint loads the CoreML models once more per process;
+    /// the domain is tiny (nil, the meeting prior's `bounds(1, n + 1)`, CLI
+    /// values) and diarization is async work measured in tens of seconds, so
+    /// the extra load is cheaper than sharing model objects across managers.
+    private var managers: [SpeakerDiarizationConstraint?: Task<any OfflineDiarizerManaging, Error>] = [:]
     private var modelsReady = false
-    /// Single in-flight preparation so overlapping cold `diarize` calls share
-    /// one model load (the actor is reentrant across the await).
-    private var preparation: Task<Void, Error>?
 
     /// Uses the high-accuracy async configuration. Pass `config` only to
     /// override it deliberately (tests, benchmarks).
@@ -219,7 +109,7 @@ public actor DiarizationService: DiarizationServiceProtocol {
         modelsDirectory: URL? = nil
     ) {
         self.init(
-            manager: FluidOfflineDiarizer(config: config),
+            makeManager: { constraint in OfflineDiarizerManager(config: Self.applying(constraint, to: config)) },
             modelsDirectory: modelsDirectory ?? AppPaths.fluidAudioModelsDirURL,
             explicitConstraint: nil
         )
@@ -230,18 +120,18 @@ public actor DiarizationService: DiarizationServiceProtocol {
         modelsDirectory: URL? = nil
     ) {
         self.init(
-            manager: FluidOfflineDiarizer(config: Self.offlineConfig(speakerConstraint: speakerConstraint)),
+            makeManager: { _ in OfflineDiarizerManager(config: Self.offlineConfig(speakerConstraint: speakerConstraint)) },
             modelsDirectory: modelsDirectory ?? AppPaths.fluidAudioModelsDirURL,
             explicitConstraint: speakerConstraint
         )
     }
 
     init(
-        manager: any OfflineDiarizerManaging,
+        makeManager: @escaping ManagerFactory,
         modelsDirectory: URL,
         explicitConstraint: SpeakerDiarizationConstraint? = nil
     ) {
-        self.manager = manager
+        self.makeManager = makeManager
         self.modelsDirectory = modelsDirectory.standardizedFileURL
         self.explicitConstraint = explicitConstraint
     }
@@ -250,14 +140,11 @@ public actor DiarizationService: DiarizationServiceProtocol {
         audioURL: URL,
         speakerConstraint: SpeakerDiarizationConstraint?
     ) async throws -> MacParakeetDiarizationResult {
-        try await ensureModelsPrepared()
-
-        // The base manager already carries an explicit constraint, so a
+        // The explicit constraint already lives in the manager's config, so a
         // per-call hint must not override the user's flag.
-        let requestConstraint = explicitConstraint == nil ? speakerConstraint : nil
+        let manager = try await preparedManager(for: explicitConstraint == nil ? speakerConstraint : nil)
 
         let fluidResult: DiarizationResult
-        let manager = self.manager
         do {
             // Serialize Neural Engine inference on macOS 14 (no-op on macOS 15+):
             // offline diarization runs its own CoreML models outside the STT
@@ -265,7 +152,7 @@ public actor DiarizationService: DiarizationServiceProtocol {
             // intermittently SIGBUSes the shared Neural Engine queue on macOS 14.
             // See `ANEInferenceGate`.
             fluidResult = try await ANEInferenceGate.shared.withExclusiveAccess {
-                try await manager.process(audioURL: audioURL, speakerConstraint: requestConstraint)
+                try await manager.process(audioURL: audioURL)
             }
         } catch let error as OfflineDiarizationError where error.isNoSpeechDetected {
             return MacParakeetDiarizationResult(segments: [], speakerCount: 0, speakers: [])
@@ -314,7 +201,7 @@ public actor DiarizationService: DiarizationServiceProtocol {
 
     public func prepareModels(onProgress: (@Sendable (String) -> Void)? = nil) async throws {
         onProgress?("Downloading speaker models...")
-        try await ensureModelsPrepared()
+        _ = try await preparedManager(for: nil)
         onProgress?("Speaker models ready")
     }
 
@@ -322,47 +209,32 @@ public actor DiarizationService: DiarizationServiceProtocol {
         explicitConstraint
     }
 
-    private func ensureModelsPrepared() async throws {
-        guard !modelsReady else { return }
-        let task: Task<Void, Error>
-        if let preparation {
-            task = preparation
+    private func preparedManager(
+        for constraint: SpeakerDiarizationConstraint?
+    ) async throws -> any OfflineDiarizerManaging {
+        let task: Task<any OfflineDiarizerManaging, Error>
+        if let existing = managers[constraint] {
+            task = existing
         } else {
-            let manager = self.manager
-            let directory = self.modelsDirectory
-            task = Task { try await manager.prepareModels(at: directory) }
-            preparation = task
+            let manager = makeManager(constraint)
+            let directory = modelsDirectory
+            task = Task {
+                try await manager.prepareModels(at: directory)
+                return manager
+            }
+            managers[constraint] = task
         }
+
+        let manager: any OfflineDiarizerManaging
         do {
-            // Cancellation-responsive: a cancelled caller returns at once
-            // while the shared load keeps running for the other waiters.
-            try await Self.awaitCancellable(task)
+            manager = try await task.value
         } catch {
-            // A cancelled waiter leaves the shared task in place for the other
-            // callers. Any error the shared task itself produced, including a
-            // CancellationError thrown by the loader, must not be reused.
-            let waiterWasCancelled = Task.isCancelled && error is CancellationError
-            if !waiterWasCancelled, preparation == task { preparation = nil }
+            if managers[constraint] == task { managers[constraint] = nil }
             throw error
         }
-        modelsReady = true
-        if preparation == task { preparation = nil }
-    }
-
-    /// Awaits `task` but returns `CancellationError` as soon as the calling
-    /// task is cancelled, without cancelling `task` itself.
-    nonisolated static func awaitCancellable<T: Sendable>(_ task: Task<T, Error>) async throws -> T {
-        let waiter = CancellableWaiter<T>()
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                waiter.register(continuation)
-                Task {
-                    waiter.resume(with: await task.result)
-                }
-            }
-        } onCancel: {
-            waiter.resume(with: .failure(CancellationError()))
-        }
+        if constraint == nil { modelsReady = true }
+        try Task.checkCancellation()
+        return manager
     }
 
     public func isReady() async -> Bool {
@@ -519,43 +391,5 @@ public actor MockDiarizationService: DiarizationServiceProtocol {
 
     public func hasCachedModels() async -> Bool {
         cachedModels
-    }
-}
-
-/// One-shot continuation holder; the first `resume` wins, whether it comes
-/// from the shared task finishing or from the waiter's own cancellation.
-private final class CancellableWaiter<T: Sendable>: Sendable {
-    private struct State {
-        var continuation: CheckedContinuation<T, Error>?
-        var pendingResult: Result<T, Error>?
-        var finished = false
-    }
-
-    private let state = OSAllocatedUnfairLock(initialState: State())
-
-    func register(_ continuation: CheckedContinuation<T, Error>) {
-        let pending: Result<T, Error>? = state.withLock { state in
-            if let pendingResult = state.pendingResult, !state.finished {
-                state.finished = true
-                return pendingResult
-            }
-            state.continuation = continuation
-            return nil
-        }
-        if let pending { continuation.resume(with: pending) }
-    }
-
-    func resume(with result: Result<T, Error>) {
-        let continuation: CheckedContinuation<T, Error>? = state.withLock { state in
-            guard !state.finished else { return nil }
-            if let continuation = state.continuation {
-                state.finished = true
-                state.continuation = nil
-                return continuation
-            }
-            if state.pendingResult == nil { state.pendingResult = result }
-            return nil
-        }
-        continuation?.resume(with: result)
     }
 }
