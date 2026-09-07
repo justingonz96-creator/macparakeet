@@ -1499,34 +1499,39 @@ public actor TranscriptionService: SpeechEngineOverrideTranscriptionService, Aud
         guard let systemWavURL = sourceWavURLs[.system] else { return nil }
 
         lifecycleStage = .diarization
-        // Attendee prior from the calendar snapshot captured at record start.
-        // Bounds only, never an exact count; a 1:1 call skips clustering.
-        let speakerPrior = MeetingSpeakerPrior.derive(from: recording.calendarEventSnapshot)
+        // Attendee prior from the calendar snapshot captured at record start
+        // (bounds only, never an exact count; a 1:1 call skips clustering),
+        // unless the service carries an explicit user constraint, which wins
+        // and always runs the diarizer. Diagnostics record the effective policy.
+        let speakerPolicy = MeetingSpeakerPolicy.resolve(
+            prior: MeetingSpeakerPrior.derive(from: recording.calendarEventSnapshot),
+            explicitConstraint: await diarizationService.explicitSpeakerConstraint()
+        )
         do {
             onProgress?(.identifyingSpeakers)
             Telemetry.send(.diarizationStarted(source: .meeting))
             let diarStartedAt = Date()
             let diarResult: MacParakeetDiarizationResult
-            if speakerPrior == .singleRemoteSpeaker {
+            if speakerPolicy.skipsClustering {
                 diarResult = Self.singleRemoteSpeakerDiarization()
             } else {
                 diarResult = try await diarizationService.diarize(
                     audioURL: systemWavURL,
-                    speakerConstraint: speakerPrior.speakerConstraint
+                    speakerConstraint: speakerPolicy.speakerConstraintHint
                 )
             }
             let diarDuration = Date().timeIntervalSince(diarStartedAt)
             logger.notice(
-                "meeting_system_diarization_completed prior=\(speakerPrior.diagnosticsLabel, privacy: .public) speakers=\(diarResult.speakerCount, privacy: .public) segments=\(diarResult.segments.count, privacy: .public) duration_s=\(String(format: "%.2f", diarDuration), privacy: .public)"
+                "meeting_system_diarization_completed prior=\(speakerPolicy.diagnosticsLabel, privacy: .public) speakers=\(diarResult.speakerCount, privacy: .public) segments=\(diarResult.segments.count, privacy: .public) duration_s=\(String(format: "%.2f", diarDuration), privacy: .public)"
             )
             AudioCaptureDiagnostics.append(
-                "meeting_system_diarization_completed session=\(recording.sessionID.uuidString) prior=\(speakerPrior.diagnosticsLabel) speakers=\(diarResult.speakerCount) segments=\(diarResult.segments.count) duration_s=\(String(format: "%.2f", diarDuration))"
+                "meeting_system_diarization_completed session=\(recording.sessionID.uuidString) prior=\(speakerPolicy.diagnosticsLabel) speakers=\(diarResult.speakerCount) segments=\(diarResult.segments.count) duration_s=\(String(format: "%.2f", diarDuration))"
             )
             Telemetry.send(.diarizationCompleted(
                 source: .meeting,
                 speakerCount: diarResult.speakerCount,
                 durationSeconds: diarDuration,
-                speakerPrior: speakerPrior.diagnosticsLabel
+                speakerPrior: speakerPolicy.diagnosticsLabel
             ))
 
             guard !diarResult.segments.isEmpty else { return nil }
@@ -1551,7 +1556,8 @@ public actor TranscriptionService: SpeechEngineOverrideTranscriptionService, Aud
 
             return MeetingTranscriptFinalizer.SystemDiarization(
                 speakers: mappedSpeakers,
-                segments: mappedSegments
+                segments: mappedSegments,
+                singleSpeakerId: speakerPolicy.skipsClustering ? mappedSpeakers.first?.id : nil
             )
         } catch is CancellationError {
             throw CancellationError()
@@ -1566,10 +1572,11 @@ public actor TranscriptionService: SpeechEngineOverrideTranscriptionService, Aud
         }
     }
 
-    /// One remote speaker covering the whole system timeline. The finalizer
-    /// applies system segments to system words only, so an open-ended span
-    /// labels every system word without depending on the track's playable
-    /// length or on engine timestamps that run past the file edge.
+    /// One remote speaker for the whole system track. The finalizer labels
+    /// every system word with `SystemDiarization.singleSpeakerId` directly
+    /// (zero-duration words never overlap a segment); the open-ended segment
+    /// only keeps the result shaped like a diarizer result and is never
+    /// persisted, since the finalizer rebuilds stored segments from words.
     static func singleRemoteSpeakerDiarization() -> MacParakeetDiarizationResult {
         MacParakeetDiarizationResult(
             segments: [SpeakerSegment(speakerId: "S1", startMs: 0, endMs: Int.max / 2)],

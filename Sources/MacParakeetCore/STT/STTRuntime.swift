@@ -2242,7 +2242,7 @@ public actor STTRuntime: STTRuntimeProtocol {
             throw STTError.engineBusy
         }
 
-        let engine = NemotronEnglishEngine()
+        let engine = NemotronEnglishEngine(inferenceGate: inferenceGate)
         nemotronEnglishEngine = engine
         return engine
     }

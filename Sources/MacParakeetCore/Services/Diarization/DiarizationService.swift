@@ -41,11 +41,20 @@ public protocol DiarizationServiceProtocol: Sendable {
     func prepareModels(onProgress: (@Sendable (String) -> Void)?) async throws
     func isReady() async -> Bool
     func hasCachedModels() async -> Bool
+    /// The constraint the service was constructed with (CLI `--speaker-*`
+    /// flags), or `nil`. Callers that would otherwise skip clustering must
+    /// check this first so an explicit user constraint always reaches the
+    /// diarizer.
+    func explicitSpeakerConstraint() async -> SpeakerDiarizationConstraint?
 }
 
 extension DiarizationServiceProtocol {
     public func diarize(audioURL: URL) async throws -> MacParakeetDiarizationResult {
         try await diarize(audioURL: audioURL, speakerConstraint: nil)
+    }
+
+    public func explicitSpeakerConstraint() async -> SpeakerDiarizationConstraint? {
+        nil
     }
 
     public func prepareModels() async throws {
@@ -70,36 +79,85 @@ protocol OfflineDiarizerManaging: AnyObject, Sendable {
 /// speaker constraint. Managers are cheap (configuration plus a reference to
 /// the shared models), so a per-meeting attendee prior costs no extra model
 /// load or download.
-final class FluidOfflineDiarizer: OfflineDiarizerManaging, @unchecked Sendable {
+actor FluidOfflineDiarizer: OfflineDiarizerManaging {
     private let baseConfig: OfflineDiarizerConfig
-    // Written once by `prepareModels(at:)`, read afterwards. All calls are
-    // serialized through DiarizationService actor isolation.
-    private var models: OfflineDiarizerModels?
+    /// One in-flight or completed load; concurrent cold callers await the
+    /// same task instead of each downloading, repairing, and compiling.
+    private var loadTask: Task<OfflineDiarizerModels, Error>?
 
     init(config: OfflineDiarizerConfig) {
         self.baseConfig = config
     }
 
     func prepareModels(at directory: URL) async throws {
-        guard models == nil else { return }
-        // `OfflineDiarizerModels.load` downloads missing files and purges and
-        // re-downloads a cache that fails to load, mirroring
-        // `OfflineDiarizerManager.prepareModels(directory:)`.
-        models = try await OfflineDiarizerModels.load(from: directory)
+        _ = try await models(at: directory)
     }
 
     func process(
         audioURL: URL,
         speakerConstraint: SpeakerDiarizationConstraint?
     ) async throws -> DiarizationResult {
-        guard let models else {
+        guard let loadTask else {
             throw OfflineDiarizationError.modelNotLoaded("offline-diarizer")
         }
+        let models = try await loadTask.value
         let manager = OfflineDiarizerManager(
             config: DiarizationService.applying(speakerConstraint, to: baseConfig)
         )
         manager.initialize(models: models)
         return try await manager.process(audioURL)
+    }
+
+    private func models(at directory: URL) async throws -> OfflineDiarizerModels {
+        if let loadTask {
+            return try await loadTask.value
+        }
+        let task = Task {
+            try await Self.loadWithRecovery(directory: directory) {
+                try await OfflineDiarizerModels.load(from: directory)
+            }
+        }
+        loadTask = task
+        do {
+            return try await task.value
+        } catch {
+            // A failed load must not poison later attempts.
+            if loadTask == task { loadTask = nil }
+            throw error
+        }
+    }
+
+    /// `OfflineDiarizerModels.load` recovers compiled-model failures inside
+    /// `ModelHub.loadModels`, but it parses `plda-parameters.json` afterwards,
+    /// outside that recovery, so a present-but-malformed file would fail every
+    /// attempt. Mirror `OfflineDiarizerManager.prepareModels(directory:)`: on a
+    /// non-transient failure purge the diarizer repo directory once and reload.
+    /// Cancellation, offline mode, and network errors keep the cache.
+    static func loadWithRecovery<T: Sendable>(
+        directory: URL,
+        load: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await load()
+        } catch {
+            guard shouldPurgeCache(after: error) else { throw error }
+            DiarizationService.clearModelCache(directory: directory)
+            return try await load()
+        }
+    }
+
+    static func shouldPurgeCache(after error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if error is URLError { return false }
+        if let downloadError = error as? DownloadError {
+            switch downloadError {
+            case .networkDisabled, .modelMissing, .stalled, .rateLimited, .downloadFailed:
+                return false
+            default:
+                return true
+            }
+        }
+        return true
     }
 }
 
@@ -110,6 +168,9 @@ public actor DiarizationService: DiarizationServiceProtocol {
     /// When set it wins over any per-call hint.
     private let explicitConstraint: SpeakerDiarizationConstraint?
     private var modelsReady = false
+    /// Single in-flight preparation so overlapping cold `diarize` calls share
+    /// one model load (the actor is reentrant across the await).
+    private var preparation: Task<Void, Error>?
 
     /// Uses the high-accuracy async configuration. Pass `config` only to
     /// override it deliberately (tests, benchmarks).
@@ -217,10 +278,32 @@ public actor DiarizationService: DiarizationServiceProtocol {
         onProgress?("Speaker models ready")
     }
 
+    public func explicitSpeakerConstraint() async -> SpeakerDiarizationConstraint? {
+        explicitConstraint
+    }
+
     private func ensureModelsPrepared() async throws {
         guard !modelsReady else { return }
-        try await manager.prepareModels(at: modelsDirectory)
+        let task: Task<Void, Error>
+        if let preparation {
+            task = preparation
+        } else {
+            let manager = self.manager
+            let directory = self.modelsDirectory
+            task = Task { try await manager.prepareModels(at: directory) }
+            preparation = task
+        }
+        do {
+            try await task.value
+        } catch {
+            if preparation == task { preparation = nil }
+            throw error
+        }
+        // The shared load keeps running for the other waiters; a cancelled
+        // caller still stops here.
+        try Task.checkCancellation()
         modelsReady = true
+        if preparation == task { preparation = nil }
     }
 
     public func isReady() async -> Bool {
@@ -319,8 +402,17 @@ public actor MockDiarizationService: DiarizationServiceProtocol {
     public var prepareModelsError: Error?
     public var ready = false
     public var cachedModels = false
+    public var explicitConstraint: SpeakerDiarizationConstraint?
 
     public init() {}
+
+    public func configureExplicitConstraint(_ constraint: SpeakerDiarizationConstraint?) {
+        explicitConstraint = constraint
+    }
+
+    public func explicitSpeakerConstraint() async -> SpeakerDiarizationConstraint? {
+        explicitConstraint
+    }
 
     public func configure(result: MacParakeetDiarizationResult) {
         self.diarizeResult = result

@@ -27,12 +27,40 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
 
     private let logger = Logger(subsystem: "com.macparakeet.core", category: "NemotronEnglishEngine")
 
+    /// Loads one manager's models from the FluidAudio cache. Injected so tests
+    /// can observe gating without downloading or compiling models.
+    typealias ManagerLoader = @Sendable (
+        StreamingNemotronAsrManager, URL, ProgressHandler?
+    ) async throws -> Void
+
     private var interactiveManager: StreamingNemotronAsrManager?
     private var backgroundManager: StreamingNemotronAsrManager?
     private var initializationTask: Task<Void, Error>?
     private var activeLanes: Set<NemotronEnglishRuntimeLane> = []
+    /// Serializes Neural Engine work on macOS 14 (no-op on macOS 15+). Since
+    /// FluidAudio 0.15.6 `StreamingNemotronAsrManager.loadModels` runs an
+    /// encoder prediction as a load-time health probe, so model loading is
+    /// inference and must take the gate like every `process` call.
+    private let inferenceGate: ANEInferenceGate
+    private let managerLoader: ManagerLoader
 
-    public init() {}
+    public init(inferenceGate: ANEInferenceGate = .shared) {
+        self.init(
+            inferenceGate: inferenceGate,
+            managerLoader: { manager, directory, progressHandler in
+                try await manager.loadModels(
+                    to: directory,
+                    configuration: nil,
+                    progressHandler: progressHandler
+                )
+            }
+        )
+    }
+
+    init(inferenceGate: ANEInferenceGate, managerLoader: @escaping ManagerLoader) {
+        self.inferenceGate = inferenceGate
+        self.managerLoader = managerLoader
+    }
 
     public func transcribe(
         audioPath: String,
@@ -79,14 +107,14 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
                 let end = min(offset + Self.sliceSampleCount, samples.count)
                 let sampleSlice = samples[offset..<end]
                 let buffer = UncheckedSendableAudioPCMBuffer(try Self.makePCMBuffer(samples: sampleSlice))
-                try await ANEInferenceGate.shared.withExclusiveAccess {
+                try await inferenceGate.withExclusiveAccess {
                     _ = try await manager.process(audioBuffer: buffer.buffer)
                 }
                 offset = end
                 let fraction = Double(offset) / Double(samples.count)
                 onProgress?(25 + Int(fraction * 65), 100)
             }
-            let final = try await ANEInferenceGate.shared.withExclusiveAccess {
+            let final = try await inferenceGate.withExclusiveAccess {
                 try await manager.finishWithTokenTimings()
             }
             onProgress?(100, 100)
@@ -151,7 +179,7 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
             // resample.
             let sampleSlice = samples[...]
             let buffer = UncheckedSendableAudioPCMBuffer(try Self.makePCMBuffer(samples: sampleSlice))
-            try await ANEInferenceGate.shared.withExclusiveAccess {
+            try await inferenceGate.withExclusiveAccess {
                 _ = try await manager.process(audioBuffer: buffer.buffer)
             }
         } catch {
@@ -169,7 +197,7 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
 
         do {
             await manager.setPartialCallback { _ in }
-            let final = try await ANEInferenceGate.shared.withExclusiveAccess {
+            let final = try await inferenceGate.withExclusiveAccess {
                 try await manager.finishWithTokenTimings()
             }
             return STTResult(
@@ -327,16 +355,17 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
         // shared via the page cache rather than duplicated per instance.
         let loadedInteractiveManager = StreamingNemotronAsrManager(requestedChunkSize: .ms1120)
         let loadedBackgroundManager = StreamingNemotronAsrManager(requestedChunkSize: .ms1120)
-        try await loadedInteractiveManager.loadModels(
-            to: Self.modelsBaseDirectory(),
-            configuration: nil,
-            progressHandler: progressHandler
-        )
-        try await loadedBackgroundManager.loadModels(
-            to: Self.modelsBaseDirectory(),
-            configuration: nil,
-            progressHandler: progressHandler
-        )
+        // One gate acquisition per load, never nested: `prepare` is always
+        // called outside the transcription gate sections, and FluidAudio's
+        // purge-and-retry recovery runs inside `loadModels`, so it is covered.
+        let directory = Self.modelsBaseDirectory()
+        let managerLoader = self.managerLoader
+        try await inferenceGate.withExclusiveAccess {
+            try await managerLoader(loadedInteractiveManager, directory, progressHandler)
+        }
+        try await inferenceGate.withExclusiveAccess {
+            try await managerLoader(loadedBackgroundManager, directory, progressHandler)
+        }
 
         self.interactiveManager = loadedInteractiveManager
         self.backgroundManager = loadedBackgroundManager

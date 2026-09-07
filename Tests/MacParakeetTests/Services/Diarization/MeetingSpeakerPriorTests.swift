@@ -80,6 +80,49 @@ final class MeetingSpeakerPriorTests: XCTestCase {
         XCTAssertEqual(MeetingSpeakerPrior.derive(from: snapshot), .bounds(min: 2, max: 4))
     }
 
+    func testDeclinedAttendeesAreNotCounted() {
+        let snapshot = makeSnapshot(attendees: [
+            MeetingCalendarPerson(name: "Ada", email: "ada@example.com", status: "accepted"),
+            MeetingCalendarPerson(name: "Grace", email: "grace@example.com", status: "declined"),
+            MeetingCalendarPerson(name: "Linus", email: "linus@example.com", status: "tentative"),
+            MeetingCalendarPerson(name: "Ken", email: "ken@example.com", status: nil),
+        ])
+
+        XCTAssertEqual(MeetingSpeakerPrior.remoteAttendeeCount(in: snapshot), 3)
+        XCTAssertEqual(MeetingSpeakerPrior.derive(from: snapshot), .bounds(min: 2, max: 4))
+    }
+
+    func testNameOnlyAndEmailEntriesForTheSamePersonCountSeparately() {
+        // Documented fallback-key behavior: one key per entry, no cross-field reconciliation.
+        let snapshot = makeSnapshot(attendees: [
+            MeetingCalendarPerson(name: "Ada", email: "ada@example.com"),
+            MeetingCalendarPerson(name: "Ada", email: nil),
+        ])
+
+        XCTAssertEqual(MeetingSpeakerPrior.remoteAttendeeCount(in: snapshot), 2)
+    }
+
+    func testPolicyResolvesExplicitConstraintOverPrior() {
+        let prior = MeetingSpeakerPrior.singleRemoteSpeaker
+
+        let withExplicit = MeetingSpeakerPolicy.resolve(prior: prior, explicitConstraint: .exact(3))
+        XCTAssertEqual(withExplicit, .explicitConstraint)
+        XCTAssertFalse(withExplicit.skipsClustering)
+        XCTAssertNil(withExplicit.speakerConstraintHint)
+        XCTAssertEqual(withExplicit.diagnosticsLabel, "explicit_constraint")
+
+        let withoutExplicit = MeetingSpeakerPolicy.resolve(prior: prior, explicitConstraint: nil)
+        XCTAssertEqual(withoutExplicit, .prior(.singleRemoteSpeaker))
+        XCTAssertTrue(withoutExplicit.skipsClustering)
+        XCTAssertNil(withoutExplicit.speakerConstraintHint)
+        XCTAssertEqual(withoutExplicit.diagnosticsLabel, "single_remote")
+
+        let bounds = MeetingSpeakerPolicy.resolve(prior: .bounds(min: 2, max: 4), explicitConstraint: nil)
+        XCTAssertFalse(bounds.skipsClustering)
+        XCTAssertEqual(bounds.speakerConstraintHint, .range(min: 2, max: 4))
+        XCTAssertEqual(bounds.diagnosticsLabel, "bounds_2_4")
+    }
+
     func testSnapshotWithoutAttendeesIsUnconstrained() {
         let snapshot = makeSnapshot(attendees: [])
 
