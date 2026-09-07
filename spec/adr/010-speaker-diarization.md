@@ -207,9 +207,11 @@ Skip diarization for: dictation (single speaker by design), or when the correspo
 > runs after transcription, so `DiarizationService.highAccuracyConfig` takes
 > FluidAudio's slower preset: `stepRatio 0.1` (1 s hop instead of 2 s),
 > `minSegmentDurationSeconds 0` (short turns keep their own embedding and
-> segment), and zero-vote re-embedding on. FluidAudio measures this at 13.89%
-> versus 15.07% DER on VoxConverse (collar 0.25 s, overlap ignored) for about
-> half the throughput. `clustering.threshold` stays at the library default
+> segment), and zero-vote re-embedding on. FluidAudio's own VoxConverse table
+> (collar 0.25 s, overlap ignored), published for 0.15.4 and not yet re-run
+> under 0.15.6's corrected clustering, put this preset at 13.89% versus 15.07%
+> DER for about half the throughput; treat those as historical, not as a
+> measurement of the pinned build. `clustering.threshold` stays at the library default
 > (the app never tuned it, so the semantic change needs no remap),
 > `constrainedAssignment` stays at its new default (on), and K-Means
 > re-clustering is deterministic in 0.15.6 (`baseSeed 0`, `nInit 10`).

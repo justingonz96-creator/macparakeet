@@ -338,10 +338,11 @@ public actor DiarizationService: DiarizationServiceProtocol {
 
     /// Diarization always runs after transcription, off the interactive path,
     /// so it takes FluidAudio's slower high-accuracy settings rather than
-    /// `OfflineDiarizerConfig.default` (the fast preset). FluidAudio measures
-    /// `stepRatio 0.1` / `minSegmentDuration 0` at 13.89% versus 15.07% DER on
-    /// VoxConverse (collar 0.25 s, overlap ignored) for about half the
-    /// throughput. See ADR-010 (2026-09-06 amendment) and issue #972.
+    /// `OfflineDiarizerConfig.default` (the fast preset). FluidAudio's
+    /// 0.15.4-era VoxConverse table (collar 0.25 s, overlap ignored; not yet
+    /// re-run under 0.15.6) put `stepRatio 0.1` / `minSegmentDuration 0` at
+    /// 13.89% versus 15.07% DER for about half the throughput. See ADR-010
+    /// (2026-09-06 amendment) and issue #972.
     ///
     /// Left at library defaults on purpose: `clustering.threshold` (the app
     /// never tuned it, and 0.15.6 changed its semantics to a plain distance
