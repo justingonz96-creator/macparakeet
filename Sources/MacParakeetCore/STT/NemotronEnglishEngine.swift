@@ -27,8 +27,9 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
 
     private let logger = Logger(subsystem: "com.macparakeet.core", category: "NemotronEnglishEngine")
 
-    /// Loads one manager's models from the FluidAudio cache. Injected so tests
-    /// can observe gating without downloading or compiling models.
+    /// Loads one manager's models from the FluidAudio cache (the download step
+    /// runs before it, ungated). Injected so tests can observe gating without
+    /// compiling models.
     typealias ManagerLoader = @Sendable (
         StreamingNemotronAsrManager, URL, ProgressHandler?
     ) async throws -> Void
@@ -41,8 +42,12 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
     /// FluidAudio 0.15.6 `StreamingNemotronAsrManager.loadModels` runs an
     /// encoder prediction as a load-time health probe, so model loading is
     /// inference and must take the gate like every `process` call.
+    /// Fetches missing model files into the cache before the gated load.
+    typealias ModelDownloader = @Sendable (URL, ProgressHandler?) async throws -> Void
+
     private let inferenceGate: ANEInferenceGate
     private let managerLoader: ManagerLoader
+    private let modelDownloader: ModelDownloader
 
     public init(inferenceGate: ANEInferenceGate = .shared) {
         self.init(
@@ -53,13 +58,26 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
                     configuration: nil,
                     progressHandler: progressHandler
                 )
+            },
+            modelDownloader: { directory, progressHandler in
+                guard !Self.isModelCached() else { return }
+                try await ModelHub.download(
+                    .nemotronStreaming1120,
+                    to: directory,
+                    progressHandler: progressHandler
+                )
             }
         )
     }
 
-    init(inferenceGate: ANEInferenceGate, managerLoader: @escaping ManagerLoader) {
+    init(
+        inferenceGate: ANEInferenceGate,
+        managerLoader: @escaping ManagerLoader,
+        modelDownloader: @escaping ModelDownloader
+    ) {
         self.inferenceGate = inferenceGate
         self.managerLoader = managerLoader
+        self.modelDownloader = modelDownloader
     }
 
     public func transcribe(
@@ -355,10 +373,14 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
         // shared via the page cache rather than duplicated per instance.
         let loadedInteractiveManager = StreamingNemotronAsrManager(requestedChunkSize: .ms1120)
         let loadedBackgroundManager = StreamingNemotronAsrManager(requestedChunkSize: .ms1120)
-        // One gate acquisition per load, never nested: `prepare` is always
-        // called outside the transcription gate sections, and FluidAudio's
-        // purge-and-retry recovery runs inside `loadModels`, so it is covered.
+        // Fetch missing files before taking the gate so a slow download never
+        // holds the macOS 14 inference permit; the gated `loadModels` below
+        // then finds the cache complete. Only its purge-and-retry recovery
+        // (a corrupt cache) can still download under the gate.
         let directory = Self.modelsBaseDirectory()
+        try await modelDownloader(directory, progressHandler)
+        // One gate acquisition per load, never nested: `prepare` is always
+        // called outside the transcription gate sections.
         let managerLoader = self.managerLoader
         try await inferenceGate.withExclusiveAccess {
             try await managerLoader(loadedInteractiveManager, directory, progressHandler)

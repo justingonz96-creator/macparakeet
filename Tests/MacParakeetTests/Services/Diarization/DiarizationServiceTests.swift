@@ -218,19 +218,22 @@ final class DiarizationServiceTests: XCTestCase {
 
     func testOverlappingColdDiarizeCallsShareOnePreparation() async throws {
         let manager = RecordingOfflineDiarizerManager(result: DiarizationResult(segments: []))
+        let entered = AsyncPermit(value: 0)
         let release = AsyncPermit(value: 0)
-        await manager.setPrepareBlocker(release)
+        await manager.setPrepareSignals(entered: entered, release: release)
         let service = DiarizationService(manager: manager, modelsDirectory: FileManager.default.temporaryDirectory)
 
-        async let first = service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"))
-        async let second = service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav"))
-        // Both callers are now suspended inside the single preparation.
-        try await Task.sleep(for: .milliseconds(100))
+        let first = Task { try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav")) }
+        try await entered.wait()
+        let second = Task { try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav")) }
+        // Give the second caller the chance to (wrongly) start its own preparation.
+        for _ in 0..<50 { await Task.yield() }
         let inFlight = await manager.preparedDirectories.count
         XCTAssertEqual(inFlight, 1, "the second cold caller must await the first load, not start its own")
 
         release.signal()
-        _ = try await (first, second)
+        _ = try await first.value
+        _ = try await second.value
 
         let prepared = await manager.preparedDirectories.count
         let processed = await manager.processedAudioURLs.count
@@ -258,19 +261,18 @@ final class DiarizationServiceTests: XCTestCase {
         XCTAssertTrue(ready)
     }
 
-    func testCancelledCallerStopsWhileTheSharedLoadCompletesForLaterCallers() async throws {
+    func testCancelledCallerReturnsWhileTheLoadIsStillBlocked() async throws {
         let manager = RecordingOfflineDiarizerManager(result: DiarizationResult(segments: []))
+        let entered = AsyncPermit(value: 0)
         let release = AsyncPermit(value: 0)
-        await manager.setPrepareBlocker(release)
+        await manager.setPrepareSignals(entered: entered, release: release)
         let service = DiarizationService(manager: manager, modelsDirectory: FileManager.default.temporaryDirectory)
 
-        let cancelled = Task {
-            try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"))
-        }
-        try await Task.sleep(for: .milliseconds(50))
+        let cancelled = Task { try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav")) }
+        try await entered.wait()
         cancelled.cancel()
-        release.signal()
 
+        // Must complete before the loader is released.
         do {
             _ = try await cancelled.value
             XCTFail("expected CancellationError")
@@ -278,10 +280,13 @@ final class DiarizationServiceTests: XCTestCase {
         } catch {
             XCTFail("unexpected error \(error)")
         }
+        let stillBlocked = await manager.releasedCount
+        XCTAssertEqual(stillBlocked, 0, "the shared load was still blocked when the cancelled caller returned")
 
+        release.signal()
         _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav"))
         let prepared = await manager.preparedDirectories.count
-        XCTAssertEqual(prepared, 1, "the load that was in flight is reused")
+        XCTAssertEqual(prepared, 1, "the load that was in flight is reused by the next caller")
     }
 
     // MARK: - Cache recovery around OfflineDiarizerModels.load
@@ -295,25 +300,34 @@ final class DiarizationServiceTests: XCTestCase {
         return base
     }
 
-    func testMalformedMetadataPurgesTheDiarizerCacheOnceAndReloads() async throws {
-        let base = try makeDiarizerCache()
-        defer { try? FileManager.default.removeItem(at: base) }
-        let repo = DiarizationService.modelCacheDirectory(directory: base)
-        let attempts = OSAllocatedUnfairLock(initialState: 0)
+    private func pldaFailures() -> [Error] {
+        [
+            OfflineDiarizationError.processingFailed("Failed to decode PLDA psi parameters"),
+            DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "bad plda json")),
+            NSError(domain: NSCocoaErrorDomain, code: NSPropertyListReadCorruptError, userInfo: nil),
+        ]
+    }
 
-        let value = try await FluidOfflineDiarizer.loadWithRecovery(directory: base) { () throws -> String in
-            let attempt = attempts.withLock { $0 += 1; return $0 }
-            if attempt == 1 {
-                // The corrupt plda-parameters.json is still there on the first attempt.
-                XCTAssertTrue(FileManager.default.fileExists(atPath: repo.path))
-                throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "bad plda json"))
+    func testMalformedPLDAMetadataPurgesTheDiarizerCacheOnceAndReloads() async throws {
+        for failure in pldaFailures() {
+            let base = try makeDiarizerCache()
+            defer { try? FileManager.default.removeItem(at: base) }
+            let repo = DiarizationService.modelCacheDirectory(directory: base)
+            let attempts = OSAllocatedUnfairLock(initialState: 0)
+
+            let value = try await FluidOfflineDiarizer.loadWithRecovery(directory: base, offlineMode: false) { () throws -> String in
+                let attempt = attempts.withLock { $0 += 1; return $0 }
+                if attempt == 1 {
+                    XCTAssertTrue(FileManager.default.fileExists(atPath: repo.path))
+                    throw failure
+                }
+                XCTAssertFalse(FileManager.default.fileExists(atPath: repo.path), "the repo directory is purged before the retry")
+                return "loaded"
             }
-            XCTAssertFalse(FileManager.default.fileExists(atPath: repo.path), "the repo directory is purged before the retry")
-            return "loaded"
-        }
 
-        XCTAssertEqual(value, "loaded")
-        XCTAssertEqual(attempts.withLock { $0 }, 2)
+            XCTAssertEqual(value, "loaded")
+            XCTAssertEqual(attempts.withLock { $0 }, 2, "\(failure)")
+        }
     }
 
     func testRecoveryGivesUpAfterTheSecondFailure() async throws {
@@ -322,41 +336,81 @@ final class DiarizationServiceTests: XCTestCase {
         let attempts = OSAllocatedUnfairLock(initialState: 0)
 
         do {
-            _ = try await FluidOfflineDiarizer.loadWithRecovery(directory: base) { () throws -> String in
+            _ = try await FluidOfflineDiarizer.loadWithRecovery(directory: base, offlineMode: false) { () throws -> String in
                 attempts.withLock { $0 += 1 }
-                throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "still bad"))
+                throw OfflineDiarizationError.processingFailed("Failed to decode PLDA psi parameters")
             }
             XCTFail("expected the second failure to propagate")
         } catch {}
         XCTAssertEqual(attempts.withLock { $0 }, 2)
     }
 
-    func testTransientAndCancellationErrorsKeepTheCache() async throws {
-        let transientErrors: [Error] = [
+    func testDownloadTransientAndCancellationErrorsKeepTheCache() async throws {
+        let wrappedCancellation = NSError(
+            domain: "MacParakeetTests",
+            code: 1,
+            userInfo: [NSUnderlyingErrorKey: NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError, userInfo: nil)]
+        )
+        let preserved: [Error] = [
             CancellationError(),
+            NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError, userInfo: nil),
+            wrappedCancellation,
             URLError(.notConnectedToInternet),
             DownloadError.networkDisabled(operation: "download"),
             DownloadError.modelMissing(repo: "speaker-diarization", missing: ["Segmentation.mlmodelc"]),
             DownloadError.stalled(path: "Embedding.mlmodelc", window: 30),
+            // ModelHub already retried these and chose to preserve the cache.
+            DownloadError.invalidArtifact(path: "Embedding.mlmodelc", reason: "truncated"),
+            DownloadError.rateLimited(statusCode: 429, message: "slow down"),
+            OfflineDiarizationError.modelNotLoaded("Segmentation.mlmodelc"),
         ]
-        for transient in transientErrors {
+        for error in preserved {
             let base = try makeDiarizerCache()
             defer { try? FileManager.default.removeItem(at: base) }
             let repo = DiarizationService.modelCacheDirectory(directory: base)
             let attempts = OSAllocatedUnfairLock(initialState: 0)
 
             do {
-                _ = try await FluidOfflineDiarizer.loadWithRecovery(directory: base) { () throws -> String in
+                _ = try await FluidOfflineDiarizer.loadWithRecovery(directory: base, offlineMode: false) { () throws -> String in
                     attempts.withLock { $0 += 1 }
-                    throw transient
+                    throw error
                 }
-                XCTFail("expected \(transient) to propagate")
+                XCTFail("expected \(error) to propagate")
             } catch {}
-            XCTAssertEqual(attempts.withLock { $0 }, 1, "\(transient) must not trigger a retry")
-            XCTAssertTrue(FileManager.default.fileExists(atPath: repo.path), "\(transient) must not purge the cache")
+            XCTAssertEqual(attempts.withLock { $0 }, 1, "\(error) must not trigger a retry")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: repo.path), "\(error) must not purge the cache")
         }
-        XCTAssertTrue(FluidOfflineDiarizer.shouldPurgeCache(after: OfflineDiarizationError.modelNotLoaded("plda")))
-        XCTAssertTrue(FluidOfflineDiarizer.shouldPurgeCache(after: DownloadError.invalidArtifact(path: "x", reason: "y")))
+    }
+
+    func testOfflineModeNeverPurgesEvenForPLDAFailures() async throws {
+        for failure in pldaFailures() {
+            let base = try makeDiarizerCache()
+            defer { try? FileManager.default.removeItem(at: base) }
+            let repo = DiarizationService.modelCacheDirectory(directory: base)
+            let attempts = OSAllocatedUnfairLock(initialState: 0)
+
+            do {
+                _ = try await FluidOfflineDiarizer.loadWithRecovery(directory: base, offlineMode: true) { () throws -> String in
+                    attempts.withLock { $0 += 1 }
+                    throw failure
+                }
+                XCTFail("expected \(failure) to propagate")
+            } catch {}
+            XCTAssertEqual(attempts.withLock { $0 }, 1)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: repo.path), "offline mode must keep the cache")
+            XCTAssertFalse(FluidOfflineDiarizer.shouldPurgeCache(after: failure, offlineMode: true))
+        }
+    }
+
+    func testCancellationDetectionFollowsTheUnderlyingErrorChain() {
+        let nested = NSError(domain: "Outer", code: 5, userInfo: [
+            NSUnderlyingErrorKey: NSError(domain: "Middle", code: 6, userInfo: [
+                NSUnderlyingErrorKey: CancellationError(),
+            ]),
+        ])
+        XCTAssertTrue(FluidOfflineDiarizer.isCancellation(nested))
+        XCTAssertFalse(FluidOfflineDiarizer.isCancellation(URLError(.timedOut)))
+        XCTAssertFalse(FluidOfflineDiarizer.isPLDAMetadataFailure(OfflineDiarizationError.processingFailed("segmentation output empty")))
     }
 }
 
@@ -365,15 +419,21 @@ private actor RecordingOfflineDiarizerManager: OfflineDiarizerManaging {
     var preparedDirectories: [URL] = []
     var processedAudioURLs: [URL] = []
     var receivedConstraints: [SpeakerDiarizationConstraint?] = []
-    private var prepareBlocker: AsyncPermit?
+    private var enteredSignal: AsyncPermit?
+    private var releaseBlocker: AsyncPermit?
     private var prepareErrors: [Error] = []
+    /// Number of times a blocked preparation was released.
+    var releasedCount = 0
 
     init(result: DiarizationResult) {
         self.result = result
     }
 
-    func setPrepareBlocker(_ permit: AsyncPermit) {
-        prepareBlocker = permit
+    /// `entered` is signalled when preparation starts; preparation then waits
+    /// on `release` so the test controls exactly when the load finishes.
+    func setPrepareSignals(entered: AsyncPermit, release: AsyncPermit) {
+        enteredSignal = entered
+        releaseBlocker = release
     }
 
     func setPrepareErrors(_ errors: [Error]) {
@@ -385,8 +445,10 @@ private actor RecordingOfflineDiarizerManager: OfflineDiarizerManaging {
         if !prepareErrors.isEmpty {
             throw prepareErrors.removeFirst()
         }
-        if let prepareBlocker {
-            try await prepareBlocker.wait()
+        enteredSignal?.signal()
+        if let releaseBlocker {
+            try await releaseBlocker.wait()
+            releasedCount += 1
         }
     }
 

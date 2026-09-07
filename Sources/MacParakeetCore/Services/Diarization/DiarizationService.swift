@@ -1,5 +1,6 @@
 import FluidAudio
 import Foundation
+import os
 
 public struct MacParakeetDiarizationResult: Sendable {
     public let segments: [SpeakerSegment]
@@ -130,34 +131,59 @@ actor FluidOfflineDiarizer: OfflineDiarizerManaging {
     /// `OfflineDiarizerModels.load` recovers compiled-model failures inside
     /// `ModelHub.loadModels`, but it parses `plda-parameters.json` afterwards,
     /// outside that recovery, so a present-but-malformed file would fail every
-    /// attempt. Mirror `OfflineDiarizerManager.prepareModels(directory:)`: on a
-    /// non-transient failure purge the diarizer repo directory once and reload.
-    /// Cancellation, offline mode, and network errors keep the cache.
+    /// attempt. Mirror `OfflineDiarizerManager.prepareModels(directory:)` for
+    /// exactly that case: on an identified PLDA metadata failure purge the
+    /// diarizer repo directory once and reload. Everything else (download
+    /// errors, which ModelHub already retried or deliberately preserved;
+    /// cancellation, including Cocoa user-cancelled errors and cancellations
+    /// wrapped as underlying errors; offline mode, where a reload cannot
+    /// succeed) keeps the cache and propagates.
     static func loadWithRecovery<T: Sendable>(
         directory: URL,
+        offlineMode: Bool = ModelHub.offlineMode,
         load: () async throws -> T
     ) async throws -> T {
         do {
             return try await load()
         } catch {
-            guard shouldPurgeCache(after: error) else { throw error }
+            guard shouldPurgeCache(after: error, offlineMode: offlineMode) else { throw error }
             DiarizationService.clearModelCache(directory: directory)
             return try await load()
         }
     }
 
-    static func shouldPurgeCache(after error: Error) -> Bool {
-        if error is CancellationError { return false }
-        if error is URLError { return false }
-        if let downloadError = error as? DownloadError {
-            switch downloadError {
-            case .networkDisabled, .modelMissing, .stalled, .rateLimited, .downloadFailed:
-                return false
-            default:
-                return true
-            }
+    static func shouldPurgeCache(after error: Error, offlineMode: Bool) -> Bool {
+        if offlineMode { return false }
+        if isCancellation(error) { return false }
+        return isPLDAMetadataFailure(error)
+    }
+
+    /// `CancellationError`, Cocoa `NSUserCancelledError`, or either of those
+    /// anywhere in the `NSUnderlyingErrorKey` chain.
+    static func isCancellation(_ error: Error) -> Bool {
+        var current: Error? = error
+        var depth = 0
+        while let candidate = current, depth < 8 {
+            if candidate is CancellationError { return true }
+            let nsError = candidate as NSError
+            if nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError { return true }
+            current = nsError.userInfo[NSUnderlyingErrorKey] as? Error
+            depth += 1
         }
-        return true
+        return false
+    }
+
+    /// The failures `OfflineDiarizerModels.loadPLDAPsi` produces for a
+    /// present-but-unreadable `plda-parameters.json`: its own
+    /// `processingFailed` messages that mention PLDA, `JSONSerialization`'s
+    /// Cocoa parse error, or a `DecodingError`.
+    static func isPLDAMetadataFailure(_ error: Error) -> Bool {
+        if error is DecodingError { return true }
+        if case OfflineDiarizationError.processingFailed(let message) = error {
+            return message.localizedCaseInsensitiveContains("plda")
+        }
+        let nsError = error as NSError
+        return nsError.domain == NSCocoaErrorDomain && nsError.code == NSPropertyListReadCorruptError
     }
 }
 
@@ -294,16 +320,31 @@ public actor DiarizationService: DiarizationServiceProtocol {
             preparation = task
         }
         do {
-            try await task.value
+            // Cancellation-responsive: a cancelled caller returns at once
+            // while the shared load keeps running for the other waiters.
+            try await Self.awaitCancellable(task)
         } catch {
-            if preparation == task { preparation = nil }
+            if !(error is CancellationError), preparation == task { preparation = nil }
             throw error
         }
-        // The shared load keeps running for the other waiters; a cancelled
-        // caller still stops here.
-        try Task.checkCancellation()
         modelsReady = true
         if preparation == task { preparation = nil }
+    }
+
+    /// Awaits `task` but returns `CancellationError` as soon as the calling
+    /// task is cancelled, without cancelling `task` itself.
+    nonisolated static func awaitCancellable<T: Sendable>(_ task: Task<T, Error>) async throws -> T {
+        let waiter = CancellableWaiter<T>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiter.register(continuation)
+                Task {
+                    waiter.resume(with: await task.result)
+                }
+            }
+        } onCancel: {
+            waiter.resume(with: .failure(CancellationError()))
+        }
     }
 
     public func isReady() async -> Bool {
@@ -460,5 +501,43 @@ public actor MockDiarizationService: DiarizationServiceProtocol {
 
     public func hasCachedModels() async -> Bool {
         cachedModels
+    }
+}
+
+/// One-shot continuation holder; the first `resume` wins, whether it comes
+/// from the shared task finishing or from the waiter's own cancellation.
+private final class CancellableWaiter<T: Sendable>: Sendable {
+    private struct State {
+        var continuation: CheckedContinuation<T, Error>?
+        var pendingResult: Result<T, Error>?
+        var finished = false
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    func register(_ continuation: CheckedContinuation<T, Error>) {
+        let pending: Result<T, Error>? = state.withLock { state in
+            if let pendingResult = state.pendingResult, !state.finished {
+                state.finished = true
+                return pendingResult
+            }
+            state.continuation = continuation
+            return nil
+        }
+        if let pending { continuation.resume(with: pending) }
+    }
+
+    func resume(with result: Result<T, Error>) {
+        let continuation: CheckedContinuation<T, Error>? = state.withLock { state in
+            guard !state.finished else { return nil }
+            if let continuation = state.continuation {
+                state.finished = true
+                state.continuation = nil
+                return continuation
+            }
+            if state.pendingResult == nil { state.pendingResult = result }
+            return nil
+        }
+        continuation?.resume(with: result)
     }
 }
