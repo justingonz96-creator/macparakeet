@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-# Source this helper before replacing a running app's executable or resources.
+# Arguments: timeout, checkout ownership root, exact executable paths replaced.
+# Source this helper before replacing this worktree's executable or resources.
 # AppKit normal quit preserves recording confirmation and pending-note saves.
 stop_app_processes() {
   local helper_dir status=0

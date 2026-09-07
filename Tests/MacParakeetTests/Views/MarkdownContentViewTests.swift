@@ -27,7 +27,7 @@ final class MarkdownContentViewTests: XCTestCase {
         }
         await fulfillment(of: [subscribed], timeout: 2)
 
-        // Match SwiftStreamingMarkdown's StreamedMarkdownController.end() on disappearance.
+        // Match SwiftUI cancelling the structured consumer on disappearance.
         firstRenderer.cancel()
         let cancelledValue = await firstRenderer.value
         XCTAssertNil(cancelledValue)
@@ -64,7 +64,96 @@ final class MarkdownContentViewTests: XCTestCase {
         XCTAssertEqual(next, "Replacement remains live")
     }
 
-    func testTableExportPreservesMarkdownSource() async throws {
+    @MainActor
+    func testCancelledParseCannotOverwriteReplacementRenderer() async {
+        let source = MarkdownSnapshotSource(initialContent: "Old result")
+        let config = MarkdownContentConfiguration.make(baseFontSize: 14, isStreaming: false)
+        let oldDocument = RenderableDocument(plainText: "Old result", config: config)
+        let newDocument = RenderableDocument(plainText: "New result", config: config)
+        let oldParseStarted = expectation(description: "Old parse suspended")
+        let replacementPublished = expectation(description: "Replacement published")
+        var finishOldParse: CheckedContinuation<RenderableDocument, Never>?
+        var published: [RenderableDocument] = []
+
+        let oldRenderer = Task {
+            await MarkdownSnapshotRenderer.render(
+                source: source, config: config,
+                parse: { _, _ in
+                    await withCheckedContinuation { continuation in
+                        finishOldParse = continuation
+                        oldParseStarted.fulfill()
+                    }
+                }, publish: { published.append($0) })
+        }
+        await fulfillment(of: [oldParseStarted], timeout: 2)
+        oldRenderer.cancel()
+        source.send("New result")
+
+        let replacement = Task {
+            await MarkdownSnapshotRenderer.render(
+                source: source, config: config,
+                parse: { text, _ in
+                    XCTAssertEqual(text, "New result")
+                    return newDocument
+                },
+                publish: {
+                    published.append($0)
+                    replacementPublished.fulfill()
+                })
+        }
+        await fulfillment(of: [replacementPublished], timeout: 2)
+
+        // The dependency parser need not observe cancellation. Its late result
+        // must still be discarded after a replacement consumer has published.
+        finishOldParse?.resume(returning: oldDocument)
+        await oldRenderer.value
+        replacement.cancel()
+        await replacement.value
+        XCTAssertEqual(published, [newDocument])
+    }
+
+    @MainActor
+    func testRendererCoalescesSnapshotsWhileParsing() async {
+        let source = MarkdownSnapshotSource(initialContent: "Initial")
+        let config = MarkdownContentConfiguration.make(baseFontSize: 14, isStreaming: true)
+        let initialParseStarted = expectation(description: "Initial parse suspended")
+        let latestPublished = expectation(description: "Latest snapshot published")
+        var finishInitialParse: CheckedContinuation<RenderableDocument, Never>?
+        var parsed: [String] = []
+        var publishedCount = 0
+
+        let renderer = Task {
+            await MarkdownSnapshotRenderer.render(
+                source: source, config: config,
+                parse: { text, config in
+                    parsed.append(text)
+                    if text == "Initial" {
+                        return await withCheckedContinuation { continuation in
+                            finishInitialParse = continuation
+                            initialParseStarted.fulfill()
+                        }
+                    }
+                    return RenderableDocument(plainText: text, config: config)
+                },
+                publish: { _ in
+                    publishedCount += 1
+                    if publishedCount == 2 {
+                        latestPublished.fulfill()
+                    }
+                })
+        }
+        await fulfillment(of: [initialParseStarted], timeout: 2)
+        source.send("Intermediate")
+        source.send("Latest")
+        XCTAssertEqual(parsed, ["Initial"], "Parsing remains serial")
+        finishInitialParse?.resume(returning: RenderableDocument(plainText: "Initial", config: config))
+        await fulfillment(of: [latestPublished], timeout: 2)
+        renderer.cancel()
+        await renderer.value
+        XCTAssertEqual(parsed, ["Initial", "Latest"])
+    }
+
+    func testTableExportPreservesProvidedTableMarkdown() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }

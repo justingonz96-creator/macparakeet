@@ -55,7 +55,7 @@ with `Macro “EquatableMacros” ... must be enabled before it can be used`, do
 not install or substitute a renderer: rerun `scripts/dev/run_app.sh`, or keep
 that flag in the equivalent Xcode invocation.
 
-The script also stops every existing MacParakeet process **before** rebuilding
+The script also requests ordinary quit for this worktree’s replaced dev executables **before** rebuilding
 or re-signing the Dev bundle. Never reorder that shutdown after bundle wrapping:
 modifying a signed executable while macOS is running it can terminate the app
 later with `SIGKILL (Code Signature Invalid)`, often when the next menu or sheet
@@ -91,12 +91,13 @@ for release-gating checks (signing, notarization, first-run onboarding, auto-upd
 - While a result, saved chat response, or live Ask response is streaming, leave
   its pane and return. Existing text must remain visible and later chunks must
   continue to render. Repeat after
-  a completed result starts streaming again.
+  a completed result starts streaming again. Also switch quickly between saved
+  results of different lengths; the selected result must not revert to stale text.
 - In a rendered table, select text in a header and a body cell, then copy it.
   Selection must remain usable without a table-wide click action consuming it.
 - Navigate the table actions with VoiceOver. Both **Copy table** and **Download
   table** must be named and reachable before clicking the table; downloading must
-  open the existing save dialog and export the original Markdown source. Cancel
+  open the save dialog and export normalized Markdown for that table. Cancel
   the dialog to confirm no file is written. If the destination becomes
   unwritable, the app must show **Export Failed** instead of silently closing.
 

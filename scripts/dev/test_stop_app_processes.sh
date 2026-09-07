@@ -13,7 +13,7 @@ xcrun swiftc -parse-as-library -D LAUNCHER_TESTS \
 # A compiler failure must stop the wrapper before it can inspect or quit apps.
 source "$SCRIPT_DIR/stop_app_processes.sh"
 xcrun() { return 1; }
-if stop_app_processes 1 /synthetic/MacParakeet 2>"$TEST_DIR/compiler-error"; then
+if stop_app_processes 1 /synthetic /synthetic/MacParakeet 2>"$TEST_DIR/compiler-error"; then
   echo 'FAIL: helper compilation failure did not abort' >&2
   exit 1
 fi
@@ -59,11 +59,11 @@ TEST_EXECUTABLE_TWO='/synthetic/literal$characters+/MacParakeet'
 for expected_status in 0 37; do
   export MACPARAKEET_WRAPPER_TEST_EXIT="$expected_status"
   wrapper_status=0
-  stop_app_processes 2.5 "$TEST_EXECUTABLE_ONE" "$TEST_EXECUTABLE_TWO" || wrapper_status=$?
+  stop_app_processes 2.5 /synthetic "$TEST_EXECUTABLE_ONE" "$TEST_EXECUTABLE_TWO" || wrapper_status=$?
   [[ "$wrapper_status" == "$expected_status" ]] || { echo 'Wrapper lost helper exit status' >&2; exit 1; }
   [[ -f "$MACPARAKEET_WRAPPER_TEST_RECEIPT" ]] || { echo 'Compiled fixture did not execute' >&2; exit 1; }
   helper_binary="$(head -n 1 "$MACPARAKEET_WRAPPER_TEST_RECEIPT")"
-  expected_arguments="$(printf '%s\n' 2.5 "$TEST_EXECUTABLE_ONE" "$TEST_EXECUTABLE_TWO")"
+  expected_arguments="$(printf '%s\n' 2.5 /synthetic "$TEST_EXECUTABLE_ONE" "$TEST_EXECUTABLE_TWO")"
   actual_arguments="$(tail -n +2 "$MACPARAKEET_WRAPPER_TEST_RECEIPT")"
   [[ "$actual_arguments" == "$expected_arguments" ]] || { echo 'Wrapper changed argument boundaries' >&2; exit 1; }
   [[ ! -e "$helper_binary" && ! -d "${helper_binary%/*}" ]] || { echo 'Wrapper left temporary helper files' >&2; exit 1; }

@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 # Build configuration: Debug by default. Set MACPARAKEET_CONFIG=Release for an
 # optimized build (e.g. to feel-test true STT latency — Debug Swift is ~10x
 # slower for the Cohere decoder's per-step work).
 CONFIG="${MACPARAKEET_CONFIG:-Debug}"
+case "$CONFIG" in
+  Debug|Release) ;;
+  *) echo "MACPARAKEET_CONFIG must be Debug or Release." >&2; exit 1 ;;
+esac
 DERIVED_DATA_DIR="$ROOT_DIR/.build/xcode-dev"
 PRODUCT_DIR="$DERIVED_DATA_DIR/Build/Products/$CONFIG"
 APP_BIN="$PRODUCT_DIR/MacParakeet"
@@ -79,14 +83,9 @@ binary_has_rpath() {
   return 1
 }
 
-echo "[1/5] Stopping existing MacParakeet processes before replacing the bundle…"
+echo "[1/5] Requesting ordinary quit for this worktree's dev build…"
 source "$ROOT_DIR/scripts/dev/stop_app_processes.sh"
-stop_app_processes 10 \
-  "/Applications/MacParakeet.app/Contents/MacOS/MacParakeet" \
-  "$ROOT_DIR/dist/MacParakeet.app/Contents/MacOS/MacParakeet" \
-  "$PRODUCT_DIR/MacParakeet" \
-  "$ROOT_DIR/.build/debug/MacParakeet" \
-  "$ROOT_DIR/.build/arm64-apple-macosx/debug/MacParakeet"
+stop_app_processes 10 "$ROOT_DIR" "$APP_BIN" "$APP_MACOS_BIN"
 
 echo "[2/5] Building $CONFIG app bundle (xcodebuild, target signing disabled)…"
 if ! xcodebuild build \
@@ -143,6 +142,9 @@ while IFS= read -r -d '' bundle; do
     rsync -a --delete "$bundle/" "$RESOURCES_DIR/$bundle_name/"
   fi
 done < <(find "$PRODUCT_DIR" -maxdepth 1 -type d -name '*.bundle' -print0)
+mkdir -p "$RESOURCES_DIR/Legal"
+cp "$ROOT_DIR/Sources/MacParakeet/Resources/Legal/MarkdownDependencies.txt" "$RESOURCES_DIR/Legal/MarkdownDependencies.txt"
+cp "$ROOT_DIR/THIRD_PARTY_LICENSES.md" "$RESOURCES_DIR/Legal/THIRD_PARTY_LICENSES.md"
 
 # Copy frameworks into the bundle so dyld loads only bundle-local paths.
 BUNDLE_FW_DIR="$APP_BUNDLE/Contents/Frameworks"
@@ -234,19 +236,11 @@ BUILD_DATE_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BUILD_SOURCE="dev-run-xcodebuild-$(echo "$CONFIG" | tr '[:upper:]' '[:lower:]')"
 
 echo "[4/5] Launching ${CONFIG} app…"
-MACPARAKEET_GIT_COMMIT="$GIT_COMMIT" \
-MACPARAKEET_BUILD_DATE_UTC="$BUILD_DATE_UTC" \
-MACPARAKEET_BUILD_SOURCE="$BUILD_SOURCE" \
-nohup open "$APP_BUNDLE" --env MACPARAKEET_GIT_COMMIT="$GIT_COMMIT" \
+open -n "$APP_BUNDLE" --env MACPARAKEET_GIT_COMMIT="$GIT_COMMIT" \
   --env MACPARAKEET_BUILD_DATE_UTC="$BUILD_DATE_UTC" \
-  --env MACPARAKEET_BUILD_SOURCE="$BUILD_SOURCE" >"$LOG_FILE" 2>&1 &
+  --env MACPARAKEET_BUILD_SOURCE="$BUILD_SOURCE" >"$LOG_FILE" 2>&1
 
-sleep 2
-PID="$(pgrep -f "MacParakeet-Dev.app/Contents/MacOS/MacParakeet" | head -n 1 || true)"
-INSTALLED_PID="$(pgrep -f "/Applications/MacParakeet.app/Contents/MacOS/MacParakeet" | head -n 1 || true)"
-
-echo "[5/5] Running"
-echo "  pid: ${PID:-unknown}"
+echo "[5/5] Launch requested"
 echo "  bundle: $APP_BUNDLE"
 echo "  source: $BUILD_SOURCE"
 echo "  commit: $GIT_COMMIT"
@@ -254,6 +248,3 @@ echo "  built-at: $BUILD_DATE_UTC"
 echo "  codesign: $CODESIGN_IDENTITY"
 echo "  log: $LOG_FILE"
 echo "  build-log: $BUILD_LOG_FILE"
-if [[ -n "$INSTALLED_PID" ]]; then
-  echo "  warning: /Applications/MacParakeet.app is also running (pid $INSTALLED_PID)"
-fi

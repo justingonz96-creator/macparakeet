@@ -95,9 +95,9 @@ jobs:
           PY
 
       - name: Release Bundle Smoke
-        timeout-minutes: 15
+        timeout-minutes: 25
         env:
-          BUILD_SYSTEM: swiftpm
+          BUILD_SYSTEM: xcodebuild
           BUNDLE_YTDLP: "0"
           BUNDLE_NODE: "0"
           FFMPEG_PATH: /usr/bin/true

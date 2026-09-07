@@ -15,6 +15,7 @@ struct MarkdownContentView: View {
     private let baseFontSize: CGFloat
     private let isStreaming: Bool
     @StateObject private var streamingSource: MarkdownSnapshotSource
+    @State private var renderedDocument: RenderableDocument = .empty
 
     init(
         _ content: String,
@@ -29,29 +30,23 @@ struct MarkdownContentView: View {
         )
     }
 
-    @ViewBuilder
     var body: some View {
-        Group {
-            if isStreaming {
-                StreamedMarkdownView(
-                    source: streamingSource,
-                    config: renderConfiguration,
-                    listener: MarkdownContentInteractionListener.shared
-                )
-                .onAppear {
-                    // Refresh the retained source after hidden/static content
-                    // changes; every renderer subscription replays its latest value.
-                    streamingSource.send(content)
-                }
-                .onChange(of: content) { _, newContent in
-                    streamingSource.send(newContent)
-                }
-            } else {
-                MarkdownView(
-                    text: content,
-                    config: renderConfiguration,
-                    listener: MarkdownContentInteractionListener.shared
-                )
+        DocumentView(
+            renderableDocument: renderedDocument,
+            config: renderConfiguration,
+            listener: MarkdownContentInteractionListener.shared
+        )
+        .onAppear {
+            streamingSource.send(content)
+        }
+        .onChange(of: content) { _, newContent in
+            streamingSource.send(newContent)
+        }
+        .task(id: baseFontSize) {
+            // SwiftUI owns this consumer's lifetime. A cancelled parse cannot
+            // publish after a replacement consumer returns to the same pane.
+            await MarkdownSnapshotRenderer.render(source: streamingSource, config: renderConfiguration) {
+                renderedDocument = $0
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -76,7 +71,7 @@ struct MarkdownContentView: View {
 /// A retained snapshot store, with a separate stream for each renderer task.
 /// Cancelling a consumer terminates its AsyncStream permanently, so the source
 /// must create a fresh subscription when the same SwiftUI view reappears.
-final class MarkdownSnapshotSource: ObservableObject, StreamedMarkdownSource, @unchecked Sendable {
+final class MarkdownSnapshotSource: ObservableObject, @unchecked Sendable {
     // The renderer subscribes/cancels from tasks while SwiftUI sends snapshots.
     // All mutable state, including replay ordering, is protected by this lock.
     private let lock = NSLock()
@@ -119,6 +114,27 @@ final class MarkdownSnapshotSource: ObservableObject, StreamedMarkdownSource, @u
         // No strong reference to the source survives into termination handlers.
         for continuation in subscribers.values {
             continuation.finish()
+        }
+    }
+}
+
+/// Serial parsing keeps only the newest waiting snapshot, even when generation
+/// outpaces rendering. Publication stays on the UI actor after cancellation checks.
+enum MarkdownSnapshotRenderer {
+    @MainActor
+    static func render(
+        source: MarkdownSnapshotSource,
+        config: MarkdownRenderConfig,
+        parse: @MainActor (String, MarkdownRenderConfig) async -> RenderableDocument = { text, config in
+            await MarkdownParserImpl().parse(text: text, config: config)
+        },
+        publish: (RenderableDocument) -> Void
+    ) async {
+        for await text in source.text {
+            guard !Task.isCancelled else { return }
+            let document = await parse(text, config)
+            guard !Task.isCancelled else { return }
+            publish(document)
         }
     }
 }
@@ -222,7 +238,7 @@ enum MarkdownContentConfiguration {
     }
 }
 
-/// Writes the unchanged Markdown source without blocking the UI actor.
+/// Writes the renderer's normalized table Markdown without blocking the UI actor.
 enum MarkdownTableExporter {
     static func write(_ content: String, to destination: URL) async throws {
         try await Task.detached(priority: .userInitiated) {

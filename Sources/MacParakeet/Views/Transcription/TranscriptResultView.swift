@@ -2558,7 +2558,7 @@ struct TranscriptResultView: View {
                         MarkdownContentView(
                             generation.content,
                             font: DesignSystem.Typography.bodyLarge,
-                            isStreaming: generation.state == .streaming
+                            isStreaming: true
                         )
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }

@@ -14,17 +14,28 @@ struct AppProcess {
 struct AppExecutableMatcher {
     let paths: Set<String>
 
-    init(paths: [String]) throws {
+    init(root: String, paths: [String]) throws {
         guard !paths.isEmpty else {
-            throw ShutdownError("At least one MacParakeet executable path is required.")
+            throw ShutdownError("At least one executable path is required.")
         }
-        guard paths.allSatisfy({ $0.hasPrefix("/") }) else {
-            throw ShutdownError("Executable paths must be absolute.")
+        guard root.hasPrefix("/"), paths.allSatisfy({ $0.hasPrefix("/") }) else {
+            throw ShutdownError("Ownership root and executable paths must be absolute.")
         }
-        guard paths.allSatisfy({ URL(fileURLWithPath: $0).lastPathComponent == "MacParakeet" }) else {
-            throw ShutdownError("Expected MacParakeet executable paths.")
-        }
-        self.paths = Set(paths.map(Self.canonicalPath))
+        let lexicalRoot = URL(fileURLWithPath: root).standardizedFileURL.path
+        let ownedRoot = Self.canonicalPath(root)
+        guard ownedRoot != "/" else { throw ShutdownError("Ownership root must not be the filesystem root.") }
+        self.paths = try Set(paths.map { path in
+            let lexical = URL(fileURLWithPath: path).standardizedFileURL.path
+            guard lexical.hasPrefix(lexicalRoot + "/") else {
+                throw ShutdownError("Executable is outside the ownership root: \(path).")
+            }
+            let relative = String(lexical.dropFirst(lexicalRoot.count + 1))
+            let expected = URL(fileURLWithPath: ownedRoot).appendingPathComponent(relative).path
+            guard Self.canonicalPath(path) == expected else {
+                throw ShutdownError("Executable ownership is redirected by a symlink: \(path).")
+            }
+            return expected
+        })
     }
 
     static func canonicalPath(_ path: String) -> String {
@@ -37,10 +48,7 @@ struct AppExecutableMatcher {
 
     func matches(_ executablePath: String) -> Bool {
         let path = Self.canonicalPath(executablePath)
-        // Other worktrees may also have a Dev bundle running. Match its literal
-        // executable path components, never a command-line argument or regex.
         return paths.contains(path)
-            || path.hasSuffix("/MacParakeet-Dev.app/Contents/MacOS/MacParakeet")
     }
 }
 
@@ -50,14 +58,14 @@ struct ShutdownRequest {
     let matcher: AppExecutableMatcher
 
     init(arguments: [String]) throws {
-        guard arguments.count >= 2 else {
-            throw ShutdownError("Expected a positive timeout and at least one absolute executable path.")
+        guard arguments.count >= 3 else {
+            throw ShutdownError("Expected a positive timeout, ownership root, and at least one absolute executable path.")
         }
         guard let timeout = TimeInterval(arguments[0]), timeout > 0, timeout.isFinite else {
             throw ShutdownError("Expected a positive timeout followed by absolute executable paths.")
         }
         self.timeout = timeout
-        matcher = try AppExecutableMatcher(paths: Array(arguments.dropFirst()))
+        matcher = try AppExecutableMatcher(root: arguments[1], paths: Array(arguments.dropFirst(2)))
     }
 }
 

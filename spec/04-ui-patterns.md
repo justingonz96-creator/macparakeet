@@ -1245,9 +1245,11 @@ checked/unchecked task items, fenced code, and horizontally scrollable tables.
 The surrounding pane owns vertical scrolling; wide Markdown blocks must not
 expand the transcript detail or live-meeting panel.
 
-Each streaming renderer subscribes to a fresh snapshot stream and immediately
-receives the latest content. Closing or hiding a pane cancels only that
-subscription; returning to it must continue rendering new snapshots.
+Static and streaming content share a serial snapshot renderer. Each appearance
+subscribes afresh and receives the latest content; only the newest pending
+snapshot is retained while parsing. Closing or hiding a pane cancels its
+consumer, and a cancelled parse cannot publish over a replacement renderer.
+Returning to the pane must continue rendering new snapshots.
 
 Generated Markdown remains read-only and selectable. Task boxes communicate
 their checked state but are not controls. Headings and table cells preserve the
@@ -1262,7 +1264,9 @@ Treat rendered model output as untrusted presentation data:
 - activation of `file:`, `javascript:`, custom schemes, and relative
   destinations is discarded;
 - raw HTML does not create a web view or executable embedded content;
-- Copy Result and exports continue using the original Markdown source.
+- Copy Result and full-result exports continue using the original Markdown
+  source. Table-only Copy and Download use the renderer's normalized Markdown
+  for that table.
 
 ---
 

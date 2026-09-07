@@ -2,6 +2,16 @@
 
 This project bundles or downloads third-party software components. The following attributions summarize the relevant source, license, and usage information for those components.
 
+The Markdown dependency graph below has verbatim copyright, license, and NOTICE
+material in [`MarkdownDependencies.txt`](Sources/MacParakeet/Resources/Legal/MarkdownDependencies.txt),
+also copied to `Contents/Resources/Legal/MarkdownDependencies.txt` in dev and
+distribution bundles. It includes Highlight.js and Latin Modern Math resource
+notices (GUST Font License and LPPL 1.3c), not just library names/links.
+The font notice also identifies the complete, unmodified Latin Modern Math 1.959
+distribution, since iosMath ships only a subset of that upstream package.
+Equatable and swift-syntax are build/macro support; including their licenses
+does not claim their compiler executables are redistributed in the app.
+
 ## FFmpeg
 
 - Version: 8.0.1
@@ -128,7 +138,7 @@ This project bundles or downloads third-party software components. The following
 ### swift-markdown
 
 - Version: 0.7.3
-- License: Apache License 2.0
+- License: Apache License 2.0 with Runtime Library Exception
 - Source: <https://github.com/swiftlang/swift-markdown>
 - Used for: Markdown parsing through SwiftStreamingMarkdown
 
@@ -163,16 +173,16 @@ This project bundles or downloads third-party software components. The following
 ### swift-cmark
 
 - Version: 0.8.0
-- License: BSD 2-Clause License
+- License: BSD 2-Clause, plus the component notices reproduced in upstream `COPYING`
 - Source: <https://github.com/swiftlang/swift-cmark>
 - Used for: Transitive CommonMark/GFM parsing through swift-markdown
 
 ### swift-syntax
 
 - Version: 603.0.2
-- License: Apache License 2.0
+- License: Apache License 2.0 with Runtime Library Exception
 - Source: <https://github.com/swiftlang/swift-syntax>
-- Used for: Transitive swift-markdown build support
+- Used for: Equatable macro build support, not runtime Markdown parsing
 
 ## Parakeet TDT Model
 

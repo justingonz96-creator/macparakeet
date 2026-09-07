@@ -26,24 +26,24 @@ struct ShutdownTests {
     }
 
     static func run() throws {
-        let literal = "/private/tmp/work(qa)[draft]+/.build/debug/MacParakeet"
-        let matcher = try AppExecutableMatcher(paths: [literal])
+        let literal = "/synthetic/work(qa)[draft]+/.build/debug/MacParakeet"
+        let matcher = try AppExecutableMatcher(root: "/synthetic", paths: [literal])
         try expect(matcher.matches(literal), "Literal regex punctuation must match")
-        try expect(!matcher.matches("/private/tmp/workqa/.build/debug/MacParakeet"), "Regex-shaped lookalike must not match")
+        try expect(!matcher.matches("/synthetic/workqa/.build/debug/MacParakeet"), "Regex-shaped lookalike must not match")
         try expect(!matcher.matches("/bin/sh"), "An unrelated executable must not match its arguments")
-        try expect(matcher.matches("/another/worktree/MacParakeet-Dev.app/Contents/MacOS/MacParakeet"), "Dev bundles in other worktrees remain covered")
+        try expect(!matcher.matches("/another/worktree/MacParakeet-Dev.app/Contents/MacOS/MacParakeet"), "Dev bundles in other worktrees are untouched")
         try expect(!matcher.matches("/another/worktree/MacParakeet-Dev.app/Contents/MacOS/MacParakeet-helper"), "Executable suffix must not match")
-        try expectFailure("absolute") { _ = try AppExecutableMatcher(paths: ["relative/MacParakeet"]) }
+        try expectFailure("absolute") { _ = try AppExecutableMatcher(root: "/synthetic", paths: ["relative/MacParakeet"]) }
         print("PASS: literal executable paths and Dev bundle scope")
 
-        try expectFailure("At least one") { _ = try AppExecutableMatcher(paths: []) }
-        for arguments in [[], ["10"]] {
+        try expectFailure("At least one") { _ = try AppExecutableMatcher(root: "/synthetic", paths: []) }
+        for arguments in [[], ["10"], ["10", "/synthetic"]] {
             try expectFailure("at least one") { _ = try ShutdownRequest(arguments: arguments) }
         }
         for timeout in ["0", "-1", "nan", "inf", "invalid"] {
-            try expectFailure("positive timeout") { _ = try ShutdownRequest(arguments: [timeout, literal]) }
+            try expectFailure("positive timeout") { _ = try ShutdownRequest(arguments: [timeout, "/synthetic", literal]) }
         }
-        let request = try ShutdownRequest(arguments: ["0.5", literal])
+        let request = try ShutdownRequest(arguments: ["0.5", "/synthetic", literal])
         try expect(request.timeout == 0.5 && request.matcher.matches(literal), "Valid CLI arguments must retain timeout and path")
         print("PASS: empty matcher and missing/invalid CLI arguments rejected before inspection")
 
@@ -93,7 +93,7 @@ struct ShutdownTests {
         try decoy.run()
         defer { if decoy.isRunning { decoy.terminate() }; decoy.waitUntilExit() }
         let children = try processSnapshot().filter { $0.pid == raw.processIdentifier || $0.pid == decoy.processIdentifier }
-        let rawMatcher = try AppExecutableMatcher(paths: [rawURL.path])
+        let rawMatcher = try AppExecutableMatcher(root: folder.path, paths: [rawURL.path])
         try expect(children.contains { $0.pid == raw.processIdentifier && rawMatcher.matches($0.executablePath) }, "libproc must see raw literal executable")
         try expect(children.contains { $0.pid == decoy.processIdentifier && !rawMatcher.matches($0.executablePath) }, "libproc must ignore target path in unrelated arguments")
         try expectFailure("no normal app-quit interface") {
