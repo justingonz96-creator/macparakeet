@@ -66,45 +66,30 @@ extension DiarizationServiceProtocol {
 }
 
 protocol OfflineDiarizerManaging: AnyObject, Sendable {
-    func prepareModels(at directory: URL) async throws
     func process(audioURL: URL) async throws -> DiarizationResult
 }
 
 extension OfflineDiarizerManager: OfflineDiarizerManaging {
-    func prepareModels(at directory: URL) async throws {
-        try await prepareModels(directory: directory)
-    }
-
     func process(audioURL: URL) async throws -> DiarizationResult {
         try await process(audioURL)
     }
 }
 
-// @unchecked Sendable: a manager is published to callers only after its
-// preparation task has completed, its configuration is immutable after init,
-// and `process` reads the initialized models with request-local state. No
-// caller mutates a manager after publication.
+// @unchecked Sendable: initialized before publication and never mutated afterwards.
+// Each request owns its manager; models are shared read-only across managers.
 extension OfflineDiarizerManager: @retroactive @unchecked Sendable {}
 
 public actor DiarizationService: DiarizationServiceProtocol {
     typealias ManagerFactory = @Sendable (SpeakerDiarizationConstraint?) -> any OfflineDiarizerManaging
+    /// Loading produces a factory whose managers share the same immutable model bundle.
+    typealias ManagerFactoryLoader = @Sendable (URL) async throws -> ManagerFactory
 
-    private let makeManager: ManagerFactory
+    private let loadManagerFactory: ManagerFactoryLoader
     private let modelsDirectory: URL
     private let inferenceGate: ANEInferenceGate
-    /// Constraint the service was constructed with (CLI `--speaker-*` flags).
-    /// When set it wins over any per-call hint.
     private let explicitConstraint: SpeakerDiarizationConstraint?
-    /// One prepared `OfflineDiarizerManager` per distinct constraint, keyed by
-    /// the effective constraint. FluidAudio's `prepareModels(directory:)` owns
-    /// download, corrupt-cache purge, and retry; concurrent cold callers await
-    /// the same task, and a failed task is dropped so the next call retries.
-    /// Each distinct constraint loads the CoreML models once more per process;
-    /// the domain is tiny (nil, the meeting prior's `bounds(1, n + 1)`, CLI
-    /// values) and diarization is async work measured in tens of seconds, so
-    /// the extra load is cheaper than sharing model objects across managers.
-    private var managers: [SpeakerDiarizationConstraint?: Task<any OfflineDiarizerManaging, Error>] = [:]
-    private var modelsReady = false
+    private var managerFactory: ManagerFactory?
+    private var preparation: Task<Void, Error>?
 
     /// Uses the high-accuracy async configuration. Pass `config` only to
     /// override it deliberately (tests, benchmarks).
@@ -113,7 +98,7 @@ public actor DiarizationService: DiarizationServiceProtocol {
         modelsDirectory: URL? = nil
     ) {
         self.init(
-            makeManager: { constraint in OfflineDiarizerManager(config: Self.applying(constraint, to: config)) },
+            loadManagerFactory: Self.modelLoader(config: config),
             modelsDirectory: modelsDirectory ?? AppPaths.fluidAudioModelsDirURL,
             explicitConstraint: nil
         )
@@ -124,19 +109,19 @@ public actor DiarizationService: DiarizationServiceProtocol {
         modelsDirectory: URL? = nil
     ) {
         self.init(
-            makeManager: { _ in OfflineDiarizerManager(config: Self.offlineConfig(speakerConstraint: speakerConstraint)) },
+            loadManagerFactory: Self.modelLoader(config: Self.highAccuracyConfig),
             modelsDirectory: modelsDirectory ?? AppPaths.fluidAudioModelsDirURL,
             explicitConstraint: speakerConstraint
         )
     }
 
     init(
-        makeManager: @escaping ManagerFactory,
+        loadManagerFactory: @escaping ManagerFactoryLoader,
         modelsDirectory: URL,
         explicitConstraint: SpeakerDiarizationConstraint? = nil,
         inferenceGate: ANEInferenceGate = .shared
     ) {
-        self.makeManager = makeManager
+        self.loadManagerFactory = loadManagerFactory
         self.modelsDirectory = modelsDirectory.standardizedFileURL
         self.explicitConstraint = explicitConstraint
         self.inferenceGate = inferenceGate
@@ -146,9 +131,10 @@ public actor DiarizationService: DiarizationServiceProtocol {
         audioURL: URL,
         speakerConstraint: SpeakerDiarizationConstraint?
     ) async throws -> MacParakeetDiarizationResult {
-        // The explicit constraint already lives in the manager's config, so a
-        // per-call hint must not override the user's flag.
-        let manager = try await preparedManager(for: explicitConstraint == nil ? speakerConstraint : nil)
+        try await ensureModelsPrepared()
+        try Task.checkCancellation()
+        guard let managerFactory else { throw OfflineDiarizationError.modelNotLoaded("offline-diarizer") }
+        let manager = managerFactory(explicitConstraint ?? speakerConstraint)
 
         let fluidResult: DiarizationResult
         do {
@@ -207,7 +193,7 @@ public actor DiarizationService: DiarizationServiceProtocol {
 
     public func prepareModels(onProgress: (@Sendable (String) -> Void)? = nil) async throws {
         onProgress?("Downloading speaker models...")
-        _ = try await preparedManager(for: nil)
+        try await ensureModelsPrepared()
         onProgress?("Speaker models ready")
     }
 
@@ -215,43 +201,81 @@ public actor DiarizationService: DiarizationServiceProtocol {
         explicitConstraint
     }
 
-    private func preparedManager(
-        for constraint: SpeakerDiarizationConstraint?
-    ) async throws -> any OfflineDiarizerManaging {
-        let task: Task<any OfflineDiarizerManaging, Error>
-        if let existing = managers[constraint] {
-            task = existing
-        } else {
-            let manager = makeManager(constraint)
-            let directory = modelsDirectory
-            let inferenceGate = self.inferenceGate
-            task = Task {
-                // FluidAudio prewarms the segmentation and embedding models
-                // inside `prepareModels`, which is Neural Engine inference, so
-                // preparation takes the gate on its own, before and separately
-                // from the `process` acquisition above (never nested).
-                try await inferenceGate.withExclusiveAccess {
-                    try await manager.prepareModels(at: directory)
-                }
+    private nonisolated static func modelLoader(config: OfflineDiarizerConfig) -> ManagerFactoryLoader {
+        { directory in
+            // Unlike manager.prepareModels(), load does not prewarm with inference.
+            // Downloads and compilation must never hold the macOS 14 inference gate.
+            try await Self.repairPLDAParameters(directory: directory)
+            let models = try await OfflineDiarizerModels.load(from: directory)
+            return { constraint in
+                let manager = OfflineDiarizerManager(config: Self.applying(constraint, to: config))
+                manager.initialize(models: models)
                 return manager
             }
-            managers[constraint] = task
         }
+    }
 
-        let manager: any OfflineDiarizerManaging
-        do {
-            manager = try await task.value
-        } catch {
-            if managers[constraint] == task { managers[constraint] = nil }
-            throw error
+    /// ModelHub already repairs compiled models. PLDA JSON is parsed outside
+    /// that recovery, so repair only an existing malformed metadata file. Never
+    /// purge model bundles, and keep the old file until a valid fetch succeeds.
+    nonisolated static func repairPLDAParameters(
+        directory: URL,
+        offlineMode: Bool = ModelHub.offlineMode,
+        fetch: @Sendable (URL) async throws -> Data = {
+            try await ModelHub.fetchFile(from: $0, description: "speaker PLDA parameters")
         }
-        if constraint == nil { modelsReady = true }
+    ) async throws {
         try Task.checkCancellation()
-        return manager
+        guard !offlineMode else { return }
+        let file = modelCacheDirectory(directory: directory).appendingPathComponent("plda-parameters.json")
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        let existing = try Data(contentsOf: file)
+        guard !validPLDAParameters(existing) else { return }
+        let url = try ModelRegistry.resolveModel(Repo.diarizer.remotePath, "plda-parameters.json")
+        let replacement = try await fetch(url)
+        try Task.checkCancellation()
+        guard validPLDAParameters(replacement) else {
+            throw OfflineDiarizationError.processingFailed("Downloaded PLDA parameters are malformed")
+        }
+        try replacement.write(to: file, options: .atomic)
+    }
+
+    private nonisolated static func validPLDAParameters(_ data: Data) -> Bool {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let tensors = root["tensors"] as? [String: Any],
+            let psi = tensors["psi"] as? [String: Any],
+            let encoded = psi["data_base64"] as? String,
+            let decoded = Data(base64Encoded: encoded, options: [.ignoreUnknownCharacters])
+        else { return false }
+        return !decoded.isEmpty && decoded.count.isMultiple(of: MemoryLayout<Float>.size)
+    }
+
+    private func ensureModelsPrepared() async throws {
+        try Task.checkCancellation()
+        guard managerFactory == nil else { return }
+        let task: Task<Void, Error>
+        if let preparation {
+            task = preparation
+        } else {
+            task = Task { try await self.loadModels() }
+            preparation = task
+        }
+        let awaiter = CancellationResponsiveTaskAwaiter()
+        let waiter = Task { awaiter.resume(with: await task.result) }
+        defer { waiter.cancel() }
+        try await awaiter.wait()
+        try Task.checkCancellation()
+    }
+
+    private func loadModels() async throws {
+        // Completion owns cleanup so cancelling any or all waiters cannot drop
+        // an in-flight load or leave a failed task cached forever.
+        defer { preparation = nil }
+        managerFactory = try await loadManagerFactory(modelsDirectory)
     }
 
     public func isReady() async -> Bool {
-        modelsReady
+        managerFactory != nil
     }
 
     public func hasCachedModels() async -> Bool {

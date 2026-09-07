@@ -251,6 +251,19 @@ Skip diarization for: dictation (single speaker by design), or when the correspo
 > upgrade and is unchanged; `ANEInferenceGate` still serializes the
 > diarizer's Neural Engine work on macOS 14.
 
+**Model preparation (2026-09-07):** The service shares one model-loading task
+across speaker constraints and initializes each configured manager from those
+models. Downloads and loading run outside `ANEInferenceGate`; the service
+does not call FluidAudio's combined download-and-prewarm `prepareModels` API.
+Eager prewarming is skipped, so the first prediction happens inside the gated
+`process` call. This prevents a slow speaker-model download from blocking
+dictation on macOS 14. Cancelling one caller stops that caller's wait without
+cancelling the shared load. A failed load can be retried by a later caller.
+FluidAudio retains compiled-model recovery. An existing malformed PLDA metadata
+file is replaced atomically only after a valid replacement is downloaded;
+offline mode, cancellation, and failed downloads preserve the cached file and
+model bundles.
+
 ## Rationale
 
 ### Why the offline pipeline, not Sortformer

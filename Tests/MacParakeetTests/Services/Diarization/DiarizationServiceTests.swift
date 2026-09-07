@@ -150,236 +150,283 @@ final class DiarizationServiceTests: XCTestCase {
         XCTAssertEqual(config.clustering.maxSpeakers, 4)
     }
 
-    // MARK: - Manager preparation
+    // MARK: - Shared model loading
 
-    private func makeService(
-        factory: RecordingManagerFactory,
-        explicitConstraint: SpeakerDiarizationConstraint? = nil,
-        directory: URL = FileManager.default.temporaryDirectory
-    ) -> DiarizationService {
-        DiarizationService(
-            makeManager: { constraint in factory.make(for: constraint) },
-            modelsDirectory: directory,
-            explicitConstraint: explicitConstraint
-        )
+    func testSuspendedDownloadDoesNotHoldInferenceGate() async throws {
+        let loader = RecordingModelLoader()
+        let entered = expectation(description: "load entered")
+        let release = AsyncPermit(value: 0)
+        await loader.configure(entered: entered, release: release)
+        let gate = ANEInferenceGate(serializationRequired: true)
+        let service = makeService(loader, gate: gate)
+        let preparation = Task { try await service.prepareModels() }
+        await fulfillment(of: [entered], timeout: 2)
+
+        let inference = expectation(description: "unrelated inference completes during download")
+        let other = Task {
+            try await gate.withExclusiveAccess { inference.fulfill() }
+        }
+        await fulfillment(of: [inference], timeout: 2)
+        release.signal()
+        try await preparation.value
+        try await other.value
     }
 
-    func testDiarizePreparesModelsUsingCustomDirectoryBeforeColdStartInference() async throws {
-        let customDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            .standardizedFileURL
-        let factory = RecordingManagerFactory(result: DiarizationResult(segments: [
-            TimedSpeakerSegment(
-                speakerId: "speaker_0",
-                embedding: [],
-                startTimeSeconds: 0,
-                endTimeSeconds: 1.2,
-                qualityScore: 0.9
-            ),
-        ]))
-        let service = makeService(factory: factory, directory: customDirectory)
-        let audioURL = URL(fileURLWithPath: "/tmp/test.wav")
-
-        let result = try await service.diarize(audioURL: audioURL)
-        let manager = try XCTUnwrap(factory.managers.first)
-        let preparedDirectories = await manager.preparedDirectories
-        let processedAudioURLs = await manager.processedAudioURLs
+    func testConcurrentConstraintsAndCancelledWaiterShareOneLoad() async throws {
+        let loader = RecordingModelLoader()
+        let entered = expectation(description: "load entered")
+        let release = AsyncPermit(value: 0)
+        await loader.configure(entered: entered, release: release)
+        let service = makeService(loader)
+        let cancelled = expectation(description: "cancelled caller returns before load finishes")
+        let first = Task {
+            do {
+                _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"), speakerConstraint: .exact(2))
+                XCTFail("Expected cancellation")
+            } catch is CancellationError {
+                cancelled.fulfill()
+            } catch { XCTFail("Unexpected error: \(error)") }
+        }
+        await fulfillment(of: [entered], timeout: 2)
+        let second = Task {
+            try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav"), speakerConstraint: .exact(3))
+        }
+        first.cancel()
+        await fulfillment(of: [cancelled], timeout: 2)
+        let readyWhileLoading = await service.isReady()
+        XCTAssertFalse(readyWhileLoading)
+        release.signal()
+        await first.value
+        _ = try await second.value
+        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/c.wav"), speakerConstraint: .exact(4))
+        let loads = await loader.directories.count
+        XCTAssertEqual(loads, 1)
+        XCTAssertEqual(loader.factory.constraints, [.exact(3), .exact(4)])
         let ready = await service.isReady()
-
-        XCTAssertEqual(factory.constraints, [nil])
-        XCTAssertEqual(preparedDirectories, [customDirectory])
-        XCTAssertEqual(processedAudioURLs, [audioURL])
-        XCTAssertEqual(result.speakerCount, 1)
-        XCTAssertEqual(result.speakers.map { $0.id }, ["S1"])
-        XCTAssertEqual(result.segments.map { $0.speakerId }, ["S1"])
         XCTAssertTrue(ready)
     }
 
-    func testEachDistinctConstraintGetsItsOwnPreparedManagerOnce() async throws {
-        let factory = RecordingManagerFactory(result: DiarizationResult(segments: []))
-        let service = makeService(factory: factory)
-
-        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"))
-        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav"), speakerConstraint: .range(min: 1, max: 3))
-        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/c.wav"), speakerConstraint: .range(min: 1, max: 3))
-        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/d.wav"))
-
-        XCTAssertEqual(factory.constraints, [nil, .range(min: 1, max: 3)])
-        let processedPerManager = await factory.managers.asyncMap { await $0.processedAudioURLs.count }
-        XCTAssertEqual(processedPerManager, [2, 2])
+    func testEachRequestGetsManagerWithItsOwnConstraintAndSharedModels() async throws {
+        let loader = RecordingModelLoader()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let service = makeService(loader, directory: directory)
+        for constraint: SpeakerDiarizationConstraint? in [nil, .exact(2), .exact(2), .range(min: 1, max: 3)] {
+            _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"), speakerConstraint: constraint)
+        }
+        XCTAssertEqual(loader.factory.constraints, [nil, .exact(2), .exact(2), .range(min: 1, max: 3)])
+        XCTAssertEqual(loader.factory.managers.count, 4)
+        let directories = await loader.directories
+        XCTAssertEqual(directories, [directory.standardizedFileURL])
     }
 
     func testExplicitConstraintWinsOverPerCallHint() async throws {
-        let factory = RecordingManagerFactory(result: DiarizationResult(segments: []))
-        let service = makeService(factory: factory, explicitConstraint: .exact(3))
-
-        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"), speakerConstraint: .range(min: 1, max: 2))
-        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav"))
-
-        // The explicit constraint lives in the factory's config; the hint is
-        // dropped rather than producing a second manager.
-        XCTAssertEqual(factory.constraints, [nil])
+        let loader = RecordingModelLoader()
+        let service = makeService(loader, explicitConstraint: .exact(3))
+        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"), speakerConstraint: .exact(2))
+        XCTAssertEqual(loader.factory.constraints, [.exact(3)])
         let explicit = await service.explicitSpeakerConstraint()
         XCTAssertEqual(explicit, .exact(3))
     }
 
-    func testOverlappingColdDiarizeCallsShareOnePreparation() async throws {
-        let factory = RecordingManagerFactory(result: DiarizationResult(segments: []))
-        let entered = AsyncPermit(value: 0)
-        let release = AsyncPermit(value: 0)
-        factory.prepareSignals = (entered, release)
-        let service = makeService(factory: factory)
-
-        let first = Task { try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav")) }
-        try await entered.wait()
-        let second = Task { try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav")) }
-        // Give the second caller the chance to (wrongly) start its own preparation.
-        for _ in 0..<50 { await Task.yield() }
-        XCTAssertEqual(factory.managers.count, 1, "the second cold caller must await the first load, not start its own")
-
-        release.signal()
-        _ = try await first.value
-        _ = try await second.value
-
-        let manager = try XCTUnwrap(factory.managers.first)
-        let prepared = await manager.preparedDirectories.count
-        let processed = await manager.processedAudioURLs.count
-        XCTAssertEqual(prepared, 1)
-        XCTAssertEqual(processed, 2)
-    }
-
-    func testPreparationTakesTheInferenceGate() async throws {
-        // FluidAudio prewarms models inside prepareModels, so preparation must
-        // wait for an in-flight inference on macOS 14 like process() does.
-        let gate = ANEInferenceGate(serializationRequired: true)
-        let factory = RecordingManagerFactory(result: DiarizationResult(segments: []))
-        let entered = AsyncPermit(value: 0)
-        let release = AsyncPermit(value: 0)
-        factory.prepareSignals = (entered, release)
-        let service = DiarizationService(
-            makeManager: { constraint in factory.make(for: constraint) },
-            modelsDirectory: FileManager.default.temporaryDirectory,
-            inferenceGate: gate
-        )
-
-        let holderAcquired = AsyncPermit(value: 0)
-        let holderRelease = AsyncPermit(value: 0)
-        let holder = Task {
-            try await gate.withExclusiveAccess {
-                holderAcquired.signal()
-                try await holderRelease.wait()
-            }
-        }
-        try await holderAcquired.wait()
-
-        // `made` fires from inside the service once the preparation task has
-        // been created (it is created right after the factory call); the task
-        // then blocks on the gate the holder owns.
-        let made = AsyncPermit(value: 0)
-        factory.madeSignal = made
-        let preparation = Task { try await service.prepareModels() }
-        try await made.wait()
-        for _ in 0..<50 { await Task.yield() }
-        var preparedWhileHeld = 0
-        for manager in factory.managers {
-            preparedWhileHeld += await manager.preparedDirectories.count
-        }
-        XCTAssertEqual(factory.managers.count, 1, "the preparation task exists")
-        XCTAssertEqual(preparedWhileHeld, 0, "preparation must not run while another inference holds the permit")
-
-        holderRelease.signal()
-        try await holder.value
-        try await entered.wait()
-        release.signal()
-        try await preparation.value
-
-        let ready = await service.isReady()
-        XCTAssertTrue(ready)
-    }
-
-    func testFailedPreparationIsRetriedByTheNextCall() async throws {
-        let factory = RecordingManagerFactory(result: DiarizationResult(segments: []))
-        factory.prepareErrors = [OfflineDiarizationError.modelNotLoaded("first"), CancellationError()]
-        let service = makeService(factory: factory)
-
+    func testFailedLoadCanRetryIncludingCancellationError() async throws {
+        let loader = RecordingModelLoader()
+        await loader.configure(errors: [OfflineDiarizationError.modelNotLoaded("first"), CancellationError()])
+        let service = makeService(loader)
         for _ in 0..<2 {
             do {
-                _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"))
-                XCTFail("expected the preparation to fail")
+                try await service.prepareModels()
+                XCTFail("Expected load failure")
             } catch {}
             let ready = await service.isReady()
             XCTAssertFalse(ready)
         }
-
-        // FluidAudio's own recovery ran inside prepareModels; a failed task,
-        // including one that failed with CancellationError, is not reused.
-        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/b.wav"))
-
-        XCTAssertEqual(factory.managers.count, 3)
+        try await service.prepareModels()
+        let loads = await loader.directories.count
         let ready = await service.isReady()
+        XCTAssertEqual(loads, 3)
         XCTAssertTrue(ready)
+    }
+
+    func testProcessingWaitsForInferenceGateAfterLoading() async throws {
+        let gate = ANEInferenceGate(serializationRequired: true)
+        let loader = RecordingModelLoader()
+        let made = expectation(description: "manager initialized")
+        loader.factory.made = made
+        let service = makeService(loader, gate: gate)
+        let acquired = expectation(description: "gate held")
+        let release = AsyncPermit(value: 0)
+        let holder = Task {
+            try await gate.withExclusiveAccess {
+                acquired.fulfill()
+                try await release.wait()
+            }
+        }
+        await fulfillment(of: [acquired], timeout: 2)
+        let diarization = Task { try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav")) }
+        await fulfillment(of: [made], timeout: 2)
+        let manager = try XCTUnwrap(loader.factory.managers.first)
+        let mustNotProcess = expectation(description: "processing cannot start while gate is held")
+        mustNotProcess.isInverted = true
+        await manager.observeProcessing(mustNotProcess)
+        await fulfillment(of: [mustNotProcess], timeout: 0.1)
+        await manager.observeProcessing(nil)
+        let before = await manager.processedAudioURLs
+        XCTAssertTrue(before.isEmpty)
+        release.signal()
+        try await holder.value
+        _ = try await diarization.value
+        let after = await manager.processedAudioURLs
+        XCTAssertEqual(after, [URL(fileURLWithPath: "/tmp/a.wav")])
+    }
+
+    func testAlreadyCancelledCallerDoesNotStartLoad() async throws {
+        let loader = RecordingModelLoader()
+        let service = makeService(loader)
+        let start = AsyncPermit(value: 0)
+        let task = Task {
+            // The signal orders cancellation before entering the service.
+            _ = try? await start.wait()
+            do {
+                try await service.prepareModels()
+                XCTFail("Expected cancellation")
+            } catch is CancellationError {} catch { XCTFail("Unexpected error: \(error)") }
+        }
+        task.cancel()
+        start.signal()
+        await task.value
+        let loads = await loader.directories.count
+        XCTAssertEqual(loads, 0)
+    }
+
+    func testMetadataRepairReplacesOnlyMalformedMetadata() async throws {
+        let directory = try makeMetadataCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let metadata = DiarizationService.modelCacheDirectory(directory: directory).appendingPathComponent("plda-parameters.json")
+        let replacement = Data(#"{"tensors":{"psi":{"data_base64":"AACAPw=="}}}"#.utf8)
+        try await DiarizationService.repairPLDAParameters(directory: directory, offlineMode: false) { url in
+            XCTAssertEqual(url, try ModelRegistry.resolveModel(Repo.diarizer.remotePath, "plda-parameters.json"))
+            return replacement
+        }
+        XCTAssertEqual(try Data(contentsOf: metadata), replacement)
+        XCTAssertTrue(DiarizationService.isModelCached(directory: directory))
+        try await DiarizationService.repairPLDAParameters(directory: directory, offlineMode: false) { _ in
+            XCTFail("Valid metadata must not be downloaded again")
+            return Data()
+        }
+    }
+
+    func testMetadataRepairPreservesCacheOnNetworkCancellationOrInvalidReplacement() async throws {
+        for error: Error? in [URLError(.notConnectedToInternet), CancellationError(), nil] {
+            let directory = try makeMetadataCache()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let metadata = DiarizationService.modelCacheDirectory(directory: directory).appendingPathComponent("plda-parameters.json")
+            do {
+                try await DiarizationService.repairPLDAParameters(directory: directory, offlineMode: false) { _ in
+                    if let error { throw error }
+                    return Data("bad replacement".utf8)
+                }
+                XCTFail("Expected repair failure")
+            } catch {}
+            XCTAssertEqual(try Data(contentsOf: metadata), Data("malformed".utf8))
+            XCTAssertTrue(DiarizationService.isModelCached(directory: directory))
+        }
+    }
+
+    func testMetadataRepairDoesNotFetchOfflineOrForMissingMetadata() async throws {
+        let directory = try makeMetadataCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try await DiarizationService.repairPLDAParameters(directory: directory, offlineMode: true) { _ in
+            XCTFail("Offline mode must not fetch")
+            return Data()
+        }
+        let metadata = DiarizationService.modelCacheDirectory(directory: directory).appendingPathComponent("plda-parameters.json")
+        XCTAssertEqual(try Data(contentsOf: metadata), Data("malformed".utf8))
+        try FileManager.default.removeItem(at: metadata)
+        try await DiarizationService.repairPLDAParameters(directory: directory, offlineMode: false) { _ in
+            XCTFail("Missing metadata belongs to normal model download")
+            return Data()
+        }
+    }
+
+    private func makeMetadataCache() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let repo = DiarizationService.modelCacheDirectory(directory: directory)
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        for name in DiarizationService.requiredModelNames() {
+            let file = repo.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("model sentinel".utf8).write(to: file)
+        }
+        try Data("malformed".utf8).write(to: repo.appendingPathComponent("plda-parameters.json"))
+        return directory
+    }
+
+    private func makeService(
+        _ loader: RecordingModelLoader,
+        directory: URL = FileManager.default.temporaryDirectory,
+        explicitConstraint: SpeakerDiarizationConstraint? = nil,
+        gate: ANEInferenceGate = ANEInferenceGate(serializationRequired: false)
+    ) -> DiarizationService {
+        DiarizationService(
+            loadManagerFactory: { try await loader.load(from: $0) },
+            modelsDirectory: directory,
+            explicitConstraint: explicitConstraint,
+            inferenceGate: gate
+        )
     }
 }
 
-/// Builds one recording fake manager per requested constraint.
-private final class RecordingManagerFactory: @unchecked Sendable {
-    private let lock = NSLock()
-    private let result: DiarizationResult
-    private(set) var constraints: [SpeakerDiarizationConstraint?] = []
-    private(set) var managers: [RecordingOfflineDiarizerManager] = []
-    var prepareErrors: [Error] = []
-    var prepareSignals: (entered: AsyncPermit, release: AsyncPermit)?
-    /// Signalled each time `make(for:)` runs, i.e. when the service creates a preparation task.
-    var madeSignal: AsyncPermit?
+private actor RecordingModelLoader {
+    nonisolated let factory = RecordingManagerFactory()
+    var directories: [URL] = []
+    private var entered: XCTestExpectation?
+    private var release: AsyncPermit?
+    private var errors: [Error] = []
 
-    init(result: DiarizationResult) {
-        self.result = result
+    func configure(entered: XCTestExpectation? = nil, release: AsyncPermit? = nil, errors: [Error] = []) {
+        self.entered = entered
+        self.release = release
+        self.errors = errors
     }
 
+    func load(from directory: URL) async throws -> DiarizationService.ManagerFactory {
+        directories.append(directory)
+        entered?.fulfill()
+        if !errors.isEmpty { throw errors.removeFirst() }
+        if let release { try await release.wait() }
+        return { [factory] in factory.make(for: $0) }
+    }
+}
+
+private final class RecordingManagerFactory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedConstraints: [SpeakerDiarizationConstraint?] = []
+    private var storedManagers: [RecordingOfflineDiarizerManager] = []
+    var made: XCTestExpectation?
+    var constraints: [SpeakerDiarizationConstraint?] { lock.withLock { storedConstraints } }
+    var managers: [RecordingOfflineDiarizerManager] { lock.withLock { storedManagers } }
+
     func make(for constraint: SpeakerDiarizationConstraint?) -> any OfflineDiarizerManaging {
-        lock.lock()
-        defer { lock.unlock() }
-        constraints.append(constraint)
-        let error: Error? = prepareErrors.isEmpty ? nil : prepareErrors.removeFirst()
-        let manager = RecordingOfflineDiarizerManager(result: result, prepareError: error, signals: prepareSignals)
-        managers.append(manager)
-        madeSignal?.signal()
-        return manager
+        lock.withLock {
+            storedConstraints.append(constraint)
+            let manager = RecordingOfflineDiarizerManager()
+            storedManagers.append(manager)
+            made?.fulfill()
+            return manager
+        }
     }
 }
 
 private actor RecordingOfflineDiarizerManager: OfflineDiarizerManaging {
-    let result: DiarizationResult
-    private let prepareError: Error?
-    private let signals: (entered: AsyncPermit, release: AsyncPermit)?
-    var preparedDirectories: [URL] = []
     var processedAudioURLs: [URL] = []
-
-    init(result: DiarizationResult, prepareError: Error?, signals: (entered: AsyncPermit, release: AsyncPermit)?) {
-        self.result = result
-        self.prepareError = prepareError
-        self.signals = signals
+    private var processing: XCTestExpectation?
+    func observeProcessing(_ expectation: XCTestExpectation?) {
+        processing = expectation
+        if !processedAudioURLs.isEmpty { processing?.fulfill() }
     }
-
-    func prepareModels(at directory: URL) async throws {
-        preparedDirectories.append(directory)
-        if let prepareError { throw prepareError }
-        if let signals {
-            signals.entered.signal()
-            try await signals.release.wait()
-        }
-    }
-
     func process(audioURL: URL) async throws -> DiarizationResult {
         processedAudioURLs.append(audioURL)
-        return result
-    }
-}
-
-private extension Array {
-    func asyncMap<T>(_ transform: (Element) async -> T) async -> [T] {
-        var values: [T] = []
-        for element in self { values.append(await transform(element)) }
-        return values
+        processing?.fulfill()
+        return DiarizationResult(segments: [])
     }
 }
