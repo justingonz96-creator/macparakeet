@@ -220,15 +220,18 @@ Skip diarization for: dictation (single speaker by design), or when the correspo
 >
 > **3. Meetings feed the calendar attendee count in as a prior.** The
 > finalizer derives `MeetingSpeakerPrior` from `calendarEventSnapshot`, whose
-> attendee list already excludes the user. With `n` remote attendees the
+> attendee list already excludes the user (attendees captured as `declined`
+> are excluded too). With `n` remote attendees the
 > system-track diarizer receives bounds `min = max(1, n - 1)`,
 > `max = n + 1`, never an exact count. `n == 1` skips clustering and labels
 > every system word as one remote speaker (`Others 1`). No snapshot, no
 > attendees, or more than eight attendees leaves clustering unconstrained
 > (large invites are a poor proxy for who speaks, and a minimum bound would
-> force re-clustering to a count the audio cannot support). The applied prior
-> is recorded as `speaker_prior` on `diarization_completed` and in the local
-> capture diagnostics; it carries no attendee identity.
+> force re-clustering to a count the audio cannot support). An explicit CLI
+> speaker constraint wins over the calendar prior and always runs the
+> diarizer, including for a 1:1 invite. The effective policy is recorded as
+> `speaker_prior` on `diarization_completed` and in the local capture
+> diagnostics; it carries no attendee identity.
 >
 > **4. Not changed here (follow-ups in the research synthesis):**
 > embedding-based consolidation of over-split clusters, `SpeakerMerger`
