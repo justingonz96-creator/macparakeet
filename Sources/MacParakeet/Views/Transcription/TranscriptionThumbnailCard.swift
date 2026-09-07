@@ -1,5 +1,6 @@
 import SwiftUI
 import MacParakeetCore
+import MacParakeetViewModels
 
 private let sharedThumbnailCache = ThumbnailCacheService.shared
 
@@ -9,6 +10,7 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
     var searchText: String = ""
     var isSelected: Bool = false
     var showsSelectionControls: Bool = false
+    var sourceLabelStyle: LibrarySourceLabelStyle = .visible
     var onTap: () -> Void
     @ViewBuilder var menuContent: () -> MenuContent
 
@@ -239,9 +241,11 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
             }
 
             HStack(spacing: 6) {
-                Label(sourceDisplay.collapsedText, systemImage: sourceDisplay.systemImage)
-                    .foregroundStyle(sourceDisplay.tint)
-                    .fixedSize()
+                // Guarded rather than relying on an EmptyView contributing no
+                // spacing, so a hidden label cannot shift the date 6pt right.
+                if sourceLabelStyle != .hidden {
+                    TranscriptionSourceLabel(source: sourceDisplay, style: sourceLabelStyle)
+                }
 
                 Text(transcription.createdAt.relativeFormatted)
                     .foregroundStyle(DesignSystem.Colors.textTertiary)

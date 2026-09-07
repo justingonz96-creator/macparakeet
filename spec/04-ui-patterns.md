@@ -139,7 +139,22 @@ and other Library contexts use the grid. Browsing and switching filters do not
 save a preference. An explicit Grid or List choice is global across Library
 contexts and persists across launches; the separate Meetings workspace is unchanged.
 List mode reuses the date-grouped row presentation and adds the transcription
-source beside the title; thumbnail cards also show the source. Search, filters,
+source beside the title; thumbnail cards also show the source. Source
+attribution is drawn only where the active context leaves the source open,
+resolved from the same `(scope, filter)` pair as the library query. `All` and
+`Favorites` admit any source and show the icon with its text. `Podcasts`,
+`Local`, `Meetings`, and every filter inside the Meetings workspace admit
+exactly one source, so the label is omitted rather than repeating the filter.
+
+`Video` has narrowed the source to one family but not to one platform, so it
+shows the platform's own brand mark from `Resources/BrandGlyphs` without the
+word. The word is dropped only where such a mark replaces it: a source that
+maps to more than one platform (`Podcast` covers any feed, `Video` covers
+Twitch and unrecognized hosts) or whose asset fails to load keeps its text,
+because the SF Symbol fallback is shared by seven sources and separated only
+by tint, which names nothing to a reader who cannot distinguish those colors.
+The brand mark is hidden from accessibility, so the label supplies the source
+name that the logo carries visually. Search, filters,
 contextual actions, pagination, export, and bulk selection behave identically in
 either layout.
 

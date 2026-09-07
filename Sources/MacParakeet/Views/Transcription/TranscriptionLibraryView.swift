@@ -301,7 +301,8 @@ struct TranscriptionLibraryView: View {
                             transcription: transcription,
                             searchText: viewModel.searchText,
                             isSelected: viewModel.isTranscriptionSelected(transcription),
-                            showsSelectionControls: viewModel.isBulkSelectionModeEnabled
+                            showsSelectionControls: viewModel.isBulkSelectionModeEnabled,
+                            sourceLabelStyle: sourceLabelStyle
                         ) {
                             if viewModel.isBulkOperationInProgress || bulkExportInProgress {
                                 return
@@ -338,7 +339,7 @@ struct TranscriptionLibraryView: View {
                             searchText: viewModel.searchText,
                             isSelected: viewModel.isTranscriptionSelected(transcription),
                             showsSelectionControls: viewModel.isBulkSelectionModeEnabled,
-                            showsSource: !isMeetingContext,
+                            sourceLabelStyle: sourceLabelStyle,
                             isRetrying: viewModel.isRetryingMeetingTranscription(transcription),
                             onTap: {
                                 if viewModel.isBulkOperationInProgress || bulkExportInProgress {
@@ -933,6 +934,12 @@ struct TranscriptionLibraryView: View {
 
     private var isMeetingContext: Bool {
         viewModel.scope == .meetings || viewModel.filter == .meeting
+    }
+
+    /// Drawn from the same `(scope, filter)` pair the query uses, so the label
+    /// disappears exactly when the filter has already answered it.
+    private var sourceLabelStyle: LibrarySourceLabelStyle {
+        viewModel.scope.sourceLabelStyle(for: viewModel.filter)
     }
 
     private var libraryLayoutMode: LibraryLayoutMode {
