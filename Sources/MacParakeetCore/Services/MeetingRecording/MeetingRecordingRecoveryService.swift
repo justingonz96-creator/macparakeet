@@ -435,6 +435,16 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
         } catch {
             if fileManager.fileExists(atPath: folderURL.path) {
                 do {
+                    try MeetingRecordingLockFileStore.restoreMissingLockAfterFailedDiscard(
+                        ownershipLease,
+                        lockFileStore: lockFileStore
+                    )
+                } catch {
+                    logger.error(
+                        "meeting_discard_lock_restore_failed session=\(lock.sessionId.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .private)"
+                    )
+                }
+                do {
                     try lockFileStore.releaseFinalizationOwnership(ownershipLease)
                 } catch {
                     logger.error(
