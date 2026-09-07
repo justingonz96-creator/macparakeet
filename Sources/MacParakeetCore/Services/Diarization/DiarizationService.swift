@@ -25,19 +25,29 @@ public struct SpeakerSegment: Sendable {
     }
 }
 
-public enum SpeakerDiarizationConstraint: Equatable, Sendable {
+public enum SpeakerDiarizationConstraint: Hashable, Sendable {
     case exact(Int)
     case range(min: Int?, max: Int?)
 }
 
 public protocol DiarizationServiceProtocol: Sendable {
-    func diarize(audioURL: URL) async throws -> MacParakeetDiarizationResult
+    /// Diarizes `audioURL`. `speakerConstraint` is a per-call hint from the
+    /// caller (for example the meeting attendee prior); a service constructed
+    /// with an explicit constraint keeps that constraint and ignores the hint.
+    func diarize(
+        audioURL: URL,
+        speakerConstraint: SpeakerDiarizationConstraint?
+    ) async throws -> MacParakeetDiarizationResult
     func prepareModels(onProgress: (@Sendable (String) -> Void)?) async throws
     func isReady() async -> Bool
     func hasCachedModels() async -> Bool
 }
 
 extension DiarizationServiceProtocol {
+    public func diarize(audioURL: URL) async throws -> MacParakeetDiarizationResult {
+        try await diarize(audioURL: audioURL, speakerConstraint: nil)
+    }
+
     public func prepareModels() async throws {
         try await prepareModels(onProgress: nil)
     }
@@ -49,34 +59,68 @@ extension DiarizationServiceProtocol {
 
 protocol OfflineDiarizerManaging: AnyObject, Sendable {
     func prepareModels(at directory: URL) async throws
-    func process(audioURL: URL) async throws -> DiarizationResult
+    func process(
+        audioURL: URL,
+        speakerConstraint: SpeakerDiarizationConstraint?
+    ) async throws -> DiarizationResult
 }
 
-extension OfflineDiarizerManager: OfflineDiarizerManaging {
+/// FluidAudio-backed diarizer that loads the CoreML models once and runs each
+/// request through an `OfflineDiarizerManager` built for that request's
+/// speaker constraint. Managers are cheap (configuration plus a reference to
+/// the shared models), so a per-meeting attendee prior costs no extra model
+/// load or download.
+final class FluidOfflineDiarizer: OfflineDiarizerManaging, @unchecked Sendable {
+    private let baseConfig: OfflineDiarizerConfig
+    // Written once by `prepareModels(at:)`, read afterwards. All calls are
+    // serialized through DiarizationService actor isolation.
+    private var models: OfflineDiarizerModels?
+
+    init(config: OfflineDiarizerConfig) {
+        self.baseConfig = config
+    }
+
     func prepareModels(at directory: URL) async throws {
-        try await prepareModels(directory: directory)
+        guard models == nil else { return }
+        // `OfflineDiarizerModels.load` downloads missing files and purges and
+        // re-downloads a cache that fails to load, mirroring
+        // `OfflineDiarizerManager.prepareModels(directory:)`.
+        models = try await OfflineDiarizerModels.load(from: directory)
     }
 
-    func process(audioURL: URL) async throws -> DiarizationResult {
-        try await process(audioURL)
+    func process(
+        audioURL: URL,
+        speakerConstraint: SpeakerDiarizationConstraint?
+    ) async throws -> DiarizationResult {
+        guard let models else {
+            throw OfflineDiarizationError.modelNotLoaded("offline-diarizer")
+        }
+        let manager = OfflineDiarizerManager(
+            config: DiarizationService.applying(speakerConstraint, to: baseConfig)
+        )
+        manager.initialize(models: models)
+        return try await manager.process(audioURL)
     }
 }
-
-// @unchecked Sendable: all access is serialized through DiarizationService actor isolation.
-extension OfflineDiarizerManager: @retroactive @unchecked Sendable {}
 
 public actor DiarizationService: DiarizationServiceProtocol {
     private let manager: any OfflineDiarizerManaging
     private let modelsDirectory: URL
+    /// Constraint the service was constructed with (CLI `--speaker-*` flags).
+    /// When set it wins over any per-call hint.
+    private let explicitConstraint: SpeakerDiarizationConstraint?
     private var modelsReady = false
 
+    /// Uses the high-accuracy async configuration. Pass `config` only to
+    /// override it deliberately (tests, benchmarks).
     public init(
-        config: OfflineDiarizerConfig = .default,
+        config: OfflineDiarizerConfig = DiarizationService.highAccuracyConfig,
         modelsDirectory: URL? = nil
     ) {
         self.init(
-            manager: OfflineDiarizerManager(config: config),
-            modelsDirectory: modelsDirectory ?? AppPaths.fluidAudioModelsDirURL
+            manager: FluidOfflineDiarizer(config: config),
+            modelsDirectory: modelsDirectory ?? AppPaths.fluidAudioModelsDirURL,
+            explicitConstraint: nil
         )
     }
 
@@ -85,21 +129,31 @@ public actor DiarizationService: DiarizationServiceProtocol {
         modelsDirectory: URL? = nil
     ) {
         self.init(
-            config: Self.offlineConfig(speakerConstraint: speakerConstraint),
-            modelsDirectory: modelsDirectory
+            manager: FluidOfflineDiarizer(config: Self.offlineConfig(speakerConstraint: speakerConstraint)),
+            modelsDirectory: modelsDirectory ?? AppPaths.fluidAudioModelsDirURL,
+            explicitConstraint: speakerConstraint
         )
     }
 
     init(
         manager: any OfflineDiarizerManaging,
-        modelsDirectory: URL
+        modelsDirectory: URL,
+        explicitConstraint: SpeakerDiarizationConstraint? = nil
     ) {
         self.manager = manager
         self.modelsDirectory = modelsDirectory.standardizedFileURL
+        self.explicitConstraint = explicitConstraint
     }
 
-    public func diarize(audioURL: URL) async throws -> MacParakeetDiarizationResult {
+    public func diarize(
+        audioURL: URL,
+        speakerConstraint: SpeakerDiarizationConstraint?
+    ) async throws -> MacParakeetDiarizationResult {
         try await ensureModelsPrepared()
+
+        // The base manager already carries an explicit constraint, so a
+        // per-call hint must not override the user's flag.
+        let requestConstraint = explicitConstraint == nil ? speakerConstraint : nil
 
         let fluidResult: DiarizationResult
         let manager = self.manager
@@ -110,7 +164,7 @@ public actor DiarizationService: DiarizationServiceProtocol {
             // intermittently SIGBUSes the shared Neural Engine queue on macOS 14.
             // See `ANEInferenceGate`.
             fluidResult = try await ANEInferenceGate.shared.withExclusiveAccess {
-                try await manager.process(audioURL: audioURL)
+                try await manager.process(audioURL: audioURL, speakerConstraint: requestConstraint)
             }
         } catch let error as OfflineDiarizationError where error.isNoSpeechDetected {
             return MacParakeetDiarizationResult(segments: [], speakerCount: 0, speakers: [])
@@ -199,10 +253,44 @@ public actor DiarizationService: DiarizationServiceProtocol {
         Array(ModelNames.OfflineDiarizer.requiredModels)
     }
 
+    /// Diarization always runs after transcription, off the interactive path,
+    /// so it takes FluidAudio's slower high-accuracy settings rather than
+    /// `OfflineDiarizerConfig.default` (the fast preset). FluidAudio measures
+    /// `stepRatio 0.1` / `minSegmentDuration 0` at 13.89% versus 15.07% DER on
+    /// VoxConverse (collar 0.25 s, overlap ignored) for about half the
+    /// throughput. See ADR-010 (2026-09-06 amendment) and issue #972.
+    ///
+    /// Left at library defaults on purpose: `clustering.threshold` (the app
+    /// never tuned it, and 0.15.6 changed its semantics to a plain distance
+    /// cut), `clustering.constrainedAssignment` (on since 0.15.6), and the
+    /// K-Means re-clustering seed, which FluidAudio fixes at `baseSeed 0` with
+    /// `nInit 10` so constrained runs are deterministic.
+    public nonisolated static var highAccuracyConfig: OfflineDiarizerConfig {
+        var config = OfflineDiarizerConfig.default
+        // 10 s windows with a 1 s hop instead of 2 s: more embeddings per
+        // speaker turn and finer change points.
+        config.segmentation.stepRatio = 0.1
+        // Keep short turns: the embedding stage no longer falls back to the
+        // overlap-inclusive mask under 1 s, and reconstruction no longer drops
+        // segments shorter than 1 s.
+        config.embedding.minSegmentDurationSeconds = 0
+        // Re-embed spans that received no cluster votes instead of
+        // tie-breaking them into cluster 0 (absorbing a speaker's turn into
+        // the surrounding speaker).
+        config.zeroVoteReembed = OfflineDiarizerConfig.ZeroVoteReembed(enabled: true)
+        return config
+    }
+
     nonisolated static func offlineConfig(
         speakerConstraint: SpeakerDiarizationConstraint?
     ) -> OfflineDiarizerConfig {
-        let config = OfflineDiarizerConfig.default
+        applying(speakerConstraint, to: highAccuracyConfig)
+    }
+
+    nonisolated static func applying(
+        _ speakerConstraint: SpeakerDiarizationConstraint?,
+        to config: OfflineDiarizerConfig
+    ) -> OfflineDiarizerConfig {
         guard let speakerConstraint else { return config }
 
         switch speakerConstraint {
@@ -225,6 +313,8 @@ public actor MockDiarizationService: DiarizationServiceProtocol {
     public var diarizeResult: MacParakeetDiarizationResult?
     public var diarizeError: Error?
     public var diarizeCalled = false
+    /// Constraints passed to `diarize(audioURL:speakerConstraint:)`, in call order.
+    public var receivedSpeakerConstraints: [SpeakerDiarizationConstraint?] = []
     public var prepareModelsCalled = false
     public var prepareModelsError: Error?
     public var ready = false
@@ -254,8 +344,12 @@ public actor MockDiarizationService: DiarizationServiceProtocol {
         self.cachedModels = cachedModels
     }
 
-    public func diarize(audioURL: URL) async throws -> MacParakeetDiarizationResult {
+    public func diarize(
+        audioURL: URL,
+        speakerConstraint: SpeakerDiarizationConstraint?
+    ) async throws -> MacParakeetDiarizationResult {
         diarizeCalled = true
+        receivedSpeakerConstraints.append(speakerConstraint)
         if let error = diarizeError { throw error }
         return diarizeResult ?? MacParakeetDiarizationResult(segments: [], speakerCount: 0, speakers: [])
     }

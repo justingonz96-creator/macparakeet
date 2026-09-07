@@ -36,7 +36,7 @@ Pyannote community-1 is widely considered the best open-source diarization pipel
 - **DiariZen**: 13.3% DER — competitive open-source alternative, but no CoreML/ANE port exists
 - **NVIDIA Sortformer**: Real-time capable, but 4-speaker hard limit and ~32% DER
 
-FluidAudio's offline pipeline uses pyannote community-1 converted to CoreML, running on the ANE at 64-122x realtime. This is the same pipeline that pyannote's own commercial API uses, minus proprietary tuning.
+FluidAudio's offline pipeline uses pyannote community-1 converted to CoreML, running on the ANE at 64-122x realtime. pyannote's commercial `precision-2` is a distinct model, not this pipeline with proprietary tuning (see the 2026-09-06 amendment).
 
 ## Decision
 
@@ -79,9 +79,15 @@ ASR and diarization can potentially run in parallel since they use different mod
 ### API usage
 
 ```swift
-let config = OfflineDiarizerConfig()
-let manager = OfflineDiarizerManager(config: config)
-try await manager.prepareModels()
+// DiarizationService.highAccuracyConfig (2026-09-06 amendment)
+var config = OfflineDiarizerConfig.default
+config.segmentation.stepRatio = 0.1
+config.embedding.minSegmentDurationSeconds = 0
+config.zeroVoteReembed = .init(enabled: true)
+
+let models = try await OfflineDiarizerModels.load(from: modelsDirectory)
+let manager = OfflineDiarizerManager(config: config.withSpeakers(min: 2, max: 4))
+manager.initialize(models: models)
 
 let result = try await manager.process(url)
 for segment in result.segments {
@@ -121,7 +127,7 @@ If diarization fails (e.g. `noSpeechDetected`, model error, timeout), the ASR re
 
 ~~For file transcription, always run it — users transcribing files almost always want to know who said what.~~ **Revised:** Diarization is controlled by a "Speaker detection" toggle in Settings (on by default). Users who don't need speaker attribution can disable it for faster transcriptions.
 
-**Why the change:** The original decision was "always-on, no toggle." A Settings toggle gives users explicit control over the accuracy/speed tradeoff. The toggle detail text sets realistic expectations: "~85% accurate — best with clear audio and distinct voices."
+**Why the change:** The original decision was "always-on, no toggle." A Settings toggle gives users explicit control over the accuracy/speed tradeoff. The toggle detail text sets expectations without quoting an accuracy figure (the earlier "~85% accurate" copy was not derivable from any DER measurement and is retired; see the 2026-09-06 amendment).
 
 **Progress UX:** When enabled, show "Transcribing..." during ASR, then "Identifying speakers..." during diarization. When disabled, the diarization step is skipped entirely (no progress indicator for it).
 
@@ -176,6 +182,62 @@ Skip diarization for: dictation (single speaker by design), or when the correspo
 > tentative-live / speaker-memory option in
 > `docs/research/speaker-diarization-frontier-2026-06.md` and
 > `docs/plans/2026-06-14-002-speaker-diarization-world-class-architecture.md`.
+
+> **Amendment (2026-09-06, issue #972):** Four corrections after the
+> speaker-attribution research in
+> `docs/research/2026-09-06-speaker-diarization-claude/`.
+>
+> **1. The pinned 0.15.4 pipeline was not a faithful community-1 port.** Its
+> clustering stage converted the AHC threshold with `sqrt(2 - 2t)` although the
+> config documents a Euclidean distance (so the default 0.6 ran as a cut of
+> 0.894 and raising the knob split more instead of merging more), compared
+> speaker-count constraints against the AHC warm-start count instead of the
+> clusters VBx kept, had no constrained assignment of local speakers that share
+> a segmentation chunk, and seeded K-Means re-clustering from `UInt64.random`.
+> FluidAudio fixed all four in 0.15.5 (PR #735) and 0.15.6 (PR #802). The
+> app now pins `exact: "0.15.6"`. The claim above that this is "the same
+> pipeline pyannote's commercial API uses" was unsupported and is withdrawn:
+> `precision-2` is a distinct model, 4 to 10 DER points better on pyannote's
+> own table. The `~17.7% AMI` figure in the table above was produced by
+> FluidAudio under the inverted threshold semantics and is flagged upstream
+> for re-benchmark; treat it as historical. The "~85% accurate" Settings copy
+> is retired because no DER figure supports it.
+>
+> **2. Async runs use the high-accuracy configuration.** Diarization always
+> runs after transcription, so `DiarizationService.highAccuracyConfig` takes
+> FluidAudio's slower preset: `stepRatio 0.1` (1 s hop instead of 2 s),
+> `minSegmentDurationSeconds 0` (short turns keep their own embedding and
+> segment), and zero-vote re-embedding on. FluidAudio measures this at 13.89%
+> versus 15.07% DER on VoxConverse (collar 0.25 s, overlap ignored) for about
+> half the throughput. `clustering.threshold` stays at the library default
+> (the app never tuned it, so the semantic change needs no remap),
+> `constrainedAssignment` stays at its new default (on), and K-Means
+> re-clustering is deterministic in 0.15.6 (`baseSeed 0`, `nInit 10`).
+> The CLI `--speaker-count` / `--speaker-min` / `--speaker-max` flags map to
+> `withSpeakers(exactly:)` / `withSpeakers(min:max:)` unchanged; under the
+> corrected semantics a bound binds only when the auto-detected count falls
+> outside it.
+>
+> **3. Meetings feed the calendar attendee count in as a prior.** The
+> finalizer derives `MeetingSpeakerPrior` from `calendarEventSnapshot`, whose
+> attendee list already excludes the user. With `n` remote attendees the
+> system-track diarizer receives bounds `min = max(1, n - 1)`,
+> `max = n + 1`, never an exact count. `n == 1` skips clustering and labels
+> every system word as one remote speaker (`Others 1`). No snapshot, no
+> attendees, or more than eight attendees leaves clustering unconstrained
+> (large invites are a poor proxy for who speaks, and a minimum bound would
+> force re-clustering to a count the audio cannot support). The applied prior
+> is recorded as `speaker_prior` on `diarization_completed` and in the local
+> capture diagnostics; it carries no attendee identity.
+>
+> **4. Not changed here (follow-ups in the research synthesis):**
+> embedding-based consolidation of over-split clusters, `SpeakerMerger`
+> smoothing and nearest-turn fallback for sub-second words, stable speaker IDs
+> across re-runs, in-person meeting detection, voiceprints, and Nemotron-3
+> Diarization (evaluation-only license). FluidAudio issue #878 (a
+> deterministic BNNS crash of the offline diarizer on macOS 14) predates the
+> upgrade and is unchanged; `ANEInferenceGate` still serializes the
+> diarizer's Neural Engine work on macOS 14.
 
 ## Rationale
 

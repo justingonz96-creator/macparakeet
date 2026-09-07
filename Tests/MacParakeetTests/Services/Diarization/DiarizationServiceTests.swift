@@ -92,6 +92,30 @@ final class DiarizationServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: repoDirectory.path))
     }
 
+    func testHighAccuracyConfigUsesAsyncSettings() {
+        let config = DiarizationService.highAccuracyConfig
+        let fast = OfflineDiarizerConfig.default
+
+        XCTAssertEqual(config.segmentation.stepRatio, 0.1)
+        XCTAssertEqual(config.embedding.minSegmentDurationSeconds, 0)
+        XCTAssertTrue(config.zeroVoteReembed.enabled)
+        XCTAssertTrue(config.clustering.constrainedAssignment)
+        // Never tuned by the app; 0.15.6 changed its semantics to a plain distance cut.
+        XCTAssertEqual(config.clustering.threshold, fast.clustering.threshold)
+        XCTAssertNil(config.clustering.numSpeakers)
+        XCTAssertNil(config.clustering.minSpeakers)
+        XCTAssertNil(config.clustering.maxSpeakers)
+        XCTAssertNoThrow(try config.validate())
+    }
+
+    func testOfflineConfigStartsFromHighAccuracyConfig() {
+        let config = DiarizationService.offlineConfig(speakerConstraint: .exact(2))
+
+        XCTAssertEqual(config.segmentation.stepRatio, 0.1)
+        XCTAssertEqual(config.embedding.minSegmentDurationSeconds, 0)
+        XCTAssertTrue(config.zeroVoteReembed.enabled)
+    }
+
     func testOfflineConfigAppliesExactSpeakerConstraint() {
         let config = DiarizationService.offlineConfig(speakerConstraint: .exact(2))
 
@@ -152,12 +176,49 @@ final class DiarizationServiceTests: XCTestCase {
         XCTAssertEqual(result.segments.map { $0.speakerId }, ["S1"])
         XCTAssertTrue(ready)
     }
+
+    func testDiarizePassesPerCallSpeakerConstraintToManager() async throws {
+        let manager = RecordingOfflineDiarizerManager(result: DiarizationResult(segments: []))
+        let service = DiarizationService(
+            manager: manager,
+            modelsDirectory: FileManager.default.temporaryDirectory
+        )
+
+        _ = try await service.diarize(audioURL: URL(fileURLWithPath: "/tmp/a.wav"))
+        _ = try await service.diarize(
+            audioURL: URL(fileURLWithPath: "/tmp/b.wav"),
+            speakerConstraint: .range(min: 2, max: 4)
+        )
+
+        let constraints = await manager.receivedConstraints
+        XCTAssertEqual(constraints, [nil, .range(min: 2, max: 4)])
+    }
+
+    func testExplicitConstraintWinsOverPerCallHint() async throws {
+        let manager = RecordingOfflineDiarizerManager(result: DiarizationResult(segments: []))
+        let service = DiarizationService(
+            manager: manager,
+            modelsDirectory: FileManager.default.temporaryDirectory,
+            explicitConstraint: .exact(3)
+        )
+
+        _ = try await service.diarize(
+            audioURL: URL(fileURLWithPath: "/tmp/a.wav"),
+            speakerConstraint: .range(min: 1, max: 2)
+        )
+
+        // The explicit constraint already lives in the manager's base config,
+        // so the per-call hint is dropped rather than layered on top.
+        let constraints = await manager.receivedConstraints
+        XCTAssertEqual(constraints, [nil])
+    }
 }
 
 private actor RecordingOfflineDiarizerManager: OfflineDiarizerManaging {
     let result: DiarizationResult
     var preparedDirectories: [URL] = []
     var processedAudioURLs: [URL] = []
+    var receivedConstraints: [SpeakerDiarizationConstraint?] = []
 
     init(result: DiarizationResult) {
         self.result = result
@@ -167,8 +228,12 @@ private actor RecordingOfflineDiarizerManager: OfflineDiarizerManaging {
         preparedDirectories.append(directory)
     }
 
-    func process(audioURL: URL) async throws -> DiarizationResult {
+    func process(
+        audioURL: URL,
+        speakerConstraint: SpeakerDiarizationConstraint?
+    ) async throws -> DiarizationResult {
         processedAudioURLs.append(audioURL)
+        receivedConstraints.append(speakerConstraint)
         return result
     }
 }
