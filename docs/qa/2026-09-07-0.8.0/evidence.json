@@ -266,7 +266,7 @@
       "build": "Initial QA candidate; record exact binary provenance with final evidence",
       "observed": "Multilingual Nemotron completed Korean, Japanese and Mandarin FLEURS fixtures, retaining their scripts. Hypotheses contain some recognition errors; exact texts are attached.",
       "expected": "Supported multilingual routes preserve the expected script and return completed text.",
-      "limitations": "One sample per language. This does not imply perfect recognition or a measured corpus accuracy score. Cohere CJK runs are recorded separately as bounded attempts.",
+      "limitations": "One Nemotron sample per language; no perfect-recognition or corpus accuracy claim. Cohere’s initial bounded failures and three explicit successful follow-ups are recorded separately with their own binary provenance and cache-state limits.",
       "evidence": [
         {
           "label": "Fixture results",
@@ -474,63 +474,90 @@
     },
     {
       "id": "cohere-time-limit-ko",
-      "title": "Cohere ko model-load time limit",
+      "title": "Cohere Korean: historical timeout, later resolved",
       "area": "Speech",
       "status": "failed",
-      "phase": "Bounded attempt",
+      "phase": "Historical bounded attempt",
       "candidate": "8548c099af5ee2ab0ed4dd9efe757d85c498cca0",
       "build": "DEBUG CLI 3.3.0",
-      "observed": "The harness stopped the process after 240 seconds during encoder loading; no transcript was returned.",
+      "observed": "The initial 240-second-bound attempt stopped during encoder loading with no transcript. Runtime completion was subsequently verified by one explicitly authorized 600-second-bound probe: exit 0 in 7.896 seconds with 67 characters. This row retains the original failed attempt.",
       "expected": "Complete model preparation and return the fixture transcript within the experiment limit.",
-      "limitations": "The time limit is a QA harness bound, not a product SLA. English completed in 233.54 seconds. No language-specific inference failure or permanent deadlock has been established.",
+      "limitations": "The earlier attempt still failed its harness deadline. The later run used the copied baseline-plus-recovery CLI with uncontrolled cache/host state; it does not certify cold-load latency or prove more waiting alone would have fixed the first attempt.",
       "evidence": [
         {
-          "label": "Engine stderr",
+          "label": "Original bounded-attempt stderr",
           "path": "evidence/cohere-ko.log"
+        },
+        {
+          "label": "Explicit successful follow-up",
+          "path": "evidence/cohere-extended/ko-result.json"
+        },
+        {
+          "label": "Interpretation and quality limits",
+          "path": "cohere-extended.md"
         }
       ],
       "command": "See audio-runtime.md",
-      "durationSeconds": 240
+      "durationSeconds": 240.22,
+      "resolvedBy": "cohere-extended-ko"
     },
     {
       "id": "cohere-time-limit-ja",
-      "title": "Cohere ja model-load time limit",
+      "title": "Cohere Japanese: historical timeout, later resolved",
       "area": "Speech",
       "status": "failed",
-      "phase": "Bounded attempt",
+      "phase": "Historical bounded attempt",
       "candidate": "8548c099af5ee2ab0ed4dd9efe757d85c498cca0",
       "build": "DEBUG CLI 3.3.0",
-      "observed": "The harness stopped the process after 240 seconds during encoder loading; no transcript was returned.",
+      "observed": "The initial 240-second-bound attempt stopped during encoder loading with no transcript. Runtime completion was subsequently verified by one explicitly authorized 600-second-bound probe: exit 0 in 49.271 seconds with 46 characters. This row retains the original failed attempt.",
       "expected": "Complete model preparation and return the fixture transcript within the experiment limit.",
-      "limitations": "The time limit is a QA harness bound, not a product SLA. English completed in 233.54 seconds. No language-specific inference failure or permanent deadlock has been established.",
+      "limitations": "The earlier attempt still failed its harness deadline. The later run used the copied baseline-plus-recovery CLI with uncontrolled cache/host state; it does not certify cold-load latency or prove more waiting alone would have fixed the first attempt.",
       "evidence": [
         {
-          "label": "Engine stderr",
+          "label": "Original bounded-attempt stderr",
           "path": "evidence/cohere-ja.log"
+        },
+        {
+          "label": "Explicit successful follow-up",
+          "path": "evidence/cohere-extended/ja-result.json"
+        },
+        {
+          "label": "Interpretation and quality limits",
+          "path": "cohere-extended.md"
         }
       ],
       "command": "See audio-runtime.md",
-      "durationSeconds": 240
+      "durationSeconds": 243.78,
+      "resolvedBy": "cohere-extended-ja"
     },
     {
       "id": "cohere-time-limit-zh",
-      "title": "Cohere zh model-load time limit",
+      "title": "Cohere Mandarin: historical timeout, later resolved",
       "area": "Speech",
       "status": "failed",
-      "phase": "Bounded attempt",
+      "phase": "Historical bounded attempt",
       "candidate": "8548c099af5ee2ab0ed4dd9efe757d85c498cca0",
       "build": "DEBUG CLI 3.3.0",
-      "observed": "The harness stopped the process after 240 seconds during encoder loading; no transcript was returned.",
+      "observed": "The initial 240-second-bound attempt stopped during encoder loading with no transcript. Runtime completion was subsequently verified by one explicitly authorized 600-second-bound probe: exit 0 in 6.642 seconds with 26 characters. This row retains the original failed attempt.",
       "expected": "Complete model preparation and return the fixture transcript within the experiment limit.",
-      "limitations": "The time limit is a QA harness bound, not a product SLA. English completed in 233.54 seconds. No language-specific inference failure or permanent deadlock has been established.",
+      "limitations": "The earlier attempt still failed its harness deadline. The later run used the copied baseline-plus-recovery CLI with uncontrolled cache/host state; it does not certify cold-load latency or prove more waiting alone would have fixed the first attempt.",
       "evidence": [
         {
-          "label": "Engine stderr",
+          "label": "Original bounded-attempt stderr",
           "path": "evidence/cohere-zh.log"
+        },
+        {
+          "label": "Explicit successful follow-up",
+          "path": "evidence/cohere-extended/zh-result.json"
+        },
+        {
+          "label": "Interpretation and quality limits",
+          "path": "cohere-extended.md"
         }
       ],
       "command": "See audio-runtime.md",
-      "durationSeconds": 240
+      "durationSeconds": 240.47,
+      "resolvedBy": "cohere-extended-zh"
     },
     {
       "id": "recovery-partial-delete-red",
@@ -807,6 +834,114 @@
       ],
       "command": "",
       "durationSeconds": null
+    },
+    {
+      "id": "cohere-extended-ja",
+      "title": "Cohere Japanese: extended follow-up completed",
+      "area": "Speech",
+      "status": "passed",
+      "phase": "Extended follow-up",
+      "candidate": "8548c099af5ee2ab0ed4dd9efe757d85c498cca0 plus c506d7ef7d4cf98f3986cfb5de84ced6b4ce701e",
+      "build": "Copied DEBUG CLI SHA-256 f8a62b79ece6045909d15ece2fd086eed7e10ca04ebc870d9fc50ed76774f095; not the final distribution binary.",
+      "observed": "One sequential probe completed exit 0 in 49.271 seconds under a 600-second deadline. JSON reports cohere/ane, ja, completed, 46 rawTranscript characters and 10440 ms. Expected script is present; zero timed words and zero saved rows. Binary/input hashes are unchanged.",
+      "expected": "Resolve the missing runtime result with an explicit bounded probe using the actual rawTranscript field and preserved public input.",
+      "limitations": "Runtime completion only; recognition substitutions are retained in the report. Cache warming and host state were uncontrolled, so this is not a cold-load guarantee, accuracy benchmark or final-bundle pass.",
+      "evidence": [
+        {
+          "label": "Sanitized case result and command",
+          "path": "evidence/cohere-extended/ja-result.json"
+        },
+        {
+          "label": "Public transcript output",
+          "path": "evidence/cohere-extended/ja-stdout.json"
+        },
+        {
+          "label": "Model-loading log",
+          "path": "evidence/cohere-extended/ja-stderr.log"
+        },
+        {
+          "label": "Source and curated hashes",
+          "path": "evidence/cohere-extended/manifest.json"
+        },
+        {
+          "label": "Extended report",
+          "path": "cohere-extended.md"
+        }
+      ],
+      "command": "macparakeet-cli-runtime transcribe <public-FLEURS-ja-fixture> --engine cohere --language ja --mode raw --speaker-detection off --no-history --database <owned-case>/history.sqlite --format json",
+      "durationSeconds": 49.271
+    },
+    {
+      "id": "cohere-extended-ko",
+      "title": "Cohere Korean: extended follow-up completed",
+      "area": "Speech",
+      "status": "passed",
+      "phase": "Extended follow-up",
+      "candidate": "8548c099af5ee2ab0ed4dd9efe757d85c498cca0 plus c506d7ef7d4cf98f3986cfb5de84ced6b4ce701e",
+      "build": "Copied DEBUG CLI SHA-256 f8a62b79ece6045909d15ece2fd086eed7e10ca04ebc870d9fc50ed76774f095; not the final distribution binary.",
+      "observed": "One sequential probe completed exit 0 in 7.896 seconds under a 600-second deadline. JSON reports cohere/ane, ko, completed, 67 rawTranscript characters and 12480 ms. Expected script is present; zero timed words and zero saved rows. Binary/input hashes are unchanged.",
+      "expected": "Resolve the missing runtime result with an explicit bounded probe using the actual rawTranscript field and preserved public input.",
+      "limitations": "Runtime completion only; recognition substitutions are retained in the report. Cache warming and host state were uncontrolled, so this is not a cold-load guarantee, accuracy benchmark or final-bundle pass.",
+      "evidence": [
+        {
+          "label": "Sanitized case result and command",
+          "path": "evidence/cohere-extended/ko-result.json"
+        },
+        {
+          "label": "Public transcript output",
+          "path": "evidence/cohere-extended/ko-stdout.json"
+        },
+        {
+          "label": "Model-loading log",
+          "path": "evidence/cohere-extended/ko-stderr.log"
+        },
+        {
+          "label": "Source and curated hashes",
+          "path": "evidence/cohere-extended/manifest.json"
+        },
+        {
+          "label": "Extended report",
+          "path": "cohere-extended.md"
+        }
+      ],
+      "command": "macparakeet-cli-runtime transcribe <public-FLEURS-ko-fixture> --engine cohere --language ko --mode raw --speaker-detection off --no-history --database <owned-case>/history.sqlite --format json",
+      "durationSeconds": 7.896
+    },
+    {
+      "id": "cohere-extended-zh",
+      "title": "Cohere Mandarin: extended follow-up completed",
+      "area": "Speech",
+      "status": "passed",
+      "phase": "Extended follow-up",
+      "candidate": "8548c099af5ee2ab0ed4dd9efe757d85c498cca0 plus c506d7ef7d4cf98f3986cfb5de84ced6b4ce701e",
+      "build": "Copied DEBUG CLI SHA-256 f8a62b79ece6045909d15ece2fd086eed7e10ca04ebc870d9fc50ed76774f095; not the final distribution binary.",
+      "observed": "One sequential probe completed exit 0 in 6.642 seconds under a 600-second deadline. JSON reports cohere/ane, zh, completed, 26 rawTranscript characters and 10380 ms. Expected script is present; zero timed words and zero saved rows. Binary/input hashes are unchanged.",
+      "expected": "Resolve the missing runtime result with an explicit bounded probe using the actual rawTranscript field and preserved public input.",
+      "limitations": "Runtime completion only; recognition substitutions are retained in the report. Cache warming and host state were uncontrolled, so this is not a cold-load guarantee, accuracy benchmark or final-bundle pass.",
+      "evidence": [
+        {
+          "label": "Sanitized case result and command",
+          "path": "evidence/cohere-extended/zh-result.json"
+        },
+        {
+          "label": "Public transcript output",
+          "path": "evidence/cohere-extended/zh-stdout.json"
+        },
+        {
+          "label": "Model-loading log",
+          "path": "evidence/cohere-extended/zh-stderr.log"
+        },
+        {
+          "label": "Source and curated hashes",
+          "path": "evidence/cohere-extended/manifest.json"
+        },
+        {
+          "label": "Extended report",
+          "path": "cohere-extended.md"
+        }
+      ],
+      "command": "macparakeet-cli-runtime transcribe <public-FLEURS-zh-fixture> --engine cohere --language zh --mode raw --speaker-detection off --no-history --database <owned-case>/history.sqlite --format json",
+      "durationSeconds": 6.642
     }
   ],
   "media": [
