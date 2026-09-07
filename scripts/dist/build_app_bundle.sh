@@ -126,21 +126,22 @@ prepare_xcode_git_submodule_support() {
 build_xcodebuild() {
   # Xcode compiles assets and generates resource accessors for a relocatable app bundle.
   if [[ "$SKIP_BUILD" == "1" ]]; then
-    echo "[1/4] Skipping build (SKIP_BUILD=1)…"
-    return 0
+    echo "[1/4] Reusing existing Xcode Release products (SKIP_BUILD=1)…"
+  else
+    prepare_xcode_git_submodule_support
   fi
 
-  prepare_xcode_git_submodule_support
-
   if [[ "$UNIVERSAL" == "1" ]]; then
-    echo "[1/4] Building via xcodebuild (universal Release)…"
     local dd_arm="$XCODE_DERIVED_DATA-arm64"
     local dd_x86="$XCODE_DERIVED_DATA-x86_64"
 
-    xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=arm64" \
-      -derivedDataPath "$dd_arm" -skipMacroValidation CODE_SIGNING_ALLOWED=NO >/dev/null
-    xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=x86_64" \
-      -derivedDataPath "$dd_x86" -skipMacroValidation CODE_SIGNING_ALLOWED=NO >/dev/null
+    if [[ "$SKIP_BUILD" != "1" ]]; then
+      echo "[1/4] Building via xcodebuild (universal Release)…"
+      xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=arm64" \
+        -derivedDataPath "$dd_arm" -skipMacroValidation CODE_SIGNING_ALLOWED=NO >/dev/null
+      xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=x86_64" \
+        -derivedDataPath "$dd_x86" -skipMacroValidation CODE_SIGNING_ALLOWED=NO >/dev/null
+    fi
 
     local bin_arm="$dd_arm/Build/Products/Release/MacParakeet"
     local bin_x86="$dd_x86/Build/Products/Release/MacParakeet"
@@ -156,11 +157,13 @@ build_xcodebuild() {
     local product_dir="$dd_arm/Build/Products/Release"
     copy_resource_bundles "$product_dir"
   else
-    echo "[1/4] Building via xcodebuild (Release)…"
     local dd="$XCODE_DERIVED_DATA"
-    # Apple Silicon is the supported shipping target; lock to arm64 to avoid ambiguous destinations.
-    xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=arm64" \
-      -derivedDataPath "$dd" -skipMacroValidation CODE_SIGNING_ALLOWED=NO >/dev/null
+    if [[ "$SKIP_BUILD" != "1" ]]; then
+      echo "[1/4] Building via xcodebuild (Release)…"
+      # Apple Silicon is the supported shipping target; lock to arm64 to avoid ambiguous destinations.
+      xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=arm64" \
+        -derivedDataPath "$dd" -skipMacroValidation CODE_SIGNING_ALLOWED=NO >/dev/null
+    fi
 
     local product_dir="$dd/Build/Products/Release"
     local bin="$product_dir/MacParakeet"
