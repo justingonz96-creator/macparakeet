@@ -104,8 +104,9 @@ with human progress/status kept off stdout.
   the same object shape. For `prompts run --json`, a present value is the
   normalized adapter receipt after provider/model filtering. Absence means no
   effective receipt is available; callers must not reinterpret it as raw
-  upstream-provider defaults. Other LLM commands omit it because per-prompt
-  settings do not apply to them.
+  upstream-provider defaults. `llm summarize --json` uses the same generation
+  path and may report its resolved baseline settings without loading a saved
+  prompt. Chat and Transform commands omit this receipt.
   The CLI runs settings saved through the result-prompt GUI; `prompts add/set`
   expose no inference-setting flags. Results do not include requested-settings
   snapshots or unsupported-field metadata. Transform commands are outside this
