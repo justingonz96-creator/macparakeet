@@ -20,10 +20,11 @@ If a notes write commits but its follow-up read fails, the app updates only note
 in its loaded snapshots and keeps existing artifacts intact until a successful
 refresh can read current metadata. The saved draft is not reported as lost.
 
-Meeting rename refreshes artifacts from the row returned by the rename's
-database transaction, preserving its current transcript, notes, and folder
-metadata. A missing row is not a successful rename and starts no artifact
-refresh.
+Meeting rename publishes the row returned by its database transaction. Notes,
+rename, and speaker correction refreshes in the transcription view model share
+a per-meeting queue and reread canonical metadata and effective attribution
+after previous writes finish. A missing row is not a successful rename and
+starts no artifact refresh.
 
 ## Producers
 
@@ -152,6 +153,8 @@ raw-audio filenames.
 - `promptResultCount`
 - `calendarEventSnapshot`
 - `meetingCaptureReport`
+- `speakerCorrectionsApplied`
+- `speakerCorrectionRevision`
 
 `manifest.json` keeps:
 
@@ -247,9 +250,22 @@ unknown, not healthy.
 `meeting.md` frontmatter keeps the local Markdown schema
 `com.macparakeet.meeting-markdown` with `schemaVersion: 1`, meeting identity,
 timestamps, duration/status/source/engine metadata, artifact/audio paths when
-available, `speakerLabelsIncluded`, and `promptResultCount`. The body section
+available, `speakerLabelsIncluded`, `speakerCorrectionsApplied`,
+`speakerCorrectionRevision`, and `promptResultCount`. The body section
 order is: title, optional notes, transcript, optional prompt results, and
 artifact paths.
+
+Legacy v1 `MeetingArtifactSnapshot` JSON without speaker correction keys decodes
+with `speakerCorrectionsApplied = false` and `speakerCorrectionRevision = 0`.
+Metadata and speaker refreshes in the transcription view model share a queue
+per meeting and read the current DB row after earlier materializations finish.
+
+`transcript.json` publishes the effective speaker projection and includes
+`speakerCorrectionsApplied` plus `speakerCorrectionRevision`. Each durable
+`transcriptSegments` item may additionally include `speakerSpans`. A span has
+`wordRange`, nullable `speakerId`, and `speakerLabel`; multiple spans preserve
+manual splits that cannot be represented by the segment's legacy single
+speaker fields.
 
 `transcript.json` keeps meeting essentials: `id`, `title`, timestamps,
 `durationMs`, `status`, raw/clean/transcript text, word/speaker/diarization

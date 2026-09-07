@@ -91,6 +91,10 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ### Added
 
+- Speaker-aware export and meeting JSON include additive
+  `speakerCorrectionsApplied` and `speakerCorrectionRevision` metadata.
+- Exports, meeting artifacts and CLI prompt input use effective speaker corrections.
+
 - Saved-meeting notes autosave and can be explicitly included in result-prompt
   context. `prompts set` accepts mutually exclusive `--include-meeting-notes`
   and `--no-include-meeting-notes`. Prompt JSON adds `includeMeetingNotes`;

@@ -450,7 +450,7 @@ final class MockLaunchAtLoginService: LaunchAtLoginControlling {
 
 // MARK: - MockTranscriptionService
 
-actor MockTranscriptionService: SpeechEngineOverrideTranscriptionService {
+actor MockTranscriptionService: SpeakerConfiguredRetranscriptionService {
     private var transcribeHook: (@Sendable () async -> Void)?
 
     func setTranscribeHook(_ hook: @escaping @Sendable () async -> Void) {
@@ -465,6 +465,7 @@ actor MockTranscriptionService: SpeechEngineOverrideTranscriptionService {
     var lastSource: TelemetryTranscriptionSource?
     var lastMeetingRecording: MeetingRecordingOutput?
     var lastSpeechEngineOverride: SpeechEngineSelection?
+    var lastRetranscriptionSpeakerSelection: RetranscriptionSpeakerSelection?
     var transcribeProgressPhases: [TranscriptionProgress] = []
     var transcribeDelayMs: UInt64 = 0
     var transcribeURLCallCount = 0
@@ -710,6 +711,31 @@ actor MockTranscriptionService: SpeechEngineOverrideTranscriptionService {
         onProgress: (@Sendable (TranscriptionProgress) -> Void)?
     ) async throws -> Transcription {
         lastSpeechEngineOverride = speechEngineOverride
+        return try await transcribeMeeting(recording: recording, onProgress: onProgress)
+    }
+
+    func retranscribe(
+        existing transcription: Transcription,
+        fileURL: URL,
+        source: TelemetryTranscriptionSource,
+        speechEngineOverride: SpeechEngineSelection?,
+        speakerSelection: RetranscriptionSpeakerSelection,
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)?
+    ) async throws -> Transcription {
+        lastSpeechEngineOverride = speechEngineOverride
+        lastRetranscriptionSpeakerSelection = speakerSelection
+        return try await transcribe(fileURL: fileURL, source: source, onProgress: onProgress)
+    }
+
+    func retranscribeMeeting(
+        existing transcription: Transcription,
+        recording: MeetingRecordingOutput,
+        speechEngineOverride: SpeechEngineSelection?,
+        speakerSelection: RetranscriptionSpeakerSelection,
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)?
+    ) async throws -> Transcription {
+        lastSpeechEngineOverride = speechEngineOverride
+        lastRetranscriptionSpeakerSelection = speakerSelection
         return try await transcribeMeeting(recording: recording, onProgress: onProgress)
     }
 

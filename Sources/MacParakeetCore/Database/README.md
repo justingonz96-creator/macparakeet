@@ -19,7 +19,10 @@ processes own their connections.
 - One repository per table:
   - `DictationRepository.swift` — dictation history + lifetime stats.
   - `TranscriptionRepository.swift` — file/YouTube/meeting transcriptions.
-  - `SegmentRepository.swift` — derived transcript segments, FTS5 search, slicing, and deterministic rebuilds.
+  - `SpeakerCorrectionRepository.swift` — transcript-scoped correction history and undo/redo cursor.
+  `SpeakerCorrectionService` owns atomic cross-table edits; `SpeakerAttributionReadService`
+  resolves effective attribution without changing recognized words.
+- `SegmentRepository.swift` — derived transcript segments, FTS5 search, slicing, and deterministic rebuilds.
   - `CardRepository.swift` — derived per-recording knowledge cards, provenance staleness, deterministic joins, and card FTS sync.
   - `CustomWordRepository.swift` — vocabulary entries.
   - `TextSnippetRepository.swift` — snippets (text + action).
@@ -86,7 +89,7 @@ explicitly; a fetch followed by a separate save is not an atomic merge.
 data.** `segments` normalizes meeting and file/URL transcript JSON for search;
 `segments_fts` is an external-content FTS5 index kept in sync by triggers.
 Both can be rebuilt with `macparakeet-cli search-reindex` from
-`transcriptions`. Dictations are excluded. `KnowledgeSegmenter.currentVersion`
+`transcriptions` and their active speaker corrections. Dictations are excluded. `KnowledgeSegmenter.currentVersion`
 freezes the derivation rules: pseudo-segmentation is a pure function of text
 using explicit scalar rules, with no locale or NaturalLanguage framework
 dependency. Any rule change that can alter `(transcriptionId, seq)` citations

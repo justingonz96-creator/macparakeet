@@ -3505,6 +3505,80 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(lastMeetingRecording?.speechEngine, SpeechEngineSelection(engine: .whisper, language: "ko"))
     }
 
+    func testRetranscribeFilePassesPerRunExactSpeakerSelection() async throws {
+        let tmpFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retranscribe-speakers-\(UUID().uuidString).wav")
+        FileManager.default.createFile(atPath: tmpFile.path, contents: Data([0]))
+        defer { try? FileManager.default.removeItem(at: tmpFile) }
+        let original = Transcription(
+            id: UUID(),
+            fileName: tmpFile.lastPathComponent,
+            filePath: tmpFile.path,
+            rawTranscript: "Old",
+            status: .completed,
+            sourceType: .file
+        )
+        mockRepo.transcriptions = [original]
+        await mockService.configure(result: Transcription(
+            fileName: tmpFile.lastPathComponent,
+            rawTranscript: "New",
+            status: .completed
+        ))
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+
+        viewModel.retranscribe(original, speakerSelection: .exact(3))
+        try await waitUntil { !self.viewModel.isTranscribing }
+
+        let selection = await mockService.lastRetranscriptionSpeakerSelection
+        XCTAssertEqual(selection, .exact(3))
+    }
+
+    func testRetranscribeMeetingPassesSpeakerSelectionOnlyWithArchivedSystemTrack() async throws {
+        let archivedMeeting = try makeArchivedMeetingRecording()
+        defer { try? FileManager.default.removeItem(at: archivedMeeting.folderURL) }
+        let original = Transcription(
+            id: UUID(),
+            fileName: "Remote interview",
+            filePath: archivedMeeting.mixedURL.path,
+            rawTranscript: "Old",
+            status: .completed,
+            sourceType: .meeting
+        )
+        mockRepo.transcriptions = [original]
+        await mockService.configure(result: Transcription(
+            fileName: original.fileName,
+            rawTranscript: "New",
+            status: .completed,
+            sourceType: .meeting
+        ))
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+
+        XCTAssertTrue(viewModel.canConfigureSpeakersForRetranscription(original))
+        viewModel.retranscribe(original, speakerSelection: .exact(2))
+        try await waitUntil { !self.viewModel.isTranscribing }
+
+        let selection = await mockService.lastRetranscriptionSpeakerSelection
+        XCTAssertEqual(selection, .exact(2))
+    }
+
+    func testMeetingSpeakerSelectionIsUnavailableForMixedAudioFallback() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("meeting-no-system-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let mixedURL = folder.appendingPathComponent("meeting-playback.m4a")
+        FileManager.default.createFile(atPath: mixedURL.path, contents: Data([0]))
+        let original = Transcription(
+            fileName: "Legacy meeting",
+            filePath: mixedURL.path,
+            rawTranscript: "Old",
+            status: .completed,
+            sourceType: .meeting
+        )
+
+        XCTAssertFalse(viewModel.canConfigureSpeakersForRetranscription(original))
+    }
+
     func testRetranscribeProgressSublineUsesSpeechEngineOverride() async throws {
         let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

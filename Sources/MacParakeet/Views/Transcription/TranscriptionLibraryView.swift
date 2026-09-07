@@ -781,6 +781,7 @@ struct TranscriptionLibraryView: View {
         let runID = UUID()
         let format = selectedBulkExportFormat
         let options = bulkExportOptions
+        let projectionProvider = viewModel.speakerAttributionProjectionProvider
 
         bulkExportRunID = runID
         bulkExportInProgress = true
@@ -801,7 +802,8 @@ struct TranscriptionLibraryView: View {
                         transcriptions: targets,
                         format: format,
                         options: options,
-                        directory: directory
+                        directory: directory,
+                        projectionProvider: projectionProvider
                     )
                 }
                 bulkExportWorkerTask = exportTask
