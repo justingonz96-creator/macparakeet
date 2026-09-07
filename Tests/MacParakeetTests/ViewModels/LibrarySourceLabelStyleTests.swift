@@ -50,30 +50,47 @@ final class LibrarySourceLabelStyleTests: XCTestCase {
     /// Video looks like the obvious place to drop the word, and it is not.
     /// Its platforms share one `play.rectangle.fill` glyph separated only by
     /// tint, so the text is the only thing naming the platform.
-    func testVideoFilterKeepsTheLabelBecauseItsPlatformsShareOneGlyph() {
+    func testVideoFilterUsesBrandMarks() {
         XCTAssertEqual(
             TranscriptionLibraryScope.all.sourceLabelStyle(for: .youtube),
-            .visible,
-            "Video resolves to several platforms that are not distinguishable by glyph alone"
+            .brandMarkOnly,
+            "Video has narrowed the family, so a platform named by its own logo need not repeat the word"
         )
     }
 
     // MARK: - Drift guard
 
     /// The style is only correct because it mirrors how `makeQuery(offset:)`
-    /// narrows each pair. If a new filter is added without deciding its style,
-    /// this fails rather than defaulting to a label that may be noise.
-    func testEveryScopeAndFilterPairHasADecidedStyle() {
-        let scopes: [TranscriptionLibraryScope] = [.all, .meetings]
-        for scope in scopes {
-            for filter in LibraryFilter.allCases {
-                let style = scope.sourceLabelStyle(for: filter)
-                XCTAssertTrue(
-                    LibrarySourceLabelStyle.allCases.contains(style),
-                    "No decided source-label style for (\(scope), \(filter.rawValue))"
-                )
-            }
+    /// narrows each pair. Assert the mapping itself, so adding a filter or
+    /// re-pointing an existing one fails here rather than silently hiding a
+    /// label over a query that still admits several sources.
+    func testMappingMatchesEveryQueryNarrowing() {
+        let expected: [(TranscriptionLibraryScope, LibraryFilter, LibrarySourceLabelStyle)] = [
+            (.all, .all, .visible),
+            (.all, .favorites, .visible),
+            (.all, .youtube, .brandMarkOnly),
+            (.all, .podcast, .hidden),
+            (.all, .local, .hidden),
+            (.all, .meeting, .hidden),
+            (.meetings, .all, .hidden),
+            (.meetings, .favorites, .hidden),
+            (.meetings, .youtube, .hidden),
+            (.meetings, .podcast, .hidden),
+            (.meetings, .local, .hidden),
+            (.meetings, .meeting, .hidden),
+        ]
+
+        for (scope, filter, style) in expected {
+            XCTAssertEqual(
+                scope.sourceLabelStyle(for: filter),
+                style,
+                "(\(scope), \(filter.rawValue)) must stay in step with makeQuery's narrowing"
+            )
         }
-        XCTAssertEqual(LibraryFilter.allCases.count, 6, "A new Library filter needs its own source-label decision")
+        XCTAssertEqual(
+            expected.count,
+            2 * LibraryFilter.allCases.count,
+            "Every scope and filter pair needs a decided source-label style"
+        )
     }
 }

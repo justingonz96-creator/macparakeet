@@ -241,7 +241,11 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
             }
 
             HStack(spacing: 6) {
-                TranscriptionSourceLabel(source: sourceDisplay, style: sourceLabelStyle)
+                // Guarded rather than relying on an EmptyView contributing no
+                // spacing, so a hidden label cannot shift the date 6pt right.
+                if sourceLabelStyle != .hidden {
+                    TranscriptionSourceLabel(source: sourceDisplay, style: sourceLabelStyle)
+                }
 
                 Text(transcription.createdAt.relativeFormatted)
                     .foregroundStyle(DesignSystem.Colors.textTertiary)

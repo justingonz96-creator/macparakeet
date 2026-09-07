@@ -26,6 +26,11 @@ public enum LibrarySourceLabelStyle: String, Sendable, Equatable, CaseIterable {
     /// Icon and text. The context admits more than one source, so the label
     /// carries information the filter does not.
     case visible
+    /// Icon alone where a source has a brand mark that identifies it on sight;
+    /// icon and text otherwise. The context has narrowed the source to one
+    /// family, so the word repeats the filter for anything already named by
+    /// its logo.
+    case brandMarkOnly
     /// Nothing. The context admits exactly one source, so the label can only
     /// restate the filter.
     case hidden
@@ -48,12 +53,8 @@ extension TranscriptionLibraryScope {
             switch filter {
             case .all, .favorites:
                 return .visible
-            // Video narrows to one stored source type that still resolves to
-            // several platforms, and they share a single `play.rectangle.fill`
-            // glyph that differs only by tint. The text is the only thing
-            // telling an X post from a YouTube video here, so it stays.
             case .youtube:
-                return .visible
+                return .brandMarkOnly
             case .podcast, .local, .meeting:
                 return .hidden
             }
