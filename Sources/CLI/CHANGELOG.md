@@ -89,6 +89,8 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ## [Unreleased]
 
+## [3.3.0] — 2026-09-06
+
 ### Added
 
 - Prompt JSON gains additive optional inference metadata. `prompts list/show`
