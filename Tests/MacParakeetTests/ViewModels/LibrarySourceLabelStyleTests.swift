@@ -13,12 +13,12 @@ final class LibrarySourceLabelStyleTests: XCTestCase {
     func testMixedContextsShowTheFullLabel() {
         XCTAssertEqual(
             TranscriptionLibraryScope.all.sourceLabelStyle(for: .all),
-            .full,
+            .visible,
             "All admits every source, so the label is the only source attribution"
         )
         XCTAssertEqual(
             TranscriptionLibraryScope.all.sourceLabelStyle(for: .favorites),
-            .full,
+            .visible,
             "Favorites spans sources, so a starred meeting and a starred podcast must stay distinguishable"
         )
     }
@@ -45,13 +45,16 @@ final class LibrarySourceLabelStyleTests: XCTestCase {
         }
     }
 
-    // MARK: - The multi-platform filter keeps the glyph, drops the word
+    // MARK: - The multi-platform filter keeps its label
 
-    func testVideoFilterCollapsesToTheIcon() {
+    /// Video looks like the obvious place to drop the word, and it is not.
+    /// Its platforms share one `play.rectangle.fill` glyph separated only by
+    /// tint, so the text is the only thing naming the platform.
+    func testVideoFilterKeepsTheLabelBecauseItsPlatformsShareOneGlyph() {
         XCTAssertEqual(
             TranscriptionLibraryScope.all.sourceLabelStyle(for: .youtube),
-            .iconOnly,
-            "Video spans several platforms, so the mark still carries information but the word repeats the filter"
+            .visible,
+            "Video resolves to several platforms that are not distinguishable by glyph alone"
         )
     }
 

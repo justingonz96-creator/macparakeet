@@ -10,7 +10,7 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
     var searchText: String = ""
     var isSelected: Bool = false
     var showsSelectionControls: Bool = false
-    var sourceLabelStyle: LibrarySourceLabelStyle = .full
+    var sourceLabelStyle: LibrarySourceLabelStyle = .visible
     var onTap: () -> Void
     @ViewBuilder var menuContent: () -> MenuContent
 

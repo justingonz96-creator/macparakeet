@@ -140,16 +140,19 @@ save a preference. An explicit Grid or List choice is global across Library
 contexts and persists across launches; the separate Meetings workspace is unchanged.
 List mode reuses the date-grouped row presentation and adds the transcription
 source beside the title; thumbnail cards also show the source. Source
-attribution is drawn only at the level the active context leaves open, resolved
-from the same `(scope, filter)` pair as the library query: `All` and
-`Favorites` admit any source and show the icon with its text; `Video` narrows
-to one shared URL source type that still spans several platforms, so the mark
-is kept and the word dropped; `Podcasts`, `Local`, `Meetings`, and every filter
-inside the Meetings workspace admit exactly one source, so the label is omitted
-rather than repeating the filter. A `Video` item whose glyph is a generic
-symbol rather than a platform logo (SoundCloud audio, an unrecognized host)
-keeps its text, since collapsing it would drop the audio-versus-video
-distinction. Screen readers always receive the full source name. Search, filters,
+attribution is drawn only where the active context leaves the source open,
+resolved from the same `(scope, filter)` pair as the library query. `All`,
+`Favorites`, and `Video` can each show more than one source, so their rows and
+cards carry the icon with its text. `Podcasts`, `Local`, `Meetings`, and every
+filter inside the Meetings workspace admit exactly one source, so the label is
+omitted rather than repeating the filter.
+
+The label is shown whole or not at all; its text is never dropped while the
+glyph stays. Seven of the sources reachable under `Video` share the
+`play.rectangle.fill` symbol and are separated only by tint, so an icon alone
+names no platform, and names nothing at all to a reader who cannot separate
+those tints. Distinct per-platform marks would be a prerequisite for collapsing
+that label, not a consequence of it. Search, filters,
 contextual actions, pagination, export, and bulk selection behave identically in
 either layout.
 

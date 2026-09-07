@@ -16,20 +16,16 @@ public enum TranscriptionLibraryScope: Sendable {
     case meetings
 }
 
-/// How much of a row/card's source attribution is worth drawing.
+/// Whether a row/card's source attribution is worth drawing.
 ///
 /// A source label that repeats the active filter is noise: browsing Podcasts
 /// and reading "Podcast" on every card answers a question the filter already
 /// answered. The label only earns its place when the current context leaves
 /// the source genuinely open.
 public enum LibrarySourceLabelStyle: String, Sendable, Equatable, CaseIterable {
-    /// Icon and text. The context admits several unrelated sources, so the
-    /// label is the only thing separating a meeting from a podcast episode.
-    case full
-    /// Icon alone. The context narrows the source to one family whose members
-    /// are told apart by a recognizable platform mark, so the word is
-    /// redundant with both the filter and the glyph.
-    case iconOnly
+    /// Icon and text. The context admits more than one source, so the label
+    /// carries information the filter does not.
+    case visible
     /// Nothing. The context admits exactly one source, so the label can only
     /// restate the filter.
     case hidden
@@ -42,8 +38,8 @@ extension TranscriptionLibraryScope {
     ///
     /// Kept in step with `makeQuery(offset:)`, which maps the same pairs onto
     /// a stored `SourceType`. A pair whose query pins one `SourceType` that
-    /// resolves to exactly one display is `.hidden`; the shared URL source
-    /// type resolves to nine different platforms, so it is `.iconOnly`.
+    /// resolves to exactly one display is `.hidden`; anything that can still
+    /// resolve to more than one display keeps its label.
     public func sourceLabelStyle(for filter: LibraryFilter) -> LibrarySourceLabelStyle {
         switch self {
         case .meetings:
@@ -51,9 +47,13 @@ extension TranscriptionLibraryScope {
         case .all:
             switch filter {
             case .all, .favorites:
-                return .full
+                return .visible
+            // Video narrows to one stored source type that still resolves to
+            // several platforms, and they share a single `play.rectangle.fill`
+            // glyph that differs only by tint. The text is the only thing
+            // telling an X post from a YouTube video here, so it stays.
             case .youtube:
-                return .iconOnly
+                return .visible
             case .podcast, .local, .meeting:
                 return .hidden
             }
