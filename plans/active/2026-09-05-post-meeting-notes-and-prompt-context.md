@@ -2,10 +2,11 @@
 
 > **Extracted upstream scope:** Saved-meeting notes, autosave, durable drafts,
 > notes-context snapshots, and lifecycle/action gates are included in this branch.
-> Rich Markdown rendering is a separate upstream PR; its design and historical
-> fork QA findings below do not certify a renderer included in this branch.
-> Notes are proposed in [#959](https://github.com/moona3k/macparakeet/pull/959);
-> the separate renderer proposal is [#957](https://github.com/moona3k/macparakeet/pull/957).
+> Rich Markdown rendering landed separately in
+> [#957](https://github.com/moona3k/macparakeet/pull/957) and is preserved by this
+> integration. This document retains the original design and historical fork QA;
+> current-candidate validation is recorded in
+> [#959](https://github.com/moona3k/macparakeet/pull/959).
 > **Priority:** P2
 > **Date:** 2026-09-05
 > **Issues:** [#889](https://github.com/moona3k/macparakeet/issues/889),
@@ -26,7 +27,7 @@ or type `{{userNotes}}`. That existing template variable remains supported for
 backward compatibility and advanced control over where notes appear in a
 custom prompt.
 
-## Verified Current State
+## Baseline Before This Feature
 
 - Live meetings already provide a plaintext Notes tab backed by
   `MeetingNotesViewModel` and a 250 ms debounced write through

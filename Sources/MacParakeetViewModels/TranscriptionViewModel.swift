@@ -262,6 +262,7 @@ public final class TranscriptionViewModel {
     private var speakerRenameArtifactRefreshTokens: [UUID: UUID] = [:]
     private var speakerRenameArtifactRefreshRequestedGenerations: [UUID: Int] = [:]
     private var speakerRenameArtifactRefreshCompletedGenerations: [UUID: Int] = [:]
+    private var meetingArtifactRefreshTasks: [UUID: (token: UUID, task: Task<Bool, Never>)] = [:]
     private var meetingNotesSaveTask: Task<Bool, Never>?
     // Queue-tail identity includes artifact retries; error ownership belongs
     // only to note writes so an artifact retry cannot suppress their failures.
@@ -1921,7 +1922,7 @@ public final class TranscriptionViewModel {
     private func enqueueMeetingArtifactRefresh(transcriptionID: UUID, generation: Int) {
         guard speakerRenameGenerations[transcriptionID] == generation,
             let transcriptionRepo,
-            let promptResultRepo
+            promptResultRepo != nil
         else {
             return
         }
@@ -1934,10 +1935,9 @@ public final class TranscriptionViewModel {
             generation
         )
 
-        let artifactStore = meetingArtifactStore
         let logger = logger
         let task = Task.detached(priority: .utility) {
-            [weak self, previousTask, transcriptionRepo, promptResultRepo, artifactStore, logger] in
+            [weak self, previousTask, transcriptionRepo, logger] in
             await previousTask?.value
             let shouldMaterialize = await MainActor.run { [weak self] in
                 guard let self else { return false }
@@ -1961,11 +1961,9 @@ public final class TranscriptionViewModel {
                     else {
                         break
                     }
-                    let promptResults = try promptResultRepo.fetchAll(transcriptionId: transcriptionID)
-                    _ = try await artifactStore.materialize(
-                        transcription: persisted,
-                        promptResults: promptResults
-                    )
+                    guard await self?.refreshMeetingArtifacts(transcription: persisted) == true else {
+                        break
+                    }
                 } catch {
                     let errorType = TelemetryErrorClassifier.classify(error)
                     logger.error("speaker_rename_artifact_refresh_failed error_type=\(errorType, privacy: .public)")
@@ -2079,29 +2077,44 @@ public final class TranscriptionViewModel {
         }
     }
 
-    /// Refreshes derived meeting artifacts. Failures are logged and returned to
-    /// the caller without rolling back or throwing past the canonical DB write.
+    /// Serializes notes and rename artifact writes per meeting. Read canonical
+    /// state after the previous write finishes so queued snapshots cannot restore
+    /// old notes or metadata. A derived-file failure never rolls back the DB.
     @discardableResult
     private func refreshMeetingArtifacts(transcription: Transcription) async -> Bool {
-        guard let promptResultRepo,
+        guard let transcriptionRepo, let promptResultRepo,
             transcription.sourceType == .meeting
         else { return true }
 
-        do {
-            let artifactStore = meetingArtifactStore
-            _ = try await Task.detached(priority: .utility) {
-                let promptResults = try promptResultRepo.fetchAll(transcriptionId: transcription.id)
-                try await artifactStore.materialize(
-                    transcription: transcription,
+        let transcriptionID = transcription.id
+        let previousTask = meetingArtifactRefreshTasks[transcriptionID]?.task
+        let token = UUID()
+        let artifactStore = meetingArtifactStore
+        let logger = logger
+        let task = Task.detached(priority: .utility) {
+            _ = await previousTask?.value
+            do {
+                guard let persisted = try transcriptionRepo.fetch(id: transcriptionID),
+                    persisted.sourceType == .meeting
+                else { return false }
+                let promptResults = try promptResultRepo.fetchAll(transcriptionId: transcriptionID)
+                _ = try await artifactStore.materialize(
+                    transcription: persisted,
                     promptResults: promptResults
                 )
-            }.value
-            return true
-        } catch {
-            logger.warning(
-                "Failed to refresh meeting artifact for transcription \(transcription.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)"
-            )
-            return false
+                return true
+            } catch {
+                logger.warning(
+                    "Failed to refresh meeting artifact for transcription \(transcriptionID.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                return false
+            }
         }
+        meetingArtifactRefreshTasks[transcriptionID] = (token, task)
+        let refreshed = await task.value
+        if meetingArtifactRefreshTasks[transcriptionID]?.token == token {
+            meetingArtifactRefreshTasks[transcriptionID] = nil
+        }
+        return refreshed
     }
 }

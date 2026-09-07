@@ -2249,6 +2249,69 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(mockRepo.fetch(id: meeting.id)).userNotes, "Final notes")
     }
 
+    func testNotesArtifactRefreshWaitsForTitleRename() async throws {
+        try await assertNotesArtifactRefreshWaitsForRename(speakerRename: false)
+    }
+
+    func testNotesArtifactRefreshWaitsForSpeakerRename() async throws {
+        try await assertNotesArtifactRefreshWaitsForRename(speakerRename: true)
+    }
+
+    private func assertNotesArtifactRefreshWaitsForRename(speakerRename: Bool) async throws {
+        let firstStarted = expectation(description: "Rename artifact write started")
+        let overlappingWrite = expectation(description: "Notes cannot write artifacts while rename is suspended")
+        overlappingWrite.isInverted = true
+        let (releaseFirst, continuation) = AsyncStream<Void>.makeStream()
+        defer { continuation.finish() }
+        var releasedFirst = false
+        let store = RecordingMeetingArtifactStore(beforeMaterialize: { call in
+            if call == 1 {
+                firstStarted.fulfill()
+                for await _ in releaseFirst { break }
+            } else {
+                await MainActor.run {
+                    if !releasedFirst { overlappingWrite.fulfill() }
+                }
+            }
+        })
+        viewModel = TranscriptionViewModel(meetingArtifactStore: store)
+        let fixture = try makeMeetingArtifactFixture(namePrefix: "notes-rename-serialized")
+        defer { try? FileManager.default.removeItem(at: fixture.folderURL) }
+        let meeting = fixture.meeting
+        mockRepo.transcriptions = [meeting]
+        viewModel.configure(
+            transcriptionService: mockService, transcriptionRepo: mockRepo,
+            promptResultRepo: mockPromptResultRepo
+        )
+        viewModel.currentTranscription = meeting
+        if speakerRename {
+            viewModel.renameSpeaker(id: "S1", to: "Alice")
+        } else {
+            viewModel.renameCurrentTranscription(to: "Renamed meeting")
+        }
+        await fulfillment(of: [firstStarted], timeout: 2)
+        let subject = try XCTUnwrap(viewModel)
+        let notesSave = Task { await subject.updateMeetingNotes(for: meeting, to: "Final notes") }
+        // The database write must proceed even while derived files are blocked.
+        try await waitUntil { self.viewModel.currentTranscription?.userNotes == "Final notes" }
+        await fulfillment(of: [overlappingWrite], timeout: 0.2)
+        releasedFirst = true
+        continuation.yield(())
+        let saved = await notesSave.value
+        XCTAssertTrue(saved)
+        let wroteBoth = await store.waitForMaterializeCallCount(2)
+        XCTAssertTrue(wroteBoth)
+        let calls = await store.materializeCalls
+        let concurrency = await store.maxConcurrentMaterializeCount
+        XCTAssertEqual(concurrency, 1)
+        XCTAssertEqual(calls.last?.transcription.userNotes, "Final notes")
+        if speakerRename {
+            XCTAssertEqual(calls.last?.transcription.speakers?.first?.label, "Alice")
+        } else {
+            XCTAssertEqual(calls.last?.transcription.fileName, "Renamed meeting")
+        }
+    }
+
     func testCapturedMeetingNotesSaveDoesNotOverwriteNewSelection() async throws {
         let firstMeeting = Transcription(
             fileName: "First Meeting",
@@ -4588,6 +4651,7 @@ private struct MaterializeCall: Sendable {
 
 private actor RecordingMeetingArtifactStore: MeetingArtifactStoring {
     private let materializeDelay: Duration?
+    private let beforeMaterialize: (@Sendable (Int) async -> Void)?
     private let shouldFail: Bool
     private let materializeCallCountSignal = StateSignal<Int>()
     private var calls: [MaterializeCall] = []
@@ -4595,8 +4659,13 @@ private actor RecordingMeetingArtifactStore: MeetingArtifactStoring {
     private(set) var startedMaterializeCount = 0
     private(set) var maxConcurrentMaterializeCount = 0
 
-    init(materializeDelay: Duration? = nil, shouldFail: Bool = false) {
+    init(
+        materializeDelay: Duration? = nil,
+        shouldFail: Bool = false,
+        beforeMaterialize: (@Sendable (Int) async -> Void)? = nil
+    ) {
         self.materializeDelay = materializeDelay
+        self.beforeMaterialize = beforeMaterialize
         self.shouldFail = shouldFail
     }
 
@@ -4622,6 +4691,7 @@ private actor RecordingMeetingArtifactStore: MeetingArtifactStoring {
         startedMaterializeCount += 1
         activeMaterializeCount += 1
         maxConcurrentMaterializeCount = max(maxConcurrentMaterializeCount, activeMaterializeCount)
+        await beforeMaterialize?(startedMaterializeCount)
         if let materializeDelay {
             try? await Task.sleep(for: materializeDelay)
         }
