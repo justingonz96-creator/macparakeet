@@ -303,7 +303,7 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
         guard !isModelCached(cacheRoot: cacheRoot) else { return cacheRoot }
         onProgress?("Preparing Nemotron model download...")
         let progressHandler = makeDownloadProgressHandler(onProgress)
-        try await DownloadUtils.downloadRepo(
+        try await ModelHub.download(
             .nemotronStreaming1120,
             to: modelsBaseDirectory(),
             progressHandler: progressHandler
@@ -398,7 +398,7 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
 
     private nonisolated static func makeDownloadProgressHandler(
         _ onProgress: (@Sendable (String) -> Void)?
-    ) -> DownloadUtils.ProgressHandler? {
+    ) -> ProgressHandler? {
         guard let onProgress else { return nil }
         let clock = ContinuousClock()
         let lastProgressUpdate = OSAllocatedUnfairLock(initialState: clock.now - .seconds(1))
@@ -424,7 +424,7 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
         }
     }
 
-    private nonisolated static func progressMessage(from progress: DownloadUtils.DownloadProgress) -> String? {
+    private nonisolated static func progressMessage(from progress: DownloadProgress) -> String? {
         switch progress.phase {
         case .listing:
             return "Preparing Nemotron model download..."
@@ -472,6 +472,8 @@ public actor NemotronEnglishEngine: STTTranscribing, NativeLiveDictating {
             case .processingFailed(let message):
                 return .transcriptionFailed(message)
             case .unsupportedPlatform(let message):
+                return .engineStartFailed(message)
+            case .encoderInstantiationFailed(let message):
                 return .engineStartFailed(message)
             case .streamingConversionFailed, .fileAccessFailed:
                 return .transcriptionFailed(asrError.localizedDescription)

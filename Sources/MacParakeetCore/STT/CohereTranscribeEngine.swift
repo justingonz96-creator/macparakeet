@@ -758,7 +758,7 @@ public actor CohereTranscribeEngine: STTTranscribing {
         AppPaths.fluidAudioModelsDirURL
     }
 
-    /// `…/Models/cohere-transcribe/q8` — `DownloadUtils.downloadRepo` strips the
+    /// `…/Models/cohere-transcribe/q8` — `ModelHub.download` strips the
     /// repo's `q8` subPath prefix but `Repo.cohereTranscribeCoreml.folderName`
     /// re-adds it, so the encoder, v2 decoder and `vocab.json` all land in this
     /// single directory (which is what `CoherePipeline.loadModels` expects).
@@ -815,7 +815,7 @@ public actor CohereTranscribeEngine: STTTranscribing {
         guard !isModelCached(cacheRoot: cacheRoot) else { return cacheRoot }
         onProgress?("Preparing Cohere model download...")
         let progressHandler = makeDownloadProgressHandler(onProgress)
-        try await DownloadUtils.downloadRepo(
+        try await ModelHub.download(
             .cohereTranscribeCoreml,
             to: modelsBaseDirectory(),
             progressHandler: progressHandler
@@ -865,7 +865,7 @@ public actor CohereTranscribeEngine: STTTranscribing {
 
     private nonisolated static func makeDownloadProgressHandler(
         _ onProgress: (@Sendable (String) -> Void)?
-    ) -> DownloadUtils.ProgressHandler? {
+    ) -> ProgressHandler? {
         guard let onProgress else { return nil }
         let clock = ContinuousClock()
         let lastProgressUpdate = OSAllocatedUnfairLock(initialState: clock.now - .seconds(1))
@@ -891,7 +891,7 @@ public actor CohereTranscribeEngine: STTTranscribing {
         }
     }
 
-    private nonisolated static func progressMessage(from progress: DownloadUtils.DownloadProgress) -> String? {
+    private nonisolated static func progressMessage(from progress: DownloadProgress) -> String? {
         switch progress.phase {
         case .listing:
             return "Preparing Cohere model download..."
