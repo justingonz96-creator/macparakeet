@@ -641,6 +641,22 @@ final class DatabaseManagerTests: XCTestCase {
         }
     }
 
+    func testPromptMeetingNotesContextColumnsExistAndDefaultFalse() throws {
+        let manager = try DatabaseManager()
+        try manager.dbQueue.read { db in
+            let promptColumns = try db.columns(in: "prompts").map(\.name)
+            let summaryColumns = try db.columns(in: "summaries").map(\.name)
+            XCTAssertTrue(promptColumns.contains("includeMeetingNotes"))
+            XCTAssertTrue(summaryColumns.contains("includeMeetingNotesSnapshot"))
+
+            let promptDefault = try Bool.fetchOne(
+                db,
+                sql: "SELECT includeMeetingNotes FROM prompts LIMIT 1"
+            )
+            XCTAssertEqual(promptDefault, false)
+        }
+    }
+
     func testTranscriptionUserNotesRoundTrips() throws {
         let manager = try DatabaseManager()
         let transcriptionID = UUID()
@@ -689,7 +705,8 @@ final class DatabaseManagerTests: XCTestCase {
                 promptName: "Summary",
                 promptContent: "...",
                 content: "Generated summary",
-                userNotesSnapshot: "snapshot of notes at gen time"
+                userNotesSnapshot: "snapshot of notes at gen time",
+                includeMeetingNotesSnapshot: true
             ).insert(db)
         }
 
@@ -697,6 +714,7 @@ final class DatabaseManagerTests: XCTestCase {
             try PromptResult.fetchOne(db, key: promptResultID)
         }
         XCTAssertEqual(loaded?.userNotesSnapshot, "snapshot of notes at gen time")
+        XCTAssertEqual(loaded?.includeMeetingNotesSnapshot, true)
     }
 
     func testReconcileBuiltInPromptsHonorsAutoRunGuardWhenZeroAutoRun() throws {
