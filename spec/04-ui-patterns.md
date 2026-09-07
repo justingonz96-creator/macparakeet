@@ -1239,6 +1239,40 @@ Toggle on   → setupDiscoverContent() again (no relaunch)
 
 ---
 
+## LLM Markdown Content
+
+`MarkdownContentView` is the single presentation boundary for generated
+assistant content in Prompt Results, saved Chat, and live Ask. It renders the
+same CommonMark/GFM subset on every surface, including nested lists, static
+checked/unchecked task items, fenced code, and horizontally scrollable tables.
+The surrounding pane owns vertical scrolling; wide Markdown blocks must not
+expand the transcript detail or live-meeting panel.
+
+Static and streaming content share a serial snapshot renderer. Each appearance
+subscribes afresh and receives the latest content; only the newest pending
+snapshot is retained while parsing. Closing or hiding a pane cancels its
+consumer, and a cancelled parse cannot publish over a replacement renderer.
+Returning to the pane must continue rendering new snapshots.
+
+Generated Markdown remains read-only and selectable. Task boxes communicate
+their checked state but are not controls. Headings and table cells preserve the
+renderer accessibility structure. Fonts and colors map to `DesignSystem` and
+must remain appearance-aware.
+
+Treat rendered model output as untrusted presentation data:
+
+- image loading is disabled, including remote, local-file, bundled, and data URL
+  sources;
+- only `http` and `https` links may be handed to the system browser;
+- activation of `file:`, `javascript:`, custom schemes, and relative
+  destinations is discarded;
+- raw HTML does not create a web view or executable embedded content;
+- Copy Result and full-result exports continue using the original Markdown
+  source. Table-only Copy and Download use the renderer's normalized Markdown
+  for that table.
+
+---
+
 ## Design System
 
 All design tokens are centralized in `DesignSystem.swift` (`Views/Components/DesignSystem.swift`). A debug-only `DesignSystemGalleryView` (`#if DEBUG`) renders every token in one preview canvas — open it from Xcode when auditing for drift.

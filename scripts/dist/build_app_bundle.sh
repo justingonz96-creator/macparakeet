@@ -22,7 +22,7 @@ set -euo pipefail
 #   MIN_MACOS_VERSION   (default: 14.2)
 #   UNIVERSAL           (default: 0) build universal (arm64+x86_64) if 1
 #   SKIP_BUILD          (default: 0) reuse existing Release binary if 1
-#   BUILD_SYSTEM        (default: xcodebuild) 'xcodebuild' or 'swiftpm'
+#   BUILD_SYSTEM        (default: xcodebuild) app distribution requires xcodebuild
 #   XCODE_DERIVED_DATA  (default: .build/xcode-dist) derived data path for xcodebuild
 #   FFMPEG_PATH         (default: auto-download static build) source ffmpeg binary to bundle
 #   FFMPEG_VERSION      (default: release) 'release' or 'snapshot' from ffmpeg.martin-riedl.de
@@ -57,6 +57,10 @@ MIN_MACOS_VERSION="${MIN_MACOS_VERSION:-14.2}"
 UNIVERSAL="${UNIVERSAL:-0}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 BUILD_SYSTEM="${BUILD_SYSTEM:-xcodebuild}"
+if [[ "$BUILD_SYSTEM" != "xcodebuild" ]]; then
+  echo "App distribution requires BUILD_SYSTEM=xcodebuild for compiled assets and portable resource-bundle lookup. Unset BUILD_SYSTEM or set it to xcodebuild; swift build/test and SwiftPM CLI builds remain supported." >&2
+  exit 1
+fi
 BUILD_SOURCE="${BUILD_SOURCE:-dist-${BUILD_SYSTEM}-release}"
 XCODE_DERIVED_DATA="${XCODE_DERIVED_DATA:-$ROOT_DIR/.build/xcode-dist}"
 
@@ -76,29 +80,6 @@ if [[ "$VERSION" == "0.0.0" ]]; then
   echo "Warning: VERSION not set; building a local/dev bundle with CFBundleShortVersionString=0.0.0." >&2
   echo "Set VERSION=X.Y.Z for release builds so Sparkle and release metadata are correct." >&2
 fi
-
-build_swiftpm() {
-  if [[ "$SKIP_BUILD" == "1" ]]; then
-    echo "[1/4] Skipping build (SKIP_BUILD=1)…"
-    return 0
-  fi
-
-  if [[ "$UNIVERSAL" == "1" ]]; then
-    echo "[1/4] Building SwiftPM product (universal Release)…"
-  else
-    echo "[1/4] Building SwiftPM product (Release)…"
-  fi
-
-  pushd "$ROOT_DIR" >/dev/null
-  if [[ "$UNIVERSAL" == "1" ]]; then
-    swift build -c release --arch arm64 --arch x86_64 --product MacParakeet
-    swift build -c release --arch arm64 --arch x86_64 --product macparakeet-cli
-  else
-    swift build -c release --product MacParakeet
-    swift build -c release --product macparakeet-cli
-  fi
-  popd >/dev/null
-}
 
 build_cli_swiftpm() {
   if [[ "$SKIP_BUILD" == "1" ]]; then
@@ -143,23 +124,24 @@ prepare_xcode_git_submodule_support() {
 }
 
 build_xcodebuild() {
-  # Prefer xcodebuild so SwiftPM resource bundles are produced (notably mlx-swift_Cmlx.bundle with default.metallib).
+  # Xcode compiles assets and generates resource accessors for a relocatable app bundle.
   if [[ "$SKIP_BUILD" == "1" ]]; then
-    echo "[1/4] Skipping build (SKIP_BUILD=1)…"
-    return 0
+    echo "[1/4] Reusing existing Xcode Release products (SKIP_BUILD=1)…"
+  else
+    prepare_xcode_git_submodule_support
   fi
 
-  prepare_xcode_git_submodule_support
-
   if [[ "$UNIVERSAL" == "1" ]]; then
-    echo "[1/4] Building via xcodebuild (universal Release)…"
     local dd_arm="$XCODE_DERIVED_DATA-arm64"
     local dd_x86="$XCODE_DERIVED_DATA-x86_64"
 
-    xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=arm64" \
-      -derivedDataPath "$dd_arm" CODE_SIGNING_ALLOWED=NO >/dev/null
-    xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=x86_64" \
-      -derivedDataPath "$dd_x86" CODE_SIGNING_ALLOWED=NO >/dev/null
+    if [[ "$SKIP_BUILD" != "1" ]]; then
+      echo "[1/4] Building via xcodebuild (universal Release)…"
+      xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=arm64" \
+        -derivedDataPath "$dd_arm" -skipMacroValidation CODE_SIGNING_ALLOWED=NO >/dev/null
+      xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=x86_64" \
+        -derivedDataPath "$dd_x86" -skipMacroValidation CODE_SIGNING_ALLOWED=NO >/dev/null
+    fi
 
     local bin_arm="$dd_arm/Build/Products/Release/MacParakeet"
     local bin_x86="$dd_x86/Build/Products/Release/MacParakeet"
@@ -175,11 +157,13 @@ build_xcodebuild() {
     local product_dir="$dd_arm/Build/Products/Release"
     copy_resource_bundles "$product_dir"
   else
-    echo "[1/4] Building via xcodebuild (Release)…"
     local dd="$XCODE_DERIVED_DATA"
-    # Apple Silicon is the supported shipping target; lock to arm64 to avoid ambiguous destinations.
-    xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=arm64" \
-      -derivedDataPath "$dd" CODE_SIGNING_ALLOWED=NO >/dev/null
+    if [[ "$SKIP_BUILD" != "1" ]]; then
+      echo "[1/4] Building via xcodebuild (Release)…"
+      # Apple Silicon is the supported shipping target; lock to arm64 to avoid ambiguous destinations.
+      xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=arm64" \
+        -derivedDataPath "$dd" -skipMacroValidation CODE_SIGNING_ALLOWED=NO >/dev/null
+    fi
 
     local product_dir="$dd/Build/Products/Release"
     local bin="$product_dir/MacParakeet"
@@ -234,23 +218,8 @@ copy_cli_binary() {
   echo "Bundled CLI: $MACOS_DIR/macparakeet-cli"
 }
 
-if [[ "$BUILD_SYSTEM" == "swiftpm" ]]; then
-  build_swiftpm
-  # Locate the release binary produced by SwiftPM.
-  BIN_DIR="$(swiftpm_release_bin_dir MacParakeet)"
-  BIN_PATH="$BIN_DIR/MacParakeet"
-  if [[ ! -f "$BIN_PATH" ]]; then
-    echo "Failed to locate Release binary at: $BIN_PATH" >&2
-    exit 1
-  fi
-
-  echo "[2/4] Assembling app bundle…"
-  cp "$BIN_PATH" "$MACOS_DIR/$APP_NAME"
-  chmod +x "$MACOS_DIR/$APP_NAME"
-else
-  build_xcodebuild
-  echo "[2/4] Assembling app bundle…"
-fi
+build_xcodebuild
+echo "[2/4] Assembling app bundle…"
 
 copy_cli_binary
 
@@ -571,21 +540,15 @@ bundle_meeting_echo_assets
 # Embed Sparkle.framework for auto-updates.
 #
 # Sparkle is linked via @rpath and must live in Contents/Frameworks/.
-# For xcodebuild, the framework is produced in the derived-data product dir.
-# For SwiftPM, it's in .build/<triple>/release/.
+# Xcode produces the framework in its derived-data product directory.
 echo "Embedding Sparkle.framework…"
-SPARKLE_FW=""
-if [[ "$BUILD_SYSTEM" == "xcodebuild" ]]; then
-  SPARKLE_FW="$XCODE_DERIVED_DATA/Build/Products/Release/PackageFrameworks/Sparkle.framework"
-  # Fallback: xcodebuild may place it differently
-  if [[ ! -d "$SPARKLE_FW" ]]; then
-    SPARKLE_FW="$(find "$XCODE_DERIVED_DATA" -type d -name "Sparkle.framework" -path "*/Release/*" 2>/dev/null | head -n 1)"
-  fi
-else
-  SPARKLE_FW="$(find "$ROOT_DIR/.build" -type d -name "Sparkle.framework" -path "*/release/*" -not -path "*/artifacts/*" 2>/dev/null | head -n 1)"
-  if [[ ! -d "$SPARKLE_FW" ]]; then
-    SPARKLE_FW="$(find "$ROOT_DIR/.build" -type d -name "Sparkle.framework" -not -path "*/artifacts/*" 2>/dev/null | head -n 1)"
-  fi
+SPARKLE_PRODUCTS="$XCODE_DERIVED_DATA"
+if [[ "$UNIVERSAL" == "1" ]]; then
+  SPARKLE_PRODUCTS="$XCODE_DERIVED_DATA-arm64"
+fi
+SPARKLE_FW="$SPARKLE_PRODUCTS/Build/Products/Release/PackageFrameworks/Sparkle.framework"
+if [[ ! -d "$SPARKLE_FW" ]]; then
+  SPARKLE_FW="$(find "$SPARKLE_PRODUCTS" -type d -name "Sparkle.framework" -path "*/Release/*" 2>/dev/null | head -n 1)"
 fi
 
 if [[ -z "$SPARKLE_FW" || ! -d "$SPARKLE_FW" ]]; then
@@ -633,6 +596,7 @@ fi
 if [[ -f "$ROOT_DIR/THIRD_PARTY_LICENSES.md" ]]; then
   cp "$ROOT_DIR/THIRD_PARTY_LICENSES.md" "$LEGAL_DIR/THIRD_PARTY_LICENSES.md"
 fi
+cp "$ROOT_DIR/Sources/MacParakeet/Resources/Legal/MarkdownDependencies.txt" "$LEGAL_DIR/MarkdownDependencies.txt"
 echo "Bundled legal notices: $LEGAL_DIR"
 
 echo "[3/4] Writing Info.plist…"
@@ -772,14 +736,10 @@ echo "Sparkle trust anchor OK: SUPublicEDKey present and matches, feed is HTTPS.
 # Usage:  atos -o dist/MacParakeet.dSYM -arch arm64 -l <slide> <address>
 echo "Archiving dSYM for crash symbolication…"
 DSYM_ARCHIVED=0
-if [[ "$BUILD_SYSTEM" == "xcodebuild" ]]; then
-  if [[ "$UNIVERSAL" == "1" ]]; then
-    DSYM_SRC="$XCODE_DERIVED_DATA-arm64/Build/Products/Release/MacParakeet.dSYM"
-  else
-    DSYM_SRC="$XCODE_DERIVED_DATA/Build/Products/Release/MacParakeet.dSYM"
-  fi
+if [[ "$UNIVERSAL" == "1" ]]; then
+  DSYM_SRC="$XCODE_DERIVED_DATA-arm64/Build/Products/Release/MacParakeet.dSYM"
 else
-  DSYM_SRC="$BIN_DIR/MacParakeet.dSYM"
+  DSYM_SRC="$XCODE_DERIVED_DATA/Build/Products/Release/MacParakeet.dSYM"
 fi
 
 if [[ -d "$DSYM_SRC" ]]; then

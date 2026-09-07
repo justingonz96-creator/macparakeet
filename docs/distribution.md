@@ -2,7 +2,11 @@
 
 > Status: **ACTIVE** - Build, sign, notarize, and auto-update workflow
 
-This repo is SwiftPM-based, so we assemble a `.app` bundle manually for Developer ID distribution.
+This repo uses Swift packages. App distribution builds those packages through
+Xcode and assembles a `.app` bundle for Developer ID distribution. Xcode compiles
+asset catalogs and generates resource lookups that work after installation on
+another Mac. `BUILD_SYSTEM=swiftpm` is rejected for app distribution; ordinary
+`swift build`, `swift test`, and SwiftPM CLI builds remain supported.
 
 ## 1) Build the app bundle
 
