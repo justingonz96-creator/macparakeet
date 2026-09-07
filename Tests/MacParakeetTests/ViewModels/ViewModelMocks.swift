@@ -149,7 +149,21 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
     var updateFilePathError: Error?
     var updateSpeakersError: Error?
     var updateSpeakersHandler: (@Sendable (UUID, [SpeakerInfo]?) throws -> Void)?
+    var userNotesReadBackError: Error?
+    var userNotesUpdateHandler: (@Sendable () throws -> Void)?
+    private var failNextUserNotesReadBack = false
     var saveError: Error?
+
+    func savePreservingUserMetadata(
+        _ transcription: Transcription, originalFileName: String
+    ) throws -> Transcription {
+        // This fixture's callers serialize access, as they do for save/update.
+        let merged = try mergingCompletionForTest(
+            transcription, current: fetch(id: transcription.id), originalFileName: originalFileName
+        )
+        try save(merged)
+        return merged
+    }
 
     func save(_ transcription: Transcription) throws {
         if let saveError {
@@ -164,6 +178,10 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
 
     func fetch(id: UUID) throws -> Transcription? {
         if let fetchError { throw fetchError }
+        if failNextUserNotesReadBack, let userNotesReadBackError {
+            failNextUserNotesReadBack = false
+            throw userNotesReadBackError
+        }
         return transcriptions.first(where: { $0.id == id })
     }
 
@@ -273,6 +291,19 @@ final class MockTranscriptionRepository: TranscriptionRepositoryProtocol, @unche
             )
             transcriptions[idx].updatedAt = Date()
         }
+    }
+
+    @discardableResult
+    func updateUserNotes(id: UUID, userNotes: String?) throws -> Bool {
+        try userNotesUpdateHandler?()
+        guard var transcription = transcriptions.first(where: { $0.id == id }) else {
+            return false
+        }
+        transcription.userNotes = userNotes
+        transcription.updatedAt = Date()
+        try save(transcription)
+        failNextUserNotesReadBack = userNotesReadBackError != nil
+        return true
     }
 
     func updateFilePath(id: UUID, filePath: String?) throws {
@@ -420,6 +451,12 @@ final class MockLaunchAtLoginService: LaunchAtLoginControlling {
 // MARK: - MockTranscriptionService
 
 actor MockTranscriptionService: SpeechEngineOverrideTranscriptionService {
+    private var transcribeHook: (@Sendable () async -> Void)?
+
+    func setTranscribeHook(_ hook: @escaping @Sendable () async -> Void) {
+        transcribeHook = hook
+    }
+
     var transcribeResult: Transcription?
     var transcribeError: Error?
     var meetingFinalizationError: Error?
@@ -513,6 +550,7 @@ actor MockTranscriptionService: SpeechEngineOverrideTranscriptionService {
         onProgress: (@Sendable (TranscriptionProgress) -> Void)? = nil
     ) async throws -> Transcription {
         transcribeCallCount += 1
+        await transcribeHook?()
         lastFileURL = fileURL
         lastSource = source
         let fileName = fileURL.lastPathComponent
@@ -557,6 +595,7 @@ actor MockTranscriptionService: SpeechEngineOverrideTranscriptionService {
         onProgress: (@Sendable (TranscriptionProgress) -> Void)? = nil
     ) async throws -> Transcription {
         transcribeCallCount += 1
+        await transcribeHook?()
         lastMeetingRecording = recording
         lastSource = .meeting
 
@@ -1140,6 +1179,13 @@ final class MockPromptRepository: PromptRepositoryProtocol, @unchecked Sendable 
             prompts[index].isVisible = true
             prompts[index].appliesToSources = nil
         }
+        prompts[index].updatedAt = Date()
+    }
+
+    func setIncludeMeetingNotes(id: UUID, enabled: Bool) throws {
+        guard let index = prompts.firstIndex(where: { $0.id == id }) else { return }
+        guard prompts[index].category == .result else { return }
+        prompts[index].includeMeetingNotes = enabled
         prompts[index].updatedAt = Date()
     }
 

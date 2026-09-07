@@ -216,6 +216,31 @@ final class PromptRepositoryTests: XCTestCase {
         XCTAssertNil(normalizedAfterToggle)
     }
 
+    func testIncludeMeetingNotesRoundTripsAndCanBeUpdatedAtomically() throws {
+        let prompt = Prompt(
+            name: "Meeting Decisions",
+            content: "Summarize.",
+            includeMeetingNotes: true
+        )
+        try repo.save(prompt)
+        XCTAssertEqual(try repo.fetch(id: prompt.id)?.includeMeetingNotes, true)
+
+        try repo.setIncludeMeetingNotes(id: prompt.id, enabled: false)
+        XCTAssertEqual(try repo.fetch(id: prompt.id)?.includeMeetingNotes, false)
+    }
+
+    func testTransformPromptsCannotEnableMeetingNotesContext() throws {
+        var polish = try XCTUnwrap(
+            (try repo.fetchVisible(category: .transform)).first(where: { $0.name == "Polish" })
+        )
+        polish.includeMeetingNotes = true
+        try repo.save(polish)
+        XCTAssertEqual(try repo.fetch(id: polish.id)?.includeMeetingNotes, false)
+
+        try repo.setIncludeMeetingNotes(id: polish.id, enabled: true)
+        XCTAssertEqual(try repo.fetch(id: polish.id)?.includeMeetingNotes, false)
+    }
+
     func testMalformedInferenceSettingsIsAVisibleFetchError() throws {
         let prompt = Prompt(name: "Malformed Settings", content: "Summarize this.")
         try repo.save(prompt)
@@ -429,6 +454,25 @@ final class PromptRepositoryTests: XCTestCase {
             try secondRepo.fetch(id: summary.id)?.inferenceSettings,
             summary.inferenceSettings
         )
+    }
+
+    func testReconcilerPreservesBuiltInMeetingNotesPreference() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reconciler-meeting-notes-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        let dbPath = tmpDir.appendingPathComponent("macparakeet.db").path
+
+        let first = try DatabaseManager(path: dbPath)
+        let firstRepo = PromptRepository(dbQueue: first.dbQueue)
+        let summary = try XCTUnwrap(
+            (try firstRepo.fetchAll()).first(where: { $0.name == "Summary" })
+        )
+        try firstRepo.setIncludeMeetingNotes(id: summary.id, enabled: true)
+
+        let second = try DatabaseManager(path: dbPath)
+        let secondRepo = PromptRepository(dbQueue: second.dbQueue)
+        XCTAssertEqual(try secondRepo.fetch(id: summary.id)?.includeMeetingNotes, true)
     }
 
     func testReconcilerPreservesLegacyPartialAppliesToSources() throws {

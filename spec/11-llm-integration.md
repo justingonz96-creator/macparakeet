@@ -440,6 +440,23 @@ Use bullet points for clarity. Keep the summary under 500 words.
 
 **Context assembly:** Full transcript text. If transcript exceeds the context budget, truncate from the middle with an ellipsis marker, preserving the head and tail within the limit. Truncation snaps to word boundaries to avoid slicing multi-byte Unicode. The transcript budget accounts for the rendered summary system prompt so the combined request stays inside the provider budget; if a custom prompt has already rendered transcript text into the system prompt, that rendered prompt is bounded too. **Budget:** 500,000 characters for cloud providers, 80,000 characters for most local providers (`isLocal == true`), and 8,000 characters for LM Studio because its effective context depends on the model loaded in the desktop server.
 
+**Meeting notes for result prompts:** Result
+prompts carry an `includeMeetingNotes` opt-in, false by default. At enqueue,
+the shared GUI/CLI assembly path captures that Boolean and the normalized notes
+value capped to 8,000 words. If notes are non-empty and the opt-in is enabled,
+the assembler appends one delimited, user-authored context block after the
+selected prompt and before per-run extra instructions. The block is source
+material, not instructions, and factual conflicts resolve in favor of the
+transcript.
+
+Advanced custom templates retain case-sensitive `{{userNotes}}` substitution
+regardless of the checkbox. If the token is present, no automatic block is
+appended; if notes are empty, enabling the checkbox changes no prompt bytes.
+`PromptResult.userNotesSnapshot` stores the exact effective notes value used,
+while `includeMeetingNotesSnapshot` records the captured preference. Retry
+reuses the queued values; regenerate reuses the Boolean receipt with current
+committed notes. This path was implemented and locally verified on 2026-09-05.
+
 ### 2. Chat with Transcript
 
 **Trigger:** "Chat" button/tab on transcript result view.
@@ -464,7 +481,7 @@ the transcript, say so. Be concise and specific, citing relevant parts when help
 
 **Context assembly:** System prompt with full transcript + conversation history. Same context budget as summary (500K cloud / 80K local, 8K LM Studio). Notes and transcript are budgeted together inside the system prompt with a small recent-history reserve; if the remaining context exceeds the budget, drop oldest conversation turns first (keep system prompt + recent turns).
 
-**User notes (meeting recordings, optional):** When the transcription has non-empty `userNotes`, the chat system prompt gains a `User's notes from the meeting:\n…` block before the transcript block. Empty / nil / whitespace-only notes are omitted entirely — chat behavior is byte-identical to a chat without notes. Threaded via `LLMService.chat / chatStream / chatDetailed`'s `userNotes: String?` parameter; the GUI calls `TranscriptChatViewModel.bindUserNotesProvider(_:)` with a closure that returns the latest notes at chat-send time (static for saved transcriptions, live for in-meeting Ask). See ADR-020's 2026-05-02 amendment for context on why this is safe even though the auto-run "Memo-Steered Notes" prompt was reverted.
+**User notes (meeting recordings, optional):** When the transcription has non-empty `userNotes`, the chat system prompt gains a `User's notes from the meeting:\n…` block before the transcript block. Empty / nil / whitespace-only notes are omitted entirely — chat behavior is byte-identical to a chat without notes. Threaded via `LLMService.chat / chatStream / chatDetailed`'s `userNotes: String?` parameter; the GUI calls `TranscriptChatViewModel.bindUserNotesProvider(_:)` with a closure that returns the latest notes at chat-send time (static for saved transcriptions, live for in-meeting Ask). Saved-note editing does not add a Chat checkbox or otherwise change this policy: the next send reads the latest committed value. See ADR-020's amendments for the distinction between Chat and opt-in result-prompt context.
 
 ### 3. Transforms
 

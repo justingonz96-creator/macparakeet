@@ -20,6 +20,7 @@
 | **TODO** | Not started. Drift-check before executing. |
 | **EXECUTOR-READY** | Self-contained, verified, a cheap model can run it now. |
 | **PR OPEN** | Implemented and locally verified; hosted checks/review remain. |
+| **EXTRACTED FOR UPSTREAM REVIEW** | A feature slice has been isolated from the fork for upstream review. Its PR defines included dependencies; retained historical records do not certify unrelated features or current CI. |
 | **IMPLEMENTED** | Code is present on the named branch; `ON MAIN` identifies integration, not stable release. `QA REMAINDER` leaves only the named verification open. |
 | **PARTIAL** | Some implementation is present; a defined remainder is open. `PRODUCT GATE` or `OWNER GATE` identifies the decision still required before continuing or broadening availability. |
 | **ON HOLD** | Deliberately parked (usually pending telemetry/decision). |
@@ -31,6 +32,7 @@
 
 | Plan | Title | Status | Priority | What's left |
 |------|-------|--------|----------|-------------|
+| [2026-09-05-post-meeting-notes-and-prompt-context](active/2026-09-05-post-meeting-notes-and-prompt-context.md) | Saved-meeting notes and opt-in prompt context | **PR #959 CANDIDATE** | P2 | Editable notes, autosave, retained drafts, context snapshots and lifecycle gates. Integration review and verification in progress. |
 | [2026-09-03-per-prompt-inference-settings](active/2026-09-03-per-prompt-inference-settings.md) | Per-prompt LLM inference settings | **PR #956 CANDIDATE** | P2 | Typed result-prompt settings, independent boundary validation, provider filtering, queue snapshots and effective-only result receipts; GUI configuration, CLI saved-settings execution and additive JSON/artifact fields. Integration repairs await maintainer validation. Archive after merge. |
 | [2026-07-20-dapt-export](active/2026-07-20-dapt-export.md) | DAPT original-transcript export (#850) | **IMPLEMENTED ON MAIN** | P1 | DAPT renderer, app export/auto-save, CLI export/transcribe, and boundary contract are in current source. PR #854's historical validation does not certify this later release candidate; the retained plan is an implementation record, not a still-open coding task. |
 | [2026-07-03-speaker-voiceprints](active/2026-07-03-speaker-voiceprints.md) | Persistent speaker profiles (voiceprints) | **PROPOSED** | P2 | Research-backed plan for issue #662: enroll a speaker once (via the existing rename flow), auto-suggest their name in future diarized recordings by matching FluidAudio's per-speaker 256-d embeddings (already free in every offline diarization) against a local GRDB profile store. Opt-in, on-device, suggestions-require-confirmation; embeddings stored only for explicitly enrolled speakers (ambient "appeared in N recordings" detection deferred to Phase 3 as its own privacy decision). 5 research reports in `docs/research/2026-07-03-speaker-voiceprints/`. Next: Daniel's 4 open-question calls, then **Phase 0 calibration spike** (intra/inter-speaker distance separation on the retained meeting corpus → τ + margin + GO/NO-GO) before any product code. Concretizes the speaker-memory layer of `docs/plans/2026-06-14-002`. |

@@ -20,6 +20,25 @@ final class PromptsViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.prompts.contains(where: { $0.name == "Polish" }))
     }
 
+    func testUpdatingOtherPromptWithInvalidLegacySettingsPreservesEditorErrors() throws {
+        let editing = Prompt(name: "Editing", content: "Content", category: .result, isBuiltIn: false)
+        let invalid = Prompt(
+            name: "Legacy invalid", content: "Old", category: .result, isBuiltIn: false,
+            inferenceSettings: PromptInferenceSettings(temperature: 99))
+        try repo.save(editing)
+        try repo.save(invalid)
+        viewModel.beginEditing(editing)
+        viewModel.editingInferenceSettings.temperature = "bad"
+        viewModel.updatePrompt(editing, name: editing.name, content: editing.content)
+        let editorErrors = viewModel.editingInferenceValidationErrors
+        XCTAssertFalse(editorErrors.isEmpty)
+        viewModel.updatePrompt(invalid, name: "Renamed", content: "New")
+        XCTAssertEqual(viewModel.editingInferenceValidationErrors, editorErrors)
+        XCTAssertEqual(viewModel.editingPrompt?.id, editing.id)
+        XCTAssertNotNil(viewModel.errorMessage)
+        XCTAssertEqual(try repo.fetch(id: invalid.id)?.content, "Old")
+    }
+
     func testAddPromptCreatesCustomSummaryPrompt() {
         viewModel.newName = "Standup Notes"
         viewModel.newContent = "Summarize as a daily standup."
@@ -29,7 +48,21 @@ final class PromptsViewModelTests: XCTestCase {
         // 6 `.result` built-ins + 1 custom. Transform built-ins live in the
         // same table but are intentionally not part of the summary library.
         XCTAssertEqual(viewModel.prompts.count, 7)
-        XCTAssertTrue(viewModel.prompts.contains(where: { $0.name == "Standup Notes" && !$0.isBuiltIn }))
+        let prompt = viewModel.prompts.first { $0.name == "Standup Notes" && !$0.isBuiltIn }
+        XCTAssertNotNil(prompt)
+        XCTAssertFalse(prompt?.includeMeetingNotes ?? true)
+    }
+
+    func testAddPromptPersistsMeetingNotesPreferenceAndResetsDraft() throws {
+        viewModel.newName = "Meeting Follow-up"
+        viewModel.newContent = "Extract decisions."
+        viewModel.newIncludeMeetingNotes = true
+
+        viewModel.addPrompt()
+
+        let prompt = try XCTUnwrap(viewModel.prompts.first { $0.name == "Meeting Follow-up" })
+        XCTAssertTrue(prompt.includeMeetingNotes)
+        XCTAssertFalse(viewModel.newIncludeMeetingNotes)
     }
 
     func testAddPromptPersistsValidatedInferenceSettings() throws {
@@ -211,6 +244,70 @@ final class PromptsViewModelTests: XCTestCase {
         XCTAssertNil(updated.inferenceSettings?.topK)
         XCTAssertEqual(updated.inferenceSettings?.thinkingMode, .enabled)
         XCTAssertEqual(updated.inferenceSettings?.reasoningEffort, .xhigh)
+    }
+
+    func testEditPromptLoadsAndPersistsMeetingNotesPreference() throws {
+        let custom = Prompt(
+            name: "Old",
+            content: "Old content",
+            isBuiltIn: false,
+            sortOrder: 99,
+            includeMeetingNotes: true
+        )
+        repo.prompts.append(custom)
+        viewModel.loadPrompts()
+
+        viewModel.beginEditing(custom)
+        XCTAssertTrue(viewModel.editingIncludeMeetingNotes)
+        viewModel.editingIncludeMeetingNotes = false
+        viewModel.updatePrompt(custom, name: "New", content: "New content")
+
+        let updated = try XCTUnwrap(viewModel.prompts.first { $0.id == custom.id })
+        XCTAssertFalse(updated.includeMeetingNotes)
+        XCTAssertFalse(viewModel.editingIncludeMeetingNotes)
+    }
+
+    func testCancelEditingRestoresMeetingNotesDraftDefaultWithoutPersisting() throws {
+        let custom = Prompt(
+            name: "Meeting",
+            content: "Summarize.",
+            isBuiltIn: false,
+            sortOrder: 99,
+            includeMeetingNotes: true
+        )
+        repo.prompts.append(custom)
+        viewModel.loadPrompts()
+
+        viewModel.beginEditing(custom)
+        viewModel.editingIncludeMeetingNotes = false
+        viewModel.cancelEditing()
+
+        XCTAssertFalse(viewModel.editingIncludeMeetingNotes)
+        XCTAssertTrue(try XCTUnwrap(repo.fetch(id: custom.id)).includeMeetingNotes)
+
+        viewModel.beginEditing(custom)
+        XCTAssertTrue(viewModel.editingIncludeMeetingNotes)
+    }
+
+    func testSetIncludeMeetingNotesUpdatesBuiltInAndCustomResultPrompts() throws {
+        let builtIn = try XCTUnwrap(viewModel.prompts.first(where: \.isBuiltIn))
+        let custom = Prompt(name: "Custom", content: "Summarize.", isBuiltIn: false, sortOrder: 99)
+        repo.prompts.append(custom)
+        viewModel.loadPrompts()
+
+        viewModel.setIncludeMeetingNotes(builtIn, enabled: true)
+        viewModel.setIncludeMeetingNotes(custom, enabled: true)
+
+        XCTAssertTrue(try XCTUnwrap(viewModel.prompts.first { $0.id == builtIn.id }).includeMeetingNotes)
+        XCTAssertTrue(try XCTUnwrap(viewModel.prompts.first { $0.id == custom.id }).includeMeetingNotes)
+    }
+
+    func testSetIncludeMeetingNotesIgnoresTransformPrompts() throws {
+        let transform = try XCTUnwrap(repo.prompts.first { $0.category == .transform })
+
+        viewModel.setIncludeMeetingNotes(transform, enabled: true)
+
+        XCTAssertFalse(try XCTUnwrap(repo.fetch(id: transform.id)).includeMeetingNotes)
     }
 
     func testResetInferenceDraftClearsEveryField() {
