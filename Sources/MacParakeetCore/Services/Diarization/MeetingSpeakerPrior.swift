@@ -3,25 +3,24 @@ import Foundation
 /// Speaker-count prior for the meeting system track, derived from the
 /// calendar attendee snapshot captured when the recording started.
 ///
-/// The prior is always a range, never an exact count: attendees who stay
-/// silent or never join are common, and an exact count forces K-Means
-/// re-clustering to that number. See ADR-010 (2026-09-06 amendment) and
-/// issue #972.
+/// The prior never forces clusters: the minimum is always 1 and only the
+/// maximum carries the attendee count. FluidAudio's `minSpeakers` binds by
+/// re-clustering upward with K-Means, so a wrong minimum (declined,
+/// tentative, or resource attendees, no-shows) would split real speakers,
+/// whereas a generous maximum only caps over-splitting, which is the
+/// reported complaint (#542). See ADR-010 (2026-09-06 amendment) and issue
+/// #972; this deliberately narrows the issue's `min = max(1, n - 1)`.
 public enum MeetingSpeakerPrior: Equatable, Sendable {
     /// No usable attendee count; the clusterer picks the count itself.
     case unconstrained(reason: UnconstrainedReason)
-    /// Exactly one remote attendee: skip clustering and label every system
-    /// word as one remote speaker.
-    case singleRemoteSpeaker
-    /// Bounds handed to the clusterer.
+    /// Bounds handed to the clusterer: `min` is always 1, `max` is `n + 1`.
     case bounds(min: Int, max: Int)
 
     public enum UnconstrainedReason: String, Equatable, Sendable {
-        /// No calendar snapshot or an empty attendee list.
+        /// No calendar snapshot or no countable attendee.
         case noAttendeeCount = "no_attendee_count"
         /// Attendee count above `maxAttendeesForBounds`; large invites are a
-        /// poor proxy for who actually speaks, and the minimum bound would
-        /// force re-clustering to a count the audio cannot support.
+        /// poor proxy for who actually speaks and the maximum would never bind.
         case largeAttendeeCount = "large_attendee_count"
     }
 
@@ -33,20 +32,17 @@ public enum MeetingSpeakerPrior: Equatable, Sendable {
         guard let count = remoteAttendeeCount, count > 0 else {
             return .unconstrained(reason: .noAttendeeCount)
         }
-        if count == 1 {
-            return .singleRemoteSpeaker
-        }
         guard count <= maxAttendeesForBounds else {
             return .unconstrained(reason: .largeAttendeeCount)
         }
-        return .bounds(min: max(1, count - 1), max: count + 1)
+        return .bounds(min: 1, max: count + 1)
     }
 
     /// Attendees in the snapshot already exclude the current user (see
-    /// `CalendarService.convertEvent`). Attendees whose captured status is
-    /// `declined` are excluded; tentative, pending, unknown, and legacy
-    /// snapshots without a status all count (the `n - 1` slack in the bounds
-    /// absorbs one no-show).
+    /// `CalendarService.convertEvent`). Attendees captured as `declined`, and
+    /// participants captured as a `room`, `resource`, or `group`, are excluded;
+    /// tentative, pending, unknown, and legacy snapshots without status or
+    /// kind all count.
     ///
     /// De-duplication uses a single fallback key per entry: the lowercased
     /// email when present, otherwise the lowercased name. Two entries for the
@@ -58,11 +54,16 @@ public enum MeetingSpeakerPrior: Equatable, Sendable {
     }
 
     static let declinedStatus = EventParticipant.ParticipantStatus.declined.rawValue
+    static let nonSpeakingKinds: Set<String> = [
+        EventParticipant.ParticipantKind.room.rawValue,
+        EventParticipant.ParticipantKind.resource.rawValue,
+        EventParticipant.ParticipantKind.group.rawValue,
+    ]
 
     static func remoteAttendeeCount(in snapshot: MeetingCalendarSnapshot) -> Int {
         var seenKeys = Set<String>()
         var count = 0
-        for attendee in snapshot.attendees where attendee.status != declinedStatus {
+        for attendee in snapshot.attendees where isCountable(attendee) {
             let email = attendee.email?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased() ?? ""
@@ -85,13 +86,19 @@ public enum MeetingSpeakerPrior: Equatable, Sendable {
         return count
     }
 
+    static func isCountable(_ attendee: MeetingCalendarPerson) -> Bool {
+        if attendee.status == declinedStatus { return false }
+        if let kind = attendee.kind, nonSpeakingKinds.contains(kind) { return false }
+        return true
+    }
+
     /// Constraint to pass to the diarizer, or `nil` when clustering runs
-    /// unconstrained or is skipped entirely.
+    /// unconstrained.
     public var speakerConstraint: SpeakerDiarizationConstraint? {
         switch self {
         case .bounds(let min, let max):
             return .range(min: min, max: max)
-        case .unconstrained, .singleRemoteSpeaker:
+        case .unconstrained:
             return nil
         }
     }
@@ -101,8 +108,6 @@ public enum MeetingSpeakerPrior: Equatable, Sendable {
         switch self {
         case .unconstrained(let reason):
             return "unconstrained_\(reason.rawValue)"
-        case .singleRemoteSpeaker:
-            return "single_remote"
         case .bounds(let min, let max):
             return "bounds_\(min)_\(max)"
         }
@@ -116,7 +121,7 @@ public enum MeetingSpeakerPolicy: Equatable, Sendable {
     case prior(MeetingSpeakerPrior)
     /// The diarization service carries an explicit constraint (CLI
     /// `--speaker-count` / `--speaker-min` / `--speaker-max`); it wins over the
-    /// calendar prior, and clustering always runs so the service can apply it.
+    /// calendar prior, which is discarded.
     case explicitConstraint
 
     public static func resolve(
@@ -124,12 +129,6 @@ public enum MeetingSpeakerPolicy: Equatable, Sendable {
         explicitConstraint: SpeakerDiarizationConstraint?
     ) -> MeetingSpeakerPolicy {
         explicitConstraint == nil ? .prior(prior) : .explicitConstraint
-    }
-
-    /// True only for the single-remote-attendee shortcut with no explicit constraint.
-    public var skipsClustering: Bool {
-        if case .prior(.singleRemoteSpeaker) = self { return true }
-        return false
     }
 
     /// Hint handed to `diarize(audioURL:speakerConstraint:)`. `nil` under an
@@ -145,14 +144,14 @@ public enum MeetingSpeakerPolicy: Equatable, Sendable {
     }
 
     /// Stable, PII-free `speaker_prior` value for diagnostics and telemetry:
-    /// `explicit_constraint`, `single_remote`, `bounds_<min>_<max>`,
-    /// `unconstrained_no_attendee_count`, or `unconstrained_large_attendee_count`.
+    /// `explicit_cli`, `bounds_1_<n+1>`, `unconstrained_no_attendee_count`, or
+    /// `unconstrained_large_attendee_count`.
     public var diagnosticsLabel: String {
         switch self {
         case .prior(let prior):
             return prior.diagnosticsLabel
         case .explicitConstraint:
-            return "explicit_constraint"
+            return "explicit_cli"
         }
     }
 }

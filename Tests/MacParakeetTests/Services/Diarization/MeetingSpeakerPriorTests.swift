@@ -23,15 +23,15 @@ final class MeetingSpeakerPriorTests: XCTestCase {
         )
     }
 
-    func testSingleRemoteAttendeeSkipsClustering() {
+    func testSingleRemoteAttendeeStillRunsClusteringWithACapOfTwo() {
         let prior = MeetingSpeakerPrior.derive(remoteAttendeeCount: 1)
 
-        XCTAssertEqual(prior, .singleRemoteSpeaker)
-        XCTAssertNil(prior.speakerConstraint)
-        XCTAssertEqual(prior.diagnosticsLabel, "single_remote")
+        XCTAssertEqual(prior, .bounds(min: 1, max: 2))
+        XCTAssertEqual(prior.speakerConstraint, .range(min: 1, max: 2))
+        XCTAssertEqual(prior.diagnosticsLabel, "bounds_1_2")
     }
 
-    func testTwoAttendeesYieldBoundsWithFloorOfOne() {
+    func testTwoAttendeesYieldBoundsOneToThree() {
         let prior = MeetingSpeakerPrior.derive(remoteAttendeeCount: 2)
 
         XCTAssertEqual(prior, .bounds(min: 1, max: 3))
@@ -39,21 +39,21 @@ final class MeetingSpeakerPriorTests: XCTestCase {
         XCTAssertEqual(prior.diagnosticsLabel, "bounds_1_3")
     }
 
-    func testFiveAttendeesYieldOneOfSlackEachSide() {
+    func testFiveAttendeesYieldBoundsOneToSix() {
         let prior = MeetingSpeakerPrior.derive(remoteAttendeeCount: 5)
 
-        XCTAssertEqual(prior, .bounds(min: 4, max: 6))
-        XCTAssertEqual(prior.speakerConstraint, .range(min: 4, max: 6))
+        XCTAssertEqual(prior, .bounds(min: 1, max: 6))
+        XCTAssertEqual(prior.speakerConstraint, .range(min: 1, max: 6))
     }
 
-    func testBoundsAreNeverAnExactCount() {
-        for count in 2...MeetingSpeakerPrior.maxAttendeesForBounds {
+    func testMinimumIsAlwaysOneAndBoundsAreNeverExact() {
+        for count in 1...MeetingSpeakerPrior.maxAttendeesForBounds {
             guard case .bounds(let min, let max) = MeetingSpeakerPrior.derive(remoteAttendeeCount: count) else {
                 return XCTFail("expected bounds for \(count) attendees")
             }
-            XCTAssertLessThan(min, max)
-            XCTAssertEqual(min, count - 1)
+            XCTAssertEqual(min, 1, "the prior must never force clusters upward")
             XCTAssertEqual(max, count + 1)
+            XCTAssertLessThan(min, max)
         }
     }
 
@@ -77,19 +77,22 @@ final class MeetingSpeakerPriorTests: XCTestCase {
         ])
 
         XCTAssertEqual(MeetingSpeakerPrior.remoteAttendeeCount(in: snapshot), 3)
-        XCTAssertEqual(MeetingSpeakerPrior.derive(from: snapshot), .bounds(min: 2, max: 4))
+        XCTAssertEqual(MeetingSpeakerPrior.derive(from: snapshot), .bounds(min: 1, max: 4))
     }
 
-    func testDeclinedAttendeesAreNotCounted() {
+    func testDeclinedAttendeesAndResourcesAreNotCounted() {
         let snapshot = makeSnapshot(attendees: [
-            MeetingCalendarPerson(name: "Ada", email: "ada@example.com", status: "accepted"),
-            MeetingCalendarPerson(name: "Grace", email: "grace@example.com", status: "declined"),
-            MeetingCalendarPerson(name: "Linus", email: "linus@example.com", status: "tentative"),
-            MeetingCalendarPerson(name: "Ken", email: "ken@example.com", status: nil),
+            MeetingCalendarPerson(name: "Ada", email: "ada@example.com", status: "accepted", kind: "person"),
+            MeetingCalendarPerson(name: "Grace", email: "grace@example.com", status: "declined", kind: "person"),
+            MeetingCalendarPerson(name: "Linus", email: "linus@example.com", status: "tentative", kind: "person"),
+            MeetingCalendarPerson(name: "Ken", email: "ken@example.com", status: nil, kind: nil),
+            MeetingCalendarPerson(name: "Room 4B", email: "room4b@example.com", status: "accepted", kind: "room"),
+            MeetingCalendarPerson(name: "Projector", email: "projector@example.com", status: "accepted", kind: "resource"),
+            MeetingCalendarPerson(name: "Platform Team", email: "platform@example.com", status: "accepted", kind: "group"),
         ])
 
         XCTAssertEqual(MeetingSpeakerPrior.remoteAttendeeCount(in: snapshot), 3)
-        XCTAssertEqual(MeetingSpeakerPrior.derive(from: snapshot), .bounds(min: 2, max: 4))
+        XCTAssertEqual(MeetingSpeakerPrior.derive(from: snapshot), .bounds(min: 1, max: 4))
     }
 
     func testNameOnlyAndEmailEntriesForTheSamePersonCountSeparately() {
@@ -102,42 +105,47 @@ final class MeetingSpeakerPriorTests: XCTestCase {
         XCTAssertEqual(MeetingSpeakerPrior.remoteAttendeeCount(in: snapshot), 2)
     }
 
-    func testPolicyResolvesExplicitConstraintOverPrior() {
-        let prior = MeetingSpeakerPrior.singleRemoteSpeaker
-
-        let withExplicit = MeetingSpeakerPolicy.resolve(prior: prior, explicitConstraint: .exact(3))
-        XCTAssertEqual(withExplicit, .explicitConstraint)
-        XCTAssertFalse(withExplicit.skipsClustering)
-        XCTAssertNil(withExplicit.speakerConstraintHint)
-        XCTAssertEqual(withExplicit.diagnosticsLabel, "explicit_constraint")
-
-        let withoutExplicit = MeetingSpeakerPolicy.resolve(prior: prior, explicitConstraint: nil)
-        XCTAssertEqual(withoutExplicit, .prior(.singleRemoteSpeaker))
-        XCTAssertTrue(withoutExplicit.skipsClustering)
-        XCTAssertNil(withoutExplicit.speakerConstraintHint)
-        XCTAssertEqual(withoutExplicit.diagnosticsLabel, "single_remote")
-
-        let bounds = MeetingSpeakerPolicy.resolve(prior: .bounds(min: 2, max: 4), explicitConstraint: nil)
-        XCTAssertFalse(bounds.skipsClustering)
-        XCTAssertEqual(bounds.speakerConstraintHint, .range(min: 2, max: 4))
-        XCTAssertEqual(bounds.diagnosticsLabel, "bounds_2_4")
-    }
-
-    func testSnapshotWithoutAttendeesIsUnconstrained() {
-        let snapshot = makeSnapshot(attendees: [])
-
+    func testSnapshotWithoutCountableAttendeesIsUnconstrained() {
         XCTAssertEqual(
-            MeetingSpeakerPrior.derive(from: snapshot),
+            MeetingSpeakerPrior.derive(from: makeSnapshot(attendees: [])),
+            .unconstrained(reason: .noAttendeeCount)
+        )
+        XCTAssertEqual(
+            MeetingSpeakerPrior.derive(from: makeSnapshot(attendees: [
+                MeetingCalendarPerson(name: "Grace", email: "grace@example.com", status: "declined"),
+            ])),
             .unconstrained(reason: .noAttendeeCount)
         )
     }
 
-    func testSnapshotWithOneAttendeeIsSingleRemoteSpeaker() {
-        let snapshot = makeSnapshot(attendees: [
-            MeetingCalendarPerson(name: "Ada", email: "ada@example.com"),
-        ])
+    func testPolicyResolvesExplicitConstraintOverPrior() {
+        let prior = MeetingSpeakerPrior.bounds(min: 1, max: 2)
 
-        XCTAssertEqual(MeetingSpeakerPrior.derive(from: snapshot), .singleRemoteSpeaker)
+        let withExplicit = MeetingSpeakerPolicy.resolve(prior: prior, explicitConstraint: .exact(3))
+        XCTAssertEqual(withExplicit, .explicitConstraint)
+        XCTAssertNil(withExplicit.speakerConstraintHint)
+        XCTAssertEqual(withExplicit.diagnosticsLabel, "explicit_cli")
+
+        let withoutExplicit = MeetingSpeakerPolicy.resolve(prior: prior, explicitConstraint: nil)
+        XCTAssertEqual(withoutExplicit, .prior(prior))
+        XCTAssertEqual(withoutExplicit.speakerConstraintHint, .range(min: 1, max: 2))
+        XCTAssertEqual(withoutExplicit.diagnosticsLabel, "bounds_1_2")
+
+        let unconstrained = MeetingSpeakerPolicy.resolve(
+            prior: .unconstrained(reason: .noAttendeeCount),
+            explicitConstraint: nil
+        )
+        XCTAssertNil(unconstrained.speakerConstraintHint)
+        XCTAssertEqual(unconstrained.diagnosticsLabel, "unconstrained_no_attendee_count")
+    }
+
+    func testLegacySnapshotWithoutStatusOrKindStillDecodesAndCounts() throws {
+        let legacy = Data(#"{"name":"Ada","email":"ada@example.com"}"#.utf8)
+        let person = try JSONDecoder().decode(MeetingCalendarPerson.self, from: legacy)
+
+        XCTAssertNil(person.status)
+        XCTAssertNil(person.kind)
+        XCTAssertTrue(MeetingSpeakerPrior.isCountable(person))
     }
 
     private func makeSnapshot(attendees: [MeetingCalendarPerson]) -> MeetingCalendarSnapshot {

@@ -1500,9 +1500,9 @@ public actor TranscriptionService: SpeechEngineOverrideTranscriptionService, Aud
 
         lifecycleStage = .diarization
         // Attendee prior from the calendar snapshot captured at record start
-        // (bounds only, never an exact count; a 1:1 call skips clustering),
-        // unless the service carries an explicit user constraint, which wins
-        // and always runs the diarizer. Diagnostics record the effective policy.
+        // (min 1, max n + 1: it can cap over-splitting but never forces
+        // clusters), unless the service carries an explicit user constraint,
+        // which wins. Diagnostics record the effective policy.
         let speakerPolicy = MeetingSpeakerPolicy.resolve(
             prior: MeetingSpeakerPrior.derive(from: recording.calendarEventSnapshot),
             explicitConstraint: await diarizationService.explicitSpeakerConstraint()
@@ -1511,15 +1511,10 @@ public actor TranscriptionService: SpeechEngineOverrideTranscriptionService, Aud
             onProgress?(.identifyingSpeakers)
             Telemetry.send(.diarizationStarted(source: .meeting))
             let diarStartedAt = Date()
-            let diarResult: MacParakeetDiarizationResult
-            if speakerPolicy.skipsClustering {
-                diarResult = Self.singleRemoteSpeakerDiarization()
-            } else {
-                diarResult = try await diarizationService.diarize(
-                    audioURL: systemWavURL,
-                    speakerConstraint: speakerPolicy.speakerConstraintHint
-                )
-            }
+            let diarResult = try await diarizationService.diarize(
+                audioURL: systemWavURL,
+                speakerConstraint: speakerPolicy.speakerConstraintHint
+            )
             let diarDuration = Date().timeIntervalSince(diarStartedAt)
             logger.notice(
                 "meeting_system_diarization_completed prior=\(speakerPolicy.diagnosticsLabel, privacy: .public) speakers=\(diarResult.speakerCount, privacy: .public) segments=\(diarResult.segments.count, privacy: .public) duration_s=\(String(format: "%.2f", diarDuration), privacy: .public)"
@@ -1556,8 +1551,7 @@ public actor TranscriptionService: SpeechEngineOverrideTranscriptionService, Aud
 
             return MeetingTranscriptFinalizer.SystemDiarization(
                 speakers: mappedSpeakers,
-                segments: mappedSegments,
-                singleSpeakerId: speakerPolicy.skipsClustering ? mappedSpeakers.first?.id : nil
+                segments: mappedSegments
             )
         } catch is CancellationError {
             throw CancellationError()
@@ -1570,19 +1564,6 @@ public actor TranscriptionService: SpeechEngineOverrideTranscriptionService, Aud
             ))
             return nil
         }
-    }
-
-    /// One remote speaker for the whole system track. The finalizer labels
-    /// every system word with `SystemDiarization.singleSpeakerId` directly
-    /// (zero-duration words never overlap a segment); the open-ended segment
-    /// only keeps the result shaped like a diarizer result and is never
-    /// persisted, since the finalizer rebuilds stored segments from words.
-    static func singleRemoteSpeakerDiarization() -> MacParakeetDiarizationResult {
-        MacParakeetDiarizationResult(
-            segments: [SpeakerSegment(speakerId: "S1", startMs: 0, endMs: Int.max / 2)],
-            speakerCount: 1,
-            speakers: [SpeakerInfo(id: "S1", label: "Speaker 1")]
-        )
     }
 
     private func resolveMeetingMicrophoneSource(

@@ -86,7 +86,7 @@ config.embedding.minSegmentDurationSeconds = 0
 config.zeroVoteReembed = .init(enabled: true)
 
 let models = try await OfflineDiarizerModels.load(from: modelsDirectory)
-let manager = OfflineDiarizerManager(config: config.withSpeakers(min: 2, max: 4))
+let manager = OfflineDiarizerManager(config: config.withSpeakers(min: 1, max: 4))
 manager.initialize(models: models)
 
 let result = try await manager.process(url)
@@ -218,20 +218,27 @@ Skip diarization for: dictation (single speaker by design), or when the correspo
 > corrected semantics a bound binds only when the auto-detected count falls
 > outside it.
 >
-> **3. Meetings feed the calendar attendee count in as a prior.** The
-> finalizer derives `MeetingSpeakerPrior` from `calendarEventSnapshot`, whose
-> attendee list already excludes the user (attendees captured as `declined`
-> are excluded too). With `n` remote attendees the
-> system-track diarizer receives bounds `min = max(1, n - 1)`,
-> `max = n + 1`, never an exact count. `n == 1` skips clustering and labels
-> every system word as one remote speaker (`Others 1`). No snapshot, no
-> attendees, or more than eight attendees leaves clustering unconstrained
-> (large invites are a poor proxy for who speaks, and a minimum bound would
-> force re-clustering to a count the audio cannot support). An explicit CLI
-> speaker constraint wins over the calendar prior and always runs the
-> diarizer, including for a 1:1 invite. The effective policy is recorded as
-> `speaker_prior` on `diarization_completed` and in the local capture
-> diagnostics; it carries no attendee identity.
+> **3. Meetings feed the calendar attendee count in as a prior that can only
+> cap.** The finalizer derives `MeetingSpeakerPrior` from
+> `calendarEventSnapshot`, whose attendee list already excludes the user;
+> attendees captured as `declined` and participants captured as a `room`,
+> `resource`, or `group` are excluded too (`MeetingCalendarPerson.status` and
+> `.kind`, optional fields added 2026-09-06; older snapshots count every
+> attendee). With `n` countable remote attendees the system-track diarizer
+> receives bounds `min = 1`, `max = n + 1`, never an exact count and never a
+> minimum above 1. Issue #972 asked for `min = max(1, n - 1)`; that was
+> narrowed deliberately: declined, tentative, and resource attendees, no-shows,
+> and uninvited joiners make the invite an unreliable count, and FluidAudio's
+> `minSpeakers` binds only by forcing K-Means re-clustering upward, so a wrong
+> minimum splits real speakers while a generous maximum only caps the
+> over-splitting users actually report (#542). A 1:1 invite therefore still
+> runs the diarizer with `max 2` instead of skipping clustering. No snapshot,
+> no countable attendee, or more than eight attendees leaves clustering
+> unconstrained. An explicit CLI speaker constraint wins over the calendar
+> prior. The effective policy is recorded as `speaker_prior` on
+> `diarization_completed` (`explicit_cli`, `bounds_1_<n+1>`,
+> `unconstrained_no_attendee_count`, `unconstrained_large_attendee_count`) and
+> in the local capture diagnostics; it carries no attendee identity.
 >
 > **4. Not changed here (follow-ups in the research synthesis):**
 > embedding-based consolidation of over-split clusters, `SpeakerMerger`

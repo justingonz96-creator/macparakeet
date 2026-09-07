@@ -10,17 +10,6 @@ struct MeetingTranscriptFinalizer {
     struct SystemDiarization: Sendable {
         let speakers: [SpeakerInfo]
         let segments: [SpeakerSegment]
-        /// When set, every system-source word takes this speaker id directly
-        /// instead of going through the segment-overlap merge, so words with
-        /// zero duration (which never overlap any segment) are labelled too.
-        /// Used by the single-remote-attendee shortcut.
-        let singleSpeakerId: String?
-
-        init(speakers: [SpeakerInfo], segments: [SpeakerSegment], singleSpeakerId: String? = nil) {
-            self.speakers = speakers
-            self.segments = segments
-            self.singleSpeakerId = singleSpeakerId
-        }
     }
 
     struct FinalizedTranscript: Sendable {
@@ -60,13 +49,7 @@ struct MeetingTranscriptFinalizer {
         )
         let microphoneWords = sourceReconciliation.microphoneWords
         let finalizedSystemWords: [WordTimestamp]
-        if let singleSpeakerId = systemDiarization?.singleSpeakerId {
-            finalizedSystemWords = systemWords.map { word in
-                var labelled = word
-                labelled.speakerId = singleSpeakerId
-                return labelled
-            }
-        } else if let systemDiarization {
+        if let systemDiarization {
             finalizedSystemWords = SpeakerMerger.mergeWordTimestampsWithSpeakers(
                 words: systemWords,
                 segments: systemDiarization.segments

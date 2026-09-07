@@ -52,11 +52,15 @@ public struct MeetingCalendarPerson: Codable, Sendable, Equatable {
     /// (`accepted`, `declined`, `tentative`, `pending`, `unknown`). `nil` on
     /// snapshots stored before the field existed.
     public var status: String?
+    /// `EventParticipant.ParticipantKind.rawValue` at capture time (`person`,
+    /// `room`, `resource`, `group`, `unknown`). `nil` on older snapshots.
+    public var kind: String?
 
-    public init(name: String? = nil, email: String? = nil, status: String? = nil) {
+    public init(name: String? = nil, email: String? = nil, status: String? = nil, kind: String? = nil) {
         self.name = name
         self.email = email
         self.status = status
+        self.kind = kind
     }
 }
 
@@ -74,10 +78,10 @@ public extension MeetingCalendarSnapshot {
             scheduledStartAt: event.startTime,
             scheduledEndAt: event.endTime,
             attendees: event.participants.map {
-                MeetingCalendarPerson(name: $0.name, email: $0.email, status: $0.status.rawValue)
+                MeetingCalendarPerson(name: $0.name, email: $0.email, status: $0.status.rawValue, kind: $0.kind?.rawValue)
             },
             organizer: event.organizer.map {
-                MeetingCalendarPerson(name: $0.name, email: $0.email, status: $0.status.rawValue)
+                MeetingCalendarPerson(name: $0.name, email: $0.email, status: $0.status.rawValue, kind: $0.kind?.rawValue)
             },
             meetingURL: event.meetUrl,
             meetingService: MeetingLinkParser.shared.identifyService(from: event.meetUrl),

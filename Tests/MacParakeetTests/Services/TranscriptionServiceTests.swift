@@ -2575,9 +2575,39 @@ final class TranscriptionServiceTests: XCTestCase {
 
         _ = try await service.transcribeMeeting(recording: recording)
 
-        // Three remote attendees: bounds n-1...n+1, never an exact count.
+        // Three remote attendees: min 1 (never forces clusters), max n + 1.
         let constraints = await diarization.receivedSpeakerConstraints
-        XCTAssertEqual(constraints, [.range(min: 2, max: 4)])
+        XCTAssertEqual(constraints, [.range(min: 1, max: 4)])
+    }
+
+    func testTranscribeMeetingWithOneAttendeeStillRunsDiarizerCappedAtTwo() async throws {
+        let recordingFolder = URL(fileURLWithPath: AppPaths.tempDir)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: recordingFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: recordingFolder) }
+        let recording = try makeDualSourceMeetingRecording(
+            displayName: "One On One",
+            folderURL: recordingFolder,
+            calendarEventSnapshot: makeCalendarSnapshot(attendeeCount: 1)
+        )
+
+        await mockSTT.configureSequence(results: meetingSourceSTTResults())
+
+        let diarization = MockDiarizationService()
+        let service = TranscriptionService(
+            audioProcessor: mockAudio,
+            sttTranscriber: mockSTT,
+            transcriptionRepo: transcriptionRepo,
+            shouldDiarizeMeetings: { true },
+            diarizationService: diarization
+        )
+
+        _ = try await service.transcribeMeeting(recording: recording)
+
+        let diarizeCalled = await diarization.diarizeCalled
+        XCTAssertTrue(diarizeCalled, "a 1:1 invite still clusters; an uninvited second voice must stay separable")
+        let constraints = await diarization.receivedSpeakerConstraints
+        XCTAssertEqual(constraints, [.range(min: 1, max: 2)])
     }
 
     func testTranscribeMeetingWithoutAttendeeCountDiarizesUnconstrained() async throws {
@@ -2601,54 +2631,7 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertEqual(constraints, [nil])
     }
 
-    func testTranscribeMeetingWithSingleRemoteAttendeeSkipsClustering() async throws {
-        let recordingFolder = URL(fileURLWithPath: AppPaths.tempDir)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: recordingFolder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: recordingFolder) }
-        let recording = try makeDualSourceMeetingRecording(
-            displayName: "One On One",
-            folderURL: recordingFolder,
-            calendarEventSnapshot: makeCalendarSnapshot(attendeeCount: 1)
-        )
-
-        await mockSTT.configureSequence(results: [
-            STTResult(text: "Hi", words: [
-                TimestampedWord(word: "Hi", startMs: 0, endMs: 200, confidence: 0.9),
-            ]),
-            STTResult(text: "Hello again later", words: [
-                TimestampedWord(word: "Hello", startMs: 300, endMs: 500, confidence: 0.9),
-                TimestampedWord(word: "again", startMs: 520, endMs: 700, confidence: 0.9),
-                // Past the 2 s playable duration: engines can emit timestamps beyond the file edge.
-                TimestampedWord(word: "later", startMs: 2_400, endMs: 2_600, confidence: 0.9),
-            ]),
-        ])
-
-        let diarization = MockDiarizationService()
-        let service = TranscriptionService(
-            audioProcessor: mockAudio,
-            sttTranscriber: mockSTT,
-            transcriptionRepo: transcriptionRepo,
-            shouldDiarizeMeetings: { true },
-            diarizationService: diarization
-        )
-
-        let result = try await service.transcribeMeeting(recording: recording)
-
-        let diarizeCalled = await diarization.diarizeCalled
-        XCTAssertFalse(diarizeCalled, "1:1 calls label the system track without clustering")
-        XCTAssertEqual(
-            result.wordTimestamps?.map(\.speakerId),
-            ["microphone", "system:S1", "system:S1", "system:S1"]
-        )
-        XCTAssertEqual(result.speakers, [
-            SpeakerInfo(id: "microphone", label: "Me"),
-            SpeakerInfo(id: "system:S1", label: "Others 1"),
-        ])
-        XCTAssertEqual(result.speakerCount, 2)
-    }
-
-    func testTranscribeMeetingExplicitConstraintOverridesSingleAttendeeShortcut() async throws {
+    func testTranscribeMeetingExplicitConstraintWinsOverOneAttendeePrior() async throws {
         let recordingFolder = URL(fileURLWithPath: AppPaths.tempDir)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: recordingFolder, withIntermediateDirectories: true)
@@ -2694,7 +2677,7 @@ final class TranscriptionServiceTests: XCTestCase {
         let result = try await service.transcribeMeeting(recording: recording)
 
         let diarizeCalled = await diarization.diarizeCalled
-        XCTAssertTrue(diarizeCalled, "an explicit constraint must reach the diarizer even for a 1:1 invite")
+        XCTAssertTrue(diarizeCalled)
         let constraints = await diarization.receivedSpeakerConstraints
         XCTAssertEqual(constraints, [nil], "the service already holds the explicit constraint; no calendar hint is layered on")
         XCTAssertEqual(result.wordTimestamps?.map(\.speakerId), ["microphone", "system:S1", "system:S2"])
@@ -2727,49 +2710,6 @@ final class TranscriptionServiceTests: XCTestCase {
 
         let constraints = await diarization.receivedSpeakerConstraints
         XCTAssertEqual(constraints, [nil])
-    }
-
-    func testTranscribeMeetingSingleAttendeeLabelsZeroDurationSystemWords() async throws {
-        let recordingFolder = URL(fileURLWithPath: AppPaths.tempDir)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: recordingFolder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: recordingFolder) }
-        let recording = try makeDualSourceMeetingRecording(
-            displayName: "One On One Zero Duration",
-            folderURL: recordingFolder,
-            calendarEventSnapshot: makeCalendarSnapshot(attendeeCount: 1)
-        )
-
-        await mockSTT.configureSequence(results: [
-            STTResult(text: "mine", words: [
-                TimestampedWord(word: "mine", startMs: 0, endMs: 0, confidence: 0.9),
-            ]),
-            STTResult(text: "uh hello", words: [
-                // Zero-duration words never overlap a segment; the shortcut must label them anyway.
-                TimestampedWord(word: "uh", startMs: 100, endMs: 100, confidence: 0.5),
-                TimestampedWord(word: "hello", startMs: 300, endMs: 500, confidence: 0.9),
-            ]),
-        ])
-
-        let diarization = MockDiarizationService()
-        let service = TranscriptionService(
-            audioProcessor: mockAudio,
-            sttTranscriber: mockSTT,
-            transcriptionRepo: transcriptionRepo,
-            shouldDiarizeMeetings: { true },
-            diarizationService: diarization
-        )
-
-        let result = try await service.transcribeMeeting(recording: recording)
-
-        let diarizeCalled = await diarization.diarizeCalled
-        XCTAssertFalse(diarizeCalled)
-        XCTAssertEqual(result.wordTimestamps?.map(\.speakerId), ["microphone", "system:S1", "system:S1"])
-        XCTAssertEqual(result.speakers, [
-            SpeakerInfo(id: "microphone", label: "Me"),
-            SpeakerInfo(id: "system:S1", label: "Others 1"),
-        ])
-        XCTAssertEqual(result.speakerCount, 2)
     }
 
     func testTranscribeMeetingUsesMeetingDiarizationPreference() async throws {
