@@ -89,6 +89,15 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ## [Unreleased]
 
+### Added
+
+- Saved-meeting notes autosave and can be explicitly included in result-prompt
+  context. `prompts set` accepts mutually exclusive `--include-meeting-notes`
+  and `--no-include-meeting-notes`. Prompt JSON adds `includeMeetingNotes`;
+  result JSON adds `includeMeetingNotesSnapshot`, both defaulting to false.
+  Transform prompts reject the setting. `{{userNotes}}` remains available
+  independently; using both mechanisms does not duplicate notes.
+
 ## [3.3.0] — 2026-09-06
 
 ### Added
