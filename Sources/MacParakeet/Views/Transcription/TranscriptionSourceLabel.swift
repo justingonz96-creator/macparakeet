@@ -13,6 +13,14 @@ import MacParakeetViewModels
 /// under the Video filter share `play.rectangle.fill` and differ only by tint,
 /// which names nothing to a reader who cannot separate those colors — so
 /// anything without a bundled mark keeps its word.
+///
+/// Known gap, pre-existing and not closed here: `resolve` falls back to
+/// `.youtube` for a `.youtube` row with no stored `sourceURL`, so such a row
+/// draws the YouTube mark whatever its real origin. It already read "YouTube"
+/// before this change, and the only creation path always stores the URL, so
+/// this needs a legacy or corrupt row. Closing it means changing that fallback
+/// to `.mediaURL`, which also moves the transcript detail chip and is its own
+/// change.
 struct TranscriptionSourceLabel: View {
     let source: TranscriptionSourceDisplay
     let style: LibrarySourceLabelStyle
@@ -34,13 +42,20 @@ struct TranscriptionSourceLabel: View {
             EmptyView()
         case .visible, .brandMarkOnly:
             if let platform = brandMark {
-                PlatformGlyph(platform: platform, color: source.tint)
-                    .frame(width: markSize, height: markSize)
-                    // PlatformGlyph hides itself from accessibility, so the
-                    // name a sighted reader gets from the logo is restored
-                    // here rather than lost with the text.
-                    .accessibilityElement()
-                    .accessibilityLabel(source.collapsedText)
+                // `.iconOnly` keeps the title as the element's accessibility
+                // text while drawing only the mark, so the name a sighted
+                // reader takes from the logo is not lost with the word. The
+                // explicit label is belt and braces: PlatformGlyph hides
+                // itself, and this must not depend on that flag being
+                // overridden from outside.
+                Label {
+                    Text(source.collapsedText)
+                } icon: {
+                    PlatformGlyph(platform: platform, color: source.tint)
+                        .frame(width: markSize, height: markSize)
+                }
+                .labelStyle(.iconOnly)
+                .accessibilityLabel(source.collapsedText)
             } else {
                 Label(source.collapsedText, systemImage: source.systemImage)
                     .font(font)
