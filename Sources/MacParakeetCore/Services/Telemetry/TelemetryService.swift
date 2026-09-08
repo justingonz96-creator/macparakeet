@@ -392,7 +392,8 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
         }
         let events: [TelemetryEvent]
         if let nextRetryAt, now() < nextRetryAt {
-            events = queue.filter { $0.event == TelemetryEventName.telemetryOptedOut.rawValue }
+            // Consent permits the final event, but does not bypass server backoff.
+            events = []
         } else {
             events = queue
         }

@@ -569,6 +569,26 @@ final class TelemetryServiceTests: XCTestCase {
         XCTAssertEqual(totalEvents, eventCount)
     }
 
+    func testTerminationDoesNotRetryRateLimitedOptOutBeforeRetryAfter() async {
+        let service = makeService(isEnabled: { false })
+        service.now = { Date(timeIntervalSince1970: 100) }
+        service.retryJitter = { 1 }
+        TelemetryMockURLProtocol.setRequestHandler { request in
+            request.respond(statusCode: 429, headers: ["Retry-After": "120"])
+        }
+
+        let delivered = await service.sendAndFlush(.telemetryOptedOut)
+        XCTAssertFalse(delivered)
+        XCTAssertEqual(service.pendingEventCount, 1)
+        XCTAssertEqual(TelemetryMockURLProtocol.recordedPayloads().count, 1)
+
+        service.flushForTermination()
+
+        XCTAssertEqual(TelemetryMockURLProtocol.recordedPayloads().count, 1,
+                       "Termination must honor the server retry floor even for the final opt-out event")
+        XCTAssertEqual(service.pendingEventCount, 0, "The best-effort termination queue is discarded")
+    }
+
     func testTerminationFlushDoesNotEmitAppQuitWhenTelemetryDisabled() async throws {
         let service = makeService(isEnabled: { false })
 

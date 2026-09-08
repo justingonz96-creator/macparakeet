@@ -43,8 +43,11 @@ claim a release channel.
 Automatic flush requests are coalesced. Network failures, HTTP 408/429 and 5xx
 retain event UUIDs for retry with jittered exponential backoff (5 seconds initial,
 15 minutes maximum), respecting a longer `Retry-After` delay (seconds or HTTP
-date). The periodic timer attempts eligible retries; explicit flushes also honor
-the delay. Permanent HTTP rejections discard the rejected batch, including any
+date). These delays are minimum retry intervals, not exact delivery deadlines.
+The existing 60-second GUI timer attempts eligible retries; explicit and
+termination flushes also honor the delay, including for a final opt-out event.
+The CLI makes its best-effort flush before exit and does not remain alive for a
+later retry. Queued events are not persisted across process exit. Permanent HTTP rejections discard the rejected batch, including any
 valid events in that batch, and report delivery failure rather than repeatedly
 poisoning the queue. Consent changes invalidate retry timing and queued snapshots.
 Local structured `telemetry_transport` logs contain outcomes, numeric status,

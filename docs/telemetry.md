@@ -888,6 +888,9 @@ report its version; that does not prove the version was published.
 
 The delivery queue coalesces automatic flushes, retries transient HTTP/network
 failures with jittered exponential backoff and `Retry-After`, and drops permanent
-HTTP rejection batches. Drops and retry decisions are reported through bounded
+HTTP rejection batches. Retry delays are minimum intervals: the GUI's existing
+60-second timer attempts eligible retries, while short-lived CLI commands do
+not wait for a future retry before exiting. Termination respects the retry floor
+even for the final opt-out event; pending events are not persisted across exit. Drops and retry decisions are reported through bounded
 local `telemetry_transport` fields. See the [telemetry contract](../spec/contracts/telemetry-v1.md#client-delivery-policy)
 for exact policy, retry timing and compatibility limits.
