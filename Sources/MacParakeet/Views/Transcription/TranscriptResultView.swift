@@ -4424,21 +4424,25 @@ struct TranscriptResultView: View {
     }
 
     private func commitSpeakerRename(contextID: String) {
-        guard let draft = speakerRename.finish(contextID: contextID) else { return }
+        guard let draft = speakerRename.draft, draft.contextID == contextID else { return }
+        // A refused save (another correction is still saving) keeps the draft
+        // open so the entered name is not lost; the editor refocuses when it can retry.
+        guard saveSpeakerRename(draft) else { return }
+        _ = speakerRename.finish(contextID: contextID)
         if focusedSpeakerRenameContext == contextID {
             focusedSpeakerRenameContext = nil
         }
-        saveSpeakerRename(draft)
     }
 
-    private func saveSpeakerRename(_ draft: SpeakerRenameState.Draft) {
+    @discardableResult
+    private func saveSpeakerRename(_ draft: SpeakerRenameState.Draft) -> Bool {
         let trimmed = draft.label.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            viewModel.renameSpeaker(id: draft.speakerID, to: trimmed)
-            if transcriptDisplayMode == .timed {
-                scheduleSegmentCacheRebuild()
-            }
+        guard !trimmed.isEmpty else { return true }
+        guard viewModel.renameSpeaker(id: draft.speakerID, to: trimmed) else { return false }
+        if transcriptDisplayMode == .timed {
+            scheduleSegmentCacheRebuild()
         }
+        return true
     }
 
     private func cancelSpeakerRename(contextID: String) {
