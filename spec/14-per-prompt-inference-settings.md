@@ -1,8 +1,9 @@
 # Per-Prompt LLM Inference Settings
 
-> Status: **IMPLEMENTED CANDIDATE / PR #956** — integration repairs await
-> maintainer validation. Default semantics and the conditional reasoning-effort
-> extension are recorded in
+> Status: **IMPLEMENTED ON MAIN; UNRELEASED** — merged through
+> [PR #968](https://github.com/moona3k/macparakeet/pull/968), integrating the work
+> from [PR #956](https://github.com/moona3k/macparakeet/pull/956).
+> Default semantics and the conditional reasoning-effort extension are recorded in
 > [`plans/active/2026-09-03-per-prompt-inference-settings.md`](../plans/active/2026-09-03-per-prompt-inference-settings.md).
 
 Target: MacParakeet
@@ -29,12 +30,12 @@ This is deliberately a typed feature, not an arbitrary JSON request editor.
 
 ## Why this change is needed
 
-`ChatCompletionOptions` already carries `temperature` and `maxTokens`, and the
-HTTP adapters already apply model-specific rules such as using
-`max_completion_tokens` for OpenAI reasoning models. Prompt-result generation,
-however, always passes `.default`, while `Prompt` has no persisted inference
-settings. A user therefore cannot tune one summarization prompt without
-changing code or affecting unrelated LLM operations.
+Before this change, `ChatCompletionOptions` carried `temperature` and `maxTokens`,
+and HTTP adapters applied model-specific rules such as using
+`max_completion_tokens` for OpenAI reasoning models. Prompt-result generation
+always passed `.default`, while `Prompt` had no persisted inference settings.
+A user could not tune one summarization prompt without changing code or
+affecting unrelated LLM operations.
 
 Local models make this particularly visible. A long meeting summary may need a
 larger output budget and deterministic sampling, while a thinking-capable

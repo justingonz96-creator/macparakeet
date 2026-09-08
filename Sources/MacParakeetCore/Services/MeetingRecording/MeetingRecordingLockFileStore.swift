@@ -368,7 +368,7 @@ public final class MeetingRecordingLockFileStore:
         guard FileManager.default.fileExists(atPath: folderURL.path) else {
             throw MeetingFinalizationOwnershipError.missingLock
         }
-        return try withFinalizationOwnershipMutex(folderURL: folderURL) {
+        return try Self.withFinalizationOwnershipMutex(folderURL: folderURL) {
             guard let currentLock = try readableOrUnreadablePresentLock(folderURL: folderURL)
             else {
                 throw MeetingFinalizationOwnershipError.missingLock
@@ -406,7 +406,7 @@ public final class MeetingRecordingLockFileStore:
         _ lease: MeetingFinalizationOwnershipLease
     ) throws {
         do {
-            try withFinalizationOwnershipMutex(folderURL: lease.folderURL) {
+            try Self.withFinalizationOwnershipMutex(folderURL: lease.folderURL) {
                 guard let currentLock = try read(folderURL: lease.folderURL),
                     currentLock.finalizationLeaseId == lease.id
                 else {
@@ -425,6 +425,23 @@ public final class MeetingRecordingLockFileStore:
         }
     }
 
+    /// Recursive discard may remove `recording.lock` before another child fails
+    /// to delete. Restore that missing recovery marker under the same mutex as
+    /// admission, without replacing any lock another owner has since written.
+    /// Ordinary lease release must not do this: a missing lock there can mean
+    /// successful settlement, which must stay settled.
+    static func restoreMissingLockAfterFailedDiscard(
+        _ lease: MeetingFinalizationOwnershipLease,
+        lockFileStore: any MeetingRecordingLockFileStoring
+    ) throws {
+        try withFinalizationOwnershipMutex(folderURL: lease.folderURL) {
+            guard !FileManager.default.fileExists(atPath: lockFileURL(for: lease.folderURL).path) else {
+                return
+            }
+            try lockFileStore.write(lease.previousLock, folderURL: lease.folderURL)
+        }
+    }
+
     public func reconcileIfUnowned(
         folderURL: URL,
         transition: @Sendable () throws -> Bool
@@ -432,7 +449,7 @@ public final class MeetingRecordingLockFileStore:
         guard FileManager.default.fileExists(atPath: folderURL.path) else {
             return try transition()
         }
-        return try withFinalizationOwnershipMutex(folderURL: folderURL) {
+        return try Self.withFinalizationOwnershipMutex(folderURL: folderURL) {
             guard try !hasLiveOwner(folderURL: folderURL) else {
                 return false
             }
@@ -595,7 +612,7 @@ public final class MeetingRecordingLockFileStore:
         return Self.relinquishedFinalizationLeases.contains(leaseID)
     }
 
-    private func withFinalizationOwnershipMutex<T>(
+    private static func withFinalizationOwnershipMutex<T>(
         folderURL: URL,
         _ operation: () throws -> T
     ) throws -> T {

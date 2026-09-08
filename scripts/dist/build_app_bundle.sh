@@ -558,7 +558,8 @@ fi
 
 if [[ -d "$SPARKLE_FW" ]]; then
   rm -rf "$FRAMEWORKS_DIR/Sparkle.framework"
-  cp -R "$SPARKLE_FW" "$FRAMEWORKS_DIR/"
+  # Follow Xcode's product symlink while preserving relative links inside the framework.
+  cp -RH "$SPARKLE_FW" "$FRAMEWORKS_DIR/"
   echo "Embedded Sparkle.framework from: $SPARKLE_FW"
 
   # Ensure the binary's rpath includes Contents/Frameworks/ (standard macOS location).
