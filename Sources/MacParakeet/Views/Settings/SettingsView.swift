@@ -190,7 +190,6 @@ struct SettingsView: View {
             viewModel.stopPermissionPolling()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            viewModel.refreshPermissions()
             viewModel.engine.refreshSpeechEngineSwitchAvailability()
             Task { await viewModel.refreshCalendarNotificationAuthorization() }
         }

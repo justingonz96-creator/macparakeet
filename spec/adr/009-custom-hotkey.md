@@ -79,3 +79,14 @@ Community issue #234 requested hotkeys such as Right Command+Right Option. The e
 ### Original decision preserved
 
 Existing `.modifier`, `.keyCode`, and `.chord` persisted values decode unchanged. Modifier-only chords are additive and use the existing key-agnostic gesture controller for the configured role semantics.
+
+## Amendment: Accessibility grant recovery (2026-09-07)
+
+A running app can fail to install its global event taps before Accessibility is
+granted. The shared permission refresh must notify the app when access changes
+from unavailable to granted, including the first successful check after startup.
+The app retries configured dictation, auxiliary and Transform shortcuts through
+their existing lifecycle methods. Repeated granted checks do not restart taps,
+and shortcut recording keeps production listeners suspended until it finishes.
+Permission status refreshes on application activation as well as the existing
+Settings polling, so returning from System Settings does not require a restart.

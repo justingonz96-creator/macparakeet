@@ -1367,6 +1367,52 @@ final class SettingsViewModelTests: XCTestCase {
 
     // MARK: - Permissions
 
+    func testAccessibilityGrantRetriesShortcutsOnlyOnGrantTransitions() async throws {
+        mockPermissions.accessibilityPermission = false
+        var recoveryStates: [Bool] = []
+        viewModel.onAccessibilityGranted = { [weak viewModel] in
+            recoveryStates.append(viewModel?.accessibilityGranted == true)
+        }
+        viewModel.configure(
+            permissionService: mockPermissions,
+            dictationRepo: mockRepo,
+            entitlementsService: entitlements,
+            checkoutURL: nil
+        )
+        try await waitUntil { self.mockPermissions.checkScreenRecordingPermissionCallCount == 1 }
+        XCTAssertTrue(recoveryStates.isEmpty, "Denied startup must not attempt permission recovery")
+
+        for (granted, expectedRecoveries) in [(false, 0), (true, 1), (true, 1), (false, 1), (true, 2)] {
+            let previousChecks = mockPermissions.checkScreenRecordingPermissionCallCount
+            mockPermissions.accessibilityPermission = granted
+            viewModel.refreshPermissions()
+            try await waitUntil { self.mockPermissions.checkScreenRecordingPermissionCallCount > previousChecks }
+
+            XCTAssertEqual(viewModel.accessibilityGranted, granted)
+            XCTAssertEqual(recoveryStates, Array(repeating: true, count: expectedRecoveries))
+        }
+        viewModel.onAccessibilityGranted = nil
+    }
+
+    func testFirstGrantedPermissionRefreshRecoversFailedStartupShortcuts() async throws {
+        // Permission can be granted while environment setup is finishing,
+        // before the first asynchronous permission refresh publishes its state.
+        mockPermissions.accessibilityPermission = true
+        var recoveryCount = 0
+        viewModel.onAccessibilityGranted = { recoveryCount += 1 }
+        viewModel.configure(
+            permissionService: mockPermissions,
+            dictationRepo: mockRepo,
+            entitlementsService: entitlements,
+            checkoutURL: nil
+        )
+        try await waitUntil { self.mockPermissions.checkScreenRecordingPermissionCallCount == 1 }
+
+        XCTAssertTrue(viewModel.accessibilityGranted)
+        XCTAssertEqual(recoveryCount, 1)
+        viewModel.onAccessibilityGranted = nil
+    }
+
     func testRefreshPermissionsUpdatesGrantedState() async throws {
         mockPermissions.microphonePermission = .granted
         mockPermissions.accessibilityPermission = true

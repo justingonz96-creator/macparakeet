@@ -490,6 +490,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        settingsViewModel.refreshPermissions()
         onboardingCoordinator.handleApplicationDidBecomeActive(environment: appEnvironment)
         if let appEnvironment {
             meetingAudioRetentionSweepCoordinator.scheduleForegroundSweepIfDue(environment: appEnvironment)
@@ -516,6 +517,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupEnvironment(_ env: AppEnvironment) {
         appEnvironment = env
+        settingsViewModel.onAccessibilityGranted = { [weak self] in
+            self?.handleAccessibilityGrant()
+        }
 
         let runtime = environmentConfigurer.configure(
             environment: env,
@@ -722,6 +726,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Event Handlers
+
+    private func handleAccessibilityGrant() {
+        // Startup may have discarded every event tap before access was granted.
+        // Reuse the normal refresh path, which preserves recorder suspension.
+        hotkeyCoordinator?.refreshAllHotkeys()
+        if !isHotkeyRecorderActive {
+            transformsCoordinator?.resumeHotkeys()
+        }
+    }
 
     private func handleHotkeyTriggerChange() {
         hotkeyCoordinator?.refreshAllHotkeys()

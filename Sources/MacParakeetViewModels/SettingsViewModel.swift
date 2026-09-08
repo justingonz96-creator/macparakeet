@@ -705,6 +705,8 @@ public final class SettingsViewModel {
     public var microphoneGranted = false
     public var accessibilityGranted = false
     public var screenRecordingGranted = false
+    /// Reinstall shortcuts after macOS grants access to a running app.
+    public var onAccessibilityGranted: (() -> Void)?
 
     // Stats
     public var dictationCount = 0
@@ -1273,9 +1275,13 @@ public final class SettingsViewModel {
                 let micStatus = await service.checkMicrophonePermission()
                 let accStatus = service.checkAccessibilityPermission()
                 let screenRecordingStatus = service.checkScreenRecordingPermission()
+                let accessibilityBecameGranted = accStatus && !accessibilityGranted
                 microphoneGranted = micStatus == .granted
                 accessibilityGranted = accStatus
                 screenRecordingGranted = screenRecordingStatus
+                if accessibilityBecameGranted {
+                    onAccessibilityGranted?()
+                }
             }
             refreshCalendarPermission()
         }
