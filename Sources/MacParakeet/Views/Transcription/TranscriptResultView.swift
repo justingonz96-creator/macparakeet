@@ -88,6 +88,39 @@ private enum TranscriptDisplayMode: String, CaseIterable, Hashable {
     case timed = "Timed"
 }
 
+/// The active inline editor and the draft handed off when another speaker is opened.
+struct SpeakerRenameState {
+    struct Draft {
+        let speakerID: String
+        let contextID: String
+        var label: String
+    }
+
+    private(set) var draft: Draft?
+
+    mutating func begin(_ speaker: SpeakerInfo, contextID: String) -> Draft? {
+        guard draft?.speakerID != speaker.id || draft?.contextID != contextID else { return nil }
+        let previous = draft
+        draft = Draft(speakerID: speaker.id, contextID: contextID, label: speaker.label)
+        return previous
+    }
+
+    mutating func updateLabel(_ label: String, contextID: String) {
+        guard draft?.contextID == contextID else { return }
+        draft?.label = label
+    }
+
+    mutating func finish(contextID: String) -> Draft? {
+        guard draft?.contextID == contextID else { return nil }
+        defer { draft = nil }
+        return draft
+    }
+
+    mutating func cancel(contextID: String) -> Bool {
+        finish(contextID: contextID) != nil
+    }
+}
+
 /// Owns the one rich-context preparation pipeline shared by chat and prompt
 /// actions. Formatting always runs in a detached task; equal requests coalesce
 /// and reuse their result, while a new revision or mode invalidates old work.
@@ -480,16 +513,13 @@ struct TranscriptResultView: View {
     /// the bar resumes playback-follow — without clobbering an unrelated
     /// manual-scroll pause when find never navigated.
     @State private var findPausedAutoScroll = false
-    @State private var editingSpeakerId: String?
-    @State private var editingSpeakerContextID: String?
-    @State private var editingSpeakerLabel: String = ""
+    @State private var speakerRename = SpeakerRenameState()
     @State private var editingSpeakers = false
     @State private var speakerSelection = SpeakerEditSelectionModel()
     @State private var showingNewSpeakerPrompt = false
     @State private var newSpeakerLabel = ""
     @State private var pendingNewSpeakerSegments: [SpeakerEditableSegment] = []
     @State private var pendingSplitSegment: SpeakerEditableSegment?
-    @State private var pendingSplitWordIndex = 0
     @State private var showConversationPopover = false
     @State private var hoveredConversationId: UUID?
     @State private var playerViewModel = MediaPlayerViewModel()
@@ -520,7 +550,7 @@ struct TranscriptResultView: View {
     @FocusState private var titleFocused: Bool
     @FocusState private var transcriptEditorFocused: Bool
     @FocusState private var meetingNotesEditorFocused: Bool
-    @FocusState private var speakerRenameFocused: Bool
+    @FocusState private var focusedSpeakerRenameContext: String?
     @FocusState private var findFieldFocused: Bool
 
     private let suggestedPrompts = [
@@ -626,7 +656,17 @@ struct TranscriptResultView: View {
                      : "Add a speaker and assign the selected segments.")
             }
             .sheet(item: $pendingSplitSegment) { segment in
-                speakerSplitSheet(segment)
+                SpeakerSplitSheet(
+                    segment: segment,
+                    words: viewModel.speakerAttribution?.words ?? [],
+                    onCancel: { pendingSplitSegment = nil },
+                    onSplit: { boundary in
+                        viewModel.applySpeakerCorrection(
+                            .split(target: correctionTarget(for: segment), atWordIndex: boundary)
+                        )
+                        pendingSplitSegment = nil
+                    }
+                )
             }
             .alert(
                 "Delete Result?",
@@ -713,15 +753,14 @@ struct TranscriptResultView: View {
         transcriptEditError = nil
         configureSavedMeetingNotes(for: activeTranscription)
         transcriptDisplayModeBeforeEdit = nil
-        editingSpeakerId = nil
-        editingSpeakerLabel = ""
+        speakerRename = SpeakerRenameState()
+        focusedSpeakerRenameContext = nil
         editingSpeakers = false
         speakerSelection.clear()
         showingNewSpeakerPrompt = false
         newSpeakerLabel = ""
         pendingNewSpeakerSegments = []
         pendingSplitSegment = nil
-        pendingSplitWordIndex = 0
         showConversationPopover = false
         hoveredConversationId = nil
         lastScrolledSegmentMs = -1
@@ -4126,45 +4165,7 @@ struct TranscriptResultView: View {
 
     private func presentSplitPicker(_ segment: SpeakerEditableSegment) {
         guard segment.wordRange.endIndexExclusive - segment.wordRange.startIndex > 1 else { return }
-        pendingSplitWordIndex = segment.wordRange.startIndex + 1
         pendingSplitSegment = segment
-    }
-
-    private func speakerSplitSheet(_ segment: SpeakerEditableSegment) -> some View {
-        let lower = segment.wordRange.startIndex + 1
-        let upper = segment.wordRange.endIndexExclusive - 1
-        let words = viewModel.speakerAttribution?.words ?? []
-        let leftWord = words.indices.contains(pendingSplitWordIndex - 1)
-            ? words[pendingSplitWordIndex - 1].word : ""
-        let rightWord = words.indices.contains(pendingSplitWordIndex)
-            ? words[pendingSplitWordIndex].word : ""
-        return VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
-            Text("Split segment")
-                .font(DesignSystem.Typography.sectionTitle)
-            Text("Choose the word boundary. Text and timestamps stay unchanged.")
-                .font(DesignSystem.Typography.body)
-                .foregroundStyle(DesignSystem.Colors.textSecondary)
-            Stepper(value: $pendingSplitWordIndex, in: lower...upper) {
-                Text("\(leftWord)  |  \(rightWord)")
-            }
-            HStack {
-                Spacer()
-                Button("Cancel") { pendingSplitSegment = nil }
-                    .parakeetAction(.secondary)
-                Button("Split") {
-                    viewModel.applySpeakerCorrection(
-                        .split(
-                            target: correctionTarget(for: segment),
-                            atWordIndex: pendingSplitWordIndex
-                        )
-                    )
-                    pendingSplitSegment = nil
-                }
-                .parakeetAction(.primary)
-            }
-        }
-        .padding(DesignSystem.Spacing.lg)
-        .frame(width: 430)
     }
 
     // MARK: - Speaker Summary Panel
@@ -4340,28 +4341,42 @@ struct TranscriptResultView: View {
         font: Font = DesignSystem.Typography.caption.weight(.semibold),
         renameButtonOpacity: Double = SpeakerRenameAccessibility.renameButtonOpacity(isVisuallyRevealed: true)
     ) -> some View {
-        if editingSpeakerId == speaker.id, editingSpeakerContextID == contextID {
-            TextField("Name", text: $editingSpeakerLabel)
-                .font(font)
-                .foregroundStyle(color)
-                .textFieldStyle(.plain)
-                .frame(minWidth: 60, maxWidth: 200)
-                .focused($speakerRenameFocused)
-                .task { speakerRenameFocused = true }
-                .onSubmit {
-                    commitSpeakerRename()
-                }
-                .onExitCommand {
-                    cancelSpeakerRename()
-                }
-                .onChange(of: speakerRenameFocused) {
-                    if !speakerRenameFocused {
-                        commitSpeakerRename()
-                    }
-                }
-                .accessibilityLabel(SpeakerRenameAccessibility.speakerNameFieldLabel)
-                .accessibilityHint(SpeakerRenameAccessibility.speakerNameFieldHint)
-                .accessibilityIdentifier(SpeakerRenameAccessibility.speakerNameFieldIdentifier(contextID: contextID))
+        if let draft = speakerRename.draft, draft.speakerID == speaker.id, draft.contextID == contextID {
+            TextField(
+                "Name",
+                text: Binding(
+                    get: {
+                        speakerRename.draft?.contextID == contextID
+                            ? speakerRename.draft?.label ?? draft.label : draft.label
+                    },
+                    set: { speakerRename.updateLabel($0, contextID: contextID) }
+                )
+            )
+            .font(font)
+            .foregroundStyle(color)
+            .textFieldStyle(.plain)
+            .frame(minWidth: 60, maxWidth: 200)
+            .focused($focusedSpeakerRenameContext, equals: contextID)
+            .task(id: viewModel.isApplyingSpeakerCorrection) {
+                // A new editor may appear disabled while the previous speaker's save finishes.
+                guard !Task.isCancelled, !viewModel.isApplyingSpeakerCorrection,
+                    speakerRename.draft?.contextID == contextID
+                else { return }
+                focusedSpeakerRenameContext = contextID
+            }
+            .onSubmit {
+                commitSpeakerRename(contextID: contextID)
+            }
+            .onExitCommand {
+                cancelSpeakerRename(contextID: contextID)
+            }
+            .onChange(of: focusedSpeakerRenameContext) { previous, current in
+                guard previous == contextID, current != contextID else { return }
+                commitSpeakerRename(contextID: contextID)
+            }
+            .accessibilityLabel(SpeakerRenameAccessibility.speakerNameFieldLabel)
+            .accessibilityHint(SpeakerRenameAccessibility.speakerNameFieldHint)
+            .accessibilityIdentifier(SpeakerRenameAccessibility.speakerNameFieldIdentifier(contextID: contextID))
         } else {
             HStack(spacing: 6) {
                 Text(speaker.label)
@@ -4382,7 +4397,6 @@ struct TranscriptResultView: View {
                 .parakeetAction(.subtle)
                 .controlSize(.small)
                 .help(SpeakerRenameAccessibility.renameButtonLabel(for: speaker.label))
-                .accessibilityElement(children: .ignore)
                 .accessibilityLabel(SpeakerRenameAccessibility.renameButtonLabel(for: speaker.label))
                 .accessibilityHint(SpeakerRenameAccessibility.renameButtonHint)
                 .accessibilityIdentifier(SpeakerRenameAccessibility.renameButtonIdentifier(contextID: contextID))
@@ -4393,31 +4407,37 @@ struct TranscriptResultView: View {
     }
 
     private func beginSpeakerRename(_ speaker: SpeakerInfo, contextID: String) {
-        if editingSpeakerId != nil, editingSpeakerId != speaker.id || editingSpeakerContextID != contextID {
-            commitSpeakerRename()
+        if let previous = speakerRename.begin(speaker, contextID: contextID) {
+            if focusedSpeakerRenameContext == previous.contextID {
+                focusedSpeakerRenameContext = nil
+            }
+            saveSpeakerRename(previous)
         }
-        editingSpeakerId = speaker.id
-        editingSpeakerContextID = contextID
-        editingSpeakerLabel = speaker.label
     }
 
-    private func commitSpeakerRename() {
-        guard let speakerId = editingSpeakerId else { return }
-        let trimmed = editingSpeakerLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func commitSpeakerRename(contextID: String) {
+        guard let draft = speakerRename.finish(contextID: contextID) else { return }
+        if focusedSpeakerRenameContext == contextID {
+            focusedSpeakerRenameContext = nil
+        }
+        saveSpeakerRename(draft)
+    }
+
+    private func saveSpeakerRename(_ draft: SpeakerRenameState.Draft) {
+        let trimmed = draft.label.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
-            viewModel.renameSpeaker(id: speakerId, to: trimmed)
+            viewModel.renameSpeaker(id: draft.speakerID, to: trimmed)
             if transcriptDisplayMode == .timed {
                 scheduleSegmentCacheRebuild()
             }
         }
-        cancelSpeakerRename()
     }
 
-    private func cancelSpeakerRename() {
-        editingSpeakerId = nil
-        editingSpeakerContextID = nil
-        editingSpeakerLabel = ""
-        speakerRenameFocused = false
+    private func cancelSpeakerRename(contextID: String) {
+        guard speakerRename.cancel(contextID: contextID) else { return }
+        if focusedSpeakerRenameContext == contextID {
+            focusedSpeakerRenameContext = nil
+        }
     }
 
     private func formatSpeakingTime(ms: Int) -> String {
@@ -5469,6 +5489,55 @@ struct TranscriptSegmentCachePayload: Sendable {
             hasSpeakers: hasSpeakers,
             speakerLabelMap: speakerLabelMap
         )
+    }
+}
+
+private struct SpeakerSplitSheet: View {
+    let segment: SpeakerEditableSegment
+    let words: [WordTimestamp]
+    let onCancel: () -> Void
+    let onSplit: (Int) -> Void
+
+    @State private var selectedBoundary: Int
+
+    init(
+        segment: SpeakerEditableSegment,
+        words: [WordTimestamp],
+        onCancel: @escaping () -> Void,
+        onSplit: @escaping (Int) -> Void
+    ) {
+        self.segment = segment
+        self.words = words
+        self.onCancel = onCancel
+        self.onSplit = onSplit
+        _selectedBoundary = State(initialValue: segment.wordRange.startIndex + 1)
+    }
+
+    var body: some View {
+        let lower = segment.wordRange.startIndex + 1
+        let upper = segment.wordRange.endIndexExclusive - 1
+        let leftWord = words.indices.contains(selectedBoundary - 1) ? words[selectedBoundary - 1].word : ""
+        let rightWord = words.indices.contains(selectedBoundary) ? words[selectedBoundary].word : ""
+
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+            Text("Split segment")
+                .font(DesignSystem.Typography.sectionTitle)
+            Text("Choose the word boundary. Text and timestamps stay unchanged.")
+                .font(DesignSystem.Typography.body)
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
+            Stepper(value: $selectedBoundary, in: lower...upper) {
+                Text("\(leftWord)  |  \(rightWord)")
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .parakeetAction(.secondary)
+                Button("Split") { onSplit(selectedBoundary) }
+                    .parakeetAction(.primary)
+            }
+        }
+        .padding(DesignSystem.Spacing.lg)
+        .frame(width: 430)
     }
 }
 
