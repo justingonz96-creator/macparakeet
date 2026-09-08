@@ -876,3 +876,21 @@ External AI review of the telemetry design. Each point was evaluated and accepte
 - **Retained licensing telemetry** -- Keep unfired trial/purchase/restore event
   names unless the project owner explicitly decides to remove the future
   paid-distribution option and records that decision in an ADR/spec update
+
+## Development and transport policy
+
+GUI debug/dev builds default to telemetry off; explicit environment enablement
+can opt test runs in, while the GUI preference still controls consent. CLI and
+GUI share environment parsing. Environment/CI/development disabling suppresses
+even the final opt-out event; an eligible production session can still report
+that final consent change. A versioned release-candidate bundle may still
+report its version; that does not prove the version was published.
+
+The delivery queue coalesces automatic flushes, retries transient HTTP/network
+failures with jittered exponential backoff and `Retry-After`, and drops permanent
+HTTP rejection batches. Retry delays are minimum intervals: the GUI's existing
+60-second timer attempts eligible retries, while short-lived CLI commands do
+not wait for a future retry before exiting. Termination respects the retry floor
+even for the final opt-out event; pending events are not persisted across exit. Drops and retry decisions are reported through bounded
+local `telemetry_transport` fields. See the [telemetry contract](../spec/contracts/telemetry-v1.md#client-delivery-policy)
+for exact policy, retry timing and compatibility limits.

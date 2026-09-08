@@ -24,6 +24,35 @@ records the September 2026 tightening of privacy and outcome semantics.
 - A successful CLI early exit has `outcome=success`, `exit_code=0` and no
   `error_type`, even when ArgumentParser implements it by throwing.
 
+## Client delivery policy
+
+GUI telemetry defaults off in debug builds, builds marked `dev-*` or `swiftpm-*`,
+and versions `dev` or `0.0.0`. `MACPARAKEET_TELEMETRY=1/true/yes/on` explicitly
+permits development/CI telemetry; `0/false/no/off` disables it. Without that
+explicit override, `DO_NOT_TRACK=1` and recognized CI environments disable it.
+The GUI's persisted opt-out remains authoritative even with explicit enablement.
+Transport eligibility is separate from consent: environment/CI/development
+disabling suppresses every request, including the final opt-out event. Eligible
+production sessions may still send their final consent opt-out event. Explicitly
+injected clients supply their own policy; omitted eligibility defaults to allowed
+when a consent closure is injected, preserving CLI and isolated-client behavior.
+The CLI retains its existing explicit-environment precedence. Versioned release
+candidate bundles are not evidence of publication; the wire envelope does not
+claim a release channel.
+
+Automatic flush requests are coalesced. Network failures, HTTP 408/429 and 5xx
+retain event UUIDs for retry with jittered exponential backoff (5 seconds initial,
+15 minutes maximum), respecting a longer `Retry-After` delay (seconds or HTTP
+date). These delays are minimum retry intervals, not exact delivery deadlines.
+The existing 60-second GUI timer attempts eligible retries; explicit and
+termination flushes also honor the delay, including for a final opt-out event.
+The CLI makes its best-effort flush before exit and does not remain alive for a
+later retry. Queued events are not persisted across process exit. Permanent HTTP rejections discard the rejected batch, including any
+valid events in that batch, and report delivery failure rather than repeatedly
+poisoning the queue. Consent changes invalidate retry timing and queued snapshots.
+Local structured `telemetry_transport` logs contain outcomes, numeric status,
+batch/drop counts and retry timing, never event props or response bodies.
+
 ## Aggregate evidence
 
 The website's `/api/stats` keeps its existing aggregate fields. Additive
