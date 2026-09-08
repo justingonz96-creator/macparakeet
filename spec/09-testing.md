@@ -186,6 +186,52 @@ swift test --filter WhisperLanguageCatalogTests
 The app requires the Xcode app-build path; optional runtime build gates and
 canonical commands are documented in [AGENTS.md](../AGENTS.md).
 
+## Continuous Integration
+
+The [CI workflow](../.github/workflows/ci.yml) validates PRs and the integrated
+`main` branch. Its trigger policy avoids running the entire pipeline twice for
+the same feature-branch update:
+
+| Event | CI behavior |
+|-------|-------------|
+| PR opened, updated, or reopened, including fork PRs | Run against the PR merge ref, subject to GitHub approval requirements |
+| Push to `main` | Run against the integrated commit |
+| Push to another branch | No automatic push run; use the PR or manual dispatch |
+| Tag push | Run; tag validation is retained explicitly |
+| Manual dispatch | Run against the selected ref |
+
+The existing `docs/**` and `plans/**` exclusions still apply to push and PR
+path filtering. GitHub does not apply path filters to tag pushes. PR updates
+cancel superseded runs for that PR; the `swift-test` check name and all build,
+bundle, concurrency, language-mode, and test gates are retained. See GitHub's
+[branch and tag filter semantics](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onpushbranchestagsbranches-ignoretags-ignore).
+
+For a branch that needs hosted validation before a PR exists, select it under
+Actions → CI → Run workflow, or use:
+
+```bash
+gh workflow run ci.yml --ref <branch>
+```
+
+### Timing baseline and optimization priorities
+
+On 2026-09-08, six sampled successful jobs took approximately 40–52 minutes.
+For PR #984, the [PR job](https://github.com/moona3k/macparakeet/actions/runs/34195968512)
+took 40m 55s, and its redundant
+[branch-push job](https://github.com/moona3k/macparakeet/actions/runs/34195965402)
+took 46m 53s: nearly 88 runner-minutes combined. The PR job spent 9m 30s on
+the release build, 13m on the app bundle, 5m 15s on concurrency compilation,
+4m 17s on Swift 6 compilation, and 8m 9s on test compilation and execution.
+These are historical measurements, not performance guarantees.
+
+Removing the feature-branch push run saves duplicate runner work; it does not
+halve the duration of the remaining job. Measure subsequent runs before
+changing the pipeline further. Independent build jobs and compiled-output
+reuse are follow-up candidates, but must preserve the Xcode bundle/resource
+check and the separate Swift 6 compatibility gate. The current cache stores
+dependencies, not compiled outputs. Compare both elapsed time and total
+runner-minutes before adding parallel jobs or more caching.
+
 ## AI Agent Testing Loop
 
 Follow [AGENTS.md](../AGENTS.md#commands), not a second full-suite loop here:
