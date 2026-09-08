@@ -2,6 +2,10 @@ name: CI
 
 on:
   push:
+    # PRs validate feature branches; avoid a second full run for the same update.
+    branches: [main]
+    # Keep tag validation when restricting branch pushes.
+    tags: ["**"]
     paths-ignore:
       - "docs/**"
       - "plans/**"
