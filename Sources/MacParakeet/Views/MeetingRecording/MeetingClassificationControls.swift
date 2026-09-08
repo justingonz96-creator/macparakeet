@@ -117,7 +117,6 @@ private struct MeetingLabelFilterPopover: View {
     let onDismiss: () -> Void
     @State private var query = ""
     @State private var showingSelectedOnly = false
-    @State private var optionsContentHeight: CGFloat = 1
     @FocusState private var searchFocused: Bool
 
     private var labels: [MeetingLabel] {
@@ -142,20 +141,9 @@ private struct MeetingLabelFilterPopover: View {
 
             Divider()
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    filterRows
-                }
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: LabelPopoverContentHeightKey.self,
-                            value: proxy.size.height
-                        )
-                    }
-                }
+            LabelPopoverOptionsViewport {
+                filterOptions
             }
-            .frame(height: min(optionsContentHeight, 260))
 
             if libraryViewModel.hasMeetingClassificationFilter {
                 Divider()
@@ -173,7 +161,6 @@ private struct MeetingLabelFilterPopover: View {
         .onAppear {
             Task { @MainActor in searchFocused = true }
         }
-        .onPreferenceChange(LabelPopoverContentHeightKey.self) { optionsContentHeight = $0 }
         .onExitCommand(perform: onDismiss)
     }
 
@@ -195,6 +182,12 @@ private struct MeetingLabelFilterPopover: View {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(DesignSystem.Colors.border, lineWidth: 0.6)
         )
+    }
+
+    private var filterOptions: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            filterRows
+        }
     }
 
     @ViewBuilder
@@ -254,7 +247,6 @@ struct MeetingClassificationEditor: View {
     @Bindable var viewModel: MeetingClassificationViewModel
     let onDismiss: () -> Void
     @State private var newLabelName = ""
-    @State private var optionsContentHeight: CGFloat = 1
     @FocusState private var searchFocused: Bool
 
     private var classification: MeetingClassification {
@@ -269,54 +261,9 @@ struct MeetingClassificationEditor: View {
 
             searchField
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-                    if !classification.labels.isEmpty {
-                        FlowLayout(spacing: 5) {
-                            ForEach(classification.labels) { label in
-                                selectedLabelToken(label)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    if (!classification.labels.isEmpty && !suggestedLabels.isEmpty) || canCreateLabel {
-                        Divider()
-                    }
-
-                    if canCreateLabel {
-                        Button(action: createLabel) {
-                            Label("Create “\(trimmedLabelQuery)”", systemImage: "plus")
-                                .lineLimit(1)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 5)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(DesignSystem.Colors.accent)
-                    }
-
-                    if suggestedLabels.isEmpty {
-                        Text(suggestedLabelsEmptyMessage)
-                            .font(DesignSystem.Typography.caption)
-                            .foregroundStyle(DesignSystem.Colors.textTertiary)
-                            .padding(.vertical, DesignSystem.Spacing.xs)
-                    } else {
-                        ForEach(suggestedLabels) { label in
-                            availableLabelRow(label)
-                        }
-                    }
-                }
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: LabelPopoverContentHeightKey.self,
-                            value: proxy.size.height
-                        )
-                    }
-                }
+            LabelPopoverOptionsViewport {
+                editorOptions
             }
-            .frame(height: min(optionsContentHeight, 260))
 
             if viewModel.updatingTranscriptionIDs.contains(transcription.id) {
                 HStack(spacing: 7) {
@@ -340,8 +287,47 @@ struct MeetingClassificationEditor: View {
             viewModel.loadClassification(for: transcription.id)
             Task { @MainActor in searchFocused = true }
         }
-        .onPreferenceChange(LabelPopoverContentHeightKey.self) { optionsContentHeight = $0 }
         .onExitCommand(perform: onDismiss)
+    }
+
+    private var editorOptions: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            if !classification.labels.isEmpty {
+                FlowLayout(spacing: 5) {
+                    ForEach(classification.labels) { label in
+                        selectedLabelToken(label)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if (!classification.labels.isEmpty && !suggestedLabels.isEmpty) || canCreateLabel {
+                Divider()
+            }
+
+            if canCreateLabel {
+                Button(action: createLabel) {
+                    Label("Create “\(trimmedLabelQuery)”", systemImage: "plus")
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 5)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(DesignSystem.Colors.accent)
+            }
+
+            if suggestedLabels.isEmpty {
+                Text(suggestedLabelsEmptyMessage)
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textTertiary)
+                    .padding(.vertical, DesignSystem.Spacing.xs)
+            } else {
+                ForEach(suggestedLabels) { label in
+                    availableLabelRow(label)
+                }
+            }
+        }
     }
 
     private var searchField: some View {
@@ -476,11 +462,29 @@ struct MeetingClassificationEditor: View {
     }
 }
 
-private struct LabelPopoverContentHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 1
+private enum LabelPopoverOptionsLayout {
+    static let maximumHeight: CGFloat = 260
+}
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+/// Lets short label collections set the popover's natural height while keeping
+/// longer collections in a bounded native scroll view.
+struct LabelPopoverOptionsViewport<Content: View>: View {
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            content
+
+            ScrollView {
+                content
+            }
+            .frame(height: LabelPopoverOptionsLayout.maximumHeight)
+        }
+        .frame(maxHeight: LabelPopoverOptionsLayout.maximumHeight)
     }
 }
 

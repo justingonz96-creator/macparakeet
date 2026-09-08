@@ -223,12 +223,14 @@ podcasts, videos, and local files. The same availability gate applies before
 automatic generation; the prompt's existing per-source Auto-Run setting remains
 the source of truth for whether matching content runs automatically.
 
-The label editor keeps assigned labels in a separate wrapping token area below
-search. Available labels appear even with an empty query; every match is
-reachable by scrolling, and a valid unmatched query puts **Create “name”** next
-to the available-label results. Selected and available rows use a color dot,
-name, and state icon; tokens retain a reachable remove action. Pressing Return
-reuses an exact match or creates and immediately assigns a new value. Long
+The label editor keeps every assigned label in a separate wrapping token area
+below search, even when the query matches none of them. The region grows for
+small content and scrolls only after its height cap, so each assigned token and
+its remove action remains reachable. Available labels appear even with an empty
+query; every match is reachable by scrolling, and a valid unmatched query puts
+**Create “name”** next to the available-label results. Selected and available
+rows use a color dot, name, and state icon; tokens retain a reachable remove
+action. Pressing Return reuses an exact match or creates and immediately assigns a new value. Long
 labels truncate visually only after preserving their full tooltip and
 accessibility name.
 
