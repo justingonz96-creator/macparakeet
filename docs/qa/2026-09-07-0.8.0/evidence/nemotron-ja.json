@@ -6,7 +6,7 @@
   "engine" : "nemotron",
   "engineVariant" : "multilingual-1120ms",
   "fileName" : "ja_jp_0000.wav",
-  "filePath" : "\/Users\/dmoon\/asr-bench\/fleurs-data\/ja_jp\/ja_jp_0000.wav",
+  "filePath" : "<PUBLIC_CORPUS>\/fleurs-data\/ja_jp\/ja_jp_0000.wav",
   "fileSizeBytes" : 334124,
   "id" : "30368EE6-4C31-4D42-9DC2-B58B70C02027",
   "isFavorite" : false,

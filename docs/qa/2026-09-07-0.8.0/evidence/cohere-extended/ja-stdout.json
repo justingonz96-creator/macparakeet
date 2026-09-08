@@ -6,7 +6,7 @@
   "engine" : "cohere",
   "engineVariant" : "ane",
   "fileName" : "ja_jp_0000.wav",
-  "filePath" : "\/Users\/dmoon\/asr-bench\/fleurs-data\/ja_jp\/ja_jp_0000.wav",
+  "filePath" : "<PUBLIC_FLEURS>\/ja_jp\/ja_jp_0000.wav",
   "fileSizeBytes" : 334124,
   "id" : "1A51CBEF-C50B-4A57-9764-7754E1925994",
   "isFavorite" : false,

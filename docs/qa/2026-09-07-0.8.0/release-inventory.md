@@ -4,16 +4,18 @@ Status: source inventory complete; runtime verdict belongs to the parent QA repo
 
 ## Exact scope and method
 
-- Candidate: `8548c099af5ee2ab0ed4dd9efe757d85c498cca0`, branch `release/0.8.0-qa`, checkout `/Users/dmoon/code/macparakeet-qa`.
+- Candidate: `8548c099af5ee2ab0ed4dd9efe757d85c498cca0`, branch `release/0.8.0-qa`, owning QA checkout (`<QA_WORKTREE>`).
 - Stable comparison: Git tag `v0.7.3` at `d6321f87dccecf29bd4792113f522bb0c98d1f35`; its [GitHub release](https://github.com/moona3k/macparakeet/releases/tag/v0.7.3) was published 2026-07-17 with a 148,896,323-byte asset named `MacParakeet.dmg`. Its notes advertise embedded CLI 3.0. The live release API and the tag's CLI source agree.
 - Inspected first-parent history, all changed source filenames, targeted source diffs, current CLI changelog, feature flags, governing specs, subsystem READMEs, the complete distribution guide, PR #970, and known open risks #933/#949/#952. No private diagnostic or transcript content was read.
 - This worker ran no builds, tests, app launches, recording, preference writes, database mutations, signing, publishing, or GitHub mutations. Source/test mappings below are verification instructions and evidence of available coverage, not executed passes.
 - Root owns GUI/audio work, all Swift builds/tests, and the single final full-suite invocation. Historical PR checks do not replace verification of this candidate.
 - The historical `docs/audits/2026-09-04-release-readiness.md` explains earlier verified corrections, but also explicitly excludes GUI/hardware/signed-upgrade certification. Its old scope decisions and issue counts are not current decisions.
 
-## Findings requiring disposition
+## Historical findings and disposition
 
-### P1 documentation hazard: the dev-app QA guide falsely promises data isolation
+### P1 documentation hazard — corrected in this QA branch
+
+The original finding below applies to the baseline snapshot. `docs/human-qa-guide.md` now distinguishes the dev bundle identity from shared data paths and requires verified disposable state for destructive QA.
 
 Location: `docs/human-qa-guide.md:43–47`; source `Sources/MacParakeetCore/Services/AppPaths.swift:13–26,86–118`; launcher `scripts/dev/run_app.sh:238–245`.
 
@@ -25,17 +27,17 @@ Impact: a tester can delete or modify production recordings/vocabulary or affect
 
 Narrow fix: correct the guide; describe the separate TCC identity accurately and require test-owned fixtures/IDs or an explicitly isolated DEBUG state root for destructive checks. Explain the preference/Keychain limitation and that Release ignores the override. Do not add a new isolation architecture merely to repair the prose.
 
-### P2 release-status documentation drift
+### P2 release-status documentation drift — corrected in this QA branch
 
 Locations: `spec/README.md:26`, `spec/14-per-prompt-inference-settings.md:3–5`.
 
-Both still call per-prompt inference settings an implementation candidate associated with PR #956 and awaiting integration validation. The candidate includes merged integration PR #968. Set source status to implemented on development `main`, retaining the distinction from the unreleased public app.
+At the original snapshot, both called per-prompt inference settings an implementation candidate associated with PR #956 and awaiting integration validation. Both now identify the feature as implemented on development `main` through PR #968 and unreleased to the public app.
 
-The development release-channel row in `spec/README.md` also advertises catalog/JSON-mutator coverage, segment search/context reads, and knowledge cards as development additions. `git show v0.7.3:Sources/CLI/MacParakeetCLI.swift` already includes `SearchCommand`, `SearchReindexCommand`, `TranscriptCommand`, `CardsCommand`, and `SpecCommand`; the corresponding search/segment/card infrastructure exists at that tag. Do not market those as new 0.8.0 features. Cards changes in this delta concern checked token accounting, not first introduction of cards.
+The original development release-channel row in `spec/README.md` also advertised catalog/JSON-mutator coverage, segment search/context reads, and knowledge cards as development additions. That row has been corrected. `git show v0.7.3:Sources/CLI/MacParakeetCLI.swift` already includes `SearchCommand`, `SearchReindexCommand`, `TranscriptCommand`, `CardsCommand`, and `SpecCommand`; the corresponding search/segment/card infrastructure exists at that tag. Do not market those as new 0.8.0 features. Cards changes in this delta concern checked token accounting, not first introduction of cards.
 
-### P3 stale distribution size example
+### P3 stale distribution size example — corrected in this QA branch
 
-Location: final Notes bullet in `docs/distribution.md` says the DMG is 27 MB. The latest published v0.7.3 asset is about 149 MB. Remove the parenthetical rather than baking another transient size into the runbook; the hosting-size rationale remains valid.
+The original final Notes bullet in `docs/distribution.md` said the DMG was 27 MB, while the published v0.7.3 asset was about 149 MB. The transient size example has been removed; the hosting-size rationale remains valid.
 
 ## Changes grouped into testable workflows
 

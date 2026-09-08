@@ -1,72 +1,69 @@
 # MacParakeet 0.8.0 release verification
 
-Status: **IN PROGRESS — no release-readiness verdict yet.** The single full Swift suite passed; the distribution build is running. Final-bundle GUI, hardware/TCC, notarization and main merge remain open.
+**The candidate is validated for final user QA.** The combined app and DMG are signed, notarized and verified; the exercised GUI, CLI and regression checks passed within the scopes below. Both exact-head CI runs passed, and [PR #979](https://github.com/moona3k/macparakeet/pull/979) merged into main at `e476f156` on 2026-09-08 00:07:14 UTC. This is not certification of every matrix combination, and no release download, appcast or GitHub asset has been published by this QA task.
 
-## Scope and provenance
+## Candidate and evidence provenance
 
-- Requested: review changes since stable, exercise real GUI/CLI workflows with public or synthetic audio, fix concrete blockers, and retain reusable methodology and evidence.
-- Stable baseline: `v0.7.3`, commit `d6321f87dccecf29bd4792113f522bb0c98d1f35`.
-- Initial main and currently exercised GUI baseline: `8548c099af5ee2ab0ed4dd9efe757d85c498cca0`.
-- Committed product fixes: `96b2025253ad71d01566713560ea7d101a13c53d`. Documentation-only HEAD: `b7dfbb680d1d73a0ac0ca11b307e678ca93151f2`.
-- Owning branch: `release/0.8.0-qa`, dedicated checkout based on freshly fetched main. Unrelated dirty checkouts and user data are preserved.
-- GUI evidence uses the copied Xcode Release baseline product, bundle `com.macparakeet.qa.release080`, displayed version `0.8.0`, observed PID `98237`. Its version label does not make it the final distribution artifact.
-- Distribution build is now running from `b7dfbb68` with `VERSION=0.8.0` and `REQUIRE_MEETING_ECHO_ASSETS=1`. Embedded CLI target is independently `3.3.0`.
+| Item | Exact scope |
+| --- | --- |
+| Stable baseline | `v0.7.3`, `d6321f87dccecf29bd4792113f522bb0c98d1f35` |
+| Initial main / baseline GUI | `8548c099af5ee2ab0ed4dd9efe757d85c498cca0` |
+| Single full-suite product source | `96b2025253ad71d01566713560ea7d101a13c53d` |
+| First rebuilt GUI after QA fixes | `3827999ddb84c8a8e0edcb3ac190e66813fc95fe` |
+| Combined saved-notes source / final built candidate | `250bbe2994a4b60b4ef81ac257f0ee6bb70874d3` |
+| Main merge | `e476f1567d0e1ed8aaeedf29751c871262d33b93`; same tree as tested source `250bbe29` |
+| Final app / build / embedded CLI | `0.8.0` / `20260907232424` / `3.3.0` |
+| App ZIP notarization | `52abbad6-6f63-49a6-a3de-4fd7f7ba2cb3` — **Accepted** |
+| DMG notarization | `faa10966-3c5d-41e1-990f-bf2f9bafa45f` — **Accepted** |
 
-## Evidence standard and method
+The owning branch is `release/0.8.0-qa`, based in a dedicated checkout. The later main update added saved meeting notes from PR #959; the combined candidate received its own focused tests, build, package verification and notes GUI pass. Report-only commits do not change the built source identity. GUI checks used an isolated copy with bundle ID `com.macparakeet.qa.release080` and a verified owned SQLite path. That copy has a separate test identity from the notarized distribution app.
 
-Each check in [the dashboard](index.html) and [editable evidence](evidence.json) records its actual candidate, expected/observed behavior, result and limits. Historical RED and later GREEN remain separate. An unverified combination does not inherit a pass from another engine, build or test family.
+[Package verification](package-runtime.md) records strict signatures, staples, Gatekeeper acceptance, app/ZIP/DMG payload equality, signed helper startup and exact artifact hashes. The final stapled DMG is 167,213,899 bytes with SHA-256 `17fbf6c6a2a3ed6ada8ce3f0816adae041832f27d7b3a9a2ac9e3499859bcb22`. Preserve those bytes when producing matching release metadata.
 
-1. Inventory stable-to-candidate changes and map them to workflows, contracts and failure paths.
-2. Review audio, CLI/data, package and UI source independently while root owns desktop actions and all product builds/tests.
-3. Verify disposable paths before destructive QA. A development bundle ID alone does not isolate the database, named preferences or Keychain.
-4. Exercise real UI and CLI paths, then assert persisted database records, retained audio, clipboard/export content or validator results.
-5. Use deterministic regressions before narrow fixes. Run focused families during iteration; reserve exactly one full suite for settled product source.
-6. Inspect the final rebuilt artifact and repeat relevant GUI checks before reaching a release decision.
+## Verified results
 
-Committed media contains only individually inspected app-window screenshots and synthetic/public fixture content. Raw AX trees, file panels, private data, audio and unabridged local logs stay outside the report. The GUI evidence manifest records hashes and rejected captures; a successful screenshot command or filename is not proof of its contents.
+| Area | Observed result and limit |
+| --- | --- |
+| Full suite, once | At `96b20252`: **5,461 XCTest tests, 20 skips, zero failures**, plus **29 Swift Testing tests, zero failures**. [Summary and raw-log hash](evidence/full-swift-test-summary.log). This run predates the saved-notes merge. |
+| Combined-source regression gate | At `250bbe29`: **694 focused tests passed**, covering notes, database, prompts, cache and recovery integration. [Gate evidence](evidence/merged-notes-focused-summary.log), [merge review](new-main-notes-review.md). The full suite was not repeated locally. |
+| Final exact-head CI | Both [push](https://github.com/moona3k/macparakeet/actions/runs/34169966386) and [PR](https://github.com/moona3k/macparakeet/actions/runs/34169968359) CI passed at `250bbe29`, including Release build, CLI/bundle smoke, concurrency, Swift 6 and the full test step. Both reached 5,563 parallel test items and explicitly reported 29 Swift Testing passes; the parallel log does not supply an XCTest skip count. [Receipt and raw-log hashes](evidence/pr979-ci-summary.json). |
+| Three concrete fix families | Recovery discard now respects ownership and preserves retry markers; timed transcript caches/actions are scoped to the displayed record; packaging preserves a real Sparkle framework root. Deterministic RED/GREEN evidence, independent source review and actual package checks support these fixes. |
+| Baseline destructive GUI | Vocabulary **1025 → 1023 → 926 → 0**, with cancellation preserving data and one snippet untouched. Track cancellation created no row; English selection persisted ordinal 0. Transcript editing preserved raw text. Actual GUI DAPT output passed validation. [Baseline GUI](gui-runtime.md). |
+| Rebuilt transcript/Markdown GUI | At `3827999d`: ALPHA/BRAVO navigation kept active-record content; 10,000 timed words reached sentence 1000. Rich saved summary/chat rendered. At `250bbe29`, whole-summary and table Copy passed again. Code-block Copy remains unverified. [Rebuilt GUI](gui-rebuilt.md). |
+| Saved notes on final built source | At `250bbe29`: **six GUI checks passed** for autosave, navigation, revision preservation, ordinary quit, relaunch and `notes.md`. Raw transcript unchanged. [Saved-notes pass and inspected screenshots](saved-notes-gui.md). |
+| CLI and exports | Synthetic loopback-provider contracts and legacy-schema migration passed; three representative DAPT fixtures passed XSD and BBC rules with Markdown/SRT/JSON preservation checks. [CLI matrix](cli-runtime.md), [DAPT matrix](dapt-runtime.md). Live external-provider behavior was not exercised. |
+| Real file audio | Six embedded-track/diarization cases and **29 assertions passed**. Engine/language samples produced observed transcripts; extended Japanese/Korean/Mandarin Cohere probes completed. Earlier timeouts and boundary attribution/wording errors remain recorded. [File audio](file-audio-runtime.md), [engine matrix](audio-runtime.md), [Cohere follow-ups](cohere-extended.md). Sample completion is not general accuracy certification. |
+| Microphone | Test Input detected actual input; two microphone-only meetings retained audio. The low-level replay had no recognized text; the louder public-speech replay produced 116 characters, and volume was restored. [Runtime observations](microphone-runtime.md). |
+| Hardware and actual AEC assets | Root's microphone hardware gate: **10 passed, three skipped**. Actual packaged AEC runtime: **two tests passed**; 60 seconds conditioned in 5.426 seconds (**11.06× realtime**). These earlier asset/hardware runs do not establish Bluetooth or real-conversation echo quality. Exact local-log hashes are retained below. |
+| Packaging | All **24 synthetic preflight commands** met expected outcomes. The actual final package subsequently passed signature, privacy/assets, helpers, dependency, DMG payload and notarization checks. [Preflight](package-preflight.md), [final artifact](package-runtime.md). |
 
-## Current observed results
+Recovery history remains available: [stale-owner RED](evidence/recovery-discard-red.log), [first GREEN/cache RED](evidence/cache-red-recovery-green.log), [cache GREEN](evidence/cache-green.log), [partial-delete RED](evidence/recovery-partial-delete-red.log), [87-test GREEN](evidence/recovery-partial-delete-green.log), [mutex-release RED](evidence/recovery-mutex-release-red.log), and [88-test GREEN](evidence/recovery-mutex-release-green.log). Five changed Swift files introduced no new formatter diagnostics relative to their base ([comparison](evidence/format-comparison-final.json)).
 
-- **Full suite:** the one invocation exited 0 on product `96b20252` with documentation HEAD `b7dfbb68`; no product source changed during the run. XCTest: **5,461 tests, 20 skips, zero failures, 214.046 seconds**. Swift Testing: **29 tests, zero failures**. [Summary, skip reasons and full-log hash](evidence/full-swift-test-summary.log); raw log `/tmp/macparakeet-080-qa/evidence/full-swift-test.log`. Skipped hardware/conditional cases remain limitations.
-- **Formatting:** five changed Swift files introduced zero new diagnostics relative to the base. [Comparison](evidence/format-comparison-final.json).
-- **Recovery:** initial stale-owner discard RED: two tests/eight failures; first GREEN: 85 tests. Partial-deletion RED: one test/three failures; GREEN: 87 tests. Cleanup-mutex RED: one test/two failures; final GREEN: **88 tests**. The final repair restores missing markers without overwriting present ownership and independently attempts lease release after restoration failure.
-- **Timed cache:** record-replacement RED: two tests/six assertions; after ID scoping, **23 cache/layout/action tests passed**. These are deterministic/offscreen checks; baseline GUI screenshots do not verify the new fix.
-- **Baseline GUI:** vocabulary counts progressed **1025 → 1023 → 926 → 0**, with cancellation preservation and one untouched snippet. Track chooser cancellation left no row; English selection persisted ordinal 0. Real editing preserved raw text and saved clean text/Edited state. Grid/list switching rendered. Actual GUI DAPT output passed BBC validation after creating the missing owned Downloads directory.
-- **File audio:** six real CLI cases and **29 assertions passed** across embedded tracks, invalid-track rejection and automatic/exact-count diarization. Both speaker runs retain a boundary attribution mismatch; runtime success is not an accuracy certification.
-- **Microphone:** Test Input detected input and stopped automatically. Two microphone-only meetings retained audio with healthy coverage and no settlement locks. First: 48.9 seconds at speaker volume 13, no transcript; second: 13.5 seconds at temporary volume 50, 116 recognized public-speech characters. Volume was restored to 13. The first input-level failure is retained rather than counted as a recognition pass.
-- **Quiet options:** both completion options were visibly off. The app was already frontmost; preserving another app's focus remains unverified.
-- **Package preflight:** all **24 commands** met their expected outcomes on scripts and synthetic fixtures. This does not certify the actual app/DMG, signing, real echo assets or notarization.
+Root's local hardware log `hardware-microphone-tests.log` has SHA-256 `6bcffaacdace6fe8d6f9c6155b4c9008661cd677f8e81c22ddc39fc4b7fb7334`. Its three skips cover default-input mutation, the three-minute idle gap and extended cycle stress. The local `packaged-aec-runtime.log` has SHA-256 `66e5b93b0e5576d7c571b8ee9e0f0abb5a141684f38736e0686112bacf53720c`. These logs were read for their summaries; this report update did not rerun those gates.
 
-Focused raw/curated evidence:
+## Methodology and reusable lessons
 
-- [Initial recovery RED](evidence/recovery-discard-red.log), [first recovery GREEN / cache RED](evidence/cache-red-recovery-green.log), [cache GREEN](evidence/cache-green.log).
-- [Partial-deletion RED](evidence/recovery-partial-delete-red.log), [87-test GREEN](evidence/recovery-partial-delete-green.log).
-- [Mutex-release RED](evidence/recovery-mutex-release-red.log), [88-test GREEN](evidence/recovery-mutex-release-green.log).
-- [Microphone result fields](evidence/mic-meetings-results.json), raw capture observations under `/tmp/macparakeet-080-qa/evidence/`.
+The [dashboard](index.html) and [evidence data](evidence.json) retain actual candidate, expected behavior, observation, status and limits per check. Historical RED and later GREEN stay separate. A later build or untested combination does not inherit a pass from an earlier snapshot.
 
-## Reports
+1. Map stable-to-candidate changes to workflows, contracts and failure paths; split independent source reviews while one owner controls desktop and product builds/tests.
+2. Verify disposable paths before destructive actions. A dev bundle ID alone does not isolate databases, named preferences or Keychain. `CFFIXED_USER_HOME` redirected Foundation paths after a resolver/open-database check; named suites and credentials required separate treatment.
+3. Exercise actual GUI/CLI actions, then check persisted rows, retained audio, export/clipboard contents or validators. A successful automation call is not proof that the UI changed.
+4. Establish deterministic regressions before narrow fixes, run focused families during iteration, and reserve one full local suite. Validate later merged source with the affected combined families.
+5. Verify the exact rebuilt package and relevant GUI paths. Keep package acceptance, user QA, merge and publication distinct.
 
-- [Release change inventory](release-inventory.md)
-- [Audio and recovery source review](audio-review.md)
-- [CLI, data and inference source review](cli-data-review.md)
-- [Markdown and transcript source review](ui-source-review.md)
-- [Executed CLI contracts](cli-runtime.md) and [DAPT/export matrix](dapt-runtime.md)
-- [Engine/language samples](audio-runtime.md) and [file tracks / diarization](file-audio-runtime.md)
-- [Completed baseline GUI scenarios](gui-runtime.md)
-- [Microphone runtime and authorization limits](microphone-runtime.md)
-- [Package preflight and remaining artifact checks](package-preflight.md)
-- [Reusable GUI fixtures](gui-fixtures.md)
-- [Initial setup and historical runtime log](runtime-log.md)
+Native AppKit/ApplicationServices inspection, AX actions and focused input supported GUI verification after the available browser computer-use runtime could not operate on this host. No runtime guard was bypassed. Pure AX value-setting did not consistently reach SwiftUI bindings. Numeric AX indices drifted as windows changed; resolving stable attributes inside the same process that actuated them fixed navigation. Relaunch verification had to wait for the actual startup alert rather than assume a fixed tree.
 
-## What worked and what did not
+The first notes navigation attempt received concurrent user input and was invalidated. Desktop work stopped, private input was preserved outside curated evidence, and all six checks were rerun successfully once the desktop was available. Clean replacement captures were individually inspected. A missing owned Downloads directory initially blocked GUI export; creating that directory resolved the fixture problem. Low replay volume produced usable audio frames without recognized speech, so capture success was not mistaken for recognition success.
 
-- `CFFIXED_USER_HOME` redirected Foundation home/Application Support paths, verified with a resolver probe and the actual open SQLite path. It did not isolate named UserDefaults suites. A unique bundle ID separated ordinary GUI preferences; fixed Keychain services and shared CLI preferences required separate treatment. The uniquely named preference probe domain was removed.
-- Bundled `@oai/sky` refused this host because it required its trusted nodeRepl runtime. No guard was bypassed. Native AppKit/ApplicationServices inspection, AX actions, focused key events and window captures supported the GUI pass.
-- Earlier desktop work paused while the user used the computer, then resumed when available. That pause is historical, not the current release status. Direct AX value-setting and PID-targeted events did not consistently update SwiftUI bindings; verified focus and active-session input plus SQLite receipts established actual saves.
-- A low speaker level produced healthy captured frames but no recognized text. Increasing only the owned replay's volume yielded a recognized sentence, then the original volume was restored. This supports inadequate fixture audibility without ruling out every empty-transcript cause.
-- A missing fake-home Downloads directory initially prevented export. A 4×4 screenshot and an ineffective early edit screenshot were excluded. Later file validation and inspected captures supplied actual evidence.
-- Saved fixtures are insert-only and source-matched, but they do not prove streaming, forced asynchronous ordering, playback or capture. The inherited stale Library `derivedSnippet` after editing remains a documented follow-up.
+Curated media contains inspected app-window synthetic/public content only. Raw AX trees, file panels, unrelated user input, original clipboard backups and private audio are excluded. JSON path redaction must account for escaped slashes; parsed before/after comparisons and source/curated hashes now verify that only intended path values changed. [Browser validation](report-validation.md) records its own two HTML fixes and historical 106/107 then 26/26 assertion results and a further 26/26 pass against the completed 43-check snapshot.
 
-## Remaining gates
+## Remaining coverage and release boundaries
 
-The final distribution bundle needs exact binary/version/resource/AEC/signature checks and relevant GUI re-verification. macOS Accessibility setup for the unique QA app reached a Touch ID/password authorization sheet; user authentication was requested, without requesting a password in chat or editing TCC. System-audio permission/capture, Bluetooth and other device transitions, pause/mute, global hotkeys, and quiet completion while another app owns focus remain open. Notarization/distribution acceptance and main merge are separate unfinished steps. Passing tests or merging code alone does not establish a release-ready deliverable.
+- Global hotkeys and automatic paste remain unverified. Accessibility setup reached system authorization, but System Settings disappeared during the add flow; permission and end-to-end paste success were not established.
+- System-audio capture, Bluetooth/device transitions, pause/mute, and quiet completion while another app owns focus remain open. Both quiet options were observed off while the QA app was already frontmost.
+- Code-block Copy lacks a working AX activation route and did not produce verified content with targeted clicks. Full-summary/table copying work; whether the code-label click failure is automation or product behavior remains unresolved.
+- Sparkle upgrade from an installed stable app, a second physical Mac, and live external-provider requests remain unverified. Saved seeded Markdown/chat and loopback requests do not cover live streaming/provider combinations.
+- The inherited stale Library snippet after transcript editing and completed-session repeated-discard UX remain documented follow-ups. Missing recovery locks must not authorize deleting retained audio.
+- [PR #979](https://github.com/moona3k/macparakeet/pull/979) merged after both CI checks passed at the tested head. The accepted local artifacts have not been published. Final user QA and release publication are subsequent decisions.
+
+Additional source and method reports: [release inventory](release-inventory.md), [audio/recovery review](audio-review.md), [CLI/data review](cli-data-review.md), [UI review](ui-source-review.md), [hosted review dispositions](pr-review-disposition.md), [reusable GUI fixtures](gui-fixtures.md), and [historical setup log](runtime-log.md).

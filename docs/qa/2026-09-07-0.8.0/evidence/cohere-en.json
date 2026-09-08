@@ -6,7 +6,7 @@
   "engine" : "cohere",
   "engineVariant" : "ane",
   "fileName" : "1089-134686-0000.flac",
-  "filePath" : "\/Users\/dmoon\/asr-bench\/LibriSpeech\/test-clean\/1089\/134686\/1089-134686-0000.flac",
+  "filePath" : "<PUBLIC_CORPUS>\/LibriSpeech\/test-clean\/1089\/134686\/1089-134686-0000.flac",
   "fileSizeBytes" : 183318,
   "id" : "A37702D3-8F2F-4B7B-9EBD-0BF087FDB5F9",
   "isFavorite" : false,

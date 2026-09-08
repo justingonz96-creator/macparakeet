@@ -12,7 +12,7 @@ This was a risk-directed review of a large release delta, not a claim that every
 
 ## Finding: discard bypasses active finalization ownership
 
-Fix status: implemented in the QA worktree; root's green validation is pending. Root first ran the two regression tests against unchanged production code. Both failed with eight assertions, confirming that same-process and other-live-process source files and locks were removed. Evidence: `/tmp/macparakeet-080-qa/evidence/recovery-discard-red.log`. Only disposable generated test recordings were involved.
+Fix status: implemented in the QA worktree; root's green validation is pending. Root first ran the two regression tests against unchanged production code. Both failed with eight assertions, confirming that same-process and other-live-process source files and locks were removed. Evidence: [original regression log](evidence/recovery-discard-red.log). Only disposable generated test recordings were involved.
 
 The fix claims the current on-disk ownership before discard and restores the prior lock on failure while the folder remains. Added coverage also pins missing-folder idempotence and retry after an injected folder-removal failure; the existing failed-settlement test now checks the exact restored lock. The narrow guarantee is documented in `spec/contracts/meeting-recovery-retention.md`. Source locations below describe the original candidate.
 
@@ -44,15 +44,15 @@ Test anchors: `MeetingRecordingRecoveryServiceTests` owns the existing `testDisc
 
 ## Public prerecorded fixture inventory (observed)
 
-These paths contain public research corpus files, not the user's meetings. All five are mono, 16 kHz according to `ffprobe`.
+`<PUBLIC_CORPUS>` identifies the local public-corpus root with its workstation prefix redacted. These fixtures contain public research audio, not the user's meetings. All five are mono, 16 kHz according to `ffprobe`. Curated JSON receipts also use `<QA_WORKTREE>` and `<QA_RUN>` for the owning checkout and temporary run root; only path strings were changed, preserving results, hashes, and candidate identifiers.
 
 | Sample | Local file | Duration | SHA-256 |
 |---|---|---:|---|
-| LibriSpeech English | `/Users/dmoon/asr-bench/LibriSpeech/test-clean/1089/134686/1089-134686-0000.flac` | 10.435 s | `30885601173f96b0d8ddd020dc959b055c6c1582b85a33e3fcab8c4b08ed94c2` |
-| FLEURS English | `/Users/dmoon/asr-bench/fleurs-data/en_us/en_us_0000.wav` | 10.560 s | `7835bd6ffb54ce38a2a9bcde3905ba424faed94d50a474f21a9cbe9209b869df` |
-| FLEURS Korean | `/Users/dmoon/asr-bench/fleurs-data/ko_kr/ko_kr_0000.wav` | 12.480 s | `b1f6cf6dde1647ea71e564d0e3efd4bbeb573674dec13f977625fd94ca1b5147` |
-| FLEURS Japanese | `/Users/dmoon/asr-bench/fleurs-data/ja_jp/ja_jp_0000.wav` | 10.440 s | `26b6cd491b5d52cf05d89207cb88499cdaba89749aebc29c8f216e834e3d9071` |
-| FLEURS Mandarin | `/Users/dmoon/asr-bench/fleurs-data/cmn_hans_cn/cmn_hans_cn_0000.wav` | 10.380 s | `5214e16584b6498ddbd22f321738c0f62b19117ab1880b21e405fba983986b6a` |
+| LibriSpeech English | `<PUBLIC_CORPUS>/LibriSpeech/test-clean/1089/134686/1089-134686-0000.flac` | 10.435 s | `30885601173f96b0d8ddd020dc959b055c6c1582b85a33e3fcab8c4b08ed94c2` |
+| FLEURS English | `<PUBLIC_CORPUS>/fleurs-data/en_us/en_us_0000.wav` | 10.560 s | `7835bd6ffb54ce38a2a9bcde3905ba424faed94d50a474f21a9cbe9209b869df` |
+| FLEURS Korean | `<PUBLIC_CORPUS>/fleurs-data/ko_kr/ko_kr_0000.wav` | 12.480 s | `b1f6cf6dde1647ea71e564d0e3efd4bbeb573674dec13f977625fd94ca1b5147` |
+| FLEURS Japanese | `<PUBLIC_CORPUS>/fleurs-data/ja_jp/ja_jp_0000.wav` | 10.440 s | `26b6cd491b5d52cf05d89207cb88499cdaba89749aebc29c8f216e834e3d9071` |
+| FLEURS Mandarin | `<PUBLIC_CORPUS>/fleurs-data/cmn_hans_cn/cmn_hans_cn_0000.wav` | 10.380 s | `5214e16584b6498ddbd22f321738c0f62b19117ab1880b21e405fba983986b6a` |
 
 English reference: `1089/134686/1089-134686.trans.txt`, matching utterance ID. FLEURS references: each language folder's `<language>.trans.txt`, matching WAV stem. Observed WAV counts: en_us 647, ko_kr 382, ja_jp 650, cmn_hans_cn 945. Public speaker corpus/RTTM availability was not established; concatenate two known LibriSpeech speakers for a smoke check, but do not call that a DER benchmark.
 
@@ -77,16 +77,19 @@ Observed directory names under `~/Library/Application Support/FluidAudio/Models`
 
 ### Exact commands and inputs
 
-Run from the owning QA worktree after root's candidate build. Set `QA_CLI` to that exact built CLI and `QA_OUT` to a new owned temporary directory. These variables deliberately do not replace system environment variables.
+Run from the owning QA worktree after root's candidate build. Set `QA_WORKTREE` to that checkout, `QA_FIXTURE_ROOT` to the public-corpus root, and `QA_RUN` to a new owned temporary root. Set `QA_CLI` to that exact built CLI and `QA_OUT` to its owned output directory. These variables deliberately do not replace system environment variables.
 
 ```sh
-QA_CLI=/Users/dmoon/code/macparakeet-qa/.build/arm64-apple-macosx/release/macparakeet-cli
-QA_OUT=/tmp/macparakeet-080-qa/audio-runtime
+: "${QA_WORKTREE:?Set the owning QA checkout}"
+: "${QA_FIXTURE_ROOT:?Set the public-corpus root}"
+: "${QA_RUN:?Set a new owned temporary root}"
+QA_CLI="$QA_WORKTREE/.build/arm64-apple-macosx/release/macparakeet-cli"
+QA_OUT="$QA_RUN/audio-runtime"
 mkdir -p "$QA_OUT"
 MACPARAKEET_TELEMETRY=0 "$QA_CLI" models list --json > "$QA_OUT/models-list.json"
 MACPARAKEET_TELEMETRY=0 "$QA_CLI" models status --json > "$QA_OUT/models-status.json"
 MACPARAKEET_TELEMETRY=0 "$QA_CLI" transcribe \
-  /Users/dmoon/asr-bench/LibriSpeech/test-clean/1089/134686/1089-134686-0000.flac \
+  "$QA_FIXTURE_ROOT/LibriSpeech/test-clean/1089/134686/1089-134686-0000.flac" \
   --engine parakeet --parakeet-model v3 --mode raw \
   --speaker-detection off --no-history --database "$QA_OUT/history.sqlite" \
   --format json > "$QA_OUT/parakeet-v3-en.json" 2> "$QA_OUT/parakeet-v3-en.log"
@@ -98,8 +101,8 @@ For embedded-track QA, first create two private derived files with different pub
 
 ```sh
 ffmpeg -nostdin \
-  -i /Users/dmoon/asr-bench/fleurs-data/en_us/en_us_0000.wav \
-  -i /Users/dmoon/asr-bench/fleurs-data/ja_jp/ja_jp_0000.wav \
+  -i "$QA_FIXTURE_ROOT/fleurs-data/en_us/en_us_0000.wav" \
+  -i "$QA_FIXTURE_ROOT/fleurs-data/ja_jp/ja_jp_0000.wav" \
   -map 0:a:0 -map 1:a:0 -c:a pcm_s16le \
   -metadata:s:a:0 language=eng -metadata:s:a:1 language=jpn \
   "$QA_OUT/two-tracks.mkv"

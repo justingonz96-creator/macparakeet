@@ -20,9 +20,9 @@
       "path": "ja-stdout.json",
       "sourceRelativePath": "stdout.json",
       "sourceSHA256": "f6c878f3ece0fcaef299a8740850b6964576426f3e0c429b2c7968840cc066d7",
-      "curatedSHA256": "f6c878f3ece0fcaef299a8740850b6964576426f3e0c429b2c7968840cc066d7",
-      "sizeBytes": 1022,
-      "transformation": "Replace absolute QA and public fixture roots only; all transcript/log content retained."
+      "curatedSHA256": "84179bd3d2bb439c2f0e9e755390648e7c6a5817405b5fac0672b991850d1d88",
+      "sizeBytes": 999,
+      "transformation": "Replace the JSON-escaped absolute public fixture root with <PUBLIC_FLEURS>; every other decoded value unchanged."
     },
     {
       "path": "ja-stderr.log",
@@ -44,9 +44,9 @@
       "path": "ko-stdout.json",
       "sourceRelativePath": "ko/stdout.json",
       "sourceSHA256": "9c2ed9b7afabc12b42de9e98adaa33dfa4186869cb8b1c735707bb58b8fc1216",
-      "curatedSHA256": "9c2ed9b7afabc12b42de9e98adaa33dfa4186869cb8b1c735707bb58b8fc1216",
-      "sizeBytes": 1054,
-      "transformation": "Replace absolute QA and public fixture roots only; all transcript/log content retained."
+      "curatedSHA256": "20c5202dac221e9deb6d680b32aa8b3398b34bdd36e0873a48d018e706f50d67",
+      "sizeBytes": 1031,
+      "transformation": "Replace the JSON-escaped absolute public fixture root with <PUBLIC_FLEURS>; every other decoded value unchanged."
     },
     {
       "path": "ko-stderr.log",
@@ -68,9 +68,9 @@
       "path": "zh-stdout.json",
       "sourceRelativePath": "zh/stdout.json",
       "sourceSHA256": "73bb1244ac45ab597a864cb8754e94a383a6bdfe608057ea912515f28e5e6955",
-      "curatedSHA256": "73bb1244ac45ab597a864cb8754e94a383a6bdfe608057ea912515f28e5e6955",
-      "sizeBytes": 848,
-      "transformation": "Replace absolute QA and public fixture roots only; all transcript/log content retained."
+      "curatedSHA256": "553d5d00b41b075c510c616cede71f0c3ef74da9d62acdb9a55308d44aa8dd52",
+      "sizeBytes": 825,
+      "transformation": "Replace the JSON-escaped absolute public fixture root with <PUBLIC_FLEURS>; every other decoded value unchanged."
     },
     {
       "path": "zh-stderr.log",

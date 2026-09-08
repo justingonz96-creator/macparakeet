@@ -6,7 +6,7 @@
   "engine" : "nemotron",
   "engineVariant" : "multilingual-1120ms",
   "fileName" : "1089-134686-0000.flac",
-  "filePath" : "\/Users\/dmoon\/asr-bench\/LibriSpeech\/test-clean\/1089\/134686\/1089-134686-0000.flac",
+  "filePath" : "<PUBLIC_CORPUS>\/LibriSpeech\/test-clean\/1089\/134686\/1089-134686-0000.flac",
   "fileSizeBytes" : 183318,
   "id" : "6C30CCE9-0E71-4462-BB8A-9C5237DCE870",
   "isFavorite" : false,

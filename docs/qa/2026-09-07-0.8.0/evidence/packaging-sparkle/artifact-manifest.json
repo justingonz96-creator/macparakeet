@@ -19,7 +19,7 @@
     },
     {
       "path": "sparkle-root-symlink.patch",
-      "sha256": "8fef3c6b7682d769df80f526946dc3087fb419feb869a4559c5a1066327c4314"
+      "sha256": "8e74725087a61fc4137b694ccf9c6b09df09ca3583335ac61d02a5e5a9efe2e0"
     },
     {
       "path": "actual-framework-copy-green.log",

@@ -8,15 +8,15 @@ The original 240-second timeout evidence remains unchanged.
 
 ## Provenance and isolation
 
-- Copied CLI: `/tmp/macparakeet-080-qa/macparakeet-cli-runtime`, SHA-256
+- Copied CLI: `<QA_ROOT>/macparakeet-cli-runtime`, SHA-256
   `f8a62b79ece6045909d15ece2fd086eed7e10ca04ebc870d9fc50ed76774f095`.
 - Compiled source supplied by root: `8548c099af5ee2ab0ed4dd9efe757d85c498cca0`
   plus recovery fix `c506d7ef7d4cf98f3986cfb5de84ced6b4ce701e`. This is the
   copied runtime CLI, not the newly built final distribution artifact.
-- Public FLEURS files came from `/Users/dmoon/asr-bench/fleurs-data/`.
+- Public FLEURS files came from `<PUBLIC_FLEURS>/`.
   Binary and input hashes were checked before and after every invocation and
   remained unchanged.
-- `CFFIXED_USER_HOME=/tmp/macparakeet-080-qa/isolated-home` reused the prepared
+- `CFFIXED_USER_HOME=<QA_ROOT>/isolated-home` reused the prepared
   model cache. `MACPARAKEET_TELEMETRY=0`, `DO_NOT_TRACK=1`, and an owned `TMPDIR`
   were set; any inherited `MACPARAKEET_DEBUG_APP_STATE_DIR` was removed.
 - Each case used its own database, explicit language, raw processing,
@@ -118,7 +118,7 @@ No SQLite database, model cache, audio or private environment values were copied
 - Korean: [result](evidence/cohere-extended/ko-result.json), [stdout](evidence/cohere-extended/ko-stdout.json), [stderr](evidence/cohere-extended/ko-stderr.log)
 - Mandarin: [result](evidence/cohere-extended/zh-result.json), [stdout](evidence/cohere-extended/zh-stdout.json), [stderr](evidence/cohere-extended/zh-stderr.log)
 
-Original local working directory: `/tmp/macparakeet-080-qa/cohere-extended`.
+Original local working directory: `<QA_ROOT>/cohere-extended`.
 Its `run.py` and `run_followups.py`, raw output files, owned databases and
 conversion files remain available locally. The [earlier sample matrix](audio-runtime.md)
 retains the original timeout history. Curation did not rerun inference or modify

@@ -6,7 +6,7 @@
   "engine" : "parakeet",
   "engineVariant" : "unified",
   "fileName" : "1089-134686-0000.flac",
-  "filePath" : "\/Users\/dmoon\/asr-bench\/LibriSpeech\/test-clean\/1089\/134686\/1089-134686-0000.flac",
+  "filePath" : "<PUBLIC_CORPUS>\/LibriSpeech\/test-clean\/1089\/134686\/1089-134686-0000.flac",
   "fileSizeBytes" : 183318,
   "id" : "55F2156D-11C8-42D3-AF4F-72F453AD7A35",
   "isFavorite" : false,

@@ -42,22 +42,23 @@
   "release": {
     "name": "MacParakeet",
     "target": "0.8.0",
-    "state": "in_progress",
-    "headline": "Verification in progress",
-    "summary": "The single full Swift suite passed on the committed fixes. Baseline GUI, public file-audio, microphone-only capture, and distribution-script preflight have observed results. The final distribution build is running; final-bundle GUI, hardware/TCC and release gates remain open.",
-    "candidate": "96b2025253ad71d01566713560ea7d101a13c53d",
-    "candidateLabel": "Committed product fixes",
+    "state": "candidate_validated",
+    "headline": "Candidate validated; final QA scope recorded",
+    "summary": "The recovery and transcript fixes, integrated saved notes, real speech samples, and signed 0.8.0 package passed their recorded checks. Both CI runs passed and PR #979 is merged. The app and DMG are notarized; remaining permission and hardware combinations are explicit.",
+    "candidate": "250bbe2994a4b60b4ef81ac257f0ee6bb70874d3",
+    "candidateLabel": "Combined source candidate",
     "baseline": "v0.7.3",
     "baselineCommit": "d6321f87dccecf29bd4792113f522bb0c98d1f35",
     "branch": "release/0.8.0-qa",
-    "updated": "2026-09-07 15:54 PDT",
-    "snapshotLabel": "Full suite passed; distribution build running",
-    "boundary": "Product source 96b2025253ad; documentation head b7dfbb680d1d. GUI evidence still comes from baseline 8548c099af5e. This local QA record does not certify a signed, notarized, or published release.",
+    "updated": "2026-09-07 17:10 PDT",
+    "snapshotLabel": "Merged source and notarized candidate verified",
+    "boundary": "Evidence retains each actual source commit. The single local full-suite run predates saved-notes integration; 694 focused tests, GUI checks and two successful full CI runs cover the combined source. The six failed records are historical attempts with later fixes or successful reruns. No release was published.",
     "next": [
-      "Inspect the running 0.8.0 distribution build from b7dfbb68 with required meeting echo assets.",
-      "Repeat relevant GUI checks on the final bundle; baseline screenshots predate the recovery/cache fixes.",
-      "Complete or explicitly scope Accessibility authorization, system audio, Bluetooth/device transitions, notarization and main merge."
-    ]
+      "Complete remaining Accessibility/global paste, system-audio and device combinations during final user QA.",
+      "Before public release, verify the actual Sparkle update/download metadata against the final stapled DMG; publishing is a separate action."
+    ],
+    "mergeCommit": "e476f1567d0e1ed8aaeedf29751c871262d33b93",
+    "mergedAt": "2026-09-08T00:07:14Z"
   },
   "checks": [
     {
@@ -366,23 +367,23 @@
     },
     {
       "id": "markdown",
-      "title": "Rich Markdown display, selection, and copy",
+      "title": "Saved rich Markdown and complete summary/table copy",
       "area": "Library",
-      "status": "unverified",
-      "phase": "Candidate",
-      "candidate": "8548c099af5ee2ab0ed4dd9efe757d85c498cca0",
-      "build": "Copied Xcode Release dev product; bundle com.macparakeet.qa.release080, PID 98237, displayed 0.8.0; baseline source, not final release bundle.",
-      "observed": "Source reviewed and insert-only saved-result/chat/long-transcript fixtures prepared and validated on a synthetic database. Full native rich Markdown selection, table actions, appearance and streaming checks remain unverified.",
-      "expected": "Saved and streaming results render consistently; copying preserves content; links obey policy.",
-      "limitations": "Parser tests cannot certify native keyboard or pointer behavior.",
+      "status": "passed",
+      "phase": "Rebuilt GUI",
+      "candidate": "3827999ddb84c8a8e0edcb3ac190e66813fc95fe (rendering and Copy); 250bbe2994a4b60b4ef81ac257f0ee6bb70874d3 (summary/table Copy repeated)",
+      "build": "Isolated Xcode Release app copy; bundle com.macparakeet.qa.release080",
+      "observed": "At 3827999d, headings, table, JSON, lists, links and end marker rendered; complete summary Copy equaled saved Markdown and table Copy preserved every fixture row. Summary and table Copy both repeated successfully on 250bbe29.",
+      "expected": "Saved rich results remain readable and full/table copying preserves content.",
+      "limitations": "Saved fixtures do not prove live streaming. Code-block Copy remains unverified; no original clipboard content is published.",
       "evidence": [
         {
-          "label": "Markdown source review",
-          "path": "ui-source-review.md"
+          "label": "Rebuilt GUI report",
+          "path": "gui-rebuilt.md"
         },
         {
-          "label": "Reusable fixtures and expected GUI markers",
-          "path": "gui-fixtures.md"
+          "label": "Current copy receipts",
+          "path": "evidence/gui-rebuilt/copy-controls-current.json"
         }
       ],
       "command": "",
@@ -430,7 +431,7 @@
     },
     {
       "id": "full-suite",
-      "title": "Final settled-candidate test suite",
+      "title": "One full-suite gate before saved-notes integration",
       "area": "Release gates",
       "status": "passed",
       "phase": "After fix",
@@ -438,7 +439,7 @@
       "build": "Root-owned single full swift test invocation in the QA worktree; started 2026-09-07 15:46:58 local.",
       "observed": "The one full-suite invocation exited 0: XCTest ran 5,461 tests with 20 skips and zero failures in 214.046 seconds; Swift Testing ran 29 tests with zero failures. Product source remained 96b20252; documentation HEAD was b7dfbb68.",
       "expected": "Record the exact settled candidate, command, exit status, passed tests, and skips.",
-      "limitations": "The 20 explicit skips remain limitations; passing the suite does not certify GUI, real hardware or a final signed artifact. See the summary for skip reasons and full-log hash.",
+      "limitations": "Executed once on source 96b20252 before the later saved-notes merge. The combined 250bbe29 candidate has separate 694-test focused evidence; no second local full-suite run was made.",
       "evidence": [
         {
           "label": "Full-suite result, skips and log hash",
@@ -450,23 +451,23 @@
     },
     {
       "id": "release-package",
-      "title": "0.8.0 bundle, embedded CLI, and AEC assets",
+      "title": "Signed app and DMG are notarized and match",
       "area": "Release gates",
-      "status": "unverified",
+      "status": "passed",
       "phase": "Release artifact",
-      "candidate": "96b2025253ad71d01566713560ea7d101a13c53d; documentation head b7dfbb680d1d73a0ac0ca11b307e678ca93151f2",
-      "build": "Final rebuilt release bundle pending; the running QA GUI remains baseline 8548c099af5e.",
-      "observed": "All 24 distribution-script preflight commands passed. The distribution build is now running from b7dfbb68 with VERSION=0.8.0 and REQUIRE_MEETING_ECHO_ASSETS=1. Final binary/resource/AEC inspection, signatures, notarization, final-bundle GUI and main merge remain pending.",
-      "expected": "Versions, Markdown resources, helpers, AEC checksum/symbols, privacy entries, and signing pass on the actual release bundle.",
-      "limitations": "Synthetic validator and shutdown tests do not establish real bundle signing, asset validity, binary provenance, notarization, or publication.",
+      "candidate": "250bbe2994a4b60b4ef81ac257f0ee6bb70874d3",
+      "build": "Xcode Release app 0.8.0 build 20260907232424; production CLI 3.3.0",
+      "observed": "Both exact Apple submissions Accepted. Signatures, staples, Gatekeeper, signed helpers, DMG integrity and mounted payload identity passed. Final DMG 167,213,899 bytes, SHA-256 17fbf6c6a2a3ed6ada8ce3f0816adae041832f27d7b3a9a2ac9e3499859bcb22.",
+      "expected": "The intended candidate is self-contained, signed, accepted and intact in its DMG.",
+      "limitations": "No public release/upload/appcast update, second-Mac installation, or Sparkle upgrade was performed.",
       "evidence": [
         {
-          "label": "24-command preflight and remaining artifact gates",
-          "path": "package-preflight.md"
+          "label": "Actual package verification",
+          "path": "package-runtime.md"
         },
         {
-          "label": "Candidate provenance",
-          "path": "README.md"
+          "label": "Artifact hashes",
+          "path": "evidence/package-runtime/dmg-manifest.json"
         }
       ],
       "command": "",
@@ -942,6 +943,146 @@
       ],
       "command": "macparakeet-cli-runtime transcribe <public-FLEURS-zh-fixture> --engine cohere --language zh --mode raw --speaker-detection off --no-history --database <owned-case>/history.sqlite --format json",
       "durationSeconds": 6.642
+    },
+    {
+      "id": "merged-notes-focused",
+      "title": "694 combined notes, cache, recovery and CLI tests",
+      "area": "Tests",
+      "status": "passed",
+      "phase": "Combined candidate",
+      "candidate": "250bbe2994a4b60b4ef81ac257f0ee6bb70874d3",
+      "build": "Recorded Release candidate or focused test binary",
+      "observed": "694 focused XCTest cases passed, zero failures, 20.741 seconds after merging PR #959.",
+      "expected": "New notes behavior and overlapping fixes compose successfully.",
+      "limitations": "Focused families; not a second full suite.",
+      "evidence": [
+        {
+          "label": "Evidence and method",
+          "path": "evidence/merged-notes-focused-summary.log"
+        }
+      ],
+      "command": "See linked report for exact commands or interaction sequence.",
+      "durationSeconds": null
+    },
+    {
+      "id": "saved-notes-gui",
+      "title": "Notes survive navigation, quit and relaunch",
+      "area": "GUI",
+      "status": "passed",
+      "phase": "Combined candidate",
+      "candidate": "250bbe2994a4b60b4ef81ac257f0ee6bb70874d3",
+      "build": "Isolated copy of signed 0.8.0 app; actual owned SQLite path checked",
+      "observed": "Six GUI/database checks passed: autosave, navigation, new revision, ordinary quit, relaunch and notes.md sidecar. Transcript fields remained unchanged.",
+      "expected": "Saved meeting notes retain the latest text in the right meeting and its artifact.",
+      "limitations": "Forced debounce/race timing is covered by deterministic tests; no external provider configured.",
+      "evidence": [
+        {
+          "label": "Evidence and method",
+          "path": "saved-notes-gui.md"
+        }
+      ],
+      "command": "See linked report for exact commands or interaction sequence.",
+      "durationSeconds": null
+    },
+    {
+      "id": "timed-gui-rebuilt",
+      "title": "Timed record switching and the 10,000-word final sentence",
+      "area": "GUI",
+      "status": "passed",
+      "phase": "Rebuilt candidate",
+      "candidate": "3827999ddb84c8a8e0edcb3ac190e66813fc95fe",
+      "build": "Rebuilt signed app copied into unique QA bundle",
+      "observed": "ALPHA/BRAVO swaps showed only the active text/speaker. The native scroll bar reached sentence 1000 at 66:36.",
+      "expected": "Record replacement is clean and long timed content remains reachable.",
+      "limitations": "Screenshots sample UI states; deterministic tests force async replacement ordering.",
+      "evidence": [
+        {
+          "label": "Evidence and method",
+          "path": "gui-rebuilt.md"
+        }
+      ],
+      "command": "See linked report for exact commands or interaction sequence.",
+      "durationSeconds": null
+    },
+    {
+      "id": "hardware-microphone",
+      "title": "Real microphone lifecycle and ten repeated starts",
+      "area": "Audio",
+      "status": "passed",
+      "phase": "Rebuilt candidate",
+      "candidate": "3827999ddb84c8a8e0edcb3ac190e66813fc95fe",
+      "build": "Recorded Release candidate or focused test binary",
+      "observed": "10 hardware tests passed; 3 separately gated tests skipped; zero failures in 9.059 seconds. Cold/prepared starts, stop/start and VPIO transitions delivered actual buffers.",
+      "expected": "Real platform capture supplies buffers across supported lifecycle transitions.",
+      "limitations": "Long stress, three-minute idle and default-device mutation were not enabled; no Bluetooth claim.",
+      "evidence": [
+        {
+          "label": "Evidence and method",
+          "path": "evidence/hardware-microphone-summary.log"
+        }
+      ],
+      "command": "See linked report for exact commands or interaction sequence.",
+      "durationSeconds": null
+    },
+    {
+      "id": "real-packaged-aec",
+      "title": "Bundled LocalVQE loads and renders audio",
+      "area": "Audio",
+      "status": "passed",
+      "phase": "Rebuilt candidate",
+      "candidate": "3827999ddb84c8a8e0edcb3ac190e66813fc95fe",
+      "build": "Recorded Release candidate or focused test binary",
+      "observed": "Two focused tests passed using the actual bundled library/model; 60 seconds rendered at 11.06× realtime, zero failures.",
+      "expected": "Packaged AEC assets load and process their synthetic render fixture.",
+      "limitations": "This does not establish live system-audio or acoustic echo quality.",
+      "evidence": [
+        {
+          "label": "Evidence and method",
+          "path": "evidence/packaged-aec-summary.log"
+        }
+      ],
+      "command": "See linked report for exact commands or interaction sequence.",
+      "durationSeconds": null
+    },
+    {
+      "id": "code-copy-control",
+      "title": "Code-block Copy activation",
+      "area": "GUI",
+      "status": "unverified",
+      "phase": "Combined candidate",
+      "candidate": "250bbe2994a4b60b4ef81ac257f0ee6bb70874d3",
+      "build": "Recorded Release candidate or focused test binary",
+      "observed": "Full-result and table Copy passed; targeted code-label clicks did not produce the expected JSON. The dependency lacks an AXPress activation action.",
+      "expected": "The individual code block copies its complete content.",
+      "limitations": "Automation outcome remains unverified; no dependency replacement was introduced. Full summary Copy provides the code.",
+      "evidence": [
+        {
+          "label": "Evidence and method",
+          "path": "gui-rebuilt.md"
+        }
+      ],
+      "command": "See linked report for exact commands or interaction sequence.",
+      "durationSeconds": null
+    },
+    {
+      "id": "global-shortcuts-paste",
+      "title": "Global shortcut and paste into another app",
+      "area": "Permissions",
+      "status": "unverified",
+      "phase": "Combined candidate",
+      "candidate": "250bbe2994a4b60b4ef81ac257f0ee6bb70874d3",
+      "build": "Recorded Release candidate or focused test binary",
+      "observed": "Unique QA bundle lacked Accessibility. System Settings setup did not reach a verified QA-specific grant.",
+      "expected": "Global shortcut capture and paste work with granted permissions.",
+      "limitations": "No TCC bypass or credential access. Existing production app permission is not evidence for the QA bundle.",
+      "evidence": [
+        {
+          "label": "Evidence and method",
+          "path": "README.md"
+        }
+      ],
+      "command": "See linked report for exact commands or interaction sequence.",
+      "durationSeconds": null
     }
   ],
   "media": [
@@ -1024,6 +1165,56 @@
       "caption": "This capture establishes format selection. The exported file and BBC validator results establish successful output.",
       "checkIds": [
         "gui-dapt-export"
+      ]
+    },
+    {
+      "id": "rebuilt-markdown",
+      "kind": "image",
+      "path": "evidence/gui-rebuilt/updated-markdown-preview.png",
+      "title": "Rebuilt rich Markdown summary",
+      "caption": "Individually inspected synthetic QA content. Interaction/database assertions are recorded in the linked scenario.",
+      "checkIds": [
+        "markdown"
+      ]
+    },
+    {
+      "id": "rebuilt-timed-bravo",
+      "kind": "image",
+      "path": "evidence/gui-rebuilt/updated-timed-bravo.png",
+      "title": "BRAVO owns its displayed timed rows",
+      "caption": "Individually inspected synthetic QA content. Interaction/database assertions are recorded in the linked scenario.",
+      "checkIds": [
+        "timed-gui-rebuilt"
+      ]
+    },
+    {
+      "id": "rebuilt-timed-end",
+      "kind": "image",
+      "path": "evidence/gui-rebuilt/updated-timed-long-bottom.png",
+      "title": "The 10,000-word final sentence",
+      "caption": "Individually inspected synthetic QA content. Interaction/database assertions are recorded in the linked scenario.",
+      "checkIds": [
+        "timed-gui-rebuilt"
+      ]
+    },
+    {
+      "id": "notes-saved",
+      "kind": "image",
+      "path": "evidence/gui-rebuilt/notes-autosaved-current.png",
+      "title": "Notes autosaved",
+      "caption": "Individually inspected synthetic QA content. Interaction/database assertions are recorded in the linked scenario.",
+      "checkIds": [
+        "saved-notes-gui"
+      ]
+    },
+    {
+      "id": "notes-reopened",
+      "kind": "image",
+      "path": "evidence/gui-rebuilt/notes-reopened-current.png",
+      "title": "Latest notes after quit and relaunch",
+      "caption": "Individually inspected synthetic QA content. Interaction/database assertions are recorded in the linked scenario.",
+      "checkIds": [
+        "saved-notes-gui"
       ]
     }
   ],
@@ -1140,6 +1331,38 @@
     {
       "label": "Microphone-only runtime and TCC limits",
       "path": "microphone-runtime.md"
+    },
+    {
+      "label": "Rebuilt GUI and copy controls",
+      "path": "gui-rebuilt.md"
+    },
+    {
+      "label": "Saved meeting notes GUI",
+      "path": "saved-notes-gui.md"
+    },
+    {
+      "label": "Saved-notes source and merge review",
+      "path": "new-main-notes-review.md"
+    },
+    {
+      "label": "Signed and notarized package",
+      "path": "package-runtime.md"
+    },
+    {
+      "label": "Report browser validation",
+      "path": "report-validation.md"
+    },
+    {
+      "label": "PR review dispositions",
+      "path": "pr-review-disposition.md"
+    },
+    {
+      "label": "Extended Cohere results",
+      "path": "cohere-extended.md"
+    },
+    {
+      "label": "Final CI receipts",
+      "path": "evidence/pr979-ci-summary.json"
     }
   ]
 }

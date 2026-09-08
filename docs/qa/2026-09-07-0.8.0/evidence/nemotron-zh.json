@@ -6,7 +6,7 @@
   "engine" : "nemotron",
   "engineVariant" : "multilingual-1120ms",
   "fileName" : "cmn_hans_cn_0000.wav",
-  "filePath" : "\/Users\/dmoon\/asr-bench\/fleurs-data\/cmn_hans_cn\/cmn_hans_cn_0000.wav",
+  "filePath" : "<PUBLIC_CORPUS>\/fleurs-data\/cmn_hans_cn\/cmn_hans_cn_0000.wav",
   "fileSizeBytes" : 332204,
   "id" : "AA6D8F03-8209-42F8-801E-F3730C2E4775",
   "isFavorite" : false,

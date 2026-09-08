@@ -6,7 +6,7 @@
 
 The inventory agent froze `index.html` and `evidence.json` before the initial run. The snapshot represented product source `96b2025253ad71d01566713560ea7d101a13c53d`, with 33 recorded checks: 23 passed, six failed, and four unverified, across ten areas. It contained eight gallery images and 14 source-report links. The six failed entries include retained historical regression proofs and timeout observations; they are not a count of six newly discovered unresolved product defects.
 
-Installed Python Playwright **1.58.0** launched the installed Chrome executable with `headless=True`; the browser reported `HeadlessChrome/152.0.0.0`. Each run used a fresh profile under `/tmp/macparakeet-080-qa/report-browser/`, loaded the page through `file://`, and set the browser context offline. No dependency install, local server, existing browser profile, foreground window, desktop input, product build, or app test suite was used. The root agent's pending macOS authorization prompt was not addressed by this work.
+Installed Python Playwright **1.58.0** launched the installed Chrome executable with `headless=True`; the browser reported `HeadlessChrome/152.0.0.0`. Each run used a fresh profile under the owned temporary browser evidence directory, loaded the page through `file://`, and set the browser context offline. No dependency install, local server, existing browser profile, foreground window, desktop input, product build, or app test suite was used. The root agent's pending macOS authorization prompt was not addressed by this work.
 
 | Artifact | SHA-256 |
 | --- | --- |
@@ -46,26 +46,50 @@ At both 390 and 320 pixels, the wrapped metadata was 85.234 pixels high inside a
 
 These were the only source edits in this validation task. Root retained commit ownership.
 
-## Commands and local evidence
+## Commands and durable evidence
 
-The standalone runners use installed Playwright directly and create fresh owned profiles:
+From this report directory, the portable standalone runners use installed Playwright directly and create fresh profiles and outputs under a newly allocated temporary directory:
 
 ```sh
-python3 /tmp/macparakeet-080-qa/report-browser/verify_report.py run-01
-python3 /tmp/macparakeet-080-qa/report-browser/retest_fixes.py
+python3 evidence/report-browser/verify_report.py run-01
+python3 evidence/report-browser/retest_fixes.py
 ```
 
-The broad runner accepts a new run-directory argument and refuses to overwrite it. The focused runner owns `run-02` and likewise refuses to overwrite an existing run. Preserve existing evidence when replaying.
+The broad runner accepts a run-directory name; both runners allocate a fresh temporary parent and refuse to overwrite the run directory. These durable copies adapt only the original machine-specific input/output paths and output-location reporting; their syntax was checked during curation. The recorded browser runs used the original runners. Replays use the current report data and retain their own hashes.
 
-- [Initial 107 assertions and diagnostics](/tmp/macparakeet-080-qa/report-browser/run-01/results.json), [raw log](/tmp/macparakeet-080-qa/report-browser/run-01.log)
-- [Original narrow-header measurements](/tmp/macparakeet-080-qa/report-browser/layout-probe.json)
-- [Exact two-change patch](/tmp/macparakeet-080-qa/report-browser/report-fixes.diff), [hash and preservation receipt](/tmp/macparakeet-080-qa/report-browser/report-fixes.json)
-- [Focused 26-assertion green result](/tmp/macparakeet-080-qa/report-browser/run-02/results.json), [raw log](/tmp/macparakeet-080-qa/report-browser/run-02.log)
-- [Final desktop screenshot](/tmp/macparakeet-080-qa/report-browser/run-02/overview-1440.png), [390-pixel screenshot](/tmp/macparakeet-080-qa/report-browser/run-02/overview-390.png), [320-pixel screenshot](/tmp/macparakeet-080-qa/report-browser/run-02/overview-320.png)
-- [Consistent saved snapshot](/tmp/macparakeet-080-qa/report-browser/run-02/saved-snapshot-consistent.png)
-- [Expanded narrow detail](/tmp/macparakeet-080-qa/report-browser/run-01/mobile-detail.png), [desktop gallery](/tmp/macparakeet-080-qa/report-browser/run-01/desktop-gallery.png), [narrow gallery](/tmp/macparakeet-080-qa/report-browser/run-01/mobile-gallery.png)
-- [Browser cleanup receipt](/tmp/macparakeet-080-qa/report-browser/cleanup.json): zero remaining processes using the owned profiles
+- [Initial 107 assertions and diagnostics](evidence/report-browser/run-01/results.json), [raw log](evidence/report-browser/run-01.log)
+- [Original narrow-header measurements](evidence/report-browser/layout-probe.json)
+- [Exact two-change patch, hash and preservation receipt](evidence/report-browser/report-fixes.json)
+- [Focused 26-assertion green result](evidence/report-browser/run-02/results.json), [raw log](evidence/report-browser/run-02.log)
+- [Final desktop screenshot](evidence/report-browser/run-02/overview-1440.png), [390-pixel screenshot](evidence/report-browser/run-02/overview-390.png), [320-pixel screenshot](evidence/report-browser/run-02/overview-320.png)
+- [Consistent saved snapshot](evidence/report-browser/run-02/saved-snapshot-consistent.png)
+- [Expanded narrow detail](evidence/report-browser/run-01/mobile-detail.png), [desktop gallery](evidence/report-browser/run-01/desktop-gallery.png), [narrow gallery](evidence/report-browser/run-01/mobile-gallery.png)
+- [Original clipped header](evidence/report-browser/run-01/mobile-overview.png), [original saved-filter mismatch](evidence/report-browser/run-01/saved-snapshot.png)
+- [Curation manifest and file hashes](evidence/report-browser/manifest.json)
+- [Browser cleanup receipt](evidence/report-browser/cleanup.json): zero remaining processes using the owned profiles
 
 Screenshots were individually inspected after capture. The first automated overflow assertions only checked horizontal bounds; visual inspection caught the vertical clipping, which then received a measured regression check. Native file dialogs were avoided: Playwright supplied the JSON directly to the report's file input and captured its HTML download. Saved-report verification placed local evidence beside the downloaded file through owned symlinks, matching the report's instruction to keep its evidence folder alongside it.
 
 Runner syntax and scoped `git diff --check` passed. Later changes to report data, scripts, or layout should retain their own snapshot hashes; this result does not silently transfer to a modified report.
+
+## Evidence curation and privacy
+
+Nine screenshots were individually inspected and copied unchanged into `evidence/report-browser/`. They show the report and approved synthetic/public app fixtures only. Browser profiles, downloaded DOM/symlinks, desktop captures, personal file panels, clipboard material, and private audio were excluded. JSON/log copies replace machine-specific absolute paths with stable placeholders; the manifest records source and curated hashes and each transformation. Counts, assertion verdicts, original HTML/evidence hashes, and the historical RED screenshots remain unchanged. The exact HTML patch is stored as a JSON string in its receipt.
+
+This report preserves the 33-check frozen snapshot. Later dashboard data updates are separate evidence; these screenshots do not depict the latest release state. Curation does not imply a new browser run.
+
+## Later data-only synchronization
+
+After the root agent added newer release observations, the embedded `script#evidence-data` was synchronized with `evidence.json`: **36 checks, 26 passed, six failed, four unverified**. The synchronization preserved every byte outside that data script and parsed back to the same JSON. [The synchronization receipt](evidence/report-browser/later-data-sync.json) records the new hashes. No browser interaction was repeated for this data-only update; the 107/26-assertion runs and screenshots above retain their earlier snapshot provenance.
+
+The separately requested hosted-review cleanup replaced workstation prefixes in nine audio evidence JSON files. [The path-redaction receipt](evidence/report-browser/review-path-redactions.json) records before/after hashes and substitution counts. The measured GUI track receipt remains unchanged.
+
+## Completed report snapshot
+
+The root reran the portable focused runner against the completed **43-check snapshot: 33 passed, six historical failures, four unverified**. All **26 assertions passed**. All four status filters, evidence reload, saved-snapshot state and content, header bounds, and horizontal overflow checks passed at 320, 390, 768 and 1,440 pixels. There were no JavaScript exceptions or external requests. Four captured report screenshots were individually inspected. This was a fresh offline headless browser, with no desktop input or product test rerun.
+
+- [26-assertion result and source hashes](evidence/report-browser-final/results.json)
+- [Desktop](evidence/report-browser-final/overview-1440.png), [390 pixels](evidence/report-browser-final/overview-390.png), [320 pixels](evidence/report-browser-final/overview-320.png), [saved snapshot](evidence/report-browser-final/saved-snapshot-consistent.png)
+- [Unmodified artifact hashes](evidence/report-browser-final/manifest.json)
+
+The exact HTML SHA-256 was `778271fcb86ce5e166deb365ef223806d4477b3ff6bfe6db002f80c057c4169c`; JSON was `012250048df0c89e9446dbb387cb559aa4adba91d4d91a72f00c5abb5d24f2b0`. Subsequent finalization changed only embedded evidence data: completed CI/merge status, a CI receipt link and four provenance descriptions. No script or CSS changed, and the 43 statuses remained unchanged. Embedded JSON equality and evidence links were checked again; the screenshots retain their pre-finalization wording.

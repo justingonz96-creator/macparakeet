@@ -6,7 +6,7 @@
   "engine" : "nemotron",
   "engineVariant" : "multilingual-1120ms",
   "fileName" : "ko_kr_0000.wav",
-  "filePath" : "\/Users\/dmoon\/asr-bench\/fleurs-data\/ko_kr\/ko_kr_0000.wav",
+  "filePath" : "<PUBLIC_CORPUS>\/fleurs-data\/ko_kr\/ko_kr_0000.wav",
   "fileSizeBytes" : 399404,
   "id" : "E67A851F-AE24-4A22-A3C0-12AF7F0EE2F5",
   "isFavorite" : false,

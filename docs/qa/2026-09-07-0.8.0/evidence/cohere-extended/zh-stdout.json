@@ -6,7 +6,7 @@
   "engine" : "cohere",
   "engineVariant" : "ane",
   "fileName" : "cmn_hans_cn_0000.wav",
-  "filePath" : "\/Users\/dmoon\/asr-bench\/fleurs-data\/cmn_hans_cn\/cmn_hans_cn_0000.wav",
+  "filePath" : "<PUBLIC_FLEURS>\/cmn_hans_cn\/cmn_hans_cn_0000.wav",
   "fileSizeBytes" : 332204,
   "id" : "74C9E76D-F7D1-49BF-B4E4-3821803EF41B",
   "isFavorite" : false,
