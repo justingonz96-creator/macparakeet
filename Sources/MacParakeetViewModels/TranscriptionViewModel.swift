@@ -1414,6 +1414,7 @@ public final class TranscriptionViewModel {
             transcript: text,
             transcriptionId: transcription.id,
             sourceType: transcription.sourceType,
+            meetingTypeId: transcription.meetingTypeId,
             runInBackground: !selectTranscription
         )
     }

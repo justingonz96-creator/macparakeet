@@ -294,15 +294,32 @@ final class MeetingArtifactStoreTests: XCTestCase {
             ),
             correctionsApplied: true
         )
-
-        let snapshot = try await MeetingArtifactStore().materialize(
-            projection: projection,
-            promptResults: []
+        let labelID = UUID()
+        let classification = MeetingArtifactClassificationSnapshot(
+            meetingType: nil,
+            labels: [.init(
+                id: labelID,
+                name: "Reviewed",
+                colorToken: "green",
+                isArchived: false
+            )]
         )
 
+        let store: any MeetingArtifactStoring = MeetingArtifactStore()
+        let snapshot = try await store.materialize(
+            projection: projection,
+            promptResults: [],
+            classification: classification
+        )
+
+        XCTAssertEqual(snapshot.meetingLabels?.map(\.id), [labelID])
         let transcript = try jsonObject(at: URL(fileURLWithPath: snapshot.transcriptPath))
         XCTAssertEqual(transcript["speakerCorrectionsApplied"] as? Bool, true)
         XCTAssertEqual(transcript["speakerCorrectionRevision"] as? Int, 2)
+        XCTAssertEqual(
+            (transcript["meetingLabels"] as? [[String: Any]])?.first?["name"] as? String,
+            "Reviewed"
+        )
         let segments = try XCTUnwrap(transcript["transcriptSegments"] as? [[String: Any]])
         let spans = try XCTUnwrap(segments.first?["speakerSpans"] as? [[String: Any]])
         XCTAssertEqual(spans.count, 2)
@@ -310,6 +327,90 @@ final class MeetingArtifactStoreTests: XCTestCase {
         let markdown = try String(contentsOfFile: snapshot.markdownPath!, encoding: .utf8)
         XCTAssertTrue(markdown.contains("speakerCorrectionsApplied: true"))
         XCTAssertTrue(markdown.contains("speakerCorrectionRevision: 2"))
+    }
+
+    func testMaterializeExportsMeetingClassificationSnapshots() async throws {
+        let transcription = makeMeeting(notes: nil)
+        let typeID = UUID()
+        let labelID = UUID()
+        let classification = MeetingArtifactClassificationSnapshot(
+            meetingType: .init(
+                id: typeID,
+                name: "Customer",
+                colorToken: "blue",
+                iconName: "person.2",
+                isArchived: false
+            ),
+            labels: [
+                .init(
+                    id: labelID,
+                    name: "Important",
+                    colorToken: "coral",
+                    isArchived: false
+                )
+            ]
+        )
+
+        let snapshot = try await MeetingArtifactStore().materialize(
+            transcription: transcription,
+            promptResults: [],
+            classification: classification
+        )
+
+        let manifest = try jsonObject(at: URL(fileURLWithPath: snapshot.manifestPath))
+        let manifestMeeting = try XCTUnwrap(manifest["meeting"] as? [String: Any])
+        let manifestType = try XCTUnwrap(manifestMeeting["meetingType"] as? [String: Any])
+        XCTAssertEqual(manifestType["id"] as? String, typeID.uuidString)
+        XCTAssertEqual(manifestType["name"] as? String, "Customer")
+        let manifestLabels = try XCTUnwrap(manifestMeeting["meetingLabels"] as? [[String: Any]])
+        XCTAssertEqual(manifestLabels.first?["id"] as? String, labelID.uuidString)
+        XCTAssertEqual(manifestLabels.first?["name"] as? String, "Important")
+
+        let transcript = try jsonObject(at: URL(fileURLWithPath: snapshot.transcriptPath))
+        XCTAssertEqual(
+            (transcript["meetingType"] as? [String: Any])?["name"] as? String,
+            "Customer"
+        )
+        XCTAssertEqual((transcript["meetingLabels"] as? [[String: Any]])?.first?["name"] as? String, "Important")
+
+        let markdown = try String(contentsOfFile: try XCTUnwrap(snapshot.markdownPath), encoding: .utf8)
+        XCTAssertTrue(markdown.contains("meetingType:\n  id: \"\(typeID.uuidString)\"\n  name: \"Customer\""))
+        XCTAssertTrue(markdown.contains("meetingLabels:\n  - id: \"\(labelID.uuidString)\"\n    name: \"Important\""))
+    }
+
+    func testLegacyMaterializeCallPreservesClassificationFromProvider() async throws {
+        let transcription = makeMeeting(notes: nil)
+        let typeID = UUID()
+        let classification = MeetingArtifactClassificationSnapshot(
+            meetingType: .init(
+                id: typeID,
+                name: "Internal",
+                colorToken: nil,
+                isArchived: false
+            ),
+            labels: []
+        )
+        let store = MeetingArtifactStore(
+            classificationProvider: { transcriptionID in
+                XCTAssertEqual(transcriptionID, transcription.id)
+                return classification
+            }
+        )
+
+        // This is the signature used by finalization and regeneration paths
+        // that predate classification-aware artifacts.
+        let snapshot = try await store.materialize(
+            transcription: transcription,
+            promptResults: []
+        )
+
+        XCTAssertEqual(snapshot.meetingType?.id, typeID)
+        XCTAssertEqual(snapshot.meetingLabels, [])
+        let manifest = try jsonObject(at: URL(fileURLWithPath: snapshot.manifestPath))
+        let meeting = try XCTUnwrap(manifest["meeting"] as? [String: Any])
+        XCTAssertEqual((meeting["meetingType"] as? [String: Any])?["name"] as? String, "Internal")
+        let transcript = try jsonObject(at: URL(fileURLWithPath: snapshot.transcriptPath))
+        XCTAssertEqual((transcript["meetingType"] as? [String: Any])?["name"] as? String, "Internal")
     }
 
     func testMaterializeDoesNotPublishManifestWhenMarkdownWriteFails() async throws {

@@ -9,6 +9,7 @@ func mergingCompletionForTest(
     var merged = completion
     merged.updatedAt = max(completion.updatedAt, current.updatedAt)
     merged.userNotes = current.userNotes
+    merged.meetingTypeId = current.meetingTypeId
     merged.isFavorite = current.isFavorite
     merged.titleOverride = current.titleOverride
     merged.chatMessages = current.chatMessages

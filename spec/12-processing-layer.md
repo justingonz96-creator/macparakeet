@@ -6,6 +6,44 @@
 
 This spec defines MacParakeet's current processing layer: the Prompt Library, multi-summary system, and the shared prompt-storage contract that productized Transforms use. Summary/result behavior remains the main focus here; ADR-022 owns the system-wide Transform interaction model. The persisted summary table is still named `summaries`; the Swift model is now `PromptResult`.
 
+> **2026-09-07 amendment — versioned prompts and transcription labels:** The
+> historical row shape and management sheet documented below describe the
+> pre-versioning implementation. The following accepted rules supersede any
+> conflicting older wording in this file.
+>
+> - `prompts` owns identity and mutable metadata. `prompt_versions` exclusively
+>   owns Markdown content, typed inference settings, and an optional
+>   active-provider model override; `prompts.activeVersionId` selects the
+>   current immutable version.
+> - Creating a prompt creates V1. Saving changed versioned values creates and
+>   activates one new monotonically numbered version. A no-op creates none.
+>   Restoring copies an old version into a new version; history is never
+>   rewritten. Name, organization collection, visibility, routing, ordering,
+>   Transform shortcut, and running label are not versioned.
+> - `PromptRepository` performs the active-version join and returns a resolved
+>   domain prompt. Runtime callers never join tables or maintain a permanent
+>   `content`/`inferenceSettings` mirror on `prompts`.
+> - Built-in and user-created prompts have identical edit, configuration,
+>   organization, routing, soft-delete, and restore rights. `isBuiltIn` is
+>   provenance only. A bundled canonical update applies automatically only to
+>   a prompt proven untouched and not deleted; customized prompts can compare
+>   and explicitly adopt the bundled candidate.
+> - The Prompts surface prioritizes a single searchable, filterable list. New
+>   prompt and collection management open separate sheets. Editing retains
+>   Markdown source/preview, typed settings, history, deterministic source/settings
+>   diff, and restore-as-new-version. See [UI patterns](04-ui-patterns.md#prompts).
+> - Labels classify every transcription source. Legacy meeting types remain
+>   compatibility metadata, not runtime routing authority.
+> - `PromptLabelApplicabilityResolver` rejects hidden/non-result prompts. No
+>   policies means available everywhere. Matching explicit label policies take
+>   precedence (any available match wins); otherwise an all-label fallback
+>   applies, or the prompt is unavailable. Availability gates source-aware
+>   auto-run. Manual selection, auto-run, and CLI share these rules. Already
+>   queued work retains its captured prompt/version/settings after label edits.
+> - SQLite is canonical for mutable classification. Meeting artifacts expose
+>   additive type/label snapshots and are refreshed after classification
+>   changes; capture metadata remains provenance.
+
 ---
 
 ## Goals
@@ -104,13 +142,17 @@ A **Summary** is a generated output tied to a specific transcript. Each transcri
 
 ### Data Model: Prompt
 
+The following row and SQL excerpts show the pre-versioning shape. Current
+version ownership, migrations, and result provenance are defined in the
+[data model](01-data-model.md#versioned-prompts-and-meeting-classification-2026-09-05).
+
 ```swift
 public struct Prompt: Codable, Identifiable, Sendable {
     public var id: UUID
     public var name: String          // "Summary", "Action Items & Decisions"
     public var content: String       // The actual instruction text
     public var category: Category    // .result stored as "summary" (extensible)
-    public var isBuiltIn: Bool       // community prompt — hide only, no edit/delete
+    public var isBuiltIn: Bool       // built-in provenance, same mutation rights
     public var isVisible: Bool       // false = hidden from picker
     public var isAutoRun: Bool       // true = auto-generate for new transcriptions
     public var sortOrder: Int        // display ordering
@@ -185,19 +227,17 @@ CREATE TABLE summaries (
 CREATE INDEX idx_summaries_transcription_id ON summaries(transcriptionId);
 ```
 
-**Why snapshot instead of reference:** Prompts can be edited or deleted after a result is generated. The result should always know exactly what instructions produced it. `promptName` is for display; `promptContent`, `userNotesSnapshot`, `includeMeetingNotesSnapshot`, and `inferenceSettingsSnapshot` are for reproducibility. The settings snapshot records the effective provider/model-filtered receipt. The Boolean remains meaningful when the generation had no notes, because regenerate can apply that captured preference to notes added later.
+**Why snapshot instead of reference:** Prompts can be edited or deleted after a result is generated. The result should always know exactly what instructions produced it. `promptName` is for display; `promptContent`, `userNotesSnapshot`, `includeMeetingNotesSnapshot`, and `inferenceSettingsSnapshot` are request provenance, not a promise of identical future AI output. The settings snapshot records the effective provider/model-filtered receipt. The Boolean remains meaningful when the generation had no notes, because regenerate can apply that captured preference to notes added later.
 
-Custom result prompts may also carry typed generation settings. The prompt row
+Result and Transform prompts may carry typed generation settings. The active immutable version
 stores the requested `PromptInferenceSettings`; a queued generation copies that
 value together with the prompt text and per-run instructions, so later edits do
 not mutate work already queued. A completed `PromptResult` stores the
 provider/model-filtered effective settings actually sent. Retry reuses its
 queue snapshot, while regenerate reuses the selected result's stored settings
-receipt. Provider/model configuration is resolved at execution rather than
-snapshotted with the queue. Requested settings and unsupported-field metadata
+receipt. The queue captures the selected model; execution resolves the current provider. Requested settings and unsupported-field metadata
 are not persisted on results. The CLI reads, preserves, and runs saved settings
-but adds no configuration flags; Transforms do not use these settings, and
-repository writes reject nondefault settings for them. Repository writes and
+but adds no inference-setting configuration flags. Transform execution also uses saved settings. Repository writes and
 execution independently reject invalid numeric values. Blank settings inherit
 the current MacParakeet prompt-result and adapter defaults. See
 [spec/14-per-prompt-inference-settings.md](14-per-prompt-inference-settings.md).
@@ -272,7 +312,7 @@ You are a helpful assistant that processes transcripts. Follow the user's instru
 
 Prompt cards may be marked `isAutoRun = true` in the prompt library.
 
-- When a new transcription finishes and `llmAvailable && transcript` is not empty/whitespace-only, the app auto-generates summaries for every prompt card with `isAutoRun = true`.
+- When a new transcription finishes and `llmAvailable && transcript` is not empty/whitespace-only, the app auto-generates results for available prompts whose source-aware auto-run setting includes that transcription source.
 - Multiple auto-run prompt cards are allowed.
 - Zero auto-run prompt cards is a valid configuration. In that state, transcription and chat still work, and users generate prompt tabs manually from the summary UI.
 - Auto-run prompt cards are forced visible while auto-run is enabled.
@@ -352,43 +392,26 @@ text; completed and partial results use the same parser and styling.
 The renderer is isolated to the GUI target. Core processing and the CLI remain
 independent of the UI dependency.
 
-### Management Sheet
+### Management surface
 
-Opened via the management control in the summary generation popover. Follows the card-based management pattern from CustomWordsView.
+Prompts is directly accessible from the main sidebar and from the generation
+popover. The initial view is one searchable list, with prompt-kind and collection
+filters. Built-in provenance is row metadata rather than a separate CRUD model.
+**New prompt** and **Manage collections** open separate sheets, leaving browsing
+and editing as the main page's purpose.
 
-```
-┌─ Summary Prompts ────────────────────────────────┐
-│                                                   │
-│  ┌─ Community ────────────────────────────────┐   │
-│  │                                            │   │
-│  │  ☑ (default prompt)       (always visible) │   │
-│  │  ☑ ...                                     │   │
-│  │                                            │   │
-│  │  [Suggest a prompt]  [Restore Defaults]    │   │
-│  └────────────────────────────────────────────┘   │
-│                                                   │
-│  ┌─ My Prompts ──────────────────────────────┐   │
-│  │                                            │   │
-│  │  ● My Standup Format     [Edit] [Delete]   │   │
-│  │  ● Client Debrief        [Edit] [Delete]   │   │
-│  │                                            │   │
-│  └────────────────────────────────────────────┘   │
-│                                                   │
-│  ┌─ Add Prompt ───────────────────────────────┐   │
-│  │  Name:   [_____________________________]   │   │
-│  │  Prompt: [_____________________________]   │   │
-│  │          [_____________________________]   │   │
-│  │          [_____________________________]   │   │
-│  │                               [Add]        │   │
-│  └────────────────────────────────────────────┘   │
-│                                                   │
-│                                      [Done]       │
-└───────────────────────────────────────────────────┘
-```
+The editor retains Markdown source/preview, collection assignment, notes context,
+optional model override and typed generation settings, and label availability.
+Version history stays in a disclosure with source/settings comparisons and an
+explicit restore action that creates a new version. Empty searches distinguish
+no matching prompts from a library with no prompts. Deleted prompts remain
+recoverable. Existing visibility and source auto-run remain in the manager;
+Transform shortcuts remain in the Transforms editor and collection ordering in
+Manage collections. Prompt order and running-label metadata survive edits.
+The layout adds no prompt duplication, prompt-reordering control, or running-label
+editor; moving navigation does not change persistence or execution semantics.
 
-- **Community prompts:** Toggle visibility via checkbox. Auto-run prompts stay visible while auto-run is enabled. Turning auto-run off makes the card manually-only and eligible to be hidden. "Restore Defaults" unhides all community prompts. "Suggest a prompt" links to the JSON file on GitHub for contributors.
-- **My Prompts:** Full CRUD for summary/result prompts. Edit opens a sheet with name + multi-line TextEditor (prompt text is too long for inline editing). Delete with confirmation alert.
-- **Add Prompt:** Name field + multi-line prompt content + Add button. Name must be unique (case-insensitive, across both community and custom).
+See [UI patterns](04-ui-patterns.md#prompts) for the current presentation contract.
 
 ---
 
@@ -420,7 +443,7 @@ Provider architecture is unchanged. The Prompt Library changes what goes into th
 | Prompt chips + generation popover | Desktop-context collection |
 | Extra instructions field | Apple Shortcuts / App Intents integration |
 | Multi-summary tab navigation + queued pipeline | |
-| Management sheet (hide community, CRUD custom) | |
+| Prompt management (uniform CRUD, versions and recovery) | |
 | PromptResultsViewModel (extracted from TranscriptionVM) | |
 | LLMService accepts custom system prompt | |
 | Migration from `transcriptions.summary` → `summaries` | |
@@ -454,9 +477,9 @@ The future design space for actions, workflows, agents, and voice control is doc
 3. Multiple summaries per transcript are displayed as tabs, with pending generations appearing immediately.
 4. User can add extra instructions that layer on top of the selected prompt.
 5. Community prompts are available on first launch from `Prompt.builtInPrompts()` Swift seeds; the bundled JSON is contribution/reference material, not the runtime loader.
-6. Community prompts can be hidden but not edited or deleted.
+6. Built-in and custom prompts share edit, hide, version, and recoverable delete rights.
 7. Custom prompts can be created, edited, and deleted via the management sheet.
-8. Prompt management is accessible from the generation popover.
-9. Auto-run after transcription uses every prompt card marked `isAutoRun`, and zero auto-run cards is a supported state.
+8. Prompt management is accessible from the sidebar and generation popover.
+9. Auto-run after transcription uses available prompts whose source-aware auto-run includes the source, and zero auto-run cards is a supported state.
 10. Existing transcriptions with summaries display migrated data correctly.
 11. `swift test` passes with all new tests.

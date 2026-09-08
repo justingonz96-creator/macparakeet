@@ -1396,6 +1396,7 @@ public actor TranscriptionService: SpeakerConfiguredRetranscriptionService, Audi
             language: nil,
             status: .processing,
             sourceType: .meeting,
+            meetingTypeId: recording.meetingTypeId,
             userNotes: recording.userNotes,
             meetingStartContext: recording.startContext,
             meetingCaptureReport: recording.captureReport,

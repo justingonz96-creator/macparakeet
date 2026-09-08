@@ -133,20 +133,89 @@ final class PromptRepositoryTests: XCTestCase {
             let preserved = try XCTUnwrap(repo.fetch(id: original.id))
             XCTAssertEqual(preserved.content, original.content)
             XCTAssertEqual(preserved.inferenceSettings, original.inferenceSettings)
+            XCTAssertEqual(
+                try PromptVersionRepository(dbQueue: manager.dbQueue).fetchAll(promptId: original.id).count,
+                1,
+                "Rejected edits must not append an immutable version."
+            )
         }
     }
 
-    func testTransformRejectsNondefaultInferenceSettings() throws {
+    func testAtomicEditorCreateRollsBackPromptAndVersionWhenLabelIsMissing() throws {
+        let service = PromptEditingService(dbQueue: manager.dbQueue)
+        let prompt = Prompt(name: "Restricted new prompt", content: "For selected labels only")
+
+        XCTAssertThrowsError(try service.save(prompt, targetLabelIDs: [UUID()]))
+
+        XCTAssertNil(try repo.fetch(id: prompt.id))
+        XCTAssertTrue(
+            try PromptVersionRepository(dbQueue: manager.dbQueue).fetchAll(promptId: prompt.id).isEmpty
+        )
+        XCTAssertTrue(
+            try PromptLabelPolicyRepository(dbQueue: manager.dbQueue).fetchPolicies(promptId: prompt.id).isEmpty
+        )
+    }
+
+    func testAtomicEditorUpdatePreservesPriorVersionAndRoutingOnFailure() throws {
+        let service = PromptEditingService(dbQueue: manager.dbQueue)
+        let versions = PromptVersionRepository(dbQueue: manager.dbQueue)
+        let policies = PromptLabelPolicyRepository(dbQueue: manager.dbQueue)
+        let label = MeetingLabel(name: "Customer")
+        try MeetingLabelRepository(dbQueue: manager.dbQueue).save(label)
+        let original = try service.save(
+            Prompt(name: "Restricted", content: "Original", inferenceSettings: .init(temperature: 0.2)),
+            targetLabelIDs: [label.id]
+        )
+        let originalPolicies = try policies.fetchPolicies(promptId: original.id)
+        var updated = original
+        updated.content = "Changed"
+        updated.inferenceSettings = .init(temperature: 0.8)
+
+        XCTAssertThrowsError(try service.save(updated, targetLabelIDs: [UUID()]))
+
+        let preserved = try XCTUnwrap(repo.fetch(id: original.id))
+        XCTAssertEqual(preserved.activeVersionId, original.activeVersionId)
+        XCTAssertEqual(preserved.content, original.content)
+        XCTAssertEqual(preserved.inferenceSettings, original.inferenceSettings)
+        XCTAssertEqual(try versions.fetchAll(promptId: original.id).count, 1)
+        XCTAssertEqual(try policies.fetchPolicies(promptId: original.id), originalPolicies)
+
+        // An unrelated definition edit preserves even the identity of policy
+        // rows; an explicit empty selection clears routing in the same save.
+        let revised = try service.save(updated, targetLabelIDs: nil)
+        XCTAssertEqual(revised.content, "Changed")
+        XCTAssertEqual(try policies.fetchPolicies(promptId: original.id), originalPolicies)
+        XCTAssertEqual(try versions.fetchAll(promptId: original.id).count, 2)
+        _ = try service.save(revised, targetLabelIDs: [])
+        XCTAssertTrue(try policies.fetchPolicies(promptId: original.id).isEmpty)
+        XCTAssertEqual(try versions.fetchAll(promptId: original.id).count, 2)
+    }
+
+    func testTransformPersistsVersionedInferenceSettings() throws {
         let transform = Prompt(
             name: "Transform", content: "Rewrite", category: .transform,
             inferenceSettings: PromptInferenceSettings(temperature: 0.2)
         )
-        XCTAssertThrowsError(try repo.save(transform)) { error in
-            XCTAssertEqual(
-                error as? PromptInferenceSettings.ValidationError, .unsupportedPromptCategory
-            )
-        }
-        XCTAssertNil(try repo.fetch(id: transform.id))
+        try repo.save(transform)
+        XCTAssertEqual(try repo.fetch(id: transform.id)?.inferenceSettings, transform.inferenceSettings)
+        XCTAssertEqual(
+            try PromptVersionRepository(dbQueue: manager.dbQueue)
+                .fetchActive(promptId: transform.id)?.inferenceSettings,
+            transform.inferenceSettings
+        )
+    }
+
+    func testEditingServiceRejectsInvalidCreateWithoutAddingHistory() throws {
+        let service = PromptEditingService(dbQueue: manager.dbQueue)
+        let prompt = Prompt(
+            name: "Invalid direct create", content: "Do not save", category: .transform,
+            inferenceSettings: PromptInferenceSettings(temperature: 3)
+        )
+        XCTAssertThrowsError(try service.create(prompt))
+        XCTAssertNil(try repo.fetch(id: prompt.id))
+        XCTAssertTrue(
+            try PromptVersionRepository(dbQueue: manager.dbQueue).fetchAll(promptId: prompt.id).isEmpty
+        )
     }
 
     func testOutOfRangeStoredInferenceSettingsFailsFetchAndMutation() throws {
@@ -154,7 +223,7 @@ final class PromptRepositoryTests: XCTestCase {
         try repo.save(prompt)
         try manager.dbQueue.write { db in
             try db.execute(
-                sql: "UPDATE prompts SET inferenceSettings = ? WHERE id = ?",
+                sql: "UPDATE prompt_versions SET inferenceSettings = ? WHERE promptId = ?",
                 arguments: [#"{"temperature":3}"#, prompt.id]
             )
         }
@@ -192,28 +261,23 @@ final class PromptRepositoryTests: XCTestCase {
         let storedJSON = try manager.dbQueue.read { db in
             try String.fetchOne(
                 db,
-                sql: "SELECT inferenceSettings FROM prompts WHERE id = ?",
+                sql: """
+                    SELECT v.inferenceSettings
+                    FROM prompt_versions v
+                    JOIN prompts p ON p.activeVersionId = v.id
+                    WHERE p.id = ?
+                    """,
                 arguments: [prompt.id]
             )
         }
         XCTAssertNil(storedJSON)
 
-        // Repository mutations normalize legacy/manual all-default JSON too.
-        try manager.dbQueue.write { db in
-            try db.execute(
-                sql: "UPDATE prompts SET inferenceSettings = ? WHERE id = ?",
-                arguments: ["{}", prompt.id]
-            )
-        }
-        try repo.toggleVisibility(id: prompt.id)
-        let normalizedAfterToggle = try manager.dbQueue.read { db in
-            try String.fetchOne(
-                db,
-                sql: "SELECT inferenceSettings FROM prompts WHERE id = ?",
-                arguments: [prompt.id]
-            )
-        }
-        XCTAssertNil(normalizedAfterToggle)
+        XCTAssertEqual(
+            try PromptVersionRepository(dbQueue: manager.dbQueue)
+                .fetchAll(promptId: prompt.id).count,
+            2,
+            "Clearing configured settings creates one new immutable version."
+        )
     }
 
     func testIncludeMeetingNotesRoundTripsAndCanBeUpdatedAtomically() throws {
@@ -246,7 +310,10 @@ final class PromptRepositoryTests: XCTestCase {
         try repo.save(prompt)
         try manager.dbQueue.write { db in
             try db.execute(
-                sql: "UPDATE prompts SET inferenceSettings = ? WHERE id = ?",
+                sql: """
+                    UPDATE prompt_versions SET inferenceSettings = ?
+                    WHERE id = (SELECT activeVersionId FROM prompts WHERE id = ?)
+                    """,
                 arguments: ["{not-json", prompt.id]
             )
         }
@@ -813,55 +880,157 @@ final class PromptRepositoryTests: XCTestCase {
         XCTAssertThrowsError(try repo.save(duplicate))
     }
 
-    func testBuiltInPromptsReconciledOnReopen() throws {
+    func testSoftDeletedBuiltInIsNotResurrectedOnReopen() throws {
         let dbURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("prompt-reconcile-\(UUID().uuidString).sqlite")
         defer { try? FileManager.default.removeItem(at: dbURL) }
 
-        let expectedChapter = try XCTUnwrap(
-            Prompt.builtInPrompts().first(where: { $0.name == "Chapter Breakdown" })
-        )
-        let expectedBlog = try XCTUnwrap(
-            Prompt.builtInPrompts().first(where: { $0.name == "Blog Post" })
-        )
-
+        var blogID: UUID!
         do {
             let manager = try DatabaseManager(path: dbURL.path)
-            try manager.dbQueue.write { db in
-                // Simulate a stale built-in with wrong ID and old content
-                try db.execute(
-                    sql: """
-                        UPDATE prompts
-                        SET id = ?, content = ?, isVisible = 0
-                        WHERE name = ?
-                        """,
-                    arguments: [
-                        UUID().uuidString,
-                        "Stale content",
-                        "Chapter Breakdown",
-                    ]
-                )
-                // Simulate a deleted built-in
-                try db.execute(
-                    sql: "DELETE FROM prompts WHERE name = ?",
-                    arguments: ["Blog Post"]
-                )
-            }
+            let repository = PromptRepository(dbQueue: manager.dbQueue)
+            let blog = try XCTUnwrap(repository.fetchAll().first { $0.name == "Blog Post" })
+            blogID = blog.id
+            XCTAssertTrue(try repository.delete(id: blog.id))
+            XCTAssertNil(try repository.fetch(id: blog.id))
         }
 
         let reopenedManager = try DatabaseManager(path: dbURL.path)
         let reopenedRepo = PromptRepository(dbQueue: reopenedManager.dbQueue)
-        let prompts = try reopenedRepo.fetchAll()
+        XCTAssertNil(try reopenedRepo.fetch(id: blogID))
+        let deleted = try XCTUnwrap(reopenedRepo.fetchIncludingDeleted(id: blogID))
+        XCTAssertNotNil(deleted.deletedAt)
+        XCTAssertNotNil(deleted.userCustomizedAt)
+    }
 
-        let chapter = try XCTUnwrap(prompts.first(where: { $0.name == "Chapter Breakdown" }))
-        XCTAssertEqual(chapter.id, expectedChapter.id)
-        XCTAssertEqual(chapter.content, expectedChapter.content)
-        XCTAssertFalse(chapter.isVisible)
-        XCTAssertEqual(prompts.count, Prompt.builtInPrompts().count)
+    func testRestoreDeletedUsesDeterministicUniqueNameWhenOriginalWasReused() throws {
+        let service = PromptEditingService(dbQueue: manager.dbQueue)
+        let original = try service.create(Prompt(name: "Reusable", content: "Original"))
+        XCTAssertTrue(try service.softDelete(id: original.id))
+        let replacement = try service.create(Prompt(name: "Reusable", content: "Replacement"))
+        _ = try service.create(Prompt(name: "Reusable (Restored)", content: "Claim suffix"))
+
+        XCTAssertTrue(try service.restoreDeleted(id: original.id))
+
+        XCTAssertEqual(try repo.fetch(id: replacement.id)?.name, "Reusable")
+        XCTAssertEqual(try repo.fetch(id: original.id)?.name, "Reusable (Restored 2)")
+    }
+
+    func testCanonicalUpdateSkipsActiveNameCollisionWithoutCreatingVersion() throws {
+        let dbURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prompt-canonical-collision-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+
+        var summaryID: UUID!
+        var customID: UUID!
+        do {
+            let first = try DatabaseManager(path: dbURL.path)
+            let firstRepo = PromptRepository(dbQueue: first.dbQueue)
+            let summary = try XCTUnwrap(firstRepo.fetchAll().first { $0.name == "Summary" })
+            summaryID = summary.id
+            try first.dbQueue.write { db in
+                try db.execute(
+                    sql: "UPDATE prompts SET name = 'Bundled Summary', lastAppliedCanonicalRevision = 0 WHERE id = ?",
+                    arguments: [summary.id]
+                )
+            }
+            let custom = Prompt(name: "Summary", content: "User-owned collision")
+            try firstRepo.save(custom)
+            customID = custom.id
+        }
+
+        let reopened = try DatabaseManager(path: dbURL.path)
+        let reopenedRepo = PromptRepository(dbQueue: reopened.dbQueue)
+        XCTAssertEqual(try reopenedRepo.fetch(id: summaryID)?.name, "Bundled Summary")
+        XCTAssertEqual(try reopenedRepo.fetch(id: customID)?.content, "User-owned collision")
         XCTAssertEqual(
-            prompts.first(where: { $0.name == "Blog Post" })?.id,
-            expectedBlog.id
+            try PromptVersionRepository(dbQueue: reopened.dbQueue)
+                .fetchAll(promptId: summaryID).count,
+            1
         )
+    }
+
+    func testCustomizedBuiltInNeverReceivesAutomaticSystemUpdate() throws {
+        let dbURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prompt-custom-canonical-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+
+        var summaryID: UUID!
+        do {
+            let first = try DatabaseManager(path: dbURL.path)
+            let firstRepo = PromptRepository(dbQueue: first.dbQueue)
+            var summary = try XCTUnwrap(firstRepo.fetchAll().first { $0.name == "Summary" })
+            summaryID = summary.id
+            summary.content = "My customized summary"
+            summary.updatedAt = Date()
+            try firstRepo.save(summary)
+            try first.dbQueue.write { db in
+                try db.execute(
+                    sql: "UPDATE prompts SET lastAppliedCanonicalRevision = 0 WHERE id = ?",
+                    arguments: [summary.id]
+                )
+            }
+        }
+
+        let reopened = try DatabaseManager(path: dbURL.path)
+        let prompt = try XCTUnwrap(PromptRepository(dbQueue: reopened.dbQueue).fetch(id: summaryID))
+        XCTAssertEqual(prompt.content, "My customized summary")
+        XCTAssertNotNil(prompt.userCustomizedAt)
+        let versions = try PromptVersionRepository(dbQueue: reopened.dbQueue)
+            .fetchAll(promptId: summaryID)
+        XCTAssertEqual(versions.count, 2)
+        XCTAssertFalse(versions.contains { $0.origin == .systemUpdate })
+    }
+
+    func testRemovedCustomizedBuiltInIsNotRetiredByReconciler() throws {
+        let dbURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prompt-retired-customized-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+
+        let removedID = UUID()
+        do {
+            let first = try DatabaseManager(path: dbURL.path)
+            try PromptRepository(dbQueue: first.dbQueue).save(
+                Prompt(
+                    id: removedID,
+                    name: "Removed but customized",
+                    content: "Keep me",
+                    isBuiltIn: true,
+                    userCustomizedAt: Date()
+                )
+            )
+        }
+
+        let reopened = try DatabaseManager(path: dbURL.path)
+        let preserved = try XCTUnwrap(
+            PromptRepository(dbQueue: reopened.dbQueue).fetch(id: removedID)
+        )
+        XCTAssertNil(preserved.deletedAt)
+        XCTAssertNotNil(preserved.userCustomizedAt)
+    }
+
+    func testDeletedAutoRunPromptDoesNotEnableNewCanonicalAutoRun() throws {
+        let dbURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prompt-deleted-autorun-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+
+        do {
+            let first = try DatabaseManager(path: dbURL.path)
+            let firstRepo = PromptRepository(dbQueue: first.dbQueue)
+            let summary = try XCTUnwrap(firstRepo.fetchAll().first { $0.name == "Summary" })
+            let deletedAuto = Prompt(name: "Deleted Auto", content: "Run", isAutoRun: true)
+            try firstRepo.save(deletedAuto)
+            XCTAssertTrue(try firstRepo.delete(id: deletedAuto.id))
+            try first.dbQueue.write { db in
+                try db.execute(sql: "DELETE FROM prompts WHERE id = ?", arguments: [summary.id])
+            }
+        }
+
+        let reopened = try DatabaseManager(path: dbURL.path)
+        let summary = try XCTUnwrap(
+            PromptRepository(dbQueue: reopened.dbQueue).fetchAll().first { $0.name == "Summary" }
+        )
+        XCTAssertFalse(summary.isAutoRun)
     }
 
     func testReconcileDoesNotOverwriteCustomPromptSharingBuiltInName() throws {
@@ -869,36 +1038,14 @@ final class PromptRepositoryTests: XCTestCase {
             .appendingPathComponent("prompt-custom-conflict-\(UUID().uuidString).sqlite")
         defer { try? FileManager.default.removeItem(at: dbURL) }
 
-        let customID = UUID()
         let customContent = "My custom blog format."
 
         do {
             let manager = try DatabaseManager(path: dbURL.path)
-            try manager.dbQueue.write { db in
-                try db.execute(
-                    sql: "DELETE FROM prompts WHERE name = ?",
-                    arguments: ["Blog Post"]
-                )
-                try db.execute(
-                    sql: """
-                        INSERT INTO prompts (
-                            id, name, content, category, isBuiltIn, isVisible, isAutoRun, sortOrder, createdAt, updatedAt
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                    arguments: [
-                        customID.uuidString,
-                        "Blog Post",
-                        customContent,
-                        Prompt.Category.result.rawValue,
-                        false,
-                        true,
-                        false,
-                        99,
-                        Date(),
-                        Date(),
-                    ]
-                )
-            }
+            let repository = PromptRepository(dbQueue: manager.dbQueue)
+            let builtIn = try XCTUnwrap(repository.fetchAll().first { $0.name == "Blog Post" })
+            XCTAssertTrue(try repository.delete(id: builtIn.id))
+            try repository.save(Prompt(name: "Blog Post", content: customContent, sortOrder: 99))
         }
 
         let reopenedManager = try DatabaseManager(path: dbURL.path)
@@ -906,9 +1053,102 @@ final class PromptRepositoryTests: XCTestCase {
         let prompts = try reopenedRepo.fetchAll()
 
         let blogPost = try XCTUnwrap(prompts.first(where: { $0.name == "Blog Post" }))
-        XCTAssertEqual(blogPost.id, customID)
         XCTAssertEqual(blogPost.content, customContent)
         XCTAssertFalse(blogPost.isBuiltIn)
         XCTAssertEqual(prompts.filter { $0.name == "Blog Post" }.count, 1)
+    }
+
+    func testCreatingAndEditingPromptMaintainsImmutableVersionHistory() throws {
+        let versionRepo = PromptVersionRepository(dbQueue: manager.dbQueue)
+        let service = PromptEditingService(dbQueue: manager.dbQueue)
+        var prompt = Prompt(name: "Versioned", content: "Version one")
+
+        prompt = try service.create(prompt)
+        let firstVersionID = try XCTUnwrap(prompt.activeVersionId)
+        XCTAssertEqual(try versionRepo.fetchAll(promptId: prompt.id).map(\.versionNumber), [1])
+
+        prompt.name = "Renamed only"
+        prompt.updatedAt = Date()
+        prompt = try service.save(prompt)
+        XCTAssertEqual(prompt.activeVersionId, firstVersionID)
+        XCTAssertEqual(try versionRepo.fetchAll(promptId: prompt.id).count, 1)
+
+        prompt.content = "Version two"
+        prompt.inferenceSettings = PromptInferenceSettings(temperature: 0.3)
+        prompt.modelOverride = "local-model"
+        prompt.updatedAt = Date()
+        prompt = try service.save(prompt, changeNote: "Tune output")
+
+        let versions = try versionRepo.fetchAll(promptId: prompt.id)
+        XCTAssertEqual(versions.map(\.versionNumber), [2, 1])
+        XCTAssertEqual(versions[0].content, "Version two")
+        XCTAssertEqual(versions[0].inferenceSettings?.temperature, 0.3)
+        XCTAssertEqual(versions[0].modelOverride, "local-model")
+        XCTAssertEqual(versions[0].changeNote, "Tune output")
+        XCTAssertEqual(prompt.content, "Version two")
+    }
+
+    func testPromptEditingServicePreservesMeetingNotesMetadataOutsideVersions() throws {
+        let versionRepo = PromptVersionRepository(dbQueue: manager.dbQueue)
+        let service = PromptEditingService(dbQueue: manager.dbQueue)
+        var prompt = Prompt(
+            name: "Meeting context",
+            content: "Summarize the meeting",
+            includeMeetingNotes: true
+        )
+
+        prompt = try service.create(prompt)
+        XCTAssertTrue(prompt.includeMeetingNotes)
+        XCTAssertEqual(try versionRepo.fetchAll(promptId: prompt.id).count, 1)
+
+        prompt.includeMeetingNotes = false
+        prompt.updatedAt = Date()
+        prompt = try service.save(prompt)
+
+        XCTAssertFalse(prompt.includeMeetingNotes)
+        XCTAssertEqual(try versionRepo.fetchAll(promptId: prompt.id).count, 1)
+    }
+
+    func testRestoringOldVersionCreatesANewVersion() throws {
+        let versionRepo = PromptVersionRepository(dbQueue: manager.dbQueue)
+        let service = PromptEditingService(dbQueue: manager.dbQueue)
+        let originalDate = Date(timeIntervalSince1970: 1_000)
+        var prompt = try service.create(
+            Prompt(name: "Restore", content: "Original", createdAt: originalDate, updatedAt: originalDate)
+        )
+        let originalVersionID = try XCTUnwrap(prompt.activeVersionId)
+        prompt.content = "Changed"
+        prompt.updatedAt = originalDate.addingTimeInterval(100)
+        prompt = try service.save(prompt)
+        let previousVersions = try versionRepo.fetchAll(promptId: prompt.id)
+        let beforeRestore = Date()
+
+        let restored = try service.restore(promptId: prompt.id, versionId: originalVersionID)
+        let afterRestore = Date()
+        XCTAssertEqual(restored.content, "Original")
+        let versions = try versionRepo.fetchAll(promptId: prompt.id)
+        XCTAssertEqual(versions.map(\.versionNumber), [3, 2, 1])
+        XCTAssertEqual(versions.first?.origin, .restore)
+        XCTAssertNotEqual(restored.activeVersionId, originalVersionID)
+        // GRDB serializes database dates at millisecond precision.
+        XCTAssertGreaterThanOrEqual(restored.updatedAt, beforeRestore.addingTimeInterval(-0.001))
+        XCTAssertLessThanOrEqual(restored.updatedAt, afterRestore.addingTimeInterval(0.001))
+        XCTAssertEqual(try XCTUnwrap(versions.first).createdAt, restored.updatedAt)
+        XCTAssertEqual(restored.createdAt, originalDate)
+        XCTAssertEqual(Array(versions.dropFirst()), previousVersions)
+    }
+
+    func testCurrentPromptSchemaHasNoLegacyVersionedColumns() throws {
+        try manager.dbQueue.read { db in
+            let promptColumns = Set(try db.columns(in: "prompts").map(\.name))
+            XCTAssertFalse(promptColumns.contains("content"))
+            XCTAssertFalse(promptColumns.contains("inferenceSettings"))
+            XCTAssertTrue(promptColumns.contains("activeVersionId"))
+            XCTAssertTrue(try db.tableExists("prompt_versions"))
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM prompts"),
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM prompt_versions")
+            )
+        }
     }
 }

@@ -96,6 +96,14 @@
 - No hard blockers between active plans. Soft sequencing: keep meeting-audio changes behind the measurement harness, and prefer the remaining audio/STT regression tests before another broad capture/STT change.
 - The two engine-switch plans are a pair: `ux-revamp` (Stage A, partial) is the parent; `stage-b` is its on-hold continuation. Both gate on the A3 cold-switch telemetry before the reactive flow is greenlit.
 
+## PR #961 contributor implementation record
+
+[`completed/2026-09-05-versioned-prompt-manager-meeting-classification.md`](completed/2026-09-05-versioned-prompt-manager-meeting-classification.md)
+records the contributor implementation. Its original primary-type routing and
+three-column layout were superseded by label routing and the single-list
+Prompts surface in spec/04 and spec/12; historical completion is not the
+main/release verification gate.
+
 ## Recently archived → `completed/` (2026-07-18)
 
 - **2026-07-17-issue-767-audio-track-selection** → implemented in #839:
