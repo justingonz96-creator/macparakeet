@@ -705,6 +705,8 @@ public final class SettingsViewModel {
     public var microphoneGranted = false
     public var accessibilityGranted = false
     public var screenRecordingGranted = false
+    /// Reinstall shortcuts after macOS grants access to a running app.
+    public var onAccessibilityGranted: (() -> Void)?
 
     // Stats
     public var dictationCount = 0
@@ -762,6 +764,7 @@ public final class SettingsViewModel {
     // These handles are only mutated on the main actor during the view
     // model lifetime; unsafe access lets deinit cancel/unregister.
     @ObservationIgnored nonisolated(unsafe) private var permissionPollingTask: Task<Void, Never>?
+    @ObservationIgnored nonisolated(unsafe) private var accessibilityGrantWatchTask: Task<Void, Never>?
     @ObservationIgnored nonisolated(unsafe) private var microphoneTestTask: Task<Void, Never>?
     @ObservationIgnored nonisolated(unsafe) private var storageStatsTask: Task<Void, Never>?
     @ObservationIgnored nonisolated(unsafe) private var calendarSettingsObserver: NSObjectProtocol?
@@ -939,6 +942,7 @@ public final class SettingsViewModel {
 
     deinit {
         permissionPollingTask?.cancel()
+        accessibilityGrantWatchTask?.cancel()
         microphoneTestTask?.cancel()
         storageStatsTask?.cancel()
         if let calendarSettingsObserver {
@@ -1274,11 +1278,48 @@ public final class SettingsViewModel {
                 let accStatus = service.checkAccessibilityPermission()
                 let screenRecordingStatus = service.checkScreenRecordingPermission()
                 microphoneGranted = micStatus == .granted
-                accessibilityGranted = accStatus
                 screenRecordingGranted = screenRecordingStatus
+                applyAccessibilityStatus(accStatus)
             }
             refreshCalendarPermission()
         }
+    }
+
+    private func applyAccessibilityStatus(_ granted: Bool) {
+        let becameGranted = granted && !accessibilityGranted
+        accessibilityGranted = granted
+        if granted {
+            stopAccessibilityGrantWatch()
+        } else {
+            startAccessibilityGrantWatch()
+        }
+        if becameGranted {
+            onAccessibilityGranted?()
+        }
+    }
+
+    /// Only Accessibility is re-checked here, so a grant made while the app
+    /// stays in the background with Settings closed still restores shortcuts.
+    private func startAccessibilityGrantWatch() {
+        guard accessibilityGrantWatchTask == nil else { return }
+        // Only a weak reference survives each sleep so releasing the view
+        // model's owner still runs `deinit`, which cancels this watch.
+        let interval = permissionPollingInterval
+        accessibilityGrantWatchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self, let service = self.permissionService else { break }
+                if service.checkAccessibilityPermission() {
+                    self.applyAccessibilityStatus(true)
+                    break
+                }
+            }
+        }
+    }
+
+    private func stopAccessibilityGrantWatch() {
+        accessibilityGrantWatchTask?.cancel()
+        accessibilityGrantWatchTask = nil
     }
 
     public func refreshMicrophoneDevices() {
