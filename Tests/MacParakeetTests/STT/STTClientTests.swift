@@ -104,6 +104,15 @@ final class STTClientTests: XCTestCase {
         #endif
     }
 
+    func testWhisperDecodeOptionsChunkAtSilenceNotFixedWindows() {
+        #if canImport(WhisperKit)
+        let options = WhisperEngine.makeDecodingOptions(language: "en")
+        // WhisperKit's default (.none) slices every 30 s regardless of speech,
+        // which splits or repeats words at the seam. VAD cuts at silence.
+        XCTAssertEqual(options.chunkingStrategy, .vad)
+        #endif
+    }
+
     func testWhisperForcedLanguageFallbackOnlyRetriesEmptyResults() {
         #if canImport(WhisperKit)
         let empty = TranscriptionResult(text: "  \n", segments: [], language: "ko", timings: TranscriptionTimings())

@@ -408,7 +408,8 @@ public actor WhisperEngine: STTTranscribing {
             wordTimestamps: true,
             compressionRatioThreshold: Float(tuning.compressionRatioThreshold),
             logProbThreshold: Float(tuning.logProbThreshold),
-            noSpeechThreshold: Float(tuning.noSpeechThreshold)
+            noSpeechThreshold: Float(tuning.noSpeechThreshold),
+            chunkingStrategy: .vad
         )
     }
 
