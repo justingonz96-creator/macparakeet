@@ -85,13 +85,15 @@ in priority order:
    `customVocabularyRecognitionBoostingEnabled` defaults off; anchors alone do
    not activate it. Future work is chunked long-audio sidecar rescoring and
    any support FluidAudio exposes for non-TDT engines.
-2. **CJK coverage: Parakeet Japanese + SenseVoiceSmall** — closes the
-   gap that currently forces Korean/Japanese/Chinese users onto Whisper
-   (and that Parakeet v3 fails outright, per the ADR-001 amendment).
-3. **Nemotron-3.5 streaming 0.6B** when FluidAudio ships it — upgrades
-   the Beta streaming engine and adds multilingual streaming (~32
-   languages, 80 ms chunks).
-4. **Cohere Transcribe stays opt-in premium** (16 GB+ gate, ~11 GB RSS)
+2. **CJK coverage: Parakeet Japanese + SenseVoiceSmall** — proposed additions
+   to benchmark against the existing multilingual Nemotron, Whisper, and
+   batch-only Cohere choices. Parakeet v3 itself remains unsuitable for
+   CJK recognition (see the ADR-001 amendment).
+3. **Nemotron-3.5 streaming** — implemented as the default multilingual
+   Nemotron Beta build (`NemotronEngine`), alongside the English-only
+   `NemotronEnglishEngine`. Native live dictation emits display-only partials;
+   recorded-file transcription remains authoritative after stop.
+4. **Cohere Transcribe stays an opt-in accuracy engine** (16 GB+ gate, ~11 GB RSS)
    per the ADR-001 amendment — accuracy leader, wrong default.
 
 Each adoption still gets a run through the `benchmarks/asr` harness

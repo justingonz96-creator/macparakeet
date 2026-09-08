@@ -360,7 +360,11 @@ MacParakeet is open-source under the **GPL-3.0** license. Current public builds 
 
 ## Relationship to Oatmeal
 
-MacParakeet and Oatmeal are **separate products** that share underlying technology.
+The comparison below records the original separate-product positioning.
+[ADR-027](adr/027-product-north-star.md) now owns the boundary: Library search
+and corpus Q&A belong in MacParakeet's direction, while deeper entity/graph/team
+work stays outside its scope. Whether Oatmeal continues as a distinct product
+is open; the older comparison is not a reason to reject MacParakeet Library work.
 
 ```
 +-----------------------------------------------------------------------+
@@ -398,7 +402,7 @@ MacParakeet and Oatmeal are **separate products** that share underlying technolo
 ### Strategic Relationship
 
 - **Standalone value**: MacParakeet is a complete product on its own. It does not require or reference Oatmeal.
-- **Funnel potential**: MacParakeet records and transcribes meetings. Users who want intelligence on top (calendar sync, entity extraction, cross-meeting memory) are natural Oatmeal prospects.
+- **Historical funnel idea**: the original split reserved meeting intelligence for Oatmeal. MacParakeet now includes Calendar integration and is building toward corpus search/Q&A; only the deeper knowledge-system boundary remains outside its stated scope.
 - **Adoption timing**: MacParakeet builds community and mindshare while Oatmeal matures. Simpler product = faster to market.
 - **Technology proving ground**: Parakeet integration and clean pipeline are battle-tested in MacParakeet before being used in Oatmeal.
 - **Boundary note (2026-07)**: [ADR-027](adr/027-product-north-star.md) moves cross-mode search and corpus QA into MacParakeet; whether Oatmeal continues as a distinct product is an open question recorded there.
@@ -514,7 +518,7 @@ Ship-quality polish. Direct distribution via notarized DMG.
 | **STT engine** | Parakeet TDT 0.6B-v3 on the standard path; locale-aware CJK/Korean onboarding can select WhisperKit; Parakeet v2 and Unified English opt-ins; selectable Nemotron Beta, WhisperKit, and Cohere Transcribe | Parakeet gives the latency target for supported languages; v2 avoids language auto-detect for English-only users; Unified offers a newer English punctuation/capitalization path with live preview and word timestamps; Nemotron is a fast local Beta path; WhisperKit keeps mature broader multilingual speech local; Cohere is a larger batch-only accuracy path. |
 | **YouTube downloads** | Standalone yt-dlp | macOS binary, auto-updates via `--update`. No Python needed. |
 | **UI framework** | SwiftUI | Native Mac experience. Menu bar + window. |
-| **Database** | SQLite (GRDB) | Single file. No server. Dictation history, custom words, settings. |
+| **Structured records** | SQLite (GRDB) | Single local database for history, library, vocabulary, prompts/results and derived retrieval. Preferences use UserDefaults, credentials use Keychain, and retained audio/artifacts remain files. |
 | **Cloud option** | No cloud STT; optional LLM providers | Core speech stays local. AI and media downloads are user-triggered; updates and opt-out telemetry/crash reporting are product-managed network surfaces. Retained purchase activation endpoints remain in code but current public builds are free/unlocked. |
 | **Pricing** | Current public build free/GPL | Zero friction today; GPL-compatible official paid distribution/support remains available later. |
 

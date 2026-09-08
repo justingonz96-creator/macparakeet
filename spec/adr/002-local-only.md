@@ -7,6 +7,10 @@
 
 ## Context
 
+The competitor examples, ratings, prices, and model-quality comparisons below
+are historical decision inputs from February–March 2026, not a current market
+survey or a benchmark of today's providers.
+
 MacParakeet is entering a market where the dominant player (WisprFlow) relies on cloud processing. WisprFlow sends audio to remote servers for transcription and AI refinement, which creates three problems users consistently report:
 
 1. **Privacy**: Audio data leaves the device. Users dictating medical notes, legal documents, proprietary code, or personal journals have legitimate privacy concerns.
@@ -60,14 +64,19 @@ LLM-powered features (summaries, chat/Meeting Ask, AI Formatter, and Transforms)
   Disabling telemetry does not disable Discover, or vice versa.
 - **Explicit submissions**: Feedback and Discover thoughts send the user's
   submitted content and associated diagnostics; these are not STT uploads.
-- **Dormant activation**: Retained LemonSqueezy activation endpoints are used
-  only when explicitly invoked; free public builds do not require activation.
+- **Dormant licensing**: Free public builds do not require activation.
+  Retained activation/deactivation methods use LemonSqueezy when invoked. App
+  setup also refreshes a previously stored activation when the last successful
+  validation is at least a day old; CLI transcription does so with
+  `--enforce-entitlements`. Without a stored key and instance ID, refresh makes
+  no request. Validation results do not gate the free build (ADR-006).
 
 ## Rationale
 
 ### Audio privacy is the brand
 
-"Your voice never leaves your Mac" remains the core promise. This is unchanged. Audio — the sensitive data — is always processed locally on the ANE. What changed is recognizing that *transcript text* has a different privacy profile than *audio recordings*, and users should choose their own tradeoff.
+"Your voice never leaves your Mac" remains the core promise. This is unchanged. Captured audio is always processed on-device; the selected speech engine
+and compute policy determine whether inference uses the ANE, GPU, or CPU. What changed is recognizing that *transcript text* has a different privacy profile than *audio recordings*, and users should choose their own tradeoff.
 
 ### The quality gap is real
 
@@ -78,9 +87,9 @@ A local 8B model produces mediocre summaries. Cloud models (Claude, GPT-4) produ
 | Configuration | Audio leaves device? | Text leaves device? | Quality |
 |--------------|---------------------|---------------------|---------|
 | No provider (default) | No | No | No LLM features |
-| Ollama | No | No (localhost) | Good (local model) |
+| Ollama | No | No with a localhost server; remote endpoints send text off-device | Depends on configured model |
 | Local CLI | No | Depends on the CLI tool | Varies by tool/provider |
-| Cloud API key | No | Yes (user-initiated) | Excellent |
+| Cloud API key | No | Yes, for configured AI workflows | Depends on configured model |
 
 Users make an informed choice. The UI makes the tradeoff explicit. Apple Intelligence follows the same pattern — on-device by default, cloud with user consent for complex tasks.
 

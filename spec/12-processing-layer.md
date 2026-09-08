@@ -65,7 +65,7 @@ The Prompt Library is intentionally general-purpose. This spec locks summary/res
 
 `Prompt.Category` currently supports:
 
-- `.summary` / `.result` — used by the summary pane today; stored as `"summary"` for compatibility
+- `.result` — used by the summary pane today; stored as `"summary"` for compatibility (the former Swift name was `.summary`)
 - `.transform` — productized Transforms (ADR-022), managed by the Transforms tab and `macparakeet-cli transforms`
 
 Additional categories are future schema decisions and are not part of this spec.
@@ -208,7 +208,7 @@ the current MacParakeet prompt-result and adapter defaults. See
 
 The current implementation seeds built-in/community prompts from `Prompt.builtInPrompts()` in Swift. `Sources/MacParakeetCore/Resources/community-prompts.json` exists as a contribution/reference file, but it is not yet the runtime source of truth for prompt seeding.
 
-`Summary` is the auto-run default and the classic built-in fallback. The shipped built-in list is defined in code and currently includes `Summary`, `Action Items & Decisions`, `Chapter Breakdown`, `Study Guide`, `Blog Post`, and `What Stood Out`. The `PromptTemplateRenderer` still exposes `{{userNotes}}` and `{{transcript}}` for advanced custom prompts; no built-in references `{{userNotes}}` today (the "Memo-Steered Notes" built-in was reverted on 2026-05-02; see ADR-020). The in-progress replacement is a separate `includeMeetingNotes` checkbox on every result prompt, default false; it does not restore or rewrite a built-in prompt.
+`Summary` is the auto-run default and the classic built-in fallback. The shipped built-in list is defined in code and currently includes `Summary`, `Action Items & Decisions`, `Chapter Breakdown`, `Study Guide`, `Blog Post`, and `What Stood Out`. The `PromptTemplateRenderer` still exposes `{{userNotes}}` and `{{transcript}}` for advanced custom prompts; no built-in references `{{userNotes}}` today (the "Memo-Steered Notes" built-in was reverted on 2026-05-02; see ADR-020). The implemented replacement is a separate `includeMeetingNotes` checkbox on every result prompt, default false; it does not restore or rewrite a built-in prompt.
 
 ### System Prompt Assembly
 

@@ -1,7 +1,11 @@
 # Post-Meeting Notes and Opt-In Prompt Context
 
-> **Extracted upstream scope:** Saved-meeting notes, autosave, durable drafts,
-> notes-context snapshots, and lifecycle/action gates are included in this branch.
+> **Status: IMPLEMENTED ON MAIN; UNRELEASED.**
+> [PR #959](https://github.com/moona3k/macparakeet/pull/959) merged as `c14b1ed4`.
+> Saved-meeting notes, autosave, durable drafts, notes-context snapshots and
+> lifecycle/action gates are implemented. The proposal below preserves design
+> history; [ADR-020](../../spec/adr/020-live-meeting-notepad-and-memo-summaries.md)
+> and the current UI spec govern the autosaving Notes-tab interaction.
 > Rich Markdown rendering landed separately in
 > [#957](https://github.com/moona3k/macparakeet/pull/957) and is preserved by this
 > integration. This document retains the original design and historical fork QA;

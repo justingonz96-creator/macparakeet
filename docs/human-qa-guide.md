@@ -5,16 +5,18 @@
 ## What "QA" means here
 
 QA (quality assurance) is **you, as a user, confirming a change actually does what it
-should** — by running the real app, not by reading the code. The automated suite
-(`swift test`) already proves the logic in isolation; QA covers what tests can't:
+should** — by running the real app, not by reading the code. Automated tests
+provide evidence for the paths and assertions they exercise; QA adds checks
+that isolated tests cannot establish:
 
 - real UX and visual correctness (does the control look and behave right?)
 - real integrations (an actual LLM provider, a real microphone, real ScreenCaptureKit
   system audio, real macOS permissions)
 - the "feel" — latency, surprises, and edge cases a fixture won't hit
 
-QA is **not** a re-run of the unit tests. Assume the logic works; you are checking that
-it works **for a human, on a real Mac, end to end.**
+QA checks whether the feature works **for a human, on a real Mac, end to end.**
+A passing automated suite does not rule out integration or logic defects found
+during that exercise.
 
 ## The workflow
 

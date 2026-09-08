@@ -18,7 +18,12 @@ Always launch the GUI from repo source when validating new UI work:
 scripts/dev/run_app.sh
 ```
 
-This script builds the latest debug binary, stops stale `/Applications`/`dist` app processes, and launches the current workspace build with build identity metadata.
+This script builds the current workspace debug app with build identity metadata.
+Before rebuilding or re-signing, it requests ordinary quit for this worktree's
+existing dev executables and aborts if they do not exit safely. It does not
+force-kill the app or stop unrelated installed copies. See the
+[human QA guide](human-qa-guide.md#getting-a-testable-build) for shared-data
+and launch-environment limits.
 
 ## Command Discovery
 

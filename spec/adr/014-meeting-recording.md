@@ -2,6 +2,7 @@
 
 > Status: IMPLEMENTED
 > Date: 2026-04-05
+> Current echo path (2026-09-07): ADR-028 governs offline cleaned-microphone rendering and bounded finalization readiness. Section 10 records the earlier live-preview guards and transcript reconciliation that remain supporting mechanisms, not the authoritative AEC architecture. ADR-027 supersedes the original Oatmeal funnel positioning.
 > Related: ADR-001 (Parakeet STT + optional local STT amendments), ADR-007 (FluidAudio CoreML), ADR-010 (speaker diarization), ADR-021 (WhisperKit optional STT), [GitHub #57](https://github.com/moona3k/macparakeet/issues/57)
 > Amended: 2026-04-10 (historical: meeting mic echo mitigation via joined software AEC + observability hardening)
 > Amended: 2026-04-29 (replace Core Audio process taps with ScreenCaptureKit audio so optional VPIO no longer conflicts with system audio capture)
@@ -200,13 +201,13 @@ To reduce phantom "Me" fragments when users are on speakers:
 - A short-window dominant-system guard remains in place for live mic chunk enqueue when recent system energy strongly dominates mic energy. Single-source recordings bypass cross-source pairing/suppression for the missing source.
 - The guard affects live mic chunk transcription only; mic audio is still stored and included in the finalized meeting artifact.
 - Joiner queue overflow and sync-lag telemetry are logged for long-session observability.
-- `MeetingTranscriptSourceReconciler` drops mic runs of >=5 words whose tokens fuzzy-match the remote speaker's *simultaneous* system words (>=80% in-order match within a +/-600 ms window), regardless of confidence — a person cannot utter the same multi-word sequence at the same time as the far end, so such runs are acoustic echo by construction (2026-06-10, issue #480). Short runs keep the conservative confidence-gated rule.
+- `MeetingTranscriptSourceReconciler` drops mic runs of >=5 words whose tokens fuzzy-match the remote speaker's *simultaneous* system words (>=80% in-order match within a +/-600 ms window), regardless of confidence. This is a duplicate-speech heuristic, not proof of acoustic echo; simultaneous repeated speech remains a possible false positive (2026-06-10, issue #480). Short runs keep the conservative confidence-gated rule.
 - The opt-in experimental `StreamingMeetingEchoSuppressor` carries partial frames across batches (contiguous frames for stateful processors, no raw-tail leak) and supports an env-configured reference delay (`MACPARAKEET_MEETING_ECHO_REFERENCE_DELAY_MS`) approximating the echo-path latency (2026-06-10). It requires an available LocalVQE-compatible runtime/model; otherwise meeting mic conditioning remains passthrough.
 - Dictation capture remains raw and unchanged (ADR-015 isolation still applies).
 
 ## Rationale
 
-### Why not keep meeting recording in Oatmeal only?
+### Why not keep meeting recording in Oatmeal only? (historical positioning)
 
 Oatmeal adds intelligence on top of recording: AI meeting notes, entity extraction, calendar integration, cross-meeting RAG. MacParakeet's meeting recording is the simple, free version — just record and transcribe. This creates a natural funnel: MacParakeet (free) → Oatmeal (paid) for users who want the intelligence layer.
 

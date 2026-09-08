@@ -22,7 +22,7 @@ Additionally, this feature is the first building block for a future processing l
 
 Reusable prompt templates are stored in the `prompts` table (not UserDefaults). Each prompt has a name, content, category, visibility flag, and auto-run flag; ADR-022 adds nullable `keyboardShortcut` and `runningLabel` columns for Transform prompts. Built-in/community prompts are currently seeded from Swift constants in `Prompt.builtInPrompts()`. The JSON file at `Sources/MacParakeetCore/Resources/community-prompts.json` is kept as a contribution/reference artifact, not the active runtime seed source. Built-in/community summary prompts can be hidden but not edited or deleted. Built-in Transform prompts can be reset but otherwise use the Transforms UI rules from ADR-022. Custom prompts support full CRUD.
 
-The table is named `prompts` (not `summary_presets`) because the model is general-purpose — the same table serves summaries and Transforms today, and can serve workflow steps later. A `category` enum field (`.summary`, `.transform`) scopes prompts to their use case.
+The table is named `prompts` (not `summary_presets`) because the model is general-purpose — the same table serves summaries and Transforms today, and can serve workflow steps later. A `category` enum field (`.result`, `.transform`; result stores `"summary"`) scopes prompts to their use case.
 
 ### 2. Multiple summaries per transcript
 
@@ -50,7 +50,9 @@ This preserves the responsive UX of “let me ask for several summaries now” w
 
 ### 6. Auto-run uses selected prompt cards
 
-Auto-run after transcription uses every prompt card marked `isAutoRun = true`. This is user-configurable in the prompt library rather than fixed to the first built-in prompt.
+Auto-run after transcription uses visible result prompt cards marked
+`isAutoRun = true` whose `appliesToSources` scope includes that source (`nil`
+means all sources). This is user-configurable in the prompt library rather than fixed to the first built-in prompt.
 
 Zero auto-run prompt cards is a valid state. In that configuration, transcription still completes normally, chat remains available, and users add prompt tabs manually from the summary UI.
 

@@ -10,8 +10,13 @@
 > Implementation status: implemented and locally verified on 2026-09-05;
 > release availability follows the normal channel process.
 
-Saved meeting details add explicit Add/Edit/Clear notes states with Save and
-Cancel. Whitespace-only saves normalize to `NULL`. SQLite
+Saved meeting details now expose an always-editable Notes tab, including empty
+and processing meetings. Edits auto-save after a 500 ms idle debounce; leaving
+the detail/tab, starting an AI action, and ordinary quit flush pending work.
+The debounce updates SQLite; flush boundaries also refresh derived files. A
+failed database flush blocks the AI action and preserves the draft for retry.
+This supersedes the original Add/Edit/Clear editor with Save and Cancel.
+Whitespace-only saves normalize to `NULL`. SQLite
 `transcriptions.userNotes` remains canonical; `notes.md`, `meeting.md`,
 `transcript.json`, and the manifest remain derived artifacts refreshed after a
 successful write. A derived-artifact failure does not roll back the canonical
@@ -84,7 +89,7 @@ The "Memo-Steered Notes" built-in prompt described in §5 has been removed from 
 1. **Meeting artifact folder.** Written into the meeting session folder alongside `meeting-playback.m4a` and `meeting-recording-metadata.json` at finalize, crash-recovery time, explicit `macparakeet-cli meetings artifact`, meeting-note flushes (navigation, AI actions and ordinary quit), CLI note writes, and prompt-result writes. Debounced saved-note edits update SQLite without rebuilding the whole artifact folder. Empty / whitespace-only / nil notes do not produce `notes.md`. The DB column `transcriptions.userNotes` is canonical; `MeetingArtifactStore` refreshes `manifest.json`, `transcript.json`, `notes.md`, `prompt-results.json`, and `prompt-results/*.md` from the DB so agents and users have a deterministic local file contract. Zero-UI consumption surface — user opens the meeting folder in Finder and reads what they typed in any editor.
 2. **Chat threading.** `LLMService.chat / chatStream / chatDetailed` accept a `userNotes: String?` parameter. When the user has typed notes, the chat system prompt gains a `User's notes from the meeting:\n…` block before the transcript block. Chat is user-initiated (not auto-run) and the empty-notes case is byte-identical to today's chat — so the failure modes that drove the prompt revert do not apply. `TranscriptChatViewModel.bindUserNotesProvider(_:)` lets callers thread either a static value (saved-transcription detail page reads `Transcription.userNotes`) or a live closure (live in-meeting Ask reads `MeetingNotesViewModel.notesText` at chat-send time so every keystroke up to Send is visible to the LLM).
 
-The first surface gives the user a file they can read; the second gives the AI context the user already typed. Together they cover the value the reverted built-in prompt was trying to deliver, without the auto-run footguns. The final sentence of the original amendment treated saved-detail editing as future work; the 2026-09-05 amendment above supersedes that point and makes it part of the in-progress scope.
+The first surface gives the user a file they can read; the second gives the AI context the user already typed. Together they cover the value the reverted built-in prompt was trying to deliver, without the auto-run footguns. The final sentence of the original amendment treated saved-detail editing as future work; the 2026-09-05 amendment above supersedes that point and is implemented by the saved-meeting Notes tab.
 
 **Tests:** `testReconcileRemovesRevertedMemoSteeredNotesPrompt` in `DatabaseManagerTests` pins the prompt-deletion behavior. `MeetingNotesFileTests` covers the async `notes.md` writer (header, empty/nil/whitespace cases, stale-file removal, internal line-break preservation). `MeetingRecordingServiceTests` integration-tests the finalize call site (notes-with-content writes the file; empty-notes meetings do not), and `MeetingRecordingRecoveryServiceTests` verifies recovered notes also write the sidecar. `LLMServiceTests` cover the chat-threading path: notes block precedes the transcript block when present, is omitted entirely on nil/empty/whitespace, the byte-identical equivalence between nil and whitespace-only is asserted, and notes+transcript are budgeted together. `TranscriptChatViewModelTests` cover the provider-closure plumbing including re-evaluation on every send (so live-meeting Ask sees the freshest keystroke) and rich-prompt regeneration.
 

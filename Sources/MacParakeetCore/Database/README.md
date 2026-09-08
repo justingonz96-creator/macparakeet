@@ -1,7 +1,7 @@
 # Database
 
-> SQLite via GRDB. One file (`macparakeet.db`), one repository per
-> table, inline migrations registered in `DatabaseManager`.
+> SQLite via GRDB. One file (`macparakeet.db`), repositories organized by
+> domain, inline migrations registered in `DatabaseManager`.
 
 ## Entry point
 
@@ -16,13 +16,13 @@ processes own their connections.
 - `DatabaseManager.swift` — connection setup, migrator registration,
   schema versions. The single source of truth for the database
   schema.
-- One repository per table:
+- Domain repositories:
   - `DictationRepository.swift` — dictation history + lifetime stats.
   - `TranscriptionRepository.swift` — file/YouTube/meeting transcriptions.
   - `SpeakerCorrectionRepository.swift` — transcript-scoped correction history and undo/redo cursor.
   `SpeakerCorrectionService` owns atomic cross-table edits; `SpeakerAttributionReadService`
   resolves effective attribution without changing recognized words.
-- `SegmentRepository.swift` — derived transcript segments, FTS5 search, slicing, and deterministic rebuilds.
+  - `SegmentRepository.swift` — derived transcript segments, FTS5 search, slicing, and deterministic rebuilds.
   - `CardRepository.swift` — derived per-recording knowledge cards, provenance staleness, deterministic joins, and card FTS sync.
   - `CustomWordRepository.swift` — vocabulary entries.
   - `TextSnippetRepository.swift` — snippets (text + action).
@@ -31,6 +31,7 @@ processes own their connections.
   - `QuickPromptRepository.swift` — quick-prompt entries (Ask tab).
   - `ChatConversationRepository.swift` — multi-turn chat history.
   - `TransformHistoryRepository.swift` — local Transform run history (input/output/source app/timings; ADR-022).
+  - `AIFormatterProfileRepository.swift` — app/category formatter profiles (normal product exposure remains feature-gated).
   - `LLMRunRepository.swift` — local metadata ledger for persisted LLM runs (provider/model/tokens/latency/status/required source link; no prompt/input/output content).
 
 ## Cross-references
@@ -48,7 +49,7 @@ processes own their connections.
 **Migrations are inline in `DatabaseManager`, not separate files.**
 Each migration is a `migrator.registerMigration("vX.Y-name") { db in
 ... }` block. The naming convention is `vX.Y-<table-or-feature>` so
-the migration ledger doubles as a release-version trail. Migrations
+these prefixes are schema identifiers, not product release versions. Migrations
 run once and are never edited after a release ships — to change a
 shipped schema, register a *new* migration that performs the
 adjustment. The registered identifiers are exposed via
@@ -60,11 +61,13 @@ database migrated by a newer app.
 The health probe uses `init(readOnlyPath:)` for its subsequent statistics reads
 too, so inspecting an older database does not apply pending migrations.
 
-**One repository per table. Don't combine tables in one repo.**
+**Keep repositories focused on a domain.**
 Each repository implements a `…Protocol` so callers can be tested
 against a mock. The repository owns CRUD plus any table-specific
-helpers (FTS search, stats aggregation). Cross-table writes and workflow
-orchestration live at the service layer. A table-owned read-model query may
+helpers (FTS search, stats aggregation). A repository may own closely related
+tables: dictation statistics, speaker correction cursors, and derived FTS tables
+are examples. Cross-domain writes and workflow orchestration live at the
+service layer, using one transaction when atomicity is required. A table-owned read-model query may
 join immutable metadata when SQL-level filtering or ranking requires it; for
 example, segment search joins transcription dates, sources, and titles.
 

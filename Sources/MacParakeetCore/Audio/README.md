@@ -439,8 +439,8 @@ At the 5 MB cap, the log is compacted to the newest complete-line tail
   helpers under deterministic mocks.
 - `swift test --filter SharedMicrophoneStream` — the VPIO state
   machine specifically.
-- `swift test` — full suite (~100 s). Audio changes ripple into
-  dictation, meeting, and STT scheduler tests.
+- For code changes, run the full suite at most once as the final gate,
+  after focused checks; follow the repository verification scope.
 - Dev-app smoke (the canonical happy-path check):
   1. `scripts/dev/run_app.sh`.
   2. Dictate three times in sequence.

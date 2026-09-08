@@ -1,9 +1,10 @@
 # Per-Prompt LLM Inference Settings — Implementation Plan
 
-> Status: **PR #956 CANDIDATE** — historical implementation verification was
-> reported on 2026-09-03, with reasoning effort added on 2026-09-05.
-> Integration repairs on 2026-09-06 await maintainer validation; the older
-> verification does not certify the corrected candidate.
+> Status: **IMPLEMENTED ON MAIN; UNRELEASED** — integrated via
+> [PR #968](https://github.com/moona3k/macparakeet/pull/968) (`57e3391a`), including
+> repairs to the earlier #956 candidate. The implementation steps and dated
+> verification below are retained as historical records, not instructions to
+> rebuild the feature or evidence for a later release candidate.
 
 Governing spec:
 [`spec/14-per-prompt-inference-settings.md`](../../spec/14-per-prompt-inference-settings.md)
