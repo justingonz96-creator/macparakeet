@@ -40,6 +40,32 @@ final class SpeakerRenameStateTests: XCTestCase {
         XCTAssertEqual(previous.contextID, "turn:1:A")
         XCTAssertFalse(state.cancel(contextID: "turn:1:A"))
         XCTAssertEqual(state.draft?.contextID, "turn:2:A")
+        XCTAssertEqual(state.draft?.label, "QA Alice")
+        XCTAssertEqual(state.finish(contextID: "turn:2:A")?.label, "QA Alice")
+    }
+
+    func testSameSpeakerHandoffUsesTheTrimmedPendingName() throws {
+        var state = SpeakerRenameState()
+        let speaker = SpeakerInfo(id: "A", label: "Speaker A")
+        state.begin(speaker, contextID: "overview:A")
+        state.updateLabel(" \n QA Alice \t ", contextID: "overview:A")
+
+        let previous = try XCTUnwrap(state.begin(speaker, contextID: "turn:1:A"))
+        XCTAssertEqual(previous.label, " \n QA Alice \t ")
+        XCTAssertEqual(state.draft?.label, "QA Alice")
+        XCTAssertEqual(state.finish(contextID: "turn:1:A")?.label, "QA Alice")
+    }
+
+    func testSameSpeakerHandoffKeepsExistingNameWhenDraftIsBlank() throws {
+        var state = SpeakerRenameState()
+        let speaker = SpeakerInfo(id: "A", label: "Speaker A")
+        state.begin(speaker, contextID: "overview:A")
+        state.updateLabel(" \n\t ", contextID: "overview:A")
+
+        let previous = try XCTUnwrap(state.begin(speaker, contextID: "turn:1:A"))
+        XCTAssertEqual(previous.label, " \n\t ")
+        XCTAssertEqual(state.draft?.label, "Speaker A")
+        XCTAssertEqual(state.finish(contextID: "turn:1:A")?.label, "Speaker A")
     }
 
     func testReopeningTheActiveEditorPreservesDraftAndEscapeDiscardsIt() {

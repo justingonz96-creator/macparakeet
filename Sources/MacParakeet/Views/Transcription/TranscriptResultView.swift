@@ -101,7 +101,15 @@ struct SpeakerRenameState {
     mutating func begin(_ speaker: SpeakerInfo, contextID: String) -> Draft? {
         guard draft?.speakerID != speaker.id || draft?.contextID != contextID else { return nil }
         let previous = draft
-        draft = Draft(speakerID: speaker.id, contextID: contextID, label: speaker.label)
+        var label = speaker.label
+        if let previous, previous.speakerID == speaker.id {
+            // The incoming snapshot still has the name from before this draft.
+            let pendingLabel = previous.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !pendingLabel.isEmpty {
+                label = pendingLabel
+            }
+        }
+        draft = Draft(speakerID: speaker.id, contextID: contextID, label: label)
         return previous
     }
 
