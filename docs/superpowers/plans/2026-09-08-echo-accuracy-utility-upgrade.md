@@ -126,7 +126,9 @@ SRC="$1"; NAME="$2"; COUNT="${3:-5}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 FFMPEG="${FFMPEG:-/Applications/Echo.app/Contents/Resources/ffmpeg}"
 mkdir -p "$HERE/clips"
-DUR=$("$FFMPEG" -i "$SRC" 2>&1 | sed -n 's/.*Duration: \([0-9]*\):\([0-9]*\):\([0-9]*\).*/\1*3600+\2*60+\3/p' | bc)
+DUR=$( { "$FFMPEG" -i "$SRC" 2>&1 || true; } | sed -n 's/.*Duration: \([0-9]*\):\([0-9]*\):\([0-9]*\).*/\1*3600+\2*60+\3/p' | bc)
+[ -n "${DUR:-}" ] || { echo "could not read duration of $SRC" >&2; exit 1; }
+[ "$DUR" -gt 180 ] || { echo "source is only ${DUR}s; need > 180s to cut ${COUNT} clips" >&2; exit 1; }
 STEP=$(( (DUR - 120) / COUNT ))
 for i in $(seq 0 $((COUNT-1))); do
   START=$(( 60 + i*STEP ))
