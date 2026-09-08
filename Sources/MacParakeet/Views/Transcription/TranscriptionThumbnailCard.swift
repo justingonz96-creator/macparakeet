@@ -18,6 +18,30 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
     @State private var hovered = false
 
     var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            cardButton
+
+            if showsUnavailableAudioIndicator {
+                MeetingAudioStateChip(state: .removed)
+                    .padding(8)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .onHover { hovered = $0 }
+        .animation(DesignSystem.Animation.hoverTransition, value: hovered)
+        .onAppear {
+            // If not locally cached, trigger background download so it's cached for next render
+            if sharedThumbnailCache.cachedThumbnail(for: transcription.id) == nil,
+               let urlString = transcription.thumbnailURL {
+                let id = transcription.id
+                Task.detached(priority: .utility) {
+                    _ = try? await ThumbnailCacheService.shared.downloadThumbnail(from: urlString, for: id)
+                }
+            }
+        }
+    }
+
+    private var cardButton: some View {
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: 0) {
                 thumbnailArea
@@ -55,24 +79,6 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
             moreButton
                 .opacity(hovered ? 1 : 0)
                 .allowsHitTesting(hovered)
-        }
-        .overlay(alignment: .bottomTrailing) {
-            if showsUnavailableAudioIndicator {
-                MeetingAudioStateChip(state: .removed)
-                    .padding(8)
-            }
-        }
-        .onHover { hovered = $0 }
-        .animation(DesignSystem.Animation.hoverTransition, value: hovered)
-        .onAppear {
-            // If not locally cached, trigger background download so it's cached for next render
-            if sharedThumbnailCache.cachedThumbnail(for: transcription.id) == nil,
-               let urlString = transcription.thumbnailURL {
-                let id = transcription.id
-                Task.detached(priority: .utility) {
-                    _ = try? await ThumbnailCacheService.shared.downloadThumbnail(from: urlString, for: id)
-                }
-            }
         }
         .accessibilityValue(showsSelectionControls ? (isSelected ? "Selected" : "Not selected") : "")
         .accessibilityHint(showsSelectionControls ? "Toggles selection" : "Opens transcription")
