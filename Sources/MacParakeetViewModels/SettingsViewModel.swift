@@ -1302,11 +1302,13 @@ public final class SettingsViewModel {
     /// stays in the background with Settings closed still restores shortcuts.
     private func startAccessibilityGrantWatch() {
         guard accessibilityGrantWatchTask == nil else { return }
+        // Only a weak reference survives each sleep so releasing the view
+        // model's owner still runs `deinit`, which cancels this watch.
+        let interval = permissionPollingInterval
         accessibilityGrantWatchTask = Task { [weak self] in
-            guard let self else { return }
             while !Task.isCancelled {
-                try? await Task.sleep(for: self.permissionPollingInterval)
-                guard !Task.isCancelled, let service = self.permissionService else { break }
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self, let service = self.permissionService else { break }
                 if service.checkAccessibilityPermission() {
                     self.applyAccessibilityStatus(true)
                     break

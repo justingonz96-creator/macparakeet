@@ -1439,6 +1439,24 @@ final class SettingsViewModelTests: XCTestCase {
         vm.onAccessibilityGranted = nil
     }
 
+    func testAccessibilityWatchDoesNotKeepDeniedViewModelAlive() async throws {
+        mockPermissions.accessibilityPermission = false
+        weak var weakViewModel: SettingsViewModel?
+        do {
+            let vm = makeBackgroundGrantViewModel()
+            weakViewModel = vm
+            try await waitUntil { self.mockPermissions.checkAccessibilityPermissionCallCount >= 2 }
+            XCTAssertFalse(vm.accessibilityGranted)
+        }
+        try await waitUntil { weakViewModel == nil }
+        XCTAssertNil(weakViewModel, "Denied-permission watch must not retain the view model")
+
+        let checksAfterRelease = mockPermissions.checkAccessibilityPermissionCallCount
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(mockPermissions.checkAccessibilityPermissionCallCount, checksAfterRelease,
+                       "Watch must stop polling once the view model is released")
+    }
+
     func testAccessibilityWatchStopsWhenSharedRefreshObservesGrant() async throws {
         mockPermissions.accessibilityPermission = false
         var recoveryCount = 0
