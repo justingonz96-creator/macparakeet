@@ -404,8 +404,8 @@ npx wrangler r2 object put macparakeet-downloads/MacParakeet.dmg \
 | `notarytool` auth failure | Keychain profile missing | Run `xcrun notarytool store-credentials "AC_PASSWORD"` (see Step 2 above) |
 | Update found but same version | Build number in appcast ≤ installed build | Ensure `sparkle:version` (build number) is strictly greater |
 | Fresh SwiftPM dependency checkout fails with `git: 'submodule' is not a git command` | Xcode's Apple Git cannot find `git-submodule`, even though the shell Git may have it | Re-run `build_app_bundle.sh`; it now detects this mismatch and lends xcodebuild the shell Git helper path. If neither Git has the helper, repair Xcode/Command Line Tools or export `GIT_EXEC_PATH` to a directory containing `git-submodule`. |
-| `notarytool` bus error / crash | Using `--wait` flag | **Never use `xcrun notarytool submit --wait`.** Submit without `--wait`, then poll with `xcrun notarytool info <submission-id>`. See gotcha #1 below. |
-| `notarytool` stays `In Progress` beyond the normal window | Apple accepted upload but the submission is likely stale/stuck | Stop local pollers, discard release artifacts, rebuild/sign from scratch, and submit a fresh archive. Do not continue from orphaned `In Progress` submissions. See gotcha #1a below. |
+| `notarytool` bus error / crash | Local tool failure; upload may already be registered, even without `--wait` | Preserve output and the artifact. Find the submission ID and query its status before considering another upload. See gotcha #1 below. |
+| `notarytool` stays `In Progress` | Apple has registered the upload; processing has not reached a final result | Poll that exact ID with a deadline. If still pending, preserve the artifact and inspect service/query errors; do not delete or resubmit solely because it is slow. See gotcha #1a below. |
 | TCC permissions silently fail | User ran app from DMG volume instead of /Applications | DMG must include Applications symlink. See gotcha #3 below. |
 | YouTube transcription fails with `[PYI:ERROR] Failed to load Python shared library ... different Team IDs` | Bundled `yt-dlp_macos` was re-signed with hardened runtime but without disabling library validation | Sign `yt-dlp` with `com.apple.security.cs.disable-library-validation=true`, smoke-test `Contents/Resources/yt-dlp --version`, and repair any bad managed copy in Application Support |
 
@@ -413,9 +413,9 @@ npx wrangler r2 object put macparakeet-downloads/MacParakeet.dmg \
 
 These are bugs and edge cases discovered during actual releases. Read before your first release.
 
-#### 1. `notarytool --wait` crashes with bus error
+#### 1. Recover a submission after a `notarytool` crash
 
-**Never use the `--wait` flag** with `xcrun notarytool submit`. It crashes with a bus error (EXC_BAD_ACCESS) on some macOS versions. This is an Apple bug that has persisted across multiple Xcode releases.
+**Do not use `--wait`** with `xcrun notarytool submit`; this workflow has encountered bus errors while waiting. Submission can also crash without `--wait` after Apple has registered the upload. A local nonzero exit is therefore not proof that no submission exists.
 
 **Instead:** Submit without `--wait` and poll for completion:
 
@@ -428,31 +428,47 @@ xcrun notarytool submit dist/MacParakeet.dmg --keychain-profile "AC_PASSWORD"
 xcrun notarytool info <SUBMISSION_ID> --keychain-profile "AC_PASSWORD"
 ```
 
-The `sign_notarize.sh` script already handles this correctly — it submits and polls in a loop. If you're running notarization manually, never add `--wait`.
+Save the submission ID, artifact SHA-256, source/build version, stdout, stderr,
+and exit status. If the tool crashes, inspect its output for an ID. If no ID was
+captured, use `notarytool history --keychain-profile "AC_PASSWORD"` and match the
+artifact name and submission time; resolve ambiguity before uploading again.
+Query the identified ID with `notarytool info` to establish its service status.
 
-#### 1a. Restart from clean artifacts if notarization stalls
+The script submits without `--wait` and polls after a successful submit command.
+It currently exits on a submit failure under `set -e` and has no resume flag.
+Rerunning the whole script re-signs and resubmits. Preserve the existing artifact,
+continue polling its exact ID, and resume at stapling only after `Accepted`.
 
-Normal notarization usually returns `Accepted` in roughly 2-5 minutes. If a
-fresh app or DMG submission stays `In Progress` well beyond that window, treat
-the submission as stale instead of waiting indefinitely. This can happen even
-when `notarytool submit` produced a valid submission ID.
+#### 1a. Bound polling and preserve pending submissions
 
-For a clean restart:
+`In Progress` is not a rejection or evidence that the archive is stale. Apple
+notes that some uploads require deeper analysis and take longer to complete.
+Elapsed time alone does not identify the cause of a delay. [Apple Developer Technical Support](https://developer.apple.com/forums/thread/818575).
+
+Poll one exact submission ID at a sensible interval, for example once per
+60 seconds for up to 30 minutes. Stop on `Accepted`, `Invalid`, or `Rejected`.
+The script's polling timeout and interval are configurable through
+`NOTARY_TIMEOUT_SECONDS` and `NOTARY_POLL_INTERVAL_SECONDS`.
 
 ```bash
-# Stop any local release pollers first.
-ps -axo pid,ppid,etime,command | rg 'notarytool|sign_notarize|build_app_bundle|hdiutil'
-
-# Then discard generated release artifacts and rebuild/sign fresh.
-rm -rf dist/MacParakeet.app dist/MacParakeet.app.zip \
-  dist/MacParakeet.dmg dist/MacParakeet-rw.dmg dist/.dmg-staging
-VERSION=X.Y.Z scripts/dist/build_app_bundle.sh
-SKIP_NOTARIZE=1 CREATE_DMG=0 scripts/dist/sign_notarize.sh
+xcrun notarytool info <SUBMISSION_ID> \
+  --keychain-profile "AC_PASSWORD" --output-format json
 ```
 
-Submit the newly-created archive and poll that exact fresh submission ID. Only
-staple, DMG, upload, or update Sparkle after a clean `Accepted` response for the
-artifact you are actually shipping.
+If the deadline expires while Apple still reports `In Progress`, stop the local
+poller and record the status and time. Preserve the signed artifact, uploaded
+archive, hash, and submission ID. Check [Apple's service status](https://developer.apple.com/system-status/)
+and inspect query errors separately: an authentication/network error is not an
+Apple notarization result. Resume bounded read-only polling of the same ID when
+appropriate; do not blindly rebuild or reupload.
+
+For `Invalid` or `Rejected`, retrieve `notarytool log <SUBMISSION_ID>` with the
+same profile and an output file, inspect the reported issues, and fix the
+artifact before a new submission. A deliberately changed release candidate
+also needs its own archive and submission; retain the previous ID as historical
+evidence. Only staple or distribute the exact artifact whose submission is
+`Accepted`, and never treat an older candidate's acceptance as approval of a
+new build.
 
 #### 2. Cloudflare CDN caches R2 objects — Sparkle cache-busting is mandatory
 
@@ -644,4 +660,4 @@ UNIVERSAL=1 scripts/dist/build_app_bundle.sh
 - **Users must install to /Applications before launching.** Running directly from a mounted DMG (`/Volumes/MacParakeet/`) will not register with macOS TCC — the app won't appear in System Settings > Privacy & Security > Microphone, and permission requests will silently fail. The DMG includes an Applications symlink for drag-to-install.
 - If a user's microphone permission gets stuck as "Denied", reset it with: `tccutil reset Microphone com.macparakeet.MacParakeet`
 - The Cloudflare R2 bucket uses a custom domain via `wrangler r2 bucket domain add`. The `r2.dev` public URL is also enabled as a fallback.
-- Cloudflare Pages has a 25MB file size limit, so the DMG (27MB) cannot be hosted directly in the website repo's `public/` folder.
+- Cloudflare Pages has a 25MB file size limit, so release DMGs that exceed this limit cannot be hosted directly in the website repo's `public/` folder.

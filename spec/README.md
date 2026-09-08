@@ -23,7 +23,7 @@
 | 11 | [LLM Integration](11-llm-integration.md) | LLM providers, summary, chat, transforms | Implemented (§1 summary superseded by spec/12) |
 | 12 | [Processing Layer](12-processing-layer.md) | Prompt library, multi-summary, v0.5 implementation contract | Active |
 | 13 | [Agent Workflows](13-agent-workflows.md) | Future actions, workflows, agents, voice control, App Intents | Draft |
-| 14 | [Per-Prompt Inference Settings](14-per-prompt-inference-settings.md) | Typed generation settings and effective-setting snapshots for result prompts | PR #956 candidate |
+| 14 | [Per-Prompt Inference Settings](14-per-prompt-inference-settings.md) | Typed generation settings and effective-setting snapshots for result prompts | Implemented on main via [PR #968](https://github.com/moona3k/macparakeet/pull/968); unreleased |
 
 ## Boundary Contracts
 
@@ -64,7 +64,7 @@ These decisions are final. Do not second-guess them.
 | Channel | Status | Notes |
 |---------|--------|-------|
 | Stable DMG `0.7.3` | User-facing release, recommended for normal use | Dictation, file/media URL transcription, System Default microphone routing, separate live/final speech-engine routes, meeting recording with cleaned-mic finalization and bounded capture lifecycle, calendar auto-start and activity-based auto-stop (both opt-in, default off), Transforms, VAD-guided meeting live-preview chunking, optional Nemotron Beta, Cohere, and WhisperKit, bundled CLI 3.0, exports, vocabulary, AI features |
-| Development source (this revision) | Unreleased; `main` and feature branches are not the stable download | CLI 3.3 per-prompt inference settings and effective-request receipts, catalog/JSON-mutator coverage, segment search/context reads, knowledge cards, DAPT export, Library grid/list layouts, menu-bar icon and Discover visibility preferences, quiet meeting completion, AI-setup preservation across failed draft operations, durable silent-system capture reporting and recovery corrections, bounded writer-finalization handling, and transcript AI-context task hardening. Check branch/commit identity; do not attribute these changes to the stable DMG. |
+| Development source (this revision) | Unreleased; `main` and feature branches are not the stable download | CLI 3.3 per-prompt inference settings and effective-request receipts, additional JSON-mutator coverage, checked knowledge-card token accounting, DAPT export, Library grid/list layouts, menu-bar icon and Discover visibility preferences, quiet meeting completion, AI-setup preservation across failed draft operations, durable silent-system capture reporting and recovery corrections, bounded writer-finalization handling, and transcript AI-context task hardening. Check branch/commit identity; do not attribute these changes to the stable DMG. |
 
 Feature gates in the current source (`Sources/MacParakeetCore/AppFeatures.swift`); an implemented gated surface is not a shipped feature:
 

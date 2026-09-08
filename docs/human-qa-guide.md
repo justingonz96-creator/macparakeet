@@ -40,9 +40,23 @@ the next release). Either is fine — the checklist is the same. This is the
 scripts/dev/run_app.sh
 ```
 
-Builds, signs, and launches the dev build. It uses a **separate bundle id
-(`com.macparakeet.dev`)** with its **own settings and database**, so it never touches
-your real MacParakeet install or history.
+Builds, signs, and launches the dev build. Its separate bundle identifier
+(`com.macparakeet.dev`) separates standard GUI preferences and macOS permissions.
+It still uses the normal MacParakeet database and artifact paths by default.
+
+Destructive QA requires verified throwaway data. A **DEBUG** binary supports
+`MACPARAKEET_DEBUG_APP_STATE_DIR` as an explicit override for app data, artifacts,
+model caches, and logs. Release builds ignore it. The script's `open --env`
+arguments currently forward build metadata only; setting the override in the
+calling shell does not establish that the launched app received it. Verify the
+running process's environment and resolved paths before testing deletion or recovery.
+
+The data override does not isolate preferences or Keychain. CLI configuration
+commands still use `com.macparakeet.MacParakeet` preferences, and GUI LLM credentials
+use the shared `com.macparakeet.llm` Keychain service. Keep provider credential
+changes out of a shared-account QA run; use a disposable macOS account when full
+user-state isolation is needed. See the
+[integration isolation rules](../integrations/README.md#safe-automation-and-isolation).
 
 To QA a specific PR branch, run that script from inside **that branch's checkout or
 worktree** — SwiftPM pins build paths per worktree, so build from where the branch
@@ -76,9 +90,10 @@ for release-gating checks (signing, notarization, first-run onboarding, auto-upd
 - The dev build is a **separate app** to macOS, so it requests its **own permissions** —
   Microphone, Accessibility, and (for system-audio meeting modes) Screen & System
   Audio Recording. Grant them when prompted.
-- If permissions act stuck after a re-sign, reset them:
-  `tccutil reset All com.macparakeet.dev`.
-- Its history and settings are independent — a clean slate is expected, not a bug.
+- If permissions act stuck after a re-sign, inspect the affected permission in
+  System Settings → Privacy & Security and confirm it belongs to the running dev app.
+- GUI settings can start fresh while history remains shared. Confirm the resolved
+  data paths before treating the dev build as a clean slate.
 
 ## Markdown regression checks
 

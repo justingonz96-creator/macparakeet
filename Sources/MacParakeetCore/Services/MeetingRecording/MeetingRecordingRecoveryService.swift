@@ -415,7 +415,11 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
         guard !MeetingAudioWriterFinalizationRegistry.contains(folderURL: folderURL) else {
             throw MeetingRecordingRecoveryError.writerFinalizationInProgress
         }
-        if fileManager.fileExists(atPath: folderURL.path) {
+        guard fileManager.fileExists(atPath: folderURL.path) else { return }
+        // Discovery can outlive its dialog. Claim the current on-disk lock so
+        // a stale Discard cannot remove audio that recovery or Retry now owns.
+        let ownershipLease = try lockFileStore.claimFinalizationOwnership(folderURL: folderURL)
+        do {
             if let completed = try existingCompletedTranscription(in: folderURL) {
                 try await settlement.settleCompletedTranscription(
                     folderURL: folderURL,
@@ -428,6 +432,27 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
                 return
             }
             try fileManager.removeItem(at: folderURL)
+        } catch {
+            if fileManager.fileExists(atPath: folderURL.path) {
+                do {
+                    try MeetingRecordingLockFileStore.restoreMissingLockAfterFailedDiscard(
+                        ownershipLease,
+                        lockFileStore: lockFileStore
+                    )
+                } catch {
+                    logger.error(
+                        "meeting_discard_lock_restore_failed session=\(lock.sessionId.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .private)"
+                    )
+                }
+                do {
+                    try lockFileStore.releaseFinalizationOwnership(ownershipLease)
+                } catch {
+                    logger.error(
+                        "meeting_discard_ownership_release_failed session=\(lock.sessionId.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .private)"
+                    )
+                }
+            }
+            throw error
         }
     }
 
