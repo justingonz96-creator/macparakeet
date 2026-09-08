@@ -282,6 +282,24 @@ extension TranscriptExportOptions: RawRepresentable {
     }
 }
 
+// Explicit `==` so this type does NOT pick up the standard library's
+// `RawRepresentable where Self: Equatable, RawValue: Equatable` default
+// implementation, which compares `lhs.rawValue == rhs.rawValue` instead of
+// synthesising a memberwise comparison. That rawValue is a JSON string from
+// JSONEncoder, whose key order is documented as unspecified unless
+// `.sortedKeys` is used — so two structurally-identical values (even the
+// exact same value re-encoded) can produce different key order and compare
+// unequal, breaking the Equatable contract (x == x could be false). Defining
+// `==` directly on the type restores real memberwise equality.
+extension TranscriptExportOptions {
+    public static func == (lhs: TranscriptExportOptions, rhs: TranscriptExportOptions) -> Bool {
+        lhs.includeTimestamps == rhs.includeTimestamps
+            && lhs.includeSpeakerLabels == rhs.includeSpeakerLabels
+            && lhs.includeMetadata == rhs.includeMetadata
+            && lhs.subtitleConfig == rhs.subtitleConfig
+    }
+}
+
 /// Handles exporting transcriptions to files and clipboard.
 /// @MainActor because PDF/DOCX paths use NSTextStorage/NSLayoutManager (AppKit, not thread-safe).
 @MainActor
