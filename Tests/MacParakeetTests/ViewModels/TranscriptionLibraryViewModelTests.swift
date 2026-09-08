@@ -237,6 +237,35 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
         XCTAssertEqual(Set(viewModel.filteredTranscriptions.map(\.fileName)), ["First", "Second"])
     }
 
+    func testClearingLabelFiltersPreservesAssignments() async throws {
+        let manager = try DatabaseManager()
+        let transcriptionRepo = TranscriptionRepository(dbQueue: manager.dbQueue)
+        let labelRepo = MeetingLabelRepository(dbQueue: manager.dbQueue)
+        let assignmentRepo = TranscriptionMeetingLabelRepository(dbQueue: manager.dbQueue)
+        let customer = MeetingLabel(name: "Customer")
+        try labelRepo.save(customer)
+
+        let labeled = Transcription(fileName: "Labeled", status: .completed, sourceType: .meeting)
+        let other = Transcription(fileName: "Other", status: .completed, sourceType: .meeting)
+        try transcriptionRepo.save(labeled)
+        try transcriptionRepo.save(other)
+        try assignmentRepo.add(labelId: customer.id, to: labeled.id)
+
+        let viewModel = TranscriptionLibraryViewModel(scope: .meetings)
+        viewModel.configure(transcriptionRepo: transcriptionRepo)
+        viewModel.toggleMeetingLabelFilter(customer.id)
+        await load(viewModel)
+        XCTAssertEqual(viewModel.filteredTranscriptions.map(\.fileName), ["Labeled"])
+
+        viewModel.clearMeetingClassificationFilters()
+        await load(viewModel)
+        XCTAssertEqual(Set(viewModel.filteredTranscriptions.map(\.fileName)), ["Labeled", "Other"])
+
+        viewModel.toggleMeetingLabelFilter(customer.id)
+        await load(viewModel)
+        XCTAssertEqual(viewModel.filteredTranscriptions.map(\.fileName), ["Labeled"])
+    }
+
     func testLabelFilterAppliesInsidePodcastSourceTab() async throws {
         let manager = try DatabaseManager()
         let transcriptionRepo = TranscriptionRepository(dbQueue: manager.dbQueue)

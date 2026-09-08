@@ -9,12 +9,11 @@ struct MeetingClassificationBadges: View {
     var body: some View {
         if let classification, !classification.labels.isEmpty {
             HStack(spacing: 5) {
-                ForEach(Array(classification.labels.prefix(maximumLabels).enumerated()), id: \.element.id) {
-                    index, label in
+                ForEach(classification.labels.prefix(maximumLabels)) { label in
                     badge(
                         label.name,
                         icon: nil,
-                        tint: MeetingClassificationTint.color(for: label.colorToken, fallback: index + 1),
+                        tint: MeetingLabelTint.color(for: label),
                         isPrimary: false
                     )
                 }
@@ -86,13 +85,16 @@ struct MeetingClassificationFilterBar: View {
         .buttonStyle(.plain)
         .fixedSize()
         .popover(isPresented: $showingLabelFilters, arrowEdge: .bottom) {
-            MeetingLabelFilterPopover(libraryViewModel: libraryViewModel)
+            MeetingLabelFilterPopover(
+                libraryViewModel: libraryViewModel,
+                onDismiss: { showingLabelFilters = false }
+            )
         }
     }
 
     private var labelFilterTitle: String {
         let count = libraryViewModel.selectedMeetingLabelIDs.count
-        return count == 0 ? "All labels" : "Labels · \(count)"
+        return count == 0 ? "Labels" : "Labels · \(count)"
     }
 
     private func filterButtonLabel(title: String, icon: String) -> some View {
@@ -112,56 +114,76 @@ struct MeetingClassificationFilterBar: View {
 
 private struct MeetingLabelFilterPopover: View {
     @Bindable var libraryViewModel: TranscriptionLibraryViewModel
+    let onDismiss: () -> Void
     @State private var query = ""
+    @State private var showingSelectedOnly = false
+    @State private var optionsContentHeight: CGFloat = 1
+    @FocusState private var searchFocused: Bool
 
     private var labels: [MeetingLabel] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let allLabels = libraryViewModel.meetingClassificationViewModel.meetingLabels
-        guard !trimmed.isEmpty else { return allLabels }
-        return allLabels.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
+        return allLabels.filter { label in
+            (!showingSelectedOnly || libraryViewModel.selectedMeetingLabelIDs.contains(label.id))
+                && (trimmed.isEmpty || label.name.localizedCaseInsensitiveContains(trimmed))
+        }
     }
 
     var body: some View {
-        filterPopoverContainer(searchText: $query, prompt: "Search labels") {
-            if labels.isEmpty {
-                Text("No matching labels")
-                    .font(DesignSystem.Typography.caption)
-                    .foregroundStyle(DesignSystem.Colors.textTertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, DesignSystem.Spacing.sm)
-            } else {
-                FlowLayout(spacing: 7) {
-                    ForEach(Array(labels.enumerated()), id: \.element.id) { index, label in
-                        filterChip(
-                            name: label.name,
-                            icon: "tag.fill",
-                            tint: MeetingClassificationTint.color(
-                                for: label.colorToken,
-                                fallback: index + 1
-                            ),
-                            selected: libraryViewModel.selectedMeetingLabelIDs.contains(label.id)
-                        ) {
-                            libraryViewModel.toggleMeetingLabelFilter(label.id)
-                        }
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            searchField
+
+            Text("Match any selected label")
+                .font(DesignSystem.Typography.micro)
+                .foregroundStyle(DesignSystem.Colors.textTertiary)
+
+            Toggle("Show selected", isOn: $showingSelectedOnly)
+                .font(DesignSystem.Typography.caption)
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    filterRows
+                }
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: LabelPopoverContentHeightKey.self,
+                            value: proxy.size.height
+                        )
                     }
                 }
             }
-        }
-    }
-}
+            .frame(height: min(optionsContentHeight, 260))
 
-@MainActor
-private func filterPopoverContainer<Content: View>(
-    searchText: Binding<String>,
-    prompt: String,
-    @ViewBuilder content: () -> Content
-) -> some View {
-    VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+            if libraryViewModel.hasMeetingClassificationFilter {
+                Divider()
+                Button("Clear filters") {
+                    libraryViewModel.clearMeetingClassificationFilters()
+                }
+                .buttonStyle(.plain)
+                .font(DesignSystem.Typography.caption.weight(.medium))
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
+            }
+        }
+        .padding(DesignSystem.Spacing.md)
+        .frame(width: 320)
+        .background(DesignSystem.Colors.contentBackground)
+        .onAppear {
+            Task { @MainActor in searchFocused = true }
+        }
+        .onPreferenceChange(LabelPopoverContentHeightKey.self) { optionsContentHeight = $0 }
+        .onExitCommand(perform: onDismiss)
+    }
+
+    private var searchField: some View {
         HStack(spacing: 7) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(DesignSystem.Colors.textTertiary)
-            TextField(prompt, text: searchText)
+            TextField("Search labels", text: $query)
                 .textFieldStyle(.plain)
+                .focused($searchFocused)
         }
         .padding(.horizontal, 10)
         .frame(height: 32)
@@ -173,56 +195,55 @@ private func filterPopoverContainer<Content: View>(
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(DesignSystem.Colors.border, lineWidth: 0.6)
         )
-
-        content()
     }
-    .padding(DesignSystem.Spacing.md)
-    .frame(width: 330)
-    .background(DesignSystem.Colors.contentBackground)
-}
 
-@MainActor
-private func filterChip(
-    name: String,
-    icon: String?,
-    tint: Color,
-    selected: Bool,
-    action: @escaping () -> Void
-) -> some View {
-    Button(action: action) {
-        HStack(spacing: 5) {
-            if selected {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 9, weight: .bold))
-            } else if let icon {
-                Image(systemName: icon)
-                    .font(.system(size: 9, weight: .semibold))
+    @ViewBuilder
+    private var filterRows: some View {
+        if labels.isEmpty {
+            Text(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No labels yet." : "No matching labels")
+                .font(DesignSystem.Typography.caption)
+                .foregroundStyle(DesignSystem.Colors.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, DesignSystem.Spacing.sm)
+        } else {
+            ForEach(labels) { label in
+                let selected = libraryViewModel.selectedMeetingLabelIDs.contains(label.id)
+                Button {
+                    libraryViewModel.toggleMeetingLabelFilter(label.id)
+                } label: {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(MeetingLabelTint.color(for: label))
+                            .frame(width: 8, height: 8)
+                        Text(label.name)
+                            .lineLimit(1)
+                            .help(label.name)
+                        Spacer(minLength: 0)
+                        Image(systemName: selected ? "checkmark" : "circle")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(selected ? MeetingLabelTint.color(for: label) : DesignSystem.Colors.textTertiary)
+                    }
+                    .font(DesignSystem.Typography.caption.weight(.medium))
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(label.name)
+                .accessibilityValue(selected ? "Selected" : "Not selected")
             }
-            Text(name)
-                .lineLimit(1)
         }
-        .font(DesignSystem.Typography.caption.weight(.medium))
-        .foregroundStyle(selected ? tint : DesignSystem.Colors.textSecondary)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
-        .background(
-            Capsule().fill(selected ? tint.opacity(0.16) : tint.opacity(0.07))
-        )
-        .overlay(
-            Capsule().strokeBorder(
-                selected ? tint.opacity(0.55) : tint.opacity(0.24),
-                lineWidth: selected ? 1 : 0.6
-            )
-        )
     }
-    .buttonStyle(.plain)
-    .accessibilityValue(selected ? "Selected" : "Not selected")
 }
 
 struct MeetingClassificationEditor: View {
     let transcription: Transcription
     @Bindable var viewModel: MeetingClassificationViewModel
+    let onDismiss: () -> Void
     @State private var newLabelName = ""
+    @State private var optionsContentHeight: CGFloat = 1
+    @FocusState private var searchFocused: Bool
 
     private var classification: MeetingClassification {
         viewModel.classification(for: transcription.id)
@@ -230,119 +251,107 @@ struct MeetingClassificationEditor: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            Text("Labels")
+                .font(DesignSystem.Typography.bodySmall.weight(.semibold))
+
+            searchField
+
             ScrollView {
-                VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
-                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-                        Text("Labels")
-                            .font(DesignSystem.Typography.bodySmall.weight(.semibold))
-
-                        HStack(spacing: 6) {
-                            if !classification.labels.isEmpty {
-                                ScrollView(.horizontal) {
-                                    HStack(spacing: 5) {
-                                        ForEach(Array(classification.labels.enumerated()), id: \.element.id) {
-                                            index, label in
-                                            selectedLabelToken(label, index: index)
-                                        }
-                                    }
-                                }
-                                .scrollIndicators(.hidden)
-                                .frame(maxWidth: .infinity)
+                VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                    if !classification.labels.isEmpty {
+                        FlowLayout(spacing: 5) {
+                            ForEach(classification.labels) { label in
+                                selectedLabelToken(label)
                             }
-
-                            TextField("Search or create a label", text: $newLabelName)
-                                .textFieldStyle(.plain)
-                                .frame(minWidth: 125, idealWidth: 155)
-                                .onSubmit(createLabel)
-                                .help("Choose an existing suggestion or press Return to create a label")
                         }
-                        .padding(.horizontal, 8)
-                        .frame(height: 34)
-                        .background(
-                            RoundedRectangle(cornerRadius: 7)
-                                .fill(DesignSystem.Colors.surfaceElevated)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7)
-                                .strokeBorder(DesignSystem.Colors.border, lineWidth: 0.6)
-                        )
-
-                        if !trimmedLabelQuery.isEmpty {
-                            VStack(alignment: .leading, spacing: 2) {
-                                ForEach(suggestedLabels) { label in
-                                    Button {
-                                        assignSuggestedLabel(label)
-                                    } label: {
-                                        HStack(spacing: 7) {
-                                            Image(
-                                                systemName: classification.labels.contains(where: { $0.id == label.id })
-                                                    ? "checkmark"
-                                                    : "tag"
-                                            )
-                                            .font(.system(size: 9, weight: .semibold))
-                                            .frame(width: 10)
-                                            Text(label.name)
-                                                .lineLimit(1)
-                                            Spacer(minLength: 0)
-                                        }
-                                        .foregroundStyle(DesignSystem.Colors.textPrimary)
-                                        .padding(.horizontal, 7)
-                                        .padding(.vertical, 5)
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-
-                                if exactLabelMatch == nil {
-                                    Button(action: createLabel) {
-                                        Label("Create “\(trimmedLabelQuery)”", systemImage: "plus")
-                                            .lineLimit(1)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .padding(.horizontal, 7)
-                                            .padding(.vertical, 5)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(DesignSystem.Colors.accent)
-                                }
-                            }
-                            .padding(5)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(DesignSystem.Colors.surfaceElevated)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .strokeBorder(DesignSystem.Colors.border, lineWidth: 0.5)
-                            )
-                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
-                    if viewModel.updatingTranscriptionIDs.contains(transcription.id) {
-                        HStack(spacing: 7) {
-                            ParakeetSpinner(.inline)
-                            Text("Saving classification…")
-                                .font(DesignSystem.Typography.caption)
-                                .foregroundStyle(DesignSystem.Colors.textTertiary)
-                        }
+                    if (!classification.labels.isEmpty && !suggestedLabels.isEmpty) || canCreateLabel {
+                        Divider()
                     }
 
-                    if let errorMessage = viewModel.errorMessage {
-                        Text(errorMessage)
+                    if canCreateLabel {
+                        Button(action: createLabel) {
+                            Label("Create “\(trimmedLabelQuery)”", systemImage: "plus")
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 5)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(DesignSystem.Colors.accent)
+                    }
+
+                    if suggestedLabels.isEmpty {
+                        Text(trimmedLabelQuery.isEmpty ? "No labels yet. Type a name to create one." : "No matching labels")
                             .font(DesignSystem.Typography.caption)
-                            .foregroundStyle(DesignSystem.Colors.errorRed)
+                            .foregroundStyle(DesignSystem.Colors.textTertiary)
+                            .padding(.vertical, DesignSystem.Spacing.xs)
+                    } else {
+                        ForEach(suggestedLabels) { label in
+                            availableLabelRow(label)
+                        }
                     }
-
-                    Spacer(minLength: 0)
                 }
-                .padding(DesignSystem.Spacing.lg)
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: LabelPopoverContentHeightKey.self,
+                            value: proxy.size.height
+                        )
+                    }
+                }
+            }
+            .frame(height: min(optionsContentHeight, 260))
+
+            if viewModel.updatingTranscriptionIDs.contains(transcription.id) {
+                HStack(spacing: 7) {
+                    ParakeetSpinner(.inline)
+                    Text("Saving classification…")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.textTertiary)
+                }
+            }
+
+            if let errorMessage = viewModel.errorMessage {
+                Text(errorMessage)
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.errorRed)
             }
         }
+        .padding(DesignSystem.Spacing.md)
         .background(DesignSystem.Colors.contentBackground)
         .onAppear {
             viewModel.loadOptions()
             viewModel.loadClassification(for: transcription.id)
+            Task { @MainActor in searchFocused = true }
         }
+        .onPreferenceChange(LabelPopoverContentHeightKey.self) { optionsContentHeight = $0 }
+        .onExitCommand(perform: onDismiss)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(DesignSystem.Colors.textTertiary)
+            TextField("Search or create a label", text: $newLabelName)
+                .textFieldStyle(.plain)
+                .focused($searchFocused)
+                .onSubmit(createLabel)
+                .help("Choose an existing label or press Return to create a label")
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 32)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(DesignSystem.Colors.surfaceElevated)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(DesignSystem.Colors.border, lineWidth: 0.6)
+        )
     }
 
     private var displayedLabels: [MeetingLabel] {
@@ -356,10 +365,9 @@ struct MeetingClassificationEditor: View {
     }
 
     private var suggestedLabels: [MeetingLabel] {
-        Array(
-            displayedLabels.filter {
-                $0.name.localizedCaseInsensitiveContains(trimmedLabelQuery)
-            }.prefix(4))
+        displayedLabels.filter {
+            trimmedLabelQuery.isEmpty || $0.name.localizedCaseInsensitiveContains(trimmedLabelQuery)
+        }
     }
 
     private var exactLabelMatch: MeetingLabel? {
@@ -368,14 +376,21 @@ struct MeetingClassificationEditor: View {
         }
     }
 
-    private func selectedLabelToken(_ label: MeetingLabel, index: Int) -> some View {
-        let tint = MeetingClassificationTint.color(for: label.colorToken, fallback: index + 1)
+    private var canCreateLabel: Bool {
+        !trimmedLabelQuery.isEmpty && exactLabelMatch == nil
+    }
+
+    private func selectedLabelToken(_ label: MeetingLabel) -> some View {
+        let tint = MeetingLabelTint.color(for: label)
         return Button {
             viewModel.toggleLabel(label.id, for: transcription.id)
         } label: {
             HStack(spacing: 5) {
                 Text(label.name)
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 180)
+                    .help(label.name)
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
             }
@@ -390,7 +405,37 @@ struct MeetingClassificationEditor: View {
         .accessibilityLabel(label.name)
         .accessibilityValue("Assigned")
         .accessibilityHint("Removes this label")
-        .fixedSize()
+    }
+
+    private func availableLabelRow(_ label: MeetingLabel) -> some View {
+        let isAssigned = classification.labels.contains(where: { $0.id == label.id })
+        let tint = MeetingLabelTint.color(for: label)
+        return Button {
+            assignSuggestedLabel(label)
+        } label: {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(tint)
+                    .frame(width: 8, height: 8)
+                Text(label.name)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(label.name)
+                Spacer(minLength: 0)
+                Image(systemName: isAssigned ? "checkmark" : "plus")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(isAssigned ? tint : DesignSystem.Colors.textTertiary)
+            }
+            .font(DesignSystem.Typography.caption.weight(.medium))
+            .foregroundStyle(DesignSystem.Colors.textPrimary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label.name)
+        .accessibilityValue(isAssigned ? "Assigned" : "Available")
+        .accessibilityHint(isAssigned ? "Already assigned" : "Adds this label")
     }
 
     private func createLabel() {
@@ -408,6 +453,14 @@ struct MeetingClassificationEditor: View {
             viewModel.toggleLabel(label.id, for: transcription.id)
         }
         newLabelName = ""
+    }
+}
+
+private struct LabelPopoverContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 1
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
@@ -444,7 +497,7 @@ struct MeetingTypesManagementCard: View {
                         HStack(spacing: DesignSystem.Spacing.sm) {
                             Circle()
                                 .fill(
-                                    MeetingClassificationTint.color(
+                                    MeetingTypeTint.color(
                                         for: meetingType.colorToken,
                                         fallback: index
                                     )
@@ -662,9 +715,10 @@ private struct MeetingClassificationPopoverModifier: ViewModifier {
             if let viewModel {
                 MeetingClassificationEditor(
                     transcription: transcription,
-                    viewModel: viewModel
+                    viewModel: viewModel,
+                    onDismiss: { item.wrappedValue = nil }
                 )
-                .frame(width: 340, height: 210)
+                .frame(width: 340)
             }
         }
     }
@@ -857,7 +911,62 @@ struct MeetingPromptPolicyEditor: View {
     }
 }
 
-enum MeetingClassificationTint {
+enum MeetingLabelTint {
+    enum ColorKey: Equatable {
+        case coral
+        case green
+        case amber
+        case red
+        case purple
+        case blue
+        case automatic(Int)
+    }
+
+    static func color(for label: MeetingLabel) -> Color {
+        color(for: colorKey(for: label))
+    }
+
+    static func colorKey(for label: MeetingLabel) -> ColorKey {
+        explicitColorKey(for: label.colorToken) ?? .automatic(automaticPaletteSlot(for: label.id))
+    }
+
+    static func automaticPaletteSlot(for id: UUID) -> Int {
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        withUnsafeBytes(of: id.uuid) { bytes in
+            for byte in bytes {
+                hash ^= UInt64(byte)
+                hash &*= 1_099_511_628_211
+            }
+        }
+        return Int(hash % UInt64(DesignSystem.Colors.speakerColors.count))
+    }
+
+    private static func explicitColorKey(for token: String?) -> ColorKey? {
+        switch token?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "coral", "orange": return .coral
+        case "green": return .green
+        case "amber", "yellow": return .amber
+        case "red": return .red
+        case "purple": return .purple
+        case "blue": return .blue
+        default: return nil
+        }
+    }
+
+    private static func color(for key: ColorKey) -> Color {
+        switch key {
+        case .coral: return DesignSystem.Colors.accent
+        case .green: return DesignSystem.Colors.successGreen
+        case .amber: return DesignSystem.Colors.warningAmber
+        case .red: return DesignSystem.Colors.errorRed
+        case .purple: return DesignSystem.Colors.podcastPurple
+        case .blue: return DesignSystem.Colors.speakerColor(for: 0)
+        case .automatic(let slot): return DesignSystem.Colors.speakerColor(for: slot)
+        }
+    }
+}
+
+enum MeetingTypeTint {
     static func color(for token: String?, fallback: Int) -> Color {
         switch token?.lowercased() {
         case "coral", "orange": return DesignSystem.Colors.accent
