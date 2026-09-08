@@ -175,15 +175,19 @@ LABEL="$1"; shift
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 CLI="${CLI:-$ROOT/.build/release/macparakeet-cli}"
+shopt -s nullglob
+CLIPS=("$HERE"/clips/*.m4a)
+[ ${#CLIPS[@]} -gt 0 ] || { echo "no clips in $HERE/clips — run make_clips.sh first" >&2; exit 1; }
 [ -x "$CLI" ] || (cd "$ROOT" && swift build -c release --product macparakeet-cli)
 HYP="$HERE/results/$LABEL"; mkdir -p "$HYP"
 START=$(date +%s)
-for clip in "$HERE"/clips/*.m4a; do
+# Flags after "$@" are last-wins in the CLI parser: passing --mode or --format again overrides the pinned values below.
+for clip in "${CLIPS[@]}"; do
   base="$(basename "${clip%.m4a}")"
-  "$CLI" transcribe "$clip" --format text --mode raw --no-history --speaker-detection off "$@" > "$HYP/$base.txt"
+  "$CLI" transcribe "$clip" --format transcript --mode raw --no-history --speaker-detection off "$@" > "$HYP/$base.txt"
 done
 END=$(date +%s)
-echo "wall=$((END-START))s for $(ls "$HERE"/clips/*.m4a | wc -l | tr -d ' ') clips"
+echo "wall=$((END-START))s for ${#CLIPS[@]} clips"
 python3 "$HERE/build_records.py" "$LABEL" "$HYP" "$HERE/results/$LABEL.jsonl"
 "$ROOT/benchmarks/asr/venv/bin/python" "$ROOT/benchmarks/asr/score.py" --ci 1000 "$HERE/results/$LABEL.jsonl"
 ```
@@ -203,10 +207,11 @@ results/
 ```markdown
 # Echelon accuracy fixture (private audio, scripts only in git)
 
+0. One-time: `python3 -m venv ../asr/venv && ../asr/venv/bin/pip install -r ../asr/requirements.txt` (run from this folder).
 1. Pick 1–2 recent class videos. `./make_clips.sh "/path/Class.mp4" marc` cuts five 2-minute
    clips into `clips/`.
 2. Produce a first-draft reference for each clip:
-   `../../.build/release/macparakeet-cli transcribe clips/marc-00.m4a --format text --mode raw --no-history > refs/marc-00.txt`
+   `../../.build/release/macparakeet-cli transcribe clips/marc-00.m4a --format transcript --mode raw --no-history > refs/marc-00.txt`
    then a human corrects every word by ear. **The reference must be what was actually said**,
    including "three, two, one" as words (the scorer's normaliser folds digits and words).
 3. `./run.sh <label> <engine flags>` transcribes every clip and prints WER with a 95% CI.
@@ -798,11 +803,11 @@ Echo → Vocabulary → Import → `benchmarks/echelon/vocabulary.txt`. Settings
 - [ ] **Step 3: Measure the effect**
 
 ```bash
-benchmarks/echelon/run.sh parakeet-unified-vocab --engine parakeet --parakeet-model unified --mode clean
+benchmarks/echelon/run.sh parakeet-unified-vocab --engine parakeet --parakeet-model unified
 benchmarks/asr/venv/bin/python benchmarks/asr/score.py benchmarks/echelon/results/parakeet-unified.jsonl benchmarks/echelon/results/parakeet-unified-vocab.jsonl
 ```
 
-(`--mode clean` is used deliberately here — this run measures the vocabulary corrections.) Record in the README.
+(Stays on run.sh's pinned `--mode raw`: upstream's CTC vocabulary boosting acts inside the recogniser, so it is visible raw; post-transcription word replacements are deliberately NOT measured here.) Record in the README.
 
 ```bash
 git add benchmarks/echelon/vocabulary.txt benchmarks/echelon/README.md
