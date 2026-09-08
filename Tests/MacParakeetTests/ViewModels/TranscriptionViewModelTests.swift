@@ -2031,6 +2031,7 @@ final class TranscriptionViewModelTests: XCTestCase {
         var current = captured
         current.fileName = "Renamed after opening notes"
         current.isFavorite = true
+        current.meetingTypeId = UUID()
         current.updatedAt = Date.distantFuture
         mockRepo.transcriptions = [current]
         mockRepo.userNotesReadBackError = NSError(domain: "repo-read", code: 1)
@@ -2043,6 +2044,7 @@ final class TranscriptionViewModelTests: XCTestCase {
         for row in [try XCTUnwrap(viewModel.currentTranscription), try XCTUnwrap(viewModel.transcriptions.first)] {
             XCTAssertEqual(row.fileName, current.fileName)
             XCTAssertTrue(row.isFavorite)
+            XCTAssertEqual(row.meetingTypeId, current.meetingTypeId)
             XCTAssertEqual(row.updatedAt, .distantFuture)
             XCTAssertEqual(row.userNotes, "Committed notes")
         }
@@ -3403,8 +3405,10 @@ final class TranscriptionViewModelTests: XCTestCase {
         viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
         viewModel.retranscribe(original)
         await fulfillment(of: [started], timeout: 2)
+        let typeID = UUID()
         var edited = original
         edited.userNotes = "Notes saved during STT"
+        edited.meetingTypeId = typeID
         edited.fileName = "Renamed during STT"
         edited.isFavorite = true
         try mockRepo.save(edited)
@@ -3414,6 +3418,7 @@ final class TranscriptionViewModelTests: XCTestCase {
         let published = try XCTUnwrap(viewModel.currentTranscription)
         for snapshot in [persisted, published] {
             XCTAssertEqual(snapshot.userNotes, edited.userNotes)
+            XCTAssertEqual(snapshot.meetingTypeId, typeID)
             XCTAssertEqual(snapshot.fileName, edited.fileName)
             XCTAssertTrue(snapshot.isFavorite)
             XCTAssertEqual(snapshot.rawTranscript, "New transcript")
@@ -4627,6 +4632,56 @@ final class TranscriptionViewModelTests: XCTestCase {
             [0:02] Others: Thanks.
             """
         )
+    }
+
+    func testMeetingAutoRunReceivesPersistedMeetingTypeForPolicyResolution() {
+        let meetingTypeID = UUID()
+        let prompt = Prompt(
+            name: "Typed auto-note",
+            content: "Summarize this meeting.",
+            category: .result,
+            isVisible: true,
+            isAutoRun: false
+        )
+        let promptRepo = MockPromptRepository()
+        promptRepo.prompts = [prompt]
+        let policies = MockPromptMeetingPolicyRepository()
+        policies.policiesByPromptID[prompt.id] = [
+            .allMeetings(promptId: prompt.id, isAvailable: false, isAutoRun: false),
+            .meetingType(
+                promptId: prompt.id,
+                meetingTypeId: meetingTypeID,
+                isAvailable: true,
+                isAutoRun: true
+            ),
+        ]
+        let llm = MockLLMService()
+        llm.streamDelayNs = 1_000_000_000
+        let promptResultsVM = PromptResultsViewModel()
+        promptResultsVM.configure(
+            llmService: llm,
+            promptRepo: promptRepo,
+            promptResultRepo: mockPromptResultRepo,
+            promptMeetingPolicyRepository: policies
+        )
+        viewModel.configure(
+            transcriptionService: mockService,
+            transcriptionRepo: mockRepo,
+            llmService: llm,
+            promptResultRepo: mockPromptResultRepo,
+            promptResultsViewModel: promptResultsVM
+        )
+        let transcription = Transcription(
+            fileName: "typed-meeting.m4a",
+            rawTranscript: "A completed typed meeting.",
+            status: .completed,
+            sourceType: .meeting,
+            meetingTypeId: meetingTypeID
+        )
+
+        viewModel.presentCompletedTranscription(transcription, autoSave: false)
+
+        XCTAssertEqual(promptResultsVM.pendingGenerations.map(\.promptName), [prompt.name])
     }
 
     func testAutoRunPromptsUsePlainTranscriptContextWhenConfigured() {

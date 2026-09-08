@@ -53,18 +53,22 @@ final class TranscriptionRepositoryTests: XCTestCase {
     }
 
     func testCompletionMergePreservesClearedMetadataAndReturnsCommittedRow() throws {
+        let type = MeetingType(name: "Customer")
+        try MeetingTypeRepository(dbQueue: dbQueue).save(type)
         var original = Transcription(
             fileName: "Meeting", status: .completed, isFavorite: true,
-            sourceType: .meeting, userNotes: "Old notes"
+            sourceType: .meeting, meetingTypeId: type.id, userNotes: "Old notes"
         )
         try repo.save(original)
         try repo.updateUserNotes(id: original.id, userNotes: nil)
+        try repo.updateMeetingType(id: original.id, meetingTypeId: nil)
         try repo.updateFavorite(id: original.id, isFavorite: false)
         original.rawTranscript = "Replacement transcript"
         let saved = try repo.savePreservingUserMetadata(original, originalFileName: original.fileName)
         let persisted = try XCTUnwrap(repo.fetch(id: original.id))
         for snapshot in [saved, persisted] {
             XCTAssertNil(snapshot.userNotes)
+            XCTAssertNil(snapshot.meetingTypeId)
             XCTAssertFalse(snapshot.isFavorite)
             XCTAssertEqual(snapshot.rawTranscript, "Replacement transcript")
         }

@@ -26,7 +26,13 @@ processes own their connections.
   - `CardRepository.swift` — derived per-recording knowledge cards, provenance staleness, deterministic joins, and card FTS sync.
   - `CustomWordRepository.swift` — vocabulary entries.
   - `TextSnippetRepository.swift` — snippets (text + action).
-  - `PromptRepository.swift` — prompt-library entries.
+  - `PromptRepository.swift` — prompt metadata resolved with its active version.
+  - `PromptEditingService.swift` — transactional version saves, restore and deletion.
+  - `PromptCollectionRepository.swift` — optional prompt organization.
+  - `PromptLabelPolicyRepository.swift` — active label availability and fallback policies.
+  - `MeetingLabelRepository.swift` / `TranscriptionMeetingLabelRepository.swift` — reusable labels across sources.
+  - `MeetingTypeRepository.swift` / `PromptMeetingPolicyRepository.swift` — retained legacy classification compatibility.
+  - `PromptVersionRepository.swift` — immutable prompt request versions.
   - `PromptResultRepository.swift` — saved prompt outputs.
   - `QuickPromptRepository.swift` — quick-prompt entries (Ask tab).
   - `ChatConversationRepository.swift` — multi-turn chat history.
@@ -77,7 +83,7 @@ Publish state and refresh artifacts from that returned row; do not synthesize
 success from a stale snapshot or make a second fetch part of write success.
 
 Transcription completion uses `savePreservingUserMetadata` and publishes the
-returned row. The repository merges current notes, favorite,
+returned row. The repository merges current notes, meeting type, favorite,
 title override, legacy chat, artifact-folder and audio pointers, and concurrent meeting
 renames inside the same write transaction. Explicit clears remain clears and `updatedAt` never moves behind the current row.
 Pass the processing snapshot's original file name so an automatic title may

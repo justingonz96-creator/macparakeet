@@ -11,6 +11,10 @@ public enum TranscriptionCompletionError: Error, Equatable, LocalizedError {
 
 public protocol TranscriptionRepositoryProtocol: Sendable {
     func save(_ transcription: Transcription) throws
+    /// Persists a meeting transcription completed from a potentially stale
+    /// pre-STT snapshot while retaining classification changed during the
+    /// long-running transcription work.
+    func savePreservingMeetingClassification(_ transcription: Transcription) throws
     /// Merge current user-owned metadata and return the row from the same write transaction.
     func savePreservingUserMetadata(_ transcription: Transcription, originalFileName: String) throws -> Transcription
     func fetch(id: UUID) throws -> Transcription?
@@ -28,6 +32,7 @@ public protocol TranscriptionRepositoryProtocol: Sendable {
     @discardableResult
     func updateFileName(id: UUID, fileName: String) throws -> Transcription?
     func updateTitleOverride(id: UUID, titleOverride: String?) throws
+    func updateMeetingType(id: UUID, meetingTypeId: UUID?) throws
     func updateChatMessages(id: UUID, chatMessages: [ChatMessage]?) throws
     func updateSpeakers(id: UUID, speakers: [SpeakerInfo]?) throws
     @discardableResult
@@ -42,6 +47,10 @@ public protocol TranscriptionRepositoryProtocol: Sendable {
 }
 
 extension TranscriptionRepositoryProtocol {
+    public func savePreservingMeetingClassification(_ transcription: Transcription) throws {
+        try save(transcription)
+    }
+
     public func fetchByFilePath(
         _ filePath: String,
         sourceType: Transcription.SourceType? = nil
@@ -85,6 +94,22 @@ extension TranscriptionRepositoryProtocol {
         if query.favoritesOnly {
             results = results.filter(\.isFavorite)
         }
+        if !query.meetingTypeIDs.isEmpty {
+            results = results.filter { transcription in
+                transcription.meetingTypeId.map(query.meetingTypeIDs.contains) ?? false
+            }
+        }
+        if query.unclassifiedMeetingsOnly {
+            results = results.filter {
+                $0.sourceType == .meeting && $0.meetingTypeId == nil
+            }
+        }
+        // Generic protocol fallbacks do not have access to the label join
+        // table. Concrete SQL repositories implement this filter. Returning no
+        // rows is safer than silently ignoring an explicitly requested label.
+        if !query.meetingLabelIDs.isEmpty {
+            results = []
+        }
         if let searchText = query.searchText?.trimmingCharacters(in: .whitespacesAndNewlines),
             !searchText.isEmpty
         {
@@ -126,6 +151,7 @@ extension TranscriptionRepositoryProtocol {
     @discardableResult
     public func updateFileName(id: UUID, fileName: String) throws -> Transcription? { nil }
     public func updateTitleOverride(id: UUID, titleOverride: String?) throws {}
+    public func updateMeetingType(id: UUID, meetingTypeId: UUID?) throws {}
     public func updateChatMessages(id: UUID, chatMessages: [ChatMessage]?) throws {}
     public func updateSpeakers(id: UUID, speakers: [SpeakerInfo]?) throws {}
     @discardableResult
@@ -177,6 +203,10 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
         try dbQueue.write { db in
             try transcription.save(db)
         }
+    }
+
+    public func savePreservingMeetingClassification(_ transcription: Transcription) throws {
+        _ = try savePreservingUserMetadata(transcription, originalFileName: transcription.fileName)
     }
 
     public func savePreservingUserMetadata(
@@ -236,6 +266,27 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
             }
             if query.favoritesOnly {
                 whereClauses.append("isFavorite = 1")
+            }
+            if !query.meetingTypeIDs.isEmpty {
+                let placeholders = Array(repeating: "?", count: query.meetingTypeIDs.count)
+                    .joined(separator: ", ")
+                whereClauses.append("meetingTypeId IN (\(placeholders))")
+                arguments.append(contentsOf: query.meetingTypeIDs.map { $0 as any DatabaseValueConvertible })
+            }
+            if query.unclassifiedMeetingsOnly {
+                whereClauses.append("sourceType = ?")
+                arguments.append(Transcription.SourceType.meeting.rawValue)
+                whereClauses.append("meetingTypeId IS NULL")
+            }
+            if !query.meetingLabelIDs.isEmpty {
+                let placeholders = Array(repeating: "?", count: query.meetingLabelIDs.count)
+                    .joined(separator: ", ")
+                whereClauses.append(
+                    "EXISTS (SELECT 1 FROM transcription_meeting_labels tml "
+                        + "WHERE tml.transcriptionId = transcriptions.id "
+                        + "AND tml.labelId IN (\(placeholders)))"
+                )
+                arguments.append(contentsOf: query.meetingLabelIDs.map { $0 as any DatabaseValueConvertible })
             }
             if let searchText = query.searchText?.trimmingCharacters(in: .whitespacesAndNewlines),
                 !searchText.isEmpty
@@ -557,6 +608,18 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
         }
     }
 
+    public func updateMeetingType(id: UUID, meetingTypeId: UUID?) throws {
+        try dbQueue.write { db in
+            guard var transcription = try Transcription.fetchOne(db, key: id),
+                transcription.sourceType == .meeting
+            else { return }
+            guard transcription.meetingTypeId != meetingTypeId else { return }
+            transcription.meetingTypeId = meetingTypeId
+            transcription.updatedAt = Date()
+            try transcription.update(db)
+        }
+    }
+
     public func updateChatMessages(id: UUID, chatMessages: [ChatMessage]?) throws {
         try dbQueue.write { db in
             guard var transcription = try Transcription.fetchOne(db, key: id) else { return }
@@ -732,6 +795,7 @@ private extension Transcription {
         var merged = self
         merged.updatedAt = max(updatedAt, current.updatedAt)
         merged.userNotes = current.userNotes
+        merged.meetingTypeId = current.meetingTypeId
         merged.isFavorite = current.isFavorite
         merged.titleOverride = current.titleOverride
         merged.chatMessages = current.chatMessages

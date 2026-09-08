@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import MacParakeetCore
 @testable import MacParakeetViewModels
 
@@ -14,10 +15,207 @@ final class PromptsViewModelTests: XCTestCase {
         viewModel.configure(repo: repo)
     }
 
+    func testTransformManagerMutationsInvalidateBindingsAfterPersistence() throws {
+        let manager = try DatabaseManager()
+        let prompts = PromptRepository(dbQueue: manager.dbQueue)
+        let versions = PromptVersionRepository(dbQueue: manager.dbQueue)
+        let subject = PromptsViewModel()
+        subject.configure(
+            repo: prompts,
+            versionRepo: versions,
+            editingService: PromptEditingService(dbQueue: manager.dbQueue)
+        )
+        var snapshots: [[String]] = []
+        subject.onTransformsChanged = {
+            snapshots.append(
+                (try? prompts.fetchVisible(category: .transform)
+                    .filter { $0.name == "Binding regression" }.map(\.content)) ?? []
+            )
+        }
+        subject.newName = "Binding regression"
+        subject.newContent = "Original instructions"
+        subject.newPromptCategory = .transform
+        subject.addPrompt()
+        var prompt = try XCTUnwrap(try prompts.fetchAll().first { $0.name == "Binding regression" })
+        let original = try XCTUnwrap(try versions.fetchActive(promptId: prompt.id))
+        subject.beginEditing(prompt)
+        subject.updatePrompt(prompt, name: prompt.name, content: "Edited instructions")
+        prompt = try XCTUnwrap(try prompts.fetch(id: prompt.id))
+        subject.beginEditing(prompt)
+        prompt = try XCTUnwrap(subject.restoreVersion(original))
+        subject.cancelEditing()
+        subject.toggleVisibility(prompt)
+        subject.toggleVisibility(try XCTUnwrap(try prompts.fetch(id: prompt.id)))
+        subject.deletePrompt(prompt)
+        subject.restoreDeletedPrompt(prompt)
+
+        XCTAssertEqual(snapshots, [
+            ["Original instructions"], ["Edited instructions"], ["Original instructions"],
+            [], ["Original instructions"], [], ["Original instructions"],
+        ])
+    }
+
+    func testFailedTransformEditDoesNotInvalidateBindings() throws {
+        var changes = 0
+        viewModel.onTransformsChanged = { changes += 1 }
+        let transform = try XCTUnwrap(viewModel.managedPrompts.first { $0.category == .transform })
+        viewModel.beginEditing(transform)
+        viewModel.updatePrompt(transform, name: "", content: "Invalid save")
+        XCTAssertEqual(changes, 0)
+        XCTAssertNotNil(viewModel.errorMessage)
+    }
+
     func testLoadPromptsFiltersOutTransformCategory() {
         XCTAssertEqual(viewModel.prompts.count, 6)
         XCTAssertTrue(viewModel.prompts.allSatisfy { $0.category == .result })
         XCTAssertFalse(viewModel.prompts.contains(where: { $0.name == "Polish" }))
+        XCTAssertTrue(viewModel.managedPrompts.contains(where: { $0.name == "Polish" }))
+    }
+
+    func testCreatingPromptPersistsSelectedLabelTargets() throws {
+        let manager = try DatabaseManager()
+        let promptRepository = PromptRepository(dbQueue: manager.dbQueue)
+        let labelRepository = MeetingLabelRepository(dbQueue: manager.dbQueue)
+        let policyRepository = PromptLabelPolicyRepository(dbQueue: manager.dbQueue)
+        let customer = MeetingLabel(name: "Customer")
+        try labelRepository.save(customer)
+        let subject = PromptsViewModel()
+        subject.configure(
+            repo: promptRepository,
+            editingService: PromptEditingService(dbQueue: manager.dbQueue),
+            labelRepository: labelRepository,
+            labelPolicyRepository: policyRepository
+        )
+        subject.newName = "Customer follow-up"
+        subject.newContent = "Draft the next steps."
+        subject.newTargetLabelIDs = [customer.id]
+
+        subject.addPrompt()
+
+        let created = try XCTUnwrap(
+            promptRepository.fetchAll().first { $0.name == "Customer follow-up" }
+        )
+        XCTAssertEqual(subject.labelIDsByPromptID[created.id], [customer.id])
+        XCTAssertEqual(
+            Set(try policyRepository.fetchPolicies(promptId: created.id).compactMap {
+                $0.scopeKind == .label && $0.isAvailable ? $0.labelId : nil
+            }),
+            [customer.id]
+        )
+    }
+
+    func testCustomDenyAllRulesCanBeExplicitlyResetToAll() throws {
+        let manager = try DatabaseManager()
+        let prompts = PromptRepository(dbQueue: manager.dbQueue)
+        let policies = PromptLabelPolicyRepository(dbQueue: manager.dbQueue)
+        let prompt = Prompt(name: "Restricted", content: "Keep these instructions")
+        try prompts.save(prompt)
+        try policies.setAvailability(promptId: prompt.id, labelId: nil, isAvailable: false)
+        let subject = PromptsViewModel()
+        subject.configure(
+            repo: prompts,
+            editingService: PromptEditingService(dbQueue: manager.dbQueue),
+            labelPolicyRepository: policies
+        )
+        subject.beginEditing(prompt)
+        XCTAssertTrue(subject.hasCustomTargetingRules(for: prompt))
+        XCTAssertTrue(subject.editingHasCustomTargetingRules)
+        XCTAssertTrue(subject.editingTargetLabelIDs.isEmpty)
+        XCTAssertFalse(subject.hasEditingChanges(prompt: prompt, name: prompt.name, content: prompt.content))
+
+        subject.setEditingTargetLabels([])
+        XCTAssertFalse(subject.editingHasCustomTargetingRules)
+        XCTAssertTrue(subject.hasEditingChanges(prompt: prompt, name: prompt.name, content: prompt.content))
+        // Reset is a draft change, not an immediate write.
+        XCTAssertFalse(try policies.fetchPolicies(promptId: prompt.id).isEmpty)
+        subject.updatePrompt(prompt, name: prompt.name, content: prompt.content)
+
+        XCTAssertNil(subject.errorMessage)
+        XCTAssertTrue(try policies.fetchPolicies(promptId: prompt.id).isEmpty)
+        XCTAssertFalse(subject.hasCustomTargetingRules(for: prompt))
+        XCTAssertTrue(PromptLabelApplicabilityResolver.resolve(
+            prompt: prompt, sourceType: .meeting, transcriptionLabelIDs: [],
+            policies: try policies.fetchPolicies(promptId: prompt.id)
+        ).isAvailable)
+    }
+
+    func testStandardLabelSelectionDoesNotDisplayAsCustomRules() throws {
+        let manager = try DatabaseManager()
+        let prompts = PromptRepository(dbQueue: manager.dbQueue)
+        let labels = MeetingLabelRepository(dbQueue: manager.dbQueue)
+        let policies = PromptLabelPolicyRepository(dbQueue: manager.dbQueue)
+        let label = MeetingLabel(name: "Selected")
+        try labels.save(label)
+        let prompt = Prompt(name: "Standard", content: "Instructions")
+        try prompts.save(prompt)
+        try policies.replaceTargetLabels(promptId: prompt.id, labelIds: [label.id])
+        let subject = PromptsViewModel()
+        subject.configure(repo: prompts, labelRepository: labels, labelPolicyRepository: policies)
+        subject.beginEditing(prompt)
+        XCTAssertFalse(subject.editingHasCustomTargetingRules)
+        XCTAssertEqual(subject.editingTargetLabelIDs, [label.id])
+    }
+
+    func testUnrelatedEditsPreserveMigratedPolicyShapes() throws {
+        for shape in 0..<3 {
+            let manager = try DatabaseManager()
+            let prompts = PromptRepository(dbQueue: manager.dbQueue)
+            let labels = MeetingLabelRepository(dbQueue: manager.dbQueue)
+            let policies = PromptLabelPolicyRepository(dbQueue: manager.dbQueue)
+            let label = MeetingLabel(name: "Restricted")
+            try labels.save(label)
+            let prompt = Prompt(name: "Policy shape \(shape)", content: "Original")
+            try prompts.save(prompt)
+            if shape != 2 {
+                try policies.setAvailability(promptId: prompt.id, labelId: nil, isAvailable: shape == 1)
+            }
+            if shape != 0 {
+                // Seed the migrated shape exactly, including no fallback.
+                try manager.dbQueue.write { db in
+                    try PromptLabelPolicy(
+                        promptId: prompt.id, scopeKind: .label, labelId: label.id, isAvailable: shape == 2
+                    ).insert(db)
+                }
+            }
+            let originalPolicies = try policies.fetchPolicies(promptId: prompt.id)
+            let subject = PromptsViewModel()
+            subject.configure(
+                repo: prompts,
+                editingService: PromptEditingService(dbQueue: manager.dbQueue),
+                labelRepository: labels,
+                labelPolicyRepository: policies
+            )
+            subject.beginEditing(prompt)
+            XCTAssertTrue(subject.editingHasCustomTargetingRules)
+            subject.updatePrompt(prompt, name: "Renamed", content: "Revised content")
+            XCTAssertNil(subject.errorMessage)
+            XCTAssertEqual(try policies.fetchPolicies(promptId: prompt.id), originalPolicies)
+            // Non-editor callers must preserve the policy too.
+            let revised = try XCTUnwrap(prompts.fetch(id: prompt.id))
+            subject.updatePrompt(revised, name: "Renamed again", content: "Another revision")
+            XCTAssertEqual(try policies.fetchPolicies(promptId: prompt.id), originalPolicies)
+            let saved = try XCTUnwrap(prompts.fetch(id: prompt.id))
+            for labelIDs in [Set<UUID>(), Set([label.id])] {
+                XCTAssertEqual(
+                    PromptLabelApplicabilityResolver.resolve(
+                        prompt: saved, sourceType: .meeting, transcriptionLabelIDs: labelIDs,
+                        policies: try policies.fetchPolicies(promptId: prompt.id)
+                    ).isAvailable,
+                    PromptLabelApplicabilityResolver.resolve(
+                        prompt: prompt, sourceType: .meeting, transcriptionLabelIDs: labelIDs,
+                        policies: originalPolicies
+                    ).isAvailable
+                )
+            }
+            // An explicit targeting edit still installs the simple picker rules.
+            subject.beginEditing(saved)
+            subject.editingTargetLabelIDs = [label.id]
+            subject.updatePrompt(saved, name: saved.name, content: saved.content)
+            XCTAssertNil(subject.errorMessage)
+            let changed = try policies.fetchPolicies(promptId: prompt.id)
+            XCTAssertTrue(changed.contains { $0.scopeKind == .all && !$0.isAvailable })
+            XCTAssertTrue(changed.contains { $0.labelId == label.id && $0.isAvailable })
+        }
     }
 
     func testUpdatingOtherPromptWithInvalidLegacySettingsPreservesEditorErrors() throws {
@@ -76,6 +274,7 @@ final class PromptsViewModelTests: XCTestCase {
             thinkingMode: .enabled,
             reasoningEffort: .medium
         )
+        viewModel.newModelOverride = "  local-model-v2  "
 
         viewModel.addPrompt()
 
@@ -92,6 +291,8 @@ final class PromptsViewModelTests: XCTestCase {
             )
         )
         XCTAssertTrue(viewModel.newInferenceSettings.isDefault)
+        XCTAssertEqual(prompt.modelOverride, "local-model-v2")
+        XCTAssertEqual(viewModel.newModelOverride, "")
         XCTAssertTrue(viewModel.newInferenceValidationErrors.isEmpty)
     }
 
@@ -237,6 +438,7 @@ final class PromptsViewModelTests: XCTestCase {
         viewModel.editingInferenceSettings.topK = ""
         viewModel.editingInferenceSettings.thinkingMode = .enabled
         viewModel.editingInferenceSettings.reasoningEffort = .xhigh
+        viewModel.editingModelOverride = "  qwen-next  "
         viewModel.updatePrompt(custom, name: "New", content: "New content")
 
         let updated = try XCTUnwrap(viewModel.prompts.first { $0.id == custom.id })
@@ -244,6 +446,7 @@ final class PromptsViewModelTests: XCTestCase {
         XCTAssertNil(updated.inferenceSettings?.topK)
         XCTAssertEqual(updated.inferenceSettings?.thinkingMode, .enabled)
         XCTAssertEqual(updated.inferenceSettings?.reasoningEffort, .xhigh)
+        XCTAssertEqual(updated.modelOverride, "qwen-next")
     }
 
     func testEditPromptLoadsAndPersistsMeetingNotesPreference() throws {
@@ -325,16 +528,212 @@ final class PromptsViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.newInferenceSettings, .init())
     }
 
-    func testBuiltInPromptCannotBeEditedThroughViewModel() {
+    func testBuiltInPromptCanBeEditedThroughViewModel() throws {
         let builtIn = viewModel.prompts[0]
 
         viewModel.beginEditing(builtIn)
+        viewModel.editingInferenceSettings.temperature = "0.3"
         viewModel.updatePrompt(builtIn, name: "Changed", content: "Changed")
 
         XCTAssertNil(viewModel.editingPrompt)
-        XCTAssertEqual(repo.prompts.first { $0.id == builtIn.id }?.name, builtIn.name)
-        XCTAssertNil(repo.prompts.first { $0.id == builtIn.id }?.inferenceSettings)
+        let updated = try XCTUnwrap(repo.prompts.first { $0.id == builtIn.id })
+        XCTAssertEqual(updated.name, "Changed")
+        XCTAssertEqual(updated.content, "Changed")
+        XCTAssertEqual(updated.inferenceSettings?.temperature, 0.3)
+        XCTAssertTrue(updated.isBuiltIn)
+    }
+
+    func testBuiltInPromptCanBeDeletedThroughViewModel() {
+        let builtIn = viewModel.prompts[0]
+
+        viewModel.deletePrompt(builtIn)
+
+        XCTAssertFalse(repo.prompts.contains { $0.id == builtIn.id })
+        XCTAssertFalse(viewModel.prompts.contains { $0.id == builtIn.id })
     }
 
 
+    func testBeginEditingLoadsNewestVersions() {
+        let prompt = viewModel.prompts[0]
+        let versionRepo = MockPromptVersionRepository()
+        versionRepo.versions = [
+            PromptVersion(promptId: prompt.id, versionNumber: 1, content: "Old"),
+            PromptVersion(promptId: prompt.id, versionNumber: 2, content: "Current"),
+        ]
+        viewModel.configure(repo: repo, versionRepo: versionRepo)
+
+        viewModel.beginEditing(prompt)
+
+        XCTAssertEqual(viewModel.promptVersions.map(\.versionNumber), [2, 1])
+    }
+
+    func testCreateAndEditPromptPersistCollectionMembership() throws {
+        let collection = PromptCollection(name: "Meetings")
+        let collectionRepo = MockPromptCollectionRepository(collections: [collection])
+        viewModel.configure(repo: repo, collectionRepo: collectionRepo)
+        viewModel.newName = "Customer recap"
+        viewModel.newContent = "Summarize the meeting."
+        viewModel.newCollectionID = collection.id
+
+        viewModel.addPrompt()
+
+        var prompt = try XCTUnwrap(viewModel.prompts.first { $0.name == "Customer recap" })
+        XCTAssertEqual(prompt.collectionId, collection.id)
+        XCTAssertEqual(viewModel.collections, [collection])
+
+        viewModel.beginEditing(prompt)
+        viewModel.editingCollectionID = nil
+        viewModel.updatePrompt(prompt, name: prompt.name, content: prompt.content)
+        prompt = try XCTUnwrap(viewModel.prompts.first { $0.id == prompt.id })
+        XCTAssertNil(prompt.collectionId)
+    }
+
+    func testEditingCollectionMembershipCountsAsDirty() {
+        let prompt = viewModel.prompts[0]
+        viewModel.beginEditing(prompt)
+        viewModel.editingCollectionID = UUID()
+
+        XCTAssertTrue(
+            viewModel.hasEditingChanges(
+                prompt: prompt,
+                name: prompt.name,
+                content: prompt.content
+            )
+        )
+    }
+
+    func testModelOverrideAloneCountsAsCustomGenerationSettings() {
+        XCTAssertTrue(
+            PromptsViewModel.hasCustomGenerationSettings(
+                draft: .init(),
+                modelOverride: "qwen-next"
+            )
+        )
+        XCTAssertFalse(
+            PromptsViewModel.hasCustomGenerationSettings(
+                draft: .init(),
+                modelOverride: "  "
+            )
+        )
+    }
+
+    func testCollectionCRUDAndReorder() throws {
+        let first = PromptCollection(name: "First", sortOrder: 0)
+        let second = PromptCollection(name: "Second", sortOrder: 1)
+        let collectionRepo = MockPromptCollectionRepository(collections: [first, second])
+        viewModel.configure(repo: repo, collectionRepo: collectionRepo)
+
+        viewModel.newCollectionName = "Third"
+        viewModel.createCollection()
+        let third = try XCTUnwrap(viewModel.collections.first { $0.name == "Third" })
+        viewModel.renameCollection(third, name: "Renamed")
+        let renamed = try XCTUnwrap(viewModel.collections.first { $0.id == third.id })
+        XCTAssertEqual(renamed.name, "Renamed")
+
+        viewModel.moveCollection(renamed, by: -1)
+        XCTAssertEqual(viewModel.collections.map(\.id), [first.id, renamed.id, second.id])
+
+        viewModel.deleteCollection(renamed)
+        XCTAssertFalse(viewModel.collections.contains { $0.id == renamed.id })
+    }
+
+    func testTrashRestoresBuiltInAndCustomPrompts() {
+        let editingService = MockPromptEditingService(repo: repo)
+        viewModel.configure(repo: repo, editingService: editingService)
+        let builtIn = viewModel.prompts[0]
+        let custom = Prompt(name: "Custom", content: "Content")
+        repo.prompts.append(custom)
+        viewModel.loadPrompts()
+
+        viewModel.deletePrompt(builtIn)
+        viewModel.deletePrompt(custom)
+        XCTAssertEqual(Set(viewModel.deletedPrompts.map(\.id)), Set([builtIn.id, custom.id]))
+
+        viewModel.restoreDeletedPrompt(builtIn)
+        viewModel.restoreDeletedPrompt(custom)
+        XCTAssertTrue(viewModel.deletedPrompts.isEmpty)
+        XCTAssertTrue(viewModel.managedPrompts.contains { $0.id == builtIn.id })
+        XCTAssertTrue(viewModel.managedPrompts.contains { $0.id == custom.id })
+    }
+
+}
+
+private final class MockPromptVersionRepository: PromptVersionRepositoryProtocol, @unchecked Sendable {
+    var versions: [PromptVersion] = []
+
+    func fetch(id: UUID) throws -> PromptVersion? {
+        versions.first { $0.id == id }
+    }
+
+    func fetchAll(promptId: UUID) throws -> [PromptVersion] {
+        versions
+            .filter { $0.promptId == promptId }
+            .sorted { $0.versionNumber > $1.versionNumber }
+    }
+
+    func fetchActive(promptId: UUID) throws -> PromptVersion? {
+        try fetchAll(promptId: promptId).first
+    }
+}
+
+private final class MockPromptCollectionRepository: PromptCollectionRepositoryProtocol, @unchecked Sendable {
+    var collections: [PromptCollection]
+
+    init(collections: [PromptCollection]) {
+        self.collections = collections
+    }
+
+    func save(_ collection: PromptCollection) throws {
+        collections.removeAll { $0.id == collection.id }
+        collections.append(collection)
+    }
+
+    func fetch(id: UUID) throws -> PromptCollection? {
+        collections.first { $0.id == id }
+    }
+
+    func fetchAll() throws -> [PromptCollection] {
+        collections.sorted { $0.sortOrder < $1.sortOrder }
+    }
+
+    func reorder(ids: [UUID]) throws {
+        for (index, id) in ids.enumerated() {
+            guard let collectionIndex = collections.firstIndex(where: { $0.id == id }) else { continue }
+            collections[collectionIndex].sortOrder = index
+        }
+    }
+
+    func delete(id: UUID) throws -> Bool {
+        let oldCount = collections.count
+        collections.removeAll { $0.id == id }
+        return collections.count != oldCount
+    }
+}
+
+private final class MockPromptEditingService: PromptEditingServiceProtocol, @unchecked Sendable {
+    let repo: MockPromptRepository
+
+    init(repo: MockPromptRepository) {
+        self.repo = repo
+    }
+
+    func save(_ prompt: Prompt, targetLabelIDs: Set<UUID>?) throws -> Prompt {
+        try repo.save(prompt)
+        return prompt
+    }
+
+    func restore(promptId: UUID, versionId: UUID, changeNote: String?) throws -> Prompt {
+        guard let prompt = repo.prompts.first(where: { $0.id == promptId }) else {
+            throw PromptEditingError.promptNotFound
+        }
+        return prompt
+    }
+
+    func restoreDeleted(id: UUID) throws -> Bool {
+        guard let index = repo.deletedPrompts.firstIndex(where: { $0.id == id }) else { return false }
+        var prompt = repo.deletedPrompts.remove(at: index)
+        prompt.deletedAt = nil
+        repo.prompts.append(prompt)
+        return true
+    }
 }

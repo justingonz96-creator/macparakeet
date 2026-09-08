@@ -91,6 +91,26 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ### Added
 
+- Immutable prompt history, version-aware `prompts show`, source/settings diff,
+  restore-as-new-version, recoverable deletion, and optional prompt collections.
+  Built-in and custom prompts share the same mutation rights. Prompt JSON adds
+  active-version metadata and model override; saved results retain optional
+  prompt/version identity and provider/model receipts.
+- Meeting classification commands expose labels and legacy meeting types.
+  Labels control prompt availability across transcription sources; legacy types
+  remain compatibility metadata. See `spec/contracts/cli-json-v1.md`.
+
+### Changed
+
+- Prompt availability can be updated with `prompts set --label LABEL` or
+  `--all-labels`, plus `--available`/`--unavailable`. Writes now affect the same
+  label rules used by execution and preserve existing exceptions. JSON returns
+  the saved label policy. Source auto-run remains a separate setting.
+- The obsolete fork-only `--meeting-type`/`--all-meeting-types` policy flags
+  fail with migration guidance instead of successfully writing inactive rules.
+
+### Added
+
 - Speaker-aware export and meeting JSON include additive
   `speakerCorrectionsApplied` and `speakerCorrectionRevision` metadata.
 - Exports, meeting artifacts and CLI prompt input use effective speaker corrections.
@@ -799,8 +819,8 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
     [--json]` — headless install of a new Transform.
     Shortcut format: `opt+1`, `cmd+shift+P`, etc. Refuses bare-key
     bindings (must include a modifier).
-  - `transforms delete <id|name> [--json]` — deletes a custom
-    Transform. Built-ins are protected.
+  - `transforms delete <id|name> [--json]` — soft-deletes a custom or
+    built-in Transform through the same recoverable prompt lifecycle.
   - `transforms list/show/create --json` use a snake-cased `TransformDTO`
     payload (`id`, `name`, `shortcut`, `is_built_in`,
     `prompt`, `created_at`, `updated_at`). `transforms run --json`

@@ -149,7 +149,8 @@ public struct MeetingMarkdownRenderer: Sendable {
         promptResults: [PromptResult],
         artifactPaths: MeetingMarkdownArtifactPaths = .init(),
         speakerCorrectionsApplied: Bool = false,
-        speakerCorrectionRevision: Int = 0
+        speakerCorrectionRevision: Int = 0,
+        classification: MeetingArtifactClassificationSnapshot? = nil
     ) -> String {
         let transcript = renderedTranscript(transcription)
         var sections = [
@@ -159,7 +160,8 @@ public struct MeetingMarkdownRenderer: Sendable {
                 speakerLabelsIncluded: transcript.speakerLabelsIncluded,
                 promptResultCount: promptResults.count,
                 speakerCorrectionsApplied: speakerCorrectionsApplied,
-                speakerCorrectionRevision: speakerCorrectionRevision
+                speakerCorrectionRevision: speakerCorrectionRevision,
+                classification: classification
             )
         ]
         sections.append(contentsOf: meetingContentSections(
@@ -198,7 +200,8 @@ public struct MeetingMarkdownRenderer: Sendable {
         speakerLabelsIncluded: Bool,
         promptResultCount: Int,
         speakerCorrectionsApplied: Bool,
-        speakerCorrectionRevision: Int
+        speakerCorrectionRevision: Int,
+        classification: MeetingArtifactClassificationSnapshot?
     ) -> String {
         var lines: [String] = ["---"]
         lines.append("schema: \(Self.schema)")
@@ -214,6 +217,7 @@ public struct MeetingMarkdownRenderer: Sendable {
         lines.append("sourceType: \(yamlString(transcription.sourceType.rawValue))")
         appendOptional("engine", transcription.engine, to: &lines)
         appendOptional("engineVariant", transcription.engineVariant, to: &lines)
+        appendClassification(classification, to: &lines)
         appendOptional("artifactFolderPath", artifactPaths.artifactFolderPath, to: &lines)
         appendOptional("manifestPath", artifactPaths.manifestPath, to: &lines)
         appendOptional("markdownPath", artifactPaths.markdownPath, to: &lines)
@@ -230,6 +234,40 @@ public struct MeetingMarkdownRenderer: Sendable {
         lines.append("promptResultCount: \(promptResultCount)")
         lines.append("---")
         return lines.joined(separator: "\n")
+    }
+
+    private func appendClassification(
+        _ classification: MeetingArtifactClassificationSnapshot?,
+        to lines: inout [String]
+    ) {
+        guard let classification else { return }
+        if let meetingType = classification.meetingType {
+            lines.append("meetingType:")
+            lines.append("  id: \(yamlString(meetingType.id.uuidString))")
+            lines.append("  name: \(yamlString(meetingType.name))")
+            if let colorToken = normalizedNonEmptyText(meetingType.colorToken) {
+                lines.append("  colorToken: \(yamlString(colorToken))")
+            }
+            if let iconName = normalizedNonEmptyText(meetingType.iconName) {
+                lines.append("  iconName: \(yamlString(iconName))")
+            }
+            if meetingType.isArchived {
+                lines.append("  archived: true")
+            }
+        }
+        if !classification.labels.isEmpty {
+            lines.append("meetingLabels:")
+            for label in classification.labels {
+                lines.append("  - id: \(yamlString(label.id.uuidString))")
+                lines.append("    name: \(yamlString(label.name))")
+                if let colorToken = normalizedNonEmptyText(label.colorToken) {
+                    lines.append("    colorToken: \(yamlString(colorToken))")
+                }
+                if label.isArchived {
+                    lines.append("    archived: true")
+                }
+            }
+        }
     }
 
     private func renderedTranscript(_ transcription: Transcription) -> (text: String, speakerLabelsIncluded: Bool) {

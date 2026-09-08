@@ -10,6 +10,48 @@ Version prefixes below identify database migrations, not product releases. `Data
 
 **Design Principle (YAGNI):** Only add tables when a version needs them. Don't create empty tables for future features.
 
+## Versioned prompts and meeting classification (2026-09-05)
+
+> Label unification amendment: user-defined classification is label-only and
+> applies to every transcription source. Existing custom meeting types are
+> copied to labels by `v0.37-general-transcription-labels`; their legacy rows
+> and `meetingTypeId` values remain temporarily for downgrade compatibility.
+
+The versioned Prompt Manager extends the relational model with:
+
+- `prompt_versions`: immutable, monotonically numbered versions containing
+  Markdown content, optional typed inference settings, optional model override,
+  origin, note, and creation time. `prompts.activeVersionId` selects the active
+  row. The repository resolves this join for callers.
+- `prompt_collections`: optional user-facing organization for prompts. The
+  existing `Prompt.Category` remains the technical result/Transform kind.
+- soft deletion and canonical provenance on `prompts`; built-in provenance does
+  not confer different CRUD rights.
+- `meeting_labels` plus `transcription_meeting_labels`: reusable labels for
+  every transcription source, with a unique transcription/label pair. The
+  historical table names are retained for migration compatibility.
+- `prompt_label_policies`: label-specific or all-transcriptions prompt
+  availability. Matching labels use OR semantics; auto-run remains sourced
+  from prompt metadata and is gated by availability.
+- `meeting_types` and `prompt_meeting_policies`: legacy compatibility state,
+  migrated to labels by v0.37/v0.38 and no longer used by the primary UI or
+  runtime prompt resolver.
+
+The v0.38 policy backfill copies prompt and label foreign keys in their
+existing SQLite representation. Legacy TEXT identifiers remain TEXT; UUID
+identifiers already stored as BLOBs retain their bytes. The migration does
+not rewrite parent identifiers or re-encode their references.
+
+Prompt name and operational metadata stay on `prompts` and are not versioned.
+The historical `prompts.content` and `prompts.inferenceSettings` columns are
+copied into V1 during migration and dropped by
+`v0.36-drop-legacy-prompt-values`; only the active version owns those values. `summaries.promptContent` and
+`summaries.inferenceSettingsSnapshot` remain durable execution snapshots.
+
+Classification names are local user data and are not telemetry dimensions.
+SQLite is the mutable source of truth; meeting artifact JSON and Markdown are
+materialized projections refreshed after classification changes.
+
 ## Relationship Diagram (selected domains)
 
 ```
@@ -437,11 +479,14 @@ CREATE INDEX idx_chat_conversations_transcription_id ON chat_conversations(trans
 
 ### `prompts` (v0.7)
 
-Reusable prompt templates for LLM-powered transcript processing. Community
-prompts are seeded during migration; custom prompts support full CRUD.
-Community prompt instruction text remains read-only and rows cannot be deleted,
-but user-owned configuration such as visibility, auto-run scope, and the
-meeting-notes context preference can be changed.
+Reusable prompt templates for LLM-powered transcript processing. Built-in and
+custom prompts share full editing, immutable versioning, recoverable
+soft-deletion rights. Result prompts also have configurable meeting-notes context.
+
+The SQL below is the pre-versioning shape. Current migrations remove `content`
+and `inferenceSettings` from `prompts` after seeding V1, and add `activeVersionId`,
+`collectionId`, deletion metadata and canonical provenance. `prompt_versions`
+solely owns the versioned fields described above.
 
 ```sql
 CREATE TABLE prompts (
@@ -449,7 +494,7 @@ CREATE TABLE prompts (
     name      TEXT NOT NULL,                              -- Display name ("Summary", "Action Items & Decisions")
     content   TEXT NOT NULL,                              -- The actual instruction text
     category  TEXT NOT NULL DEFAULT 'summary',            -- .summary (extensible to .transform)
-    isBuiltIn INTEGER NOT NULL DEFAULT 0,                 -- Community prompt — hide only, no edit/delete
+    isBuiltIn INTEGER NOT NULL DEFAULT 0,                 -- Built-in provenance, same mutation rights
     isVisible INTEGER NOT NULL DEFAULT 1,                 -- false = hidden from picker
     isAutoRun INTEGER NOT NULL DEFAULT 0,                 -- true = auto-generate for new transcriptions
     sortOrder INTEGER NOT NULL DEFAULT 0,                 -- Display ordering
@@ -467,7 +512,7 @@ CREATE UNIQUE INDEX idx_prompts_name ON prompts(name COLLATE NOCASE);
 
 **Notes:**
 - `name` has a case-insensitive unique index — no duplicate names across community and custom prompts.
-- `isBuiltIn` prompts are seeded from `Prompt.builtInPrompts()` during migration. The repository layer enforces the hide-only invariant (delete returns `false` for built-in prompts).
+- `isBuiltIn` prompts are seeded from `Prompt.builtInPrompts()` during migration. Built-ins use the same editable, recoverable soft-deletion lifecycle as custom prompts.
 - `isAutoRun` is independent of `isVisible`, but repository/UI behavior forces auto-run prompts visible while auto-run is enabled.
 - `category` currently stores the raw value `"summary"` for compatibility, while the Swift enum case is `Prompt.Category.result`.
 - Built-ins currently come from `Prompt.builtInPrompts()` in Swift. "Summary" is the lone auto-run built-in for users who have not disabled every auto-run prompt. ("Memo-Steered Notes" was a second auto-run built-in introduced in ADR-020 and reverted on 2026-05-02 — see ADR-020 amendment.)
@@ -477,15 +522,12 @@ CREATE UNIQUE INDEX idx_prompts_name ON prompts(name COLLATE NOCASE);
   `PromptInferenceSettings` value (`temperature`, `topP`, `topK`, `maxTokens`,
   `thinkingMode`, and optional `reasoningEffort`). The effort values are
   `low`, `medium`, `high`, and `xhigh`; normalization clears the field unless
-  `thinkingMode` is `enabled`. It applies only to custom result prompts. `NULL`
+  `thinkingMode` is `enabled`. The original v0.31 contract applied only to custom result prompts; current versioned settings apply to all result and Transform prompts. `NULL`
   and an all-default object are normalized to the same meaning: inherit the
   prompt-result operation's current MacParakeet and adapter defaults. They do
-  not mean "force the upstream provider to omit every parameter." Built-in and
-  Transform prompts keep this column `NULL` in the initial contract.
+  not mean "force the upstream provider to omit every parameter." The original column is migrated into `prompt_versions.inferenceSettings` and dropped by v0.36.
   JSON decoding and repository writes independently reject invalid numeric
-  values with the settings validation error. Repository writes also reject
-  nondefault settings on Transform prompts rather than persisting unused
-  configuration.
+  values with the settings validation error. Current Transform execution also uses its active version settings.
 - `includeMeetingNotes` is a result-prompt-only Boolean, defaulting to false
   for migrated, built-in and new prompts. When enabled, non-empty meeting notes
   are appended as context unless explicitly placed with `{{userNotes}}`.
@@ -496,7 +538,7 @@ CREATE UNIQUE INDEX idx_prompts_name ON prompts(name COLLATE NOCASE);
 
 ### `summaries` (v0.7, Swift model: `PromptResult`)
 
-Stores generated prompt results per transcription. Each transcript can have multiple results from different prompts. Results snapshot the prompt content and meeting notes used at generation time for reproducibility.
+Stores generated prompt results per transcription. Each transcript can have multiple results from different prompts. Results snapshot the prompt content and meeting notes used at generation time as request provenance. Optional `promptId` and `promptVersionId` link their origin; `providerSnapshot` and `modelSnapshot` record execution context. Those references may be absent for legacy results, and the durable text/settings receipts remain self-contained. This is not a guarantee of identical future AI output.
 
 ```sql
 CREATE TABLE summaries (

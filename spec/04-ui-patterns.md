@@ -71,8 +71,9 @@ The sidebar uses NavigationSplitView with flat items (icon + label):
 - **Library** (`square.grid.2x2`) -- All transcriptions; every filter offers the same persistent Grid/List switch
 - **Dictations** (`clock.arrow.circlepath`) -- Flat history list with bottom bar player
 - **Meetings** (`person.2.wave.2`) -- Workflow space for upcoming, live, and saved meeting work; visible when `AppFeatures.meetingRecordingEnabled` is true
-- **Vocabulary** (`book.fill`) -- Processing mode, pipeline guide, custom words & snippets management
+- **Prompts** (`text.quote`) -- First-class prompt manager for versioned result prompts and Transforms
 - **Transforms** (`sparkles`) -- Saved selected-text rewrites backed by `.transform` prompt rows; visible when `AppFeatures.transformsEnabled` is true
+- **Vocabulary** (`book.fill`) -- Processing mode, pipeline guide, custom words & snippets management
 - **Feedback** (`bubble.left.and.text.bubble.right`) -- Bug reports, feature requests, community link
 - **Settings** (`gearshape`) -- Dictation prefs, meeting recording prefs, storage, permissions
 
@@ -182,6 +183,38 @@ meeting is recording. That in-place refresh must not navigate, activate a
 window, or replace an unrelated open detail page. Recorder-idle queued
 completion may still present the finished meeting, matching the existing
 queued-completion behavior.
+
+### Transcription Labels Popover
+
+Label editing uses a compact popover anchored to the action that opened it from
+Library, the Meetings workspace, or any saved-transcription detail. Labels are
+shared by meetings, podcasts, videos, and local files. The popover floats above
+the current context without masking or resizing it and is never presented as a
+blocking sheet. It does not repeat the transcription title or add its own
+heading; clicking outside or pressing Escape dismisses it.
+
+The source tabs — Meetings, Podcasts, Video, and Local — are the transcription
+types. The product does not add a second, user-defined "meeting type" taxonomy.
+Legacy custom meeting types are migrated to labels without removing the legacy
+database value, preserving downgrade compatibility.
+
+Result prompts expose an **Available for** label cloud in the Prompt Manager.
+**All transcriptions** is the default. Selecting one or more colored labels
+makes the prompt available when any selected label is present, across meetings,
+podcasts, videos, and local files. The same availability gate applies before
+automatic generation; the prompt's existing per-source Auto-Run setting remains
+the source of truth for whether matching content runs automatically.
+
+Library's label filter opens a compact popover with an integrated search field.
+Its options use colored, wrapping chips instead of vertical menu rows, allowing
+multi-selection at a glance in every source tab.
+
+Labels use the same search-or-create semantics with live suggestions from
+existing labels. Assigned labels render as removable
+tokens on the same row as the input; the token area scrolls horizontally so the
+control stays one line tall. Pressing Return reuses an exact match or
+creates and immediately assigns a new value; there is no separate **Add**
+button.
 
 ### Saved Meeting Notes
 
@@ -1177,6 +1210,36 @@ Centered at the bottom of the settings form:
 Button to re-run onboarding flow: "Run Onboarding Again..."
 
 ---
+
+## Prompts
+
+The sidebar **Prompts** destination and generation-popover management action
+share `PromptLibraryView`. A single searchable list has prompt-kind and optional
+collection filters. **New prompt** opens creation in a sheet; **Manage
+collections** opens collection creation, renaming, reordering and deletion in a
+separate sheet. Built-in provenance is shown on rows, without separate built-in
+and custom sections or an always-visible creation form. No search matches is a
+filter empty state, not a claim that the user has no custom prompts.
+
+The editor retains Markdown source/preview, notes-context opt-in, collection
+assignment, model override, and collapsed generation settings. **Version history**
+retains version metadata, text/settings comparisons, and restore-as-new-version.
+Restoring requires explicit confirmation; cancelling ordinary edits does not
+silently discard or restore a version. Deleted prompts remain recoverable.
+
+Availability and automatic generation are separate controls. **All transcriptions**
+is the common default; selected labels permit any matching transcription,
+independent of its source. Source-aware auto-run only runs an available prompt.
+Explain both settings together in ordinary language so the user can understand
+why a prompt is offered and when it runs. Existing detailed CLI policy exceptions
+must survive edits that do not change availability. Rules that the simple picker
+cannot represent are shown as **Custom availability rules**; choosing All
+transcriptions or a label explicitly replaces those rules on Save. The prompt,
+its version and edited availability commit atomically. Visibility and source auto-run
+remain in the manager; Transform shortcuts remain in the Transforms editor.
+Collection ordering remains in Manage collections. Prompt ordering and running-label
+metadata are preserved by edits; this layout does not add prompt duplication,
+prompt-reordering controls, or a running-label editor.
 
 ## Discover (v0.4)
 

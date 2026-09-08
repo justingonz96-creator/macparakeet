@@ -5,14 +5,19 @@
 > from [PR #956](https://github.com/moona3k/macparakeet/pull/956).
 > Default semantics and the conditional reasoning-effort extension are recorded in
 > [`plans/active/2026-09-03-per-prompt-inference-settings.md`](../plans/active/2026-09-03-per-prompt-inference-settings.md).
+>
+> **2026-09-05 amendment:** Settings now apply uniformly to built-in and custom
+> result/Transform prompts and are owned by the active immutable prompt version,
+> alongside prompt content and an optional model override. The provider remains
+> global. Historical result snapshots remain unchanged.
 
 Target: MacParakeet
 
-Scope: Prompt Library result prompts (`Prompt.Category.result`)
+Scope: Prompt Library result and Transform prompts
 
 ## Outcome
 
-A custom Prompt Library prompt can carry its own generation settings. Manual,
+A Prompt Library prompt can carry its own generation settings. Manual,
 queued, auto-run, retry, and regenerate flows use the settings captured for
 that run. Existing prompts retain their request-parameter defaults.
 
@@ -71,15 +76,13 @@ unset; blank is not converted into zero. Native Anthropic additionally requires
 effective temperature in `0...1`; the compatibility message explains this
 constraint and generation fails before dispatch when it is violated.
 
-Built-in prompts remain read-only and keep all settings unset in the first
-release. A later product decision may add shipped settings without changing
-the storage contract.
+Built-in provenance does not restrict these controls. Built-in and user-created
+prompts use the same validation, version creation, reset, and execution paths.
+Clearing every override means inherit MacParakeet defaults.
 
-Settings are configured in the result-prompt GUI only. The CLI preserves and
+Settings are configured in the prompt editor. The CLI preserves and
 displays saved settings and applies them through `prompts run`; `prompts add`
-and `prompts set` have no inference-setting flags. Transform configuration and
-execution are outside this feature; repository writes reject nondefault
-settings on Transform prompts.
+and `prompts set` have no inference-setting flags. Transform configuration and execution use the same version-owned settings.
 
 ### Generation popover
 
@@ -103,11 +106,12 @@ omitted from the request; they are never reinterpreted as different settings.
 - A newly generated result stores the effective settings that were actually
   sent after provider/model compatibility filtering.
 - Only effective settings are persisted on each result. Requested settings live
-  on the mutable prompt and in the in-memory queue/retry snapshot; unsupported
+  on the immutable prompt version and in the in-memory queue/retry snapshot; unsupported
   fields appear in GUI compatibility text, not per-result or CLI omission
   metadata.
-- Provider/model configuration is resolved when execution begins, not captured
-  at enqueue. Retry/regenerate do not promise identical provider/model replay.
+- The selected model and prompt/version identity are captured at enqueue.
+  The provider is resolved at execution; completed results retain provider/model
+  receipts. Retry/regenerate do not promise identical provider behavior or output.
 
 ## Domain model
 
@@ -147,7 +151,7 @@ stale effort from reaching a request.
 `responseFormat` separate: it is controlled by an operation such as knowledge
 card generation, not by a user prompt.
 
-`Prompt` and the in-memory `PendingGeneration` store:
+`PromptVersion`, the resolved `Prompt`, and in-memory `PendingGeneration` carry:
 
 ```swift
 public var inferenceSettings: PromptInferenceSettings?
@@ -162,6 +166,12 @@ public var inferenceSettingsSnapshot: PromptInferenceSettings?
 Normalize `nil` and an all-default value to `nil` before persistence.
 
 ## Persistence
+
+The v0.31 migration below describes the initial deployment. Current migration
+`v0.32-prompt-versions` copies requested settings into immutable versions;
+`v0.36-drop-legacy-prompt-values` removes the old `prompts` values. Effective
+settings remain on `summaries`, alongside optional prompt/version identity and
+provider/model receipts.
 
 The registered migration follows `v0.30-meeting-capture-report`:
 

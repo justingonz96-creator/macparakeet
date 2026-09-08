@@ -229,7 +229,15 @@ not a guarantee that the invoked tool performs inference locally. The optional
 MLX target supplies a separate in-process runtime. Visibility requires both
 runtime availability and the product/developer gate.
 
-Prompt definitions live in `prompts`; completed `PromptResult` values retain
+`prompts` owns stable identity and operational metadata; immutable
+`prompt_versions` owns content, requested settings and model override.
+`PromptRepository` resolves the active-version join; `PromptEditingService`
+coordinates transactional saves and restores without rewriting history. Optional
+`prompt_collections` organize prompts. `PromptLabelApplicabilityResolver` applies
+transcription-label policies for manual selection and source-aware auto-run;
+legacy meeting-type policies are compatibility data only.
+
+Prompt definitions and versions remain in the same GRDB database; completed `PromptResult` values retain
 the compatibility table name `summaries`. Result prompts snapshot prompt
 content, included notes and effective inference settings so a later edit does
 not rewrite a historical request receipt. Default/unsupported provider settings

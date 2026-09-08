@@ -16,6 +16,7 @@ final class PromptCodableCompatibilityTests: XCTestCase {
         XCTAssertEqual(prompt.name, "Legacy")
         XCTAssertTrue(prompt.isAutoRun)
         XCTAssertNil(prompt.inferenceSettings)
+        XCTAssertNil(prompt.activeVersionId)
     }
 
     func testLegacyResultDefaultsMissingNotesPreferenceToFalse() throws {
@@ -29,6 +30,7 @@ final class PromptCodableCompatibilityTests: XCTestCase {
         let result = try JSONDecoder().decode(PromptResult.self, from: data)
         XCTAssertFalse(result.includeMeetingNotesSnapshot)
         XCTAssertEqual(result.content, "Result")
+        XCTAssertNil(result.promptId)
         XCTAssertNil(result.inferenceSettingsSnapshot)
     }
 
@@ -80,16 +82,20 @@ final class PromptCodableCompatibilityTests: XCTestCase {
             keyboardShortcut: "shortcut", runningLabel: "Reviewing…", appliesToSources: [.meeting],
             inferenceSettings: PromptInferenceSettings(
                 temperature: 0.4, thinkingMode: .enabled, reasoningEffort: .high),
-            includeMeetingNotes: includeNotes)
+            includeMeetingNotes: includeNotes, activeVersionId: UUID(), modelOverride: "model",
+            canonicalKey: "canonical", lastAppliedCanonicalRevision: 3,
+            userCustomizedAt: Date(timeIntervalSinceReferenceDate: 150),
+            deletedAt: Date(timeIntervalSinceReferenceDate: 180), collectionId: UUID())
     }
 
     private func makeResult(includeNotes: Bool = true) -> PromptResult {
         PromptResult(
-            transcriptionId: UUID(),
+            transcriptionId: UUID(), promptId: UUID(), promptVersionId: UUID(),
             promptName: "Review", promptContent: "Summarize {{userNotes}}", extraInstructions: "Be brief",
             content: "Completed result", userNotesSnapshot: "Meeting notes", includeMeetingNotesSnapshot: includeNotes,
             inferenceSettingsSnapshot: PromptInferenceSettings(
                 temperature: 0.4, thinkingMode: .enabled, reasoningEffort: .high),
+            providerSnapshot: "provider", modelSnapshot: "model",
             createdAt: Date(timeIntervalSinceReferenceDate: 100), updatedAt: Date(timeIntervalSinceReferenceDate: 200))
     }
 

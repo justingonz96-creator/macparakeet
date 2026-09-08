@@ -463,8 +463,8 @@ equivalent one-based `transcribe --audio-track N` flag for local files/folders,
 where it applies explicitly to every expanded file; URL and podcast lanes
 reject the flag.
 
-**Metadata during retranscription:** Saving notes, renaming a meeting,
-changing its favorite/title override, and
+**Metadata during retranscription:** Saving notes, changing or clearing the
+meeting type, renaming a meeting, changing its favorite/title override, and
 updating legacy chat while STT is running must survive completion. The final
 transaction preserves the latest user metadata and returns the committed row
 for GUI publication and derived artifacts; it does not restore the metadata
@@ -1643,11 +1643,11 @@ Prompt library and multi-summary system. Users control how AI processes transcri
 
 > Status: **IMPLEMENTED ON CURRENT BRANCH**
 
-**What:** Reusable prompt templates stored in SQLite. Community prompts ship with the app and can be hidden but not edited or deleted. Users can create, edit, and delete custom prompts.
+**What:** Reusable prompt templates stored in SQLite. Built-in and custom prompts share editing, immutable versioning, and recoverable soft deletion.
 
 **Acceptance criteria:**
 - [x] Built-in/community prompts available on first launch from built-in seed
-- [x] Built-in/community prompts can be hidden but not edited or deleted
+- [x] Built-in/community prompts can be edited, versioned, hidden, and soft-deleted like custom prompts
 - [x] Prompt cards can be marked auto-run independently of sort order
 - [x] Zero auto-run prompt cards is a supported configuration
 - [x] Custom prompts can be created, edited, and deleted via management sheet

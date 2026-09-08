@@ -8,6 +8,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     case library = "Library"
     case dictations = "Dictations"
     case meetings = "Meetings"
+    case prompts = "Prompts"
     case transforms = "Transforms"
     case vocabulary = "Vocabulary"
     case feedback = "Feedback"
@@ -22,6 +23,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .meetings: return "person.2.wave.2"
         case .library: return "square.grid.2x2"
         case .dictations: return "clock.arrow.circlepath"
+        case .prompts: return "text.quote"
         case .transforms: return "wand.and.stars"
         case .vocabulary: return "book.fill"
         case .feedback: return "bubble.left.and.text.bubble.right"
@@ -41,12 +43,12 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         return items
     }
 
-    /// Configuration and support items. Transforms (ADR-022) is inserted
-    /// here at runtime when `AppFeatures.transformsEnabled == true`.
+    /// Automation, configuration, and support items. Prompt automation stays
+    /// above Transforms (ADR-022) when the latter feature is enabled.
     static var configItems: [SidebarItem] {
-        var items: [SidebarItem] = [.vocabulary, .feedback, .settings]
+        var items: [SidebarItem] = [.prompts, .vocabulary, .feedback, .settings]
         if AppFeatures.transformsEnabled {
-            items.insert(.transforms, at: 0)
+            items.insert(.transforms, at: 1)
         }
         return items
     }
@@ -124,6 +126,7 @@ struct MainWindowView: View {
                             promptResultsViewModel: promptResultsViewModel,
                             promptsViewModel: promptsViewModel,
                             meetingPillViewModel: meetingPillViewModel,
+                            meetingsWorkspaceViewModel: meetingsWorkspaceViewModel,
                             meetingPermissionState: meetingPermissionState,
                             showingProgressDetail: $state.showingProgressDetail,
                             onRecordMeeting: onRecordMeeting,
@@ -159,6 +162,7 @@ struct MainWindowView: View {
                                 chatViewModel: chatViewModel,
                                 promptResultsViewModel: promptResultsViewModel,
                                 promptsViewModel: promptsViewModel,
+                                meetingClassificationViewModel: libraryViewModel.meetingClassificationViewModel,
                                 onBack: {
                                     transcriptionViewModel.showInputPortal()
                                 },
@@ -191,6 +195,11 @@ struct MainWindowView: View {
                         }
                     case .dictations:
                         DictationHistoryView(viewModel: historyViewModel)
+                    case .prompts:
+                        PromptLibraryView(
+                            viewModel: promptsViewModel,
+                            showsDismissButton: false
+                        )
                     case .transforms:
                         TransformsView(
                             viewModel: transformsViewModel,
@@ -274,7 +283,10 @@ struct MainWindowView: View {
                             onHotkeyRecordingStateChanged: onHotkeyRecordingStateChanged
                         )
                     case .discover:
-                        DiscoverView(viewModel: discoverViewModel, thoughtsService: DiscoverThoughtsService())
+                        DiscoverView(
+                            viewModel: discoverViewModel,
+                            thoughtsService: DiscoverThoughtsService()
+                        )
                     }
                 }
             }

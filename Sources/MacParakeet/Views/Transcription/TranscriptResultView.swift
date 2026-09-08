@@ -422,6 +422,7 @@ struct TranscriptResultView: View {
     var chatViewModel: TranscriptChatViewModel
     @Bindable var promptResultsViewModel: PromptResultsViewModel
     @Bindable var promptsViewModel: PromptsViewModel
+    var meetingClassificationViewModel: MeetingClassificationViewModel? = nil
     var onBack: (() -> Void)?
     var onStartNew: (() -> Void)?
     var onRetranscribe: ((Transcription, SpeechEngineSelection?, RetranscriptionSpeakerSelection?) -> Void)?
@@ -432,6 +433,7 @@ struct TranscriptResultView: View {
 
     @State private var backHovered = false
     @State private var headerExpanded = false
+    @State private var classificationTarget: Transcription?
     @State private var speakerOverviewExpanded = true
     @State private var copied = false
     @State private var copiedResultID: UUID?
@@ -588,6 +590,13 @@ struct TranscriptResultView: View {
                     promptResultsViewModel.markPromptResultViewed(id)
                 }
             }
+            .onChange(of: meetingClassificationViewModel?.classificationRevisions[transcription.id] ?? 0) {
+                _, _ in
+                promptResultsViewModel.loadVisiblePrompts(
+                    sourceType: transcription.sourceType,
+                    meetingTypeId: transcription.meetingTypeId
+                )
+            }
             .onDisappear(perform: handleDisappear)
     }
 
@@ -665,6 +674,10 @@ struct TranscriptResultView: View {
         viewModel.loadPersistedContent()
         promptResultsViewModel.loadVisiblePrompts()
         promptResultsViewModel.loadPromptResults(transcriptionId: transcription.id)
+        if transcription.sourceType == .meeting {
+            meetingClassificationViewModel?.loadOptions()
+            meetingClassificationViewModel?.loadClassification(for: transcription.id)
+        }
         chatViewModel.loadTranscript(transcriptText, transcriptionId: viewModel.currentTranscription?.id)
         scheduleRichAIContextLoad()
         // Re-evaluate typed meeting notes on every send so external CLI edits
@@ -691,6 +704,7 @@ struct TranscriptResultView: View {
             }
         }
         headerExpanded = false
+        classificationTarget = nil
         speakerOverviewExpanded = true
         editingTitle = false
         titleDraft = ""
@@ -729,6 +743,9 @@ struct TranscriptResultView: View {
             applyEmptySegmentCache()
         }
         promptResultsViewModel.loadPromptResults(transcriptionId: transcription.id)
+        if transcription.sourceType == .meeting {
+            meetingClassificationViewModel?.loadClassification(for: transcription.id)
+        }
         chatViewModel.loadTranscript(transcriptText, transcriptionId: viewModel.currentTranscription?.id)
         scheduleRichAIContextLoad()
     }
@@ -1633,6 +1650,28 @@ struct TranscriptResultView: View {
                     }
                     .buttonStyle(.plain)
                     .help(transcription.sourceType == .meeting ? "Rename meeting" : "Rename transcription")
+                }
+
+                if let meetingClassificationViewModel {
+                    MeetingClassificationBadges(
+                        classification: meetingClassificationViewModel.classification(for: transcription.id)
+                    )
+
+                    Button {
+                        classificationTarget = activeTranscription
+                    } label: {
+                        Image(systemName: "tag")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(DesignSystem.Colors.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Edit labels")
+                    .accessibilityLabel("Edit transcription labels")
+                    .meetingClassificationPopover(
+                        item: $classificationTarget,
+                        transcription: activeTranscription,
+                        viewModel: meetingClassificationViewModel
+                    )
                 }
 
                 if transcription.recoveredFromCrash {

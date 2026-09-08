@@ -4,6 +4,11 @@ import GRDB
 public struct PromptResult: Codable, Identifiable, Sendable {
     public var id: UUID
     public var transcriptionId: UUID
+    /// Nullable for historical and externally imported results.
+    public var promptId: UUID?
+    /// Immutable prompt version used to assemble this request. Nullable for
+    /// results created before prompt versioning or without a library prompt.
+    public var promptVersionId: UUID?
     public var promptName: String
     public var promptContent: String
     public var extraInstructions: String?
@@ -20,6 +25,10 @@ public struct PromptResult: Codable, Identifiable, Sendable {
     /// result. Nil means no effective receipt was recorded; regeneration then
     /// inherits the current MacParakeet prompt-result defaults.
     public var inferenceSettingsSnapshot: PromptInferenceSettings?
+    /// Provider and model reported by the successful terminal response.
+    /// These are receipts, not live references to the current LLM settings.
+    public var providerSnapshot: String?
+    public var modelSnapshot: String?
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -29,6 +38,8 @@ public struct PromptResult: Codable, Identifiable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         transcriptionId = try container.decode(UUID.self, forKey: .transcriptionId)
+        promptId = try container.decodeIfPresent(UUID.self, forKey: .promptId)
+        promptVersionId = try container.decodeIfPresent(UUID.self, forKey: .promptVersionId)
         promptName = try container.decode(String.self, forKey: .promptName)
         promptContent = try container.decode(String.self, forKey: .promptContent)
         extraInstructions = try container.decodeIfPresent(String.self, forKey: .extraInstructions)
@@ -39,6 +50,8 @@ public struct PromptResult: Codable, Identifiable, Sendable {
             ? try container.decode(Bool.self, forKey: .includeMeetingNotesSnapshot) : false
         inferenceSettingsSnapshot = try container.decodeIfPresent(
             PromptInferenceSettings.self, forKey: .inferenceSettingsSnapshot)
+        providerSnapshot = try container.decodeIfPresent(String.self, forKey: .providerSnapshot)
+        modelSnapshot = try container.decodeIfPresent(String.self, forKey: .modelSnapshot)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     }
@@ -46,6 +59,8 @@ public struct PromptResult: Codable, Identifiable, Sendable {
     public init(
         id: UUID = UUID(),
         transcriptionId: UUID,
+        promptId: UUID? = nil,
+        promptVersionId: UUID? = nil,
         promptName: String,
         promptContent: String,
         extraInstructions: String? = nil,
@@ -53,11 +68,15 @@ public struct PromptResult: Codable, Identifiable, Sendable {
         userNotesSnapshot: String? = nil,
         includeMeetingNotesSnapshot: Bool = false,
         inferenceSettingsSnapshot: PromptInferenceSettings? = nil,
+        providerSnapshot: String? = nil,
+        modelSnapshot: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
         self.id = id
         self.transcriptionId = transcriptionId
+        self.promptId = promptId
+        self.promptVersionId = promptVersionId
         self.promptName = promptName
         self.promptContent = promptContent
         self.extraInstructions = extraInstructions
@@ -65,6 +84,8 @@ public struct PromptResult: Codable, Identifiable, Sendable {
         self.userNotesSnapshot = userNotesSnapshot
         self.includeMeetingNotesSnapshot = includeMeetingNotesSnapshot
         self.inferenceSettingsSnapshot = inferenceSettingsSnapshot?.normalized
+        self.providerSnapshot = providerSnapshot
+        self.modelSnapshot = modelSnapshot
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -74,7 +95,10 @@ extension PromptResult: FetchableRecord, PersistableRecord {
     public static let databaseTableName = "summaries"
 
     public enum Columns: String, ColumnExpression {
-        case id, transcriptionId, promptName, promptContent, extraInstructions, content
-        case userNotesSnapshot, includeMeetingNotesSnapshot, inferenceSettingsSnapshot, createdAt, updatedAt
+        case id, transcriptionId, promptId, promptVersionId
+        case promptName, promptContent, extraInstructions, content
+        case userNotesSnapshot, includeMeetingNotesSnapshot, inferenceSettingsSnapshot
+        case providerSnapshot, modelSnapshot
+        case createdAt, updatedAt
     }
 }
