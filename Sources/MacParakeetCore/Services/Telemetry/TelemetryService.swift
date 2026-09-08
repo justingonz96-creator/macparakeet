@@ -72,6 +72,24 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
     // Clearing consent invalidates snapshots already removed from the queue,
     // including retries and batches that have not been admitted for dispatch.
     private var queueGeneration: UInt64 = 0
+    private var automaticFlushPending = false
+    private var nextRetryAt: Date?
+    private var consecutiveFailures = 0
+    // Configured before use in deterministic transport tests.
+    var now: @Sendable () -> Date = { Date() }
+    var retryJitter: @Sendable () -> Double = { Double.random(in: 0.8...1.2) }
+
+    private struct BatchResult {
+        var retryEvents: [TelemetryEvent] = []
+        var rejectedIDs: Set<String> = []
+    }
+
+    private enum DeliveryResult {
+        case delivered
+        case discarded
+        case rejected(status: Int)
+        case retry(status: Int, after: TimeInterval?)
+    }
     private var flushTimer: Timer?
     private var lifecycleObserver: NSObjectProtocol?
 
@@ -85,6 +103,7 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
     private let chip: String
     private let surface: String
     private let isEnabled: () -> Bool
+    private let isTransportEligible: () -> Bool
     private let requestTimeoutInterval: TimeInterval
 
     static let maxQueueSize = 200
@@ -124,9 +143,8 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
         requestTimeoutInterval: TimeInterval = 10,
         surface: String = "gui",
         appVersionOverride: String? = nil,
-        isEnabled: @escaping () -> Bool = {
-            UserDefaults.standard.object(forKey: "telemetryEnabled") as? Bool ?? true
-        }
+        isTransportEligible: (() -> Bool)? = nil,
+        isEnabled: (() -> Bool)? = nil
     ) {
         if let baseURL {
             self.baseURL = baseURL
@@ -137,7 +155,11 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
             self.baseURL = URL(string: "https://macparakeet.com/api")!
         }
         self.session = session
-        self.isEnabled = isEnabled
+        self.isEnabled = isEnabled ?? TelemetryPolicy.currentGUIEnabled
+        // Explicit consent injection is used by the CLI and isolated clients;
+        // those callers already select their policy rather than the GUI defaults.
+        self.isTransportEligible = isTransportEligible
+            ?? (isEnabled == nil ? TelemetryPolicy.currentGUITransportEligible : { true })
         self.requestTimeoutInterval = requestTimeoutInterval
         self.sessionId = UUID().uuidString
         self.sessionStartedAt = Date()
@@ -172,21 +194,21 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
         let shouldFlush: Bool
         lock.lock()
         guard generation == queueGeneration,
-            isEnabled() || event.name == .telemetryOptedOut
+            isTransportEligible(), isEnabled() || event.name == .telemetryOptedOut
         else {
             lock.unlock()
             return
         }
         queue.append(telemetryEvent)
         if queue.count > Self.maxQueueSize {
-            queue.removeFirst(queue.count - Self.maxQueueSize)
+            let dropped = queue.count - Self.maxQueueSize
+            queue.removeFirst(dropped)
+            logger.info("telemetry_transport outcome=queue_full dropped_count=\(dropped, privacy: .public)")
         }
         shouldFlush = queue.count >= Self.flushThreshold || Self.immediateEvents.contains(event.name)
         lock.unlock()
 
-        if shouldFlush {
-            Task { await flush() }
-        }
+        if shouldFlush { scheduleAutomaticFlush() }
     }
 
     @discardableResult
@@ -215,18 +237,45 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
     public func clearQueue() {
         lock.lock()
         queueGeneration &+= 1
+        nextRetryAt = nil
+        consecutiveFailures = 0
         queue.removeAll()
         lock.unlock()
     }
 
+    private func scheduleAutomaticFlush() {
+        let scheduled = lock.withLock {
+            guard !automaticFlushPending else { return false }
+            automaticFlushPending = true
+            return true
+        }
+        guard scheduled else { return }
+        Task {
+            await flush()
+            let needsAnotherFlush = lock.withLock {
+                automaticFlushPending = false
+                guard nextRetryAt.map({ now() >= $0 }) ?? true else { return false }
+                return queue.count >= Self.flushThreshold || queue.contains {
+                    Self.immediateEvents.contains(TelemetryEventName(rawValue: $0.event) ?? .appLaunched)
+                }
+            }
+            if needsAnotherFlush { scheduleAutomaticFlush() }
+        }
+    }
+
     private func flushQueuedEvents() async -> Set<String> {
+        let deferred = lock.withLock { () -> Set<String>? in
+            guard let nextRetryAt, now() < nextRetryAt else { return nil }
+            return Set(queue.map(\.eventId))
+        }
+        if let deferred { return deferred }
         let (events, generation) = takeQueuedEvents()
         guard !events.isEmpty else { return [] }
-        let failedEvents = await sendBatches(
+        let result = await sendBatches(
             events, generation: generation, using: session, timeoutInterval: requestTimeoutInterval
         )
-        let retainedFailures = requeueFailedEvents(failedEvents, generation: generation)
-        return Set(retainedFailures.map(\.eventId))
+        let retainedFailures = requeueFailedEvents(result.retryEvents, generation: generation)
+        return Set(retainedFailures.map(\.eventId)).union(result.rejectedIDs)
     }
 
     // MARK: - Internal (for testing)
@@ -245,7 +294,7 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
     private func queueGeneration(ifAllowed event: TelemetryEventName) -> UInt64? {
         lock.lock()
         defer { lock.unlock() }
-        guard isEnabled() || event == .telemetryOptedOut else { return nil }
+        guard isTransportEligible(), isEnabled() || event == .telemetryOptedOut else { return nil }
         return queueGeneration
     }
 
@@ -253,11 +302,13 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
         lock.lock()
         defer { lock.unlock() }
         guard generation == queueGeneration,
-            isEnabled() || event.event == TelemetryEventName.telemetryOptedOut.rawValue
+            isTransportEligible(), isEnabled() || event.event == TelemetryEventName.telemetryOptedOut.rawValue
         else { return false }
         queue.append(event)
         if queue.count > Self.maxQueueSize {
-            queue.removeFirst(queue.count - Self.maxQueueSize)
+            let dropped = queue.count - Self.maxQueueSize
+            queue.removeFirst(dropped)
+            logger.info("telemetry_transport outcome=queue_full dropped_count=\(dropped, privacy: .public)")
         }
         return true
     }
@@ -278,14 +329,17 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
         let retained = eventsAllowedByConsent(events)
         queue.insert(contentsOf: retained, at: 0)
         if queue.count > Self.maxQueueSize {
-            queue.removeLast(queue.count - Self.maxQueueSize)
+            let dropped = queue.count - Self.maxQueueSize
+            queue.removeLast(dropped)
+            logger.info("telemetry_transport outcome=queue_full dropped_count=\(dropped, privacy: .public)")
         }
         return retained
     }
 
     /// Called under `lock`; only the final opt-out event may be sent while disabled.
     private func eventsAllowedByConsent(_ events: [TelemetryEvent]) -> [TelemetryEvent] {
-        isEnabled() ? events : events.filter { $0.event == TelemetryEventName.telemetryOptedOut.rawValue }
+        guard isTransportEligible() else { return [] }
+        return isEnabled() ? events : events.filter { $0.event == TelemetryEventName.telemetryOptedOut.rawValue }
     }
 
     private func eventsAllowedForDispatch(_ events: [TelemetryEvent], generation: UInt64) -> [TelemetryEvent] {
@@ -312,7 +366,7 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
             guard let self else { return }
             let timer = Timer(timeInterval: Self.flushInterval, repeats: true) { [weak self] _ in
                 guard let self else { return }
-                Task { await self.flush() }
+                self.scheduleAutomaticFlush()
             }
             RunLoop.main.add(timer, forMode: .common)
             self.flushTimer = timer
@@ -331,12 +385,17 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
 
     public func flushForTermination() {
         lock.lock()
-        if isEnabled() {
+        if isTransportEligible(), isEnabled() {
             queue.append(makeTelemetryEvent(
                 from: .appQuit(sessionDurationSeconds: Date().timeIntervalSince(sessionStartedAt))
             ))
         }
-        let events = queue
+        let events: [TelemetryEvent]
+        if let nextRetryAt, now() < nextRetryAt {
+            events = queue.filter { $0.event == TelemetryEventName.telemetryOptedOut.rawValue }
+        } else {
+            events = queue
+        }
         let generation = queueGeneration
         queue.removeAll()
         lock.unlock()
@@ -362,11 +421,11 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
         generation: UInt64,
         using session: URLSession,
         timeoutInterval: TimeInterval
-    ) async -> [TelemetryEvent] {
+    ) async -> BatchResult {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         let url = baseURL.appendingPathComponent("telemetry")
-        var failedEvents: [TelemetryEvent] = []
+        var result = BatchResult()
 
         for batchStart in stride(from: 0, to: events.count, by: Self.maxBatchSize) {
             let batchEnd = min(batchStart + Self.maxBatchSize, events.count)
@@ -376,7 +435,7 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
 
             guard let body = try? encoder.encode(payload) else {
                 logger.error("Failed to encode telemetry payload")
-                failedEvents.append(contentsOf: batchEvents)
+                result.rejectedIDs.formUnion(batchEvents.map(\.eventId))
                 continue
             }
 
@@ -387,18 +446,53 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
             request.timeoutInterval = timeoutInterval
 
             beforeRequestAdmission?()
-            let sent = await sendAsync(request, events: batchEvents, generation: generation, using: session)
-            if !sent {
-                failedEvents.append(contentsOf: batchEvents)
+            let delivery = await sendAsync(request, events: batchEvents, generation: generation, using: session)
+            switch delivery {
+            case .discarded:
+                logger.debug("telemetry_transport outcome=consent_discarded batch_count=\(batchEvents.count, privacy: .public)")
+            case .delivered:
+                lock.withLock {
+                    if generation == queueGeneration {
+                        nextRetryAt = nil
+                        consecutiveFailures = 0
+                    }
+                }
+                logger.debug("telemetry_transport outcome=delivered batch_count=\(batchEvents.count, privacy: .public)")
+            case .rejected(let status):
+                result.rejectedIDs.formUnion(batchEvents.map(\.eventId))
+                logger.warning("telemetry_transport outcome=rejected status=\(status, privacy: .public) dropped_count=\(batchEvents.count, privacy: .public)")
+            case .retry(let status, let after):
+                let delay = lock.withLock { () -> TimeInterval in
+                    guard generation == queueGeneration else { return 0 }
+                    consecutiveFailures = min(consecutiveFailures + 1, 10)
+                    let backoff = min(900, 5 * pow(2, Double(consecutiveFailures - 1)) * retryJitter())
+                    let delay = max(backoff, after ?? 0)
+                    nextRetryAt = now().addingTimeInterval(delay)
+                    return delay
+                }
+                result.retryEvents.append(contentsOf: batchEvents)
+                result.retryEvents.append(contentsOf: events.dropFirst(batchEnd))
+                logger.info("telemetry_transport outcome=retry status=\(status, privacy: .public) retry_seconds=\(delay, privacy: .public) pending_count=\(result.retryEvents.count, privacy: .public)")
+                return result
             }
         }
 
-        return failedEvents
+        return result
+    }
+
+    static func retryAfter(_ value: String?, now: Date) -> TimeInterval? {
+        guard let value else { return nil }
+        if let seconds = TimeInterval(value), seconds.isFinite, seconds >= 0 { return seconds }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return formatter.date(from: value).map { max(0, $0.timeIntervalSince(now)) }
     }
 
     private func sendAsync(
         _ request: URLRequest, events: [TelemetryEvent], generation: UInt64, using session: URLSession
-    ) async -> Bool {
+    ) async -> DeliveryResult {
         let cancellation = TelemetryRequestCancellation()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
@@ -406,20 +500,27 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
                 // same lock as clearQueue, so no stale request starts afterward.
                 lock.withLock {
                     guard generation == queueGeneration,
-                        isEnabled() || events.allSatisfy({ $0.event == TelemetryEventName.telemetryOptedOut.rawValue })
+                        isTransportEligible(), isEnabled() || events.allSatisfy({ $0.event == TelemetryEventName.telemetryOptedOut.rawValue })
                     else {
-                        continuation.resume(returning: true)
+                        continuation.resume(returning: DeliveryResult.discarded)
                         return
                     }
-                    let task = session.dataTask(with: request) { [logger] _, response, error in
-                        if let error {
-                            logger.debug("Telemetry flush failed: \(error.localizedDescription)")
-                            continuation.resume(returning: false)
-                        } else if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                            logger.warning("Telemetry server returned \(http.statusCode)")
-                            continuation.resume(returning: false)
+                    let task = session.dataTask(with: request) { [now] _, response, error in
+                        if error != nil {
+                            continuation.resume(returning: DeliveryResult.retry(status: 0, after: nil))
+                        } else if let http = response as? HTTPURLResponse {
+                            if (200...299).contains(http.statusCode) {
+                                continuation.resume(returning: DeliveryResult.delivered)
+                            } else if http.statusCode == 408 || http.statusCode == 429 || (500...599).contains(http.statusCode) {
+                                continuation.resume(returning: DeliveryResult.retry(
+                                    status: http.statusCode,
+                                    after: Self.retryAfter(http.value(forHTTPHeaderField: "Retry-After"), now: now())
+                                ))
+                            } else {
+                                continuation.resume(returning: DeliveryResult.rejected(status: http.statusCode))
+                            }
                         } else {
-                            continuation.resume(returning: true)
+                            continuation.resume(returning: DeliveryResult.retry(status: 0, after: nil))
                         }
                     }
                     cancellation.install(task)

@@ -10,6 +10,12 @@ private struct RecordedTelemetryPayload: Decodable {
 private struct RecordedTelemetryEvent: Decodable {
     let event: String
     let session: String
+    let eventId: String
+
+    enum CodingKeys: String, CodingKey {
+        case event, session
+        case eventId = "event_id"
+    }
 }
 
 private final class TelemetryConsent: @unchecked Sendable {
@@ -119,9 +125,9 @@ private final class TelemetryMockURLProtocol: URLProtocol {
 
     override func stopLoading() {}
 
-    func respond(statusCode: Int) {
+    func respond(statusCode: Int, headers: [String: String]? = nil) {
         let response = HTTPURLResponse(
-            url: request.url!, statusCode: statusCode, httpVersion: nil, headerFields: nil
+            url: request.url!, statusCode: statusCode, httpVersion: nil, headerFields: headers
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data())
@@ -377,6 +383,120 @@ final class TelemetryServiceTests: XCTestCase {
 
         XCTAssertEqual(TelemetryMockURLProtocol.recordedPayloads().map { $0.events.count }, [1, 100])
         XCTAssertEqual(service.pendingEventCount, 0)
+    }
+
+    func testPermanentRejectionDropsBatchAndReportsUndelivered() async {
+        TelemetryMockURLProtocol.statusCode = 400
+        let service = makeService()
+        let delivered = await service.sendAndFlush(.appLaunched)
+        XCTAssertFalse(delivered)
+        XCTAssertEqual(service.pendingEventCount, 0)
+        await service.flush()
+        XCTAssertEqual(TelemetryMockURLProtocol.recordedPayloads().count, 1)
+    }
+
+    func testTransientRetryWaitsAndPreservesEventID() async {
+        let service = makeService()
+        service.now = { Date(timeIntervalSince1970: 100) }
+        service.retryJitter = { 1 }
+        TelemetryMockURLProtocol.setRequestHandler { request in
+            request.respond(statusCode: 429, headers: ["Retry-After": "120"])
+        }
+        let delivered = await service.sendAndFlush(.appLaunched)
+        XCTAssertFalse(delivered)
+        await service.flush()
+        XCTAssertEqual(TelemetryMockURLProtocol.recordedPayloads().count, 1)
+        service.now = { Date(timeIntervalSince1970: 219) }
+        await service.flush()
+        XCTAssertEqual(TelemetryMockURLProtocol.recordedPayloads().count, 1)
+        service.now = { Date(timeIntervalSince1970: 220) }
+        TelemetryMockURLProtocol.setRequestHandler(nil)
+        await service.flush()
+        let events = TelemetryMockURLProtocol.recordedPayloads().flatMap(\.events)
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events.first?.eventId, events.last?.eventId)
+        XCTAssertEqual(service.pendingEventCount, 0)
+    }
+
+    func testBurstDuringOutageDoesNotRepeatedlySendRejectedRequests() async {
+        let service = makeService()
+        service.now = { Date(timeIntervalSince1970: 100) }
+        service.retryJitter = { 1 }
+        TelemetryMockURLProtocol.statusCode = 503
+        for _ in 0..<150 { service.send(.appLaunched) }
+        await service.flush()
+        await service.flush()
+        XCTAssertEqual(TelemetryMockURLProtocol.recordedPayloads().count, 1)
+        XCTAssertEqual(service.pendingEventCount, 150)
+        service.clearQueue()
+    }
+
+    func testRetryAfterHTTPDateAndMalformedValue() {
+        let date = Date(timeIntervalSince1970: 0)
+        XCTAssertEqual(TelemetryService.retryAfter("Thu, 01 Jan 1970 00:02:00 GMT", now: date), 120)
+        XCTAssertNil(TelemetryService.retryAfter("NaN", now: date))
+        XCTAssertNil(TelemetryService.retryAfter("-1", now: date))
+    }
+
+    func testTransportPolicySuppressesOptOutRequestsForEnvironmentAndDevelopment() async {
+        let cases: [(env: [String: String], debug: Bool, source: String)] = [
+            (["MACPARAKEET_TELEMETRY": "0"], false, "dist-xcodebuild-release"),
+            (["DO_NOT_TRACK": "1"], false, "dist-xcodebuild-release"),
+            (["CI": "true"], false, "dist-xcodebuild-release"),
+            ([:], true, "dist-xcodebuild-release"),
+            ([:], false, "dev-run-xcodebuild-release"),
+        ]
+        for policy in cases {
+            let service = TelemetryService(
+                baseURL: URL(string: "https://localhost:9999")!, session: makeSession(),
+                isTransportEligible: {
+                    TelemetryPolicy.guiTransportEligible(env: policy.env, isDebug: policy.debug,
+                        buildSource: policy.source, version: "0.8.0")
+                },
+                isEnabled: { false }
+            )
+            service.clearQueue()
+            service.send(.telemetryOptedOut)
+            _ = await service.sendAndFlush(.telemetryOptedOut)
+            await service.flush()
+            service.flushForTermination()
+            XCTAssertEqual(service.pendingEventCount, 0)
+        }
+        XCTAssertTrue(TelemetryMockURLProtocol.recordedPayloads().isEmpty)
+    }
+
+    func testEligibleProductionTransportStillSendsFinalConsentOptOut() async {
+        let service = TelemetryService(
+            baseURL: URL(string: "https://localhost:9999")!, session: makeSession(),
+            isTransportEligible: {
+                TelemetryPolicy.guiTransportEligible(env: [:], isDebug: false,
+                    buildSource: "dist-xcodebuild-release", version: "0.8.0")
+            },
+            isEnabled: { false }
+        )
+        service.send(.appLaunched)
+        let delivered = await service.sendAndFlush(.telemetryOptedOut)
+        XCTAssertTrue(delivered)
+        XCTAssertEqual(TelemetryMockURLProtocol.recordedPayloads().flatMap(\.events).map(\.event),
+                       [TelemetryEventName.telemetryOptedOut.rawValue])
+    }
+
+    func testGUIDevelopmentPolicyAndConsent() {
+        func enabled(_ env: [String: String] = [:], debug: Bool = false,
+                     source: String = "dist-xcodebuild-release", version: String = "0.8.0",
+                     consent: Bool = true) -> Bool {
+            TelemetryPolicy.guiEnabled(preferenceEnabled: consent, env: env, isDebug: debug,
+                                       buildSource: source, version: version)
+        }
+        XCTAssertTrue(enabled())
+        XCTAssertFalse(enabled(debug: true))
+        XCTAssertFalse(enabled(source: "dev-run-xcodebuild-release"))
+        XCTAssertFalse(enabled(version: "0.0.0"))
+        XCTAssertFalse(enabled(["CI": "true"]))
+        XCTAssertFalse(enabled(["DO_NOT_TRACK": "1"]))
+        XCTAssertFalse(enabled(["MACPARAKEET_TELEMETRY": "0"]))
+        XCTAssertTrue(enabled(["MACPARAKEET_TELEMETRY": "1", "CI": "true"], debug: true))
+        XCTAssertFalse(enabled(["MACPARAKEET_TELEMETRY": "1"], consent: false))
     }
 
     // MARK: - Queue Limits
