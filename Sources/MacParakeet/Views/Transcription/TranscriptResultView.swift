@@ -98,9 +98,14 @@ struct SpeakerRenameState {
 
     private(set) var draft: Draft?
 
-    mutating func begin(_ speaker: SpeakerInfo, contextID: String) -> Draft? {
+    mutating func begin(
+        _ speaker: SpeakerInfo,
+        contextID: String,
+        savePrevious: (Draft) -> Bool = { _ in true }
+    ) -> Draft? {
         guard draft?.speakerID != speaker.id || draft?.contextID != contextID else { return nil }
         let previous = draft
+        if let previous, !savePrevious(previous) { return nil }
         var label = speaker.label
         if let previous, previous.speakerID == speaker.id {
             // The incoming snapshot still has the name from before this draft.
@@ -4415,11 +4420,10 @@ struct TranscriptResultView: View {
     }
 
     private func beginSpeakerRename(_ speaker: SpeakerInfo, contextID: String) {
-        if let previous = speakerRename.begin(speaker, contextID: contextID) {
+        if let previous = speakerRename.begin(speaker, contextID: contextID, savePrevious: saveSpeakerRename) {
             if focusedSpeakerRenameContext == previous.contextID {
                 focusedSpeakerRenameContext = nil
             }
-            saveSpeakerRename(previous)
         }
     }
 

@@ -165,10 +165,8 @@ struct MeetingMicrophoneMuteButton: View {
         }
         .buttonStyle(.plain)
         .frame(height: Self.trackHeight)
-        .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabelText)
         .accessibilityIdentifier("meeting-microphone-mute-button")
-        .accessibilityAddTraits(.isButton)
         .help(
             isMuted
                 ? "Unmute microphone"

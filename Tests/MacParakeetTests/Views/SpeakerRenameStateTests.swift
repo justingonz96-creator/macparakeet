@@ -3,6 +3,40 @@ import MacParakeetCore
 @testable import MacParakeet
 
 final class SpeakerRenameStateTests: XCTestCase {
+    func testRefusedHandoffRetainsDraftUntilAcceptedRetry() throws {
+        var state = SpeakerRenameState()
+        state.begin(SpeakerInfo(id: "B", label: "Speaker B"), contextID: "overview:B")
+        state.updateLabel("QA Bob", contextID: "overview:B")
+        let nextSpeaker = SpeakerInfo(id: "A", label: "Speaker A")
+        var acceptsSave = false
+        var saveAttempts = 0
+        var acceptedDrafts: [SpeakerRenameState.Draft] = []
+        func savePrevious(_ draft: SpeakerRenameState.Draft) -> Bool {
+            saveAttempts += 1
+            guard acceptsSave else { return false }
+            acceptedDrafts.append(draft)
+            return true
+        }
+
+        XCTAssertNil(state.begin(nextSpeaker, contextID: "overview:A", savePrevious: savePrevious))
+        XCTAssertEqual(state.draft?.contextID, "overview:B")
+        XCTAssertEqual(state.draft?.speakerID, "B")
+        XCTAssertEqual(state.draft?.label, "QA Bob")
+        XCTAssertTrue(acceptedDrafts.isEmpty)
+
+        acceptsSave = true
+        let previous = try XCTUnwrap(state.begin(nextSpeaker, contextID: "overview:A", savePrevious: savePrevious))
+        XCTAssertEqual(previous.label, "QA Bob")
+        XCTAssertEqual(state.draft?.contextID, "overview:A")
+        XCTAssertEqual(state.draft?.label, "Speaker A")
+        XCTAssertNil(state.finish(contextID: "overview:B"), "A delayed old-field event must not finish the new draft")
+        XCTAssertNil(state.begin(nextSpeaker, contextID: "overview:A", savePrevious: savePrevious))
+        XCTAssertEqual(saveAttempts, 2)
+        XCTAssertEqual(acceptedDrafts.count, 1)
+        XCTAssertEqual(acceptedDrafts.first?.speakerID, "B")
+        XCTAssertEqual(acceptedDrafts.first?.label, "QA Bob")
+    }
+
     func testSwitchingSpeakersCommitsOldDraftOnceAndIgnoresItsDelayedEvents() throws {
         var state = SpeakerRenameState()
         XCTAssertNil(state.begin(SpeakerInfo(id: "B", label: "Speaker B"), contextID: "overview:B"))
