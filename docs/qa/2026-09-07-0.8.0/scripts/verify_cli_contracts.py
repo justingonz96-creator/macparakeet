@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--cli", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--candidate", required=True)
+    parser.add_argument("--expected-cli-version", default="4.0.0")
     args = parser.parse_args()
     args.cli = args.cli.resolve(strict=True)
     args.output = args.output.resolve()
@@ -145,6 +146,7 @@ def main():
     provider = ["--provider", "openaiCompatible", "--base-url", endpoint, "--model", "qa-model"]
     metadata = {
         "candidateSource": args.candidate, "binary": str(args.cli),
+        "expectedCLIVersion": args.expected_cli_version,
         "binarySHA256": hashlib.file_digest(args.cli.open("rb"), "sha256").hexdigest(),
         "binaryMTime": args.cli.stat().st_mtime,
         "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -179,9 +181,9 @@ def main():
         return ["prompts", "run", "QA receipt", "--transcription", "qa-synthetic.wav", "--database", str(database)] + provider + extra
 
     try:
-        check(run("version", ["--version"]).strip() == "3.3.0", "Unexpected CLI version")
+        check(run("version", ["--version"]).strip() == args.expected_cli_version, "Unexpected CLI version")
         spec = run("spec", ["spec", "--json"], json_output=True)
-        check(spec["cliVersion"] == "3.3.0", "Spec version mismatch")
+        check(spec["cliVersion"] == args.expected_cli_version, "Spec version mismatch")
         run("initialize", ["prompts", "list", "--json", "--database", str(database)], json_output=True)
         run("add-prompt", ["prompts", "add", "--name", "QA receipt", "--content", "Summarize only the synthetic QA text.", "--database", str(database)])
         text_file = args.output / "synthetic.txt"
