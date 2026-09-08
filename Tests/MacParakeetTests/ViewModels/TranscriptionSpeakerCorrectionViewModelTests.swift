@@ -362,7 +362,10 @@ final class TranscriptionSpeakerCorrectionViewModelTests: XCTestCase {
         defer { reader.release.signal() }
         XCTAssertNil(viewModel.speakerAttribution)
 
-        viewModel.renameSpeaker(id: "S1", to: "Alice")
+        XCTAssertFalse(
+            viewModel.renameSpeaker(id: "S1", to: "Alice"),
+            "A refused rename tells the editor to keep its draft"
+        )
 
         XCTAssertEqual(viewModel.currentTranscription?.speakers, original.speakers)
         XCTAssertEqual(viewModel.currentTranscription?.transcriptSegments, original.transcriptSegments)
@@ -377,7 +380,7 @@ final class TranscriptionSpeakerCorrectionViewModelTests: XCTestCase {
         try await waitUntil { viewModel.speakerAttribution != nil }
         XCTAssertEqual(try repository.fetch(id: original.id)?.speakers, original.speakers)
 
-        viewModel.renameSpeaker(id: "S1", to: "Alice")
+        XCTAssertTrue(viewModel.renameSpeaker(id: "S1", to: "Alice"))
 
         try await waitUntil { viewModel.canUndoSpeakerCorrection && !viewModel.isApplyingSpeakerCorrection }
         XCTAssertNil(viewModel.errorMessage)
@@ -513,6 +516,39 @@ final class TranscriptionSpeakerCorrectionViewModelTests: XCTestCase {
         try await waitUntil { !viewModel.isApplyingSpeakerCorrection }
 
         XCTAssertEqual(viewModel.currentTranscription?.id, replacement.id)
+        XCTAssertNil(viewModel.errorMessage)
+    }
+
+    func testRenameWhileAnotherCorrectionSavesIsRefusedUntilItFinishes() async throws {
+        let original = makeTranscription()
+        let attribution = SpeakerAttributionResolver.resolve(transcription: original)
+        let service = StubSpeakerCorrectionService(
+            result: .init(attribution: attribution, revision: 1, canUndo: true, canRedo: false)
+        )
+        let viewModel = TranscriptionViewModel()
+        viewModel.configure(
+            transcriptionService: MockTranscriptionService(),
+            transcriptionRepo: MockTranscriptionRepository(),
+            speakerCorrectionService: service
+        )
+        viewModel.currentTranscription = original
+        try await waitUntil { viewModel.speakerAttribution != nil }
+
+        XCTAssertTrue(viewModel.renameSpeaker(id: "S1", to: "Alice"))
+        XCTAssertTrue(viewModel.isApplyingSpeakerCorrection)
+        XCTAssertFalse(
+            viewModel.renameSpeaker(id: "S1", to: "Alicia"),
+            "A rename submitted while the previous one saves must be refused, not dropped silently"
+        )
+        XCTAssertEqual(viewModel.errorMessage, "Speaker changes are still loading or saving. Please try again.")
+
+        try await waitUntil { !viewModel.isApplyingSpeakerCorrection }
+        XCTAssertTrue(viewModel.renameSpeaker(id: "S1", to: "Alicia"))
+        try await waitUntil { !viewModel.isApplyingSpeakerCorrection }
+
+        let calls = await service.applyCalls
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertEqual(calls.last?.command, .rename(speakerID: "S1", label: "Alicia"))
         XCTAssertNil(viewModel.errorMessage)
     }
 

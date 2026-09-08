@@ -8,7 +8,12 @@ Fixture setup is explicit: the CLI initializes its schema and adds a custom prom
 
 Reusable runner: [`scripts/verify_cli_contracts.py`](scripts/verify_cli_contracts.py). Runtime evidence is retained under `/tmp/macparakeet-080-qa/cli-contract-runtime/` with binary identity, arguments, exit codes, stdout/stderr, synthetic requests and stored results. No Swift build/test, audio or GUI invocation is performed by this runner.
 
-## Exact execution
+## Historical run-02 execution
+
+This recorded command uses the original runner identified by the SHA-256 below,
+not the current reusable runner. Keep the original runner and CLI 3.3.0 binary
+together when reproducing run-02; the current runner requires the newer schema
+and defaults to CLI 4.0.0.
 
 ```bash
 python3 docs/qa/2026-09-07-0.8.0/scripts/verify_cli_contracts.py \
@@ -17,6 +22,8 @@ python3 docs/qa/2026-09-07-0.8.0/scripts/verify_cli_contracts.py \
   --candidate 8548c099af5ee2ab0ed4dd9efe757d85c498cca0
 ```
 
+- The runner now defaults to expecting CLI `4.0.0` (PR #982). Reproducing this run-02 against the `3.3.0` candidate binary requires `--expected-cli-version 3.3.0`. The runner SHA-256 recorded below identifies the pre-#982 runner that produced run-02, not the current file.
+- The current runner also targets the versioned prompt schema that PR #961 merged after run-02: it seeds inference settings through `prompts set` instead of writing the removed `prompts.inferenceSettings` column, and its legacy fixture reconstructs only the pre-v0.29 transcription columns while asserting the active `prompt_versions` settings survive migration and the removed `prompts.inferenceSettings` column stays absent. It does not reconstruct the v0.31 prompt column, because the one-shot v0.36 rebuild cannot rerun to remove it again. Run-02 predates that schema, so the reproduction command above requires the `3.3.0` binary and the recorded pre-#982 runner; the current runner runs against a `4.0.0` binary with one more CLI invocation (`seed-settings`).
 - Executed binary SHA-256: `db8626c81735d0484878f396cae83c6a911a6cba9ff97d0a9ee139eb2cdcf690`.
 - Candidate source identity was supplied by root's build record; `--version` and `spec --json` independently returned CLI `3.3.0`.
 - Runner SHA-256: `7fd4ee9979a7c77e912fda2fd44074e84db0abea4dd7899ce4d1bcf7b65a0271`.

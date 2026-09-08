@@ -1984,13 +1984,17 @@ public final class TranscriptionViewModel {
         }
     }
 
-    public func applySpeakerCorrection(_ command: SpeakerCorrectionCommand) {
+    /// Returns `false` when the correction was refused because speaker changes
+    /// are still loading or saving, so the caller can keep its pending input
+    /// and retry once `isApplyingSpeakerCorrection` clears.
+    @discardableResult
+    public func applySpeakerCorrection(_ command: SpeakerCorrectionCommand) -> Bool {
         guard let transcriptionID = currentTranscription?.id,
               let speakerCorrectionService
-        else { return }
+        else { return true }
         guard let attribution = speakerAttribution, !isApplyingSpeakerCorrection else {
             setError(message: "Speaker changes are still loading or saving. Please try again.")
-            return
+            return false
         }
         isApplyingSpeakerCorrection = true
         let selectedRevision = currentTranscriptionRevision
@@ -2009,6 +2013,7 @@ public final class TranscriptionViewModel {
                 self?.handleSpeakerCorrectionFailure(error, transcriptionID: transcriptionID)
             }
         }
+        return true
     }
 
     public func undoSpeakerCorrection() {
@@ -2104,9 +2109,12 @@ public final class TranscriptionViewModel {
 
     // MARK: - Speaker Rename
 
-    public func renameSpeaker(id speakerId: String, to newLabel: String) {
+    /// Returns `false` only when the rename must be retried later because
+    /// speaker corrections are still loading or saving.
+    @discardableResult
+    public func renameSpeaker(id speakerId: String, to newLabel: String) -> Bool {
         let trimmed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return true }
         if speakerCorrectionService != nil,
            currentTranscription?.status == .completed,
            !(currentTranscription?.wordTimestamps ?? []).isEmpty,
@@ -2115,17 +2123,16 @@ public final class TranscriptionViewModel {
             // the automatic baseline: that would bypass undo and active edits.
             guard speakerAttribution != nil else {
                 setError(message: "Speaker corrections are loading. Try the rename again in a moment.")
-                return
+                return false
             }
             clearError()
-            applySpeakerCorrection(.rename(speakerID: speakerId, label: trimmed))
-            return
+            return applySpeakerCorrection(.rename(speakerID: speakerId, label: trimmed))
         }
         guard var transcription = currentTranscription,
             var speakers = transcription.speakers
-        else { return }
-        guard let index = speakers.firstIndex(where: { $0.id == speakerId }) else { return }
-        guard !trimmed.isEmpty, speakers[index].label != trimmed else { return }
+        else { return true }
+        guard let index = speakers.firstIndex(where: { $0.id == speakerId }) else { return true }
+        guard !trimmed.isEmpty, speakers[index].label != trimmed else { return true }
         let previousCurrentSpeakers = speakers
         let previousCurrentSegments = transcription.transcriptSegments
         let previousCurrentUpdatedAt = transcription.updatedAt
@@ -2148,7 +2155,7 @@ public final class TranscriptionViewModel {
             transcriptions[transcriptionIndex].transcriptSegments = transcription.transcriptSegments
             transcriptions[transcriptionIndex].updatedAt = transcription.updatedAt
         }
-        guard let transcriptionRepo else { return }
+        guard let transcriptionRepo else { return true }
         let transcriptionID = transcription.id
         Task {
             [
@@ -2191,6 +2198,7 @@ public final class TranscriptionViewModel {
                 )
             }
         }
+        return true
     }
 
     private func handleSpeakerRenamePersistenceFailure(

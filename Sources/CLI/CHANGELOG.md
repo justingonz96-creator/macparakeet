@@ -89,6 +89,8 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ## [Unreleased]
 
+## [4.0.0] — 2026-09-07
+
 ### Added
 
 - Immutable prompt history, version-aware `prompts show`, source/settings diff,
@@ -122,11 +124,17 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
   Transform prompts reject the setting. `{{userNotes}}` remains available
   independently; using both mechanisms does not duplicate notes.
 
-### Changed
+### Breaking
 
 - `export --stdout --format txt` now matches TXT file export, including the
   default metadata header, timestamps, and speaker labels. Use the transcript
-  text fields in JSON when automation needs only the stored text.
+  text fields in JSON when automation needs only the stored text. This also
+  affects `export <id> --stdout`, because TXT is the default format. For example,
+  use `export <id> --format json --stdout | jq -r '.cleanTranscript // .rawTranscript'`
+  to select stored transcript text.
+
+### Changed
+
 - `prompts run` uses rich timestamped, speaker-aware input when timings exist;
   edited transcripts and recordings without timings use their text fallback.
 - TXT/Markdown paragraphs with no assigned speaker remain separate and may

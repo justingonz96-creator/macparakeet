@@ -2,8 +2,9 @@
 """Exercise an already-built DEBUG CLI against owned synthetic data and HTTP.
 
 No builds, GUI, audio, shared configuration writes, Keychain or external provider
-requests. An empty, caller-owned output directory is required. SQLite fixture
-setup intentionally bypasses the GUI; it is not evidence of GUI editing.
+requests. An empty, caller-owned output directory is required. The transcription
+fixture is inserted with SQLite and prompt inference settings are seeded through
+`prompts set`; neither is evidence of GUI editing.
 """
 import argparse
 import datetime
@@ -25,6 +26,7 @@ def main():
     parser.add_argument("--cli", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--candidate", required=True)
+    parser.add_argument("--expected-cli-version", default="4.0.0")
     args = parser.parse_args()
     args.cli = args.cli.resolve(strict=True)
     args.output = args.output.resolve()
@@ -145,12 +147,13 @@ def main():
     provider = ["--provider", "openaiCompatible", "--base-url", endpoint, "--model", "qa-model"]
     metadata = {
         "candidateSource": args.candidate, "binary": str(args.cli),
+        "expectedCLIVersion": args.expected_cli_version,
         "binarySHA256": hashlib.file_digest(args.cli.open("rb"), "sha256").hexdigest(),
         "binaryMTime": args.cli.stat().st_mtime,
         "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "database": str(database), "stateDir": str(state_dir),
         "foundationHome": str(fixed_home), "endpoint": endpoint,
-        "fixtureSetup": "CLI creates schema/prompt; direct SQLite inserts synthetic transcription and settings",
+        "fixtureSetup": "CLI creates schema/prompt and seeds prompt settings; direct SQLite inserts synthetic transcription",
     }
     write_json(args.output / "metadata.json", metadata)
 
@@ -179,9 +182,9 @@ def main():
         return ["prompts", "run", "QA receipt", "--transcription", "qa-synthetic.wav", "--database", str(database)] + provider + extra
 
     try:
-        check(run("version", ["--version"]).strip() == "3.3.0", "Unexpected CLI version")
+        check(run("version", ["--version"]).strip() == args.expected_cli_version, "Unexpected CLI version")
         spec = run("spec", ["spec", "--json"], json_output=True)
-        check(spec["cliVersion"] == "3.3.0", "Spec version mismatch")
+        check(spec["cliVersion"] == args.expected_cli_version, "Spec version mismatch")
         run("initialize", ["prompts", "list", "--json", "--database", str(database)], json_output=True)
         run("add-prompt", ["prompts", "add", "--name", "QA receipt", "--content", "Summarize only the synthetic QA text.", "--database", str(database)])
         text_file = args.output / "synthetic.txt"
@@ -205,8 +208,9 @@ def main():
                 "INSERT INTO transcriptions (id, createdAt, updatedAt, fileName, rawTranscript, cleanTranscript, status, sourceType, isFavorite, recoveredFromCrash, isTranscriptEdited) VALUES (?, ?, ?, ?, ?, ?, 'completed', 'file', 0, 0, 0)",
                 (identifier, now, now, "qa-synthetic.wav", text_file.read_text(), text_file.read_text()),
             )
-            connection.execute("UPDATE prompts SET inferenceSettings = ? WHERE name = ?", (json.dumps(settings), "QA receipt"))
 
+        run("seed-settings", ["prompts", "set", "QA receipt", "--temperature", "0.25", "--top-p", "0.85", "--top-k", "24",
+                              "--max-tokens", "256", "--thinking-mode", "enabled", "--reasoning-effort", "low", "--database", str(database)])
         prompt = run("prompt-show", ["prompts", "show", "QA receipt", "--json", "--database", str(database)], json_output=True)
         check(prompt["inferenceSettings"] == settings, "Settings do not round-trip")
         summary = run("summarize-json", ["llm", "summarize", str(text_file)] + provider + ["--json"], json_output=True)
@@ -271,13 +275,13 @@ def main():
         with sqlite3.connect(legacy) as connection:
             original_text = connection.execute("SELECT id, rawTranscript FROM transcriptions").fetchall()
             original_results = connection.execute("SELECT id, content FROM summaries ORDER BY rowid").fetchall()
-            for table, column in (("transcriptions", "audioTrackOrdinal"), ("transcriptions", "meetingCaptureReport"), ("prompts", "inferenceSettings"), ("summaries", "inferenceSettingsSnapshot")):
-                connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
-            connection.execute("DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?)", (
-                "v0.29-transcription-audio-track", "v0.30-meeting-capture-report", "v0.31-prompt-inference-settings",
+            for column in ("audioTrackOrdinal", "meetingCaptureReport"):
+                connection.execute(f"ALTER TABLE transcriptions DROP COLUMN {column}")
+            connection.execute("DELETE FROM grdb_migrations WHERE identifier IN (?, ?)", (
+                "v0.29-transcription-audio-track", "v0.30-meeting-capture-report",
             ))
             write_json(args.output / "legacy-before.json", {
-                "method": "Synthetic v0.28-shaped schema reconstructed from owned current fixture; not produced by an old binary",
+                "method": "Synthetic pre-v0.29 transcription columns reconstructed from owned current fixture; the v0.31 legacy prompt column is not reconstructed because v0.36 removed it and cannot rerun; not produced by an old binary",
                 "migrations": [row[0] for row in connection.execute("SELECT identifier FROM grdb_migrations ORDER BY rowid")],
                 "transcriptionCount": len(original_text), "resultCount": len(original_results),
             })
@@ -285,14 +289,17 @@ def main():
         with sqlite3.connect(legacy) as connection:
             check(connection.execute("SELECT id, rawTranscript FROM transcriptions").fetchall() == original_text, "Migration changed transcript")
             check(connection.execute("SELECT id, content FROM summaries ORDER BY rowid").fetchall() == original_results, "Migration changed results")
-            check(connection.execute("SELECT inferenceSettings FROM prompts WHERE name='QA receipt'").fetchone()[0] is None, "Legacy prompt settings not nil")
-            check(all(row[0] is None for row in connection.execute("SELECT inferenceSettingsSnapshot FROM summaries")), "Legacy receipt not nil")
+            active_settings = connection.execute(
+                "SELECT v.inferenceSettings FROM prompts p JOIN prompt_versions v ON v.id = p.activeVersionId WHERE p.name = 'QA receipt'"
+            ).fetchone()[0]
+            check(json.loads(active_settings) == settings, "Migration changed versioned prompt settings")
+            check("inferenceSettings" not in [row[1] for row in connection.execute("PRAGMA table_info(prompts)")], "Removed legacy prompt column reappeared")
             check(connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "Integrity check failed")
             check(connection.execute("PRAGMA foreign_key_check").fetchall() == [], "Foreign keys failed")
             write_json(args.output / "legacy-after.json", {
                 "migrations": [row[0] for row in connection.execute("SELECT identifier FROM grdb_migrations ORDER BY rowid")],
                 "preservedTranscriptions": len(original_text), "preservedResults": len(original_results),
-                "legacySettings": None, "legacyReceipts": None, "integrity": "ok", "foreignKeyViolations": [],
+                "versionedPromptSettings": settings, "legacyPromptColumnAbsent": True, "integrity": "ok", "foreignKeyViolations": [],
             })
         check(all(not request["authorizationPresent"] for request in requests), "Unexpected authentication header")
         outcome = {"status": "pass", "commands": len(records), "providerRequests": len(requests)}

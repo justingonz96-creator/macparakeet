@@ -177,11 +177,13 @@ with human progress/status kept off stdout.
   `wordRange.startIndex` / `wordRange.endIndexExclusive` into the same payload's
   `wordTimestamps` array. Callers that need stable citations should prefer
   these persisted segments over re-segmenting words.
-- `export --stdout --format txt` uses the same formatted output as TXT file
+- Since CLI 4.0.0, `export --stdout --format txt` uses the same formatted output as TXT file
   export, with default metadata, timestamps, and speaker labels. JSON transcript
   text fields remain available for callers needing bare stored text. TXT/Markdown
   exports keep unassigned paragraphs separate; if named speakers exist, those
-  paragraphs may be headed `Unassigned`.
+  paragraphs may be headed `Unassigned`. CLI 3.x returned bare stored text on
+  this path; callers needing that content can select `cleanTranscript` with a
+  `rawTranscript` fallback from JSON. This does not change JSON schema version 1.
 - `prompts run` sends rich timestamped speaker context when timings exist;
   edited transcripts and untimed recordings use the stored-text fallback.
 - `export --format json`, `meetings show --json`, `meetings transcript
