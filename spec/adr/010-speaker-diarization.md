@@ -264,6 +264,39 @@ file is replaced atomically only after a valid replacement is downloaded;
 offline mode, cancellation, and failed downloads preserve the cached file and
 model bundles.
 
+> **Amendment (2026-09-05):** Automatic diarization is now an immutable
+> baseline beneath a transcript-scoped speaker-correction layer. Add, rename,
+> assign, split, merge, remove, reset, Undo, and Redo operations are persisted
+> separately and resolved into one effective attribution; they never rewrite
+> raw word/source evidence. Effective attribution is the contract for the app,
+> search, exports, meeting artifacts, cards, LLM context, and CLI. A successful
+> retranscription starts a new fingerprint and resets the effective correction
+> cursor; failed retranscription leaves the prior transcript and corrections
+> intact. Attribution reads are scoped to the selected transcript snapshot,
+> including same-ID completion and refresh; older asynchronous reads cannot
+> replace a newer snapshot. Rich AI context caches include both the selected
+> transcript revision and speaker-correction revision, including the transition
+> from loading to resolved attribution. A correction during context preparation
+> invalidates that request before submission. After saving notes, AI actions
+> await the corresponding attribution read before preparing context. Automatic
+> nil word assignments inherit the preceding speaker in timed presentation
+> and retrieval, matching the original segmenter; explicit Unassigned corrections
+> stay independent. With no active corrections, export projections preserve the
+> original stored word assignments. TXT/Markdown paragraphs keep nil assignments
+> separate (including automatic gaps) and label them Unassigned when named
+> speakers exist. Chunked cards
+> retain the complete logical turn for speaker actions. Notes, meeting rename,
+> and speaker edits serialize their artifact refreshes per meeting and reread
+> canonical data after earlier writes complete. Search derivation version 4
+> rebuilds inherited speaker runs and excludes blank edge tokens from citation
+> timestamps. CLI prompt input uses the shared rich renderer, and TXT stdout
+> uses the same speaker-aware renderer as file export. Explicitly unassigned words remain
+> separate from
+> named speakers in TXT/Markdown exports and appear under an Unassigned label
+> when the transcript has named speakers. See
+> `plans/active/2026-09-05-speaker-attribution-editing.md` and
+> `spec/01-data-model.md` for the command and persistence contracts.
+
 ## Rationale
 
 ### Why the offline pipeline, not Sortformer

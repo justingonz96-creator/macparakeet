@@ -19,7 +19,10 @@ processes own their connections.
 - One repository per table:
   - `DictationRepository.swift` — dictation history + lifetime stats.
   - `TranscriptionRepository.swift` — file/YouTube/meeting transcriptions.
-  - `SegmentRepository.swift` — derived transcript segments, FTS5 search, slicing, and deterministic rebuilds.
+  - `SpeakerCorrectionRepository.swift` — transcript-scoped correction history and undo/redo cursor.
+  `SpeakerCorrectionService` owns atomic cross-table edits; `SpeakerAttributionReadService`
+  resolves effective attribution without changing recognized words.
+- `SegmentRepository.swift` — derived transcript segments, FTS5 search, slicing, and deterministic rebuilds.
   - `CardRepository.swift` — derived per-recording knowledge cards, provenance staleness, deterministic joins, and card FTS sync.
   - `CustomWordRepository.swift` — vocabulary entries.
   - `TextSnippetRepository.swift` — snippets (text + action).
@@ -86,7 +89,7 @@ explicitly; a fetch followed by a separate save is not an atomic merge.
 data.** `segments` normalizes meeting and file/URL transcript JSON for search;
 `segments_fts` is an external-content FTS5 index kept in sync by triggers.
 Both can be rebuilt with `macparakeet-cli search-reindex` from
-`transcriptions`. Dictations are excluded. `KnowledgeSegmenter.currentVersion`
+`transcriptions` and their active speaker corrections. Dictations are excluded. `KnowledgeSegmenter.currentVersion`
 freezes the derivation rules: pseudo-segmentation is a pure function of text
 using explicit scalar rules, with no locale or NaturalLanguage framework
 dependency. Any rule change that can alter `(transcriptionId, seq)` citations
@@ -106,9 +109,11 @@ the four-field tuple `(transcriptHash, promptVersion, cardSchemaVersion,
 segmenterVersion)`; model and generation time are audit provenance only.
 After provider latency, generation revalidates the transcript and segment
 snapshot, and the repository repeats that comparison inside the save
-transaction. Retranscription publishes replacement segments and deletes the old
-card atomically; list queries suppress any stale card that remains after other
-canonical edits.
+transaction, including the speaker fingerprint and correction revision. Card
+hashes use effective attribution; listing avoids building the full timed-display
+projection when no correction head exists. Retranscription publishes replacement
+segments and deletes the old card atomically; list queries suppress any stale
+card that remains after other canonical edits.
 
 **Never use raw SQL `WHERE id = ?` with `uuid.uuidString`.**
 GRDB stores UUID values via Codable encoding, which produces a

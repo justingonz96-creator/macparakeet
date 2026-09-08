@@ -525,7 +525,8 @@ final class MeetingRecordingFlowCoordinatorTests: XCTestCase {
         XCTAssertNotNil(coordinator.startRecording(trigger: .manual))
         try await waitForPillState(pillViewModel, .recording)
         coordinator.togglePause()
-        try await waitForPillState(pillViewModel, .paused)
+        await coordinator.testHook_waitForPauseToggleTask()
+        XCTAssertEqual(pillViewModel.state, .paused)
 
         await recordingService.emitCaptureFailure()
         try await waitForStopCall(on: recordingService, coordinator: coordinator)
@@ -535,6 +536,43 @@ final class MeetingRecordingFlowCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.testHook_state, .idle)
         XCTAssertEqual(recordingSnapshot.stopCallCount, 1)
         XCTAssertEqual(transcriptionSnapshot.prepareMeetingCallCount, 1)
+    }
+
+    func testPollingSnapshotBeforePauseCannotRestoreRecordingState() async throws {
+        let service = MeetingRecordingServiceSpy(output: makeRecordingOutput())
+        let pill = MeetingRecordingPillViewModel()
+        let panel = MeetingRecordingPanelViewModel()
+        let coordinator = MeetingRecordingFlowCoordinator(
+            meetingRecordingService: service,
+            transcriptionService: MockTranscriptionService(),
+            permissionService: MockPermissionService(),
+            transcriptionRepo: MockTranscriptionRepository(),
+            conversationRepo: MockChatConversationRepository(),
+            quickPromptRepo: NoOpQuickPromptRepository(),
+            configStore: NoOpLLMConfigStore(),
+            llmService: nil,
+            pillViewModel: pill,
+            meetingRecordingSettlement: makeSettlement(),
+            onMenuBarIconUpdate: { _ in },
+            onTranscriptionReady: { _ in }
+        )
+        coordinator.testHook_enterRecording()
+        pill.state = .recording
+        panel.state = .recording
+        let snapshotRead = expectation(description: "Poll captured full mode before pause")
+        await service.blockNextCaptureHealthRead(reached: snapshotRead)
+        let poll = Task { await coordinator.testHook_refreshPillState(panel: panel) }
+        await fulfillment(of: [snapshotRead], timeout: 5)
+
+        coordinator.togglePause()
+        await coordinator.testHook_waitForPauseToggleTask()
+        XCTAssertEqual(pill.state, .paused)
+        XCTAssertTrue(panel.isPaused)
+        await service.releaseCaptureHealthRead()
+        await poll.value
+
+        XCTAssertEqual(pill.state, .paused)
+        XCTAssertTrue(panel.isPaused)
     }
 
     func testStaleGenerationCaptureFailureSignalIsIgnored() async throws {
@@ -1476,6 +1514,31 @@ private actor MeetingRecordingServiceSpy: MeetingRecordingServiceProtocol {
     private var captureFailureContinuations: [UUID: AsyncStream<MeetingCaptureFailureSignal>.Continuation] = [:]
     private var startContinuation: CheckedContinuation<Void, Never>?
     private var startObservationContinuations: [CheckedContinuation<Void, Never>] = []
+    private var captureHealthReadReached: XCTestExpectation?
+    private var captureHealthReadContinuation: CheckedContinuation<Void, Never>?
+
+    func blockNextCaptureHealthRead(reached: XCTestExpectation) {
+        captureHealthReadReached = reached
+    }
+
+    func releaseCaptureHealthRead() {
+        captureHealthReadReached = nil
+        captureHealthReadContinuation?.resume()
+        captureHealthReadContinuation = nil
+    }
+
+    var captureHealth: MeetingCaptureHealthSummary {
+        get async {
+            if let reached = captureHealthReadReached {
+                captureHealthReadReached = nil
+                await withCheckedContinuation { continuation in
+                    captureHealthReadContinuation = continuation
+                    reached.fulfill()
+                }
+            }
+            return .notRecording
+        }
+    }
 
     init(
         output: MeetingRecordingOutput,

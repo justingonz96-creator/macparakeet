@@ -465,11 +465,14 @@ extension PromptsCommand {
                 let promptRepo = PromptRepository(dbQueue: db.dbQueue)
                 let transcriptionRepo = TranscriptionRepository(dbQueue: db.dbQueue)
                 let resultRepo = PromptResultRepository(dbQueue: db.dbQueue)
+                let speakerAttributionReader = SpeakerAttributionReadService(dbQueue: db.dbQueue)
 
                 let prompt = try findPrompt(idOrName: promptIdOrName, repo: promptRepo)
-                let transcript = try findTranscription(id: transcription, repo: transcriptionRepo)
+                let automaticTranscript = try findTranscription(id: transcription, repo: transcriptionRepo)
+                let projection = try speakerAttributionReader.resolve(transcription: automaticTranscript)
+                let transcript = projection.effectiveTranscription
 
-                let transcriptText = transcript.cleanTranscript ?? transcript.rawTranscript ?? ""
+                let transcriptText = TranscriptAIContextFormatter.format(projection: projection)
                 guard !transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw PromptCLIError.emptyTranscript(transcript.fileName)
                 }
@@ -546,7 +549,8 @@ extension PromptsCommand {
                     )
                     try resultRepo.save(result)
                     await refreshMeetingArtifacts(
-                        transcription: transcript,
+                        transcriptionID: transcript.id,
+                        attributionReader: speakerAttributionReader,
                         resultRepo: resultRepo
                     )
                     // Status messages on stderr so stdout stays grep-able as the prompt output.
@@ -582,17 +586,21 @@ func makeStoredPromptRunResult(
     )
 }
 
-/// Refreshes meeting artifacts; failures are logged and never surfaced or thrown, and refresh never blocks or fails the triggering user action.
-private func refreshMeetingArtifacts(
-    transcription: Transcription,
+/// Refreshes current meeting artifacts without failing an already stored prompt result.
+func refreshMeetingArtifacts(
+    transcriptionID: UUID,
+    attributionReader: any SpeakerAttributionReading,
     resultRepo: PromptResultRepositoryProtocol
 ) async {
-    guard transcription.sourceType == .meeting else { return }
-
     do {
-        let promptResults = try resultRepo.fetchAll(transcriptionId: transcription.id)
+        // Provider latency may outlive edits to this meeting. The input receipt
+        // stays immutable, but derived files must use the current database row.
+        guard let projection = try attributionReader.resolve(transcriptionId: transcriptionID),
+              projection.automaticTranscription.sourceType == .meeting
+        else { return }
+        let promptResults = try resultRepo.fetchAll(transcriptionId: transcriptionID)
         _ = try await MeetingArtifactStore().materialize(
-            transcription: transcription,
+            projection: projection,
             promptResults: promptResults
         )
     } catch {

@@ -106,6 +106,7 @@ final class MeetingRecordingFlowCoordinator {
     private var panelViewModel: MeetingRecordingPanelViewModel?
     private var actionTask: Task<Void, Never>?
     private var pauseToggleTask: Task<Void, Never>?
+    private var pausePublicationRevision: UInt64 = 0
     private var microphoneMuteToggleTask: Task<Void, Never>?
     private var autoDismissTask: Task<Void, Never>?
     private var pillPollingTask: Task<Void, Never>?
@@ -256,6 +257,7 @@ final class MeetingRecordingFlowCoordinator {
             // capture-failure that landed during the await may have moved
             // the pill to `.transcribing` / `.error`; we must not stomp it.
             guard self.pillViewModel.canTogglePause else { return }
+            self.pausePublicationRevision &+= 1
             self.pillViewModel.state = wantPause ? .paused : .recording
             self.pillController?.refreshState()
             self.panelViewModel?.isPaused = wantPause
@@ -1223,70 +1225,72 @@ final class MeetingRecordingFlowCoordinator {
         pillPollingTask = Task { @MainActor [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
-                let micLevel = Self.displayLevel(await meetingRecordingService.micLevel)
-                let systemLevel = Self.displayLevel(await meetingRecordingService.systemLevel)
-                let elapsedSeconds = await meetingRecordingService.elapsedSeconds
-                let captureMode = await meetingRecordingService.captureMode
-                let microphoneMuteState = await meetingRecordingService.microphoneMuteState
-                let captureHealth = await meetingRecordingService.captureHealth
-
-                guard !Task.isCancelled else { break }
-                if pillViewModel.micLevel != micLevel {
-                    pillViewModel.micLevel = micLevel
-                }
-                if pillViewModel.systemLevel != systemLevel {
-                    pillViewModel.systemLevel = systemLevel
-                }
-                if pillViewModel.elapsedSeconds != elapsedSeconds {
-                    pillViewModel.elapsedSeconds = elapsedSeconds
-                }
-                if pillViewModel.captureHealth != captureHealth {
-                    pillViewModel.captureHealth = captureHealth
-                }
-                if let panelViewModel {
-                    if panelViewModel.elapsedSeconds != elapsedSeconds {
-                        panelViewModel.elapsedSeconds = elapsedSeconds
-                    }
-                    // While actively recording the panel orbs are driven by the
-                    // fast (~30 fps) glow loop; this 1 s loop only settles them
-                    // (→ 0) when paused/stopped so they don't freeze on the last
-                    // live frame. Writing levels here every second while recording
-                    // would also visibly fight the fast loop's smoother updates.
-                    if captureMode != .full {
-                        if panelViewModel.micLevel != micLevel {
-                            panelViewModel.micLevel = micLevel
-                        }
-                        if panelViewModel.systemLevel != systemLevel {
-                            panelViewModel.systemLevel = systemLevel
-                        }
-                    }
-                    if panelViewModel.isMicrophoneMuted != microphoneMuteState.isMuted {
-                        panelViewModel.isMicrophoneMuted = microphoneMuteState.isMuted
-                    }
-                    if panelViewModel.canToggleMicrophoneMute != microphoneMuteState.canMute {
-                        panelViewModel.canToggleMicrophoneMute = microphoneMuteState.canMute
-                    }
-                    if panelViewModel.captureHealth != captureHealth {
-                        panelViewModel.captureHealth = captureHealth
-                    }
-                }
-                // Pause/resume reconciliation (issue #235). The user-facing
-                // toggle does an optimistic flip; this poll is the
-                // authoritative source if the optimistic flip diverged from
-                // the service (e.g., capture failed before the service saw
-                // the pause call). Only flip pillViewModel.state between
-                // .recording and .paused — never override .completing /
-                // .transcribing / .completed / .error from here.
-                let serviceIsPaused = (captureMode == .paused)
-                if pillViewModel.state == .recording, serviceIsPaused {
-                    pillViewModel.state = .paused
-                } else if pillViewModel.state == .paused, !serviceIsPaused, captureMode == .full {
-                    pillViewModel.state = .recording
-                }
-                panelViewModel?.isPaused = serviceIsPaused
+                await refreshPillState()
                 try? await Task.sleep(for: .seconds(1))
             }
         }
+    }
+
+    private func refreshPillState() async {
+        let pauseRevision = pausePublicationRevision
+        let micLevel = Self.displayLevel(await meetingRecordingService.micLevel)
+        let systemLevel = Self.displayLevel(await meetingRecordingService.systemLevel)
+        let elapsedSeconds = await meetingRecordingService.elapsedSeconds
+        let captureMode = await meetingRecordingService.captureMode
+        let microphoneMuteState = await meetingRecordingService.microphoneMuteState
+        let captureHealth = await meetingRecordingService.captureHealth
+
+        guard !Task.isCancelled else { return }
+        if pillViewModel.micLevel != micLevel {
+            pillViewModel.micLevel = micLevel
+        }
+        if pillViewModel.systemLevel != systemLevel {
+            pillViewModel.systemLevel = systemLevel
+        }
+        if pillViewModel.elapsedSeconds != elapsedSeconds {
+            pillViewModel.elapsedSeconds = elapsedSeconds
+        }
+        if pillViewModel.captureHealth != captureHealth {
+            pillViewModel.captureHealth = captureHealth
+        }
+        if let panelViewModel {
+            if panelViewModel.elapsedSeconds != elapsedSeconds {
+                panelViewModel.elapsedSeconds = elapsedSeconds
+            }
+            // While actively recording the panel orbs are driven by the
+            // fast (~30 fps) glow loop; this 1 s loop only settles them
+            // (→ 0) when paused/stopped so they don't freeze on the last
+            // live frame. Writing levels here every second while recording
+            // would also visibly fight the fast loop's smoother updates.
+            if captureMode != .full {
+                if panelViewModel.micLevel != micLevel {
+                    panelViewModel.micLevel = micLevel
+                }
+                if panelViewModel.systemLevel != systemLevel {
+                    panelViewModel.systemLevel = systemLevel
+                }
+            }
+            if panelViewModel.isMicrophoneMuted != microphoneMuteState.isMuted {
+                panelViewModel.isMicrophoneMuted = microphoneMuteState.isMuted
+            }
+            if panelViewModel.canToggleMicrophoneMute != microphoneMuteState.canMute {
+                panelViewModel.canToggleMicrophoneMute = microphoneMuteState.canMute
+            }
+            if panelViewModel.captureHealth != captureHealth {
+                panelViewModel.captureHealth = captureHealth
+            }
+        }
+        // A confirmed toggle may have published while these service reads
+        // suspended. Keep its newer pause state, while still updating health
+        // and levels above. Polling only reconciles recording/paused states.
+        guard pausePublicationRevision == pauseRevision else { return }
+        let serviceIsPaused = (captureMode == .paused)
+        if pillViewModel.state == .recording, serviceIsPaused {
+            pillViewModel.state = .paused
+        } else if pillViewModel.state == .paused, !serviceIsPaused, captureMode == .full {
+            pillViewModel.state = .recording
+        }
+        panelViewModel?.isPaused = serviceIsPaused
     }
 
     private static func displayLevel(_ level: Float) -> Float {
@@ -1760,6 +1764,15 @@ extension MeetingRecordingFlowCoordinator {
 
     func testHook_waitForActionTask() async {
         await actionTask?.value
+    }
+
+    func testHook_refreshPillState(panel: MeetingRecordingPanelViewModel) async {
+        panelViewModel = panel
+        await refreshPillState()
+    }
+
+    func testHook_waitForPauseToggleTask() async {
+        await pauseToggleTask?.value
     }
 
     var testHook_actionTask: Task<Void, Never>? {

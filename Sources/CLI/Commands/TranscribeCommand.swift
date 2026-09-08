@@ -667,7 +667,10 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
                 podcastResolver: PodcastEpisodeResolver(),
                 podcastSearchResolver: PodcastQueryResolver(),
                 podcastAudioFetcher: PodcastAudioDownloader(),
-                diarizationService: diarizationService
+                diarizationService: diarizationService,
+                meetingArtifactStore: MeetingArtifactStore(
+                    speakerAttributionReader: SpeakerAttributionReadService(dbQueue: dbManager.dbQueue)
+                )
             )
 
             var stdoutEmission: TranscribeStdoutEmission = .none

@@ -136,6 +136,18 @@ with human progress/status kept off stdout.
   `wordRange.startIndex` / `wordRange.endIndexExclusive` into the same payload's
   `wordTimestamps` array. Callers that need stable citations should prefer
   these persisted segments over re-segmenting words.
+- `export --stdout --format txt` uses the same formatted output as TXT file
+  export, with default metadata, timestamps, and speaker labels. JSON transcript
+  text fields remain available for callers needing bare stored text. TXT/Markdown
+  exports keep unassigned paragraphs separate; if named speakers exist, those
+  paragraphs may be headed `Unassigned`.
+- `prompts run` sends rich timestamped speaker context when timings exist;
+  edited transcripts and untimed recordings use the stored-text fallback.
+- `export --format json`, `meetings show --json`, `meetings transcript
+  --format json`, and `meetings export --stdout --format json` expose the
+  effective speaker attribution. They include additive
+  `speakerCorrectionsApplied` and `speakerCorrectionRevision` fields; revision
+  `0` with `false` means the automatic baseline is active.
 - `meetings show --json` meeting objects can include optional `startContext`
   for meeting rows. When present it contains `triggerKind`, `sourceMode`, and
   optional `frontmostApplication` (`bundleIdentifier`, `localizedName`).

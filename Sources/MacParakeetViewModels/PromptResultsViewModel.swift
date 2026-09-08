@@ -108,6 +108,7 @@ public final class PromptResultsViewModel {
     /// also lived through this property was removed in v0.7.6.
     private var transcriptionRepo: TranscriptionRepositoryProtocol?
     private var meetingArtifactStore: MeetingArtifactStoring?
+    private var speakerAttributionReader: SpeakerAttributionReading?
     private var configStore: LLMConfigStoreProtocol?
     private var cliConfigStore: LocalCLIConfigStore?
     private var llmClient: LLMClientProtocol?
@@ -212,6 +213,7 @@ public final class PromptResultsViewModel {
         promptResultRepo: PromptResultRepositoryProtocol?,
         transcriptionRepo: TranscriptionRepositoryProtocol? = nil,
         meetingArtifactStore: MeetingArtifactStoring? = nil,
+        speakerAttributionReader: SpeakerAttributionReading? = nil,
         configStore: LLMConfigStoreProtocol? = nil,
         llmClient: LLMClientProtocol? = nil,
         cardGenerator: CardGenerating? = nil,
@@ -222,6 +224,7 @@ public final class PromptResultsViewModel {
         self.promptResultRepo = promptResultRepo
         self.transcriptionRepo = transcriptionRepo
         self.meetingArtifactStore = meetingArtifactStore
+        self.speakerAttributionReader = speakerAttributionReader
         self.configStore = configStore
         self.llmClient = llmClient
         self.cardGenerator = cardGenerator
@@ -753,12 +756,20 @@ public final class PromptResultsViewModel {
         else { return }
 
         do {
-            guard let transcription = try transcriptionRepo.fetch(id: transcriptionId),
-                  transcription.sourceType == .meeting
-            else { return }
-            let promptResults = try promptResultRepo.fetchAll(transcriptionId: transcriptionId)
+            let reader = speakerAttributionReader
             _ = try await Task.detached(priority: .utility) {
-                try await meetingArtifactStore.materialize(
+                guard let transcription = try transcriptionRepo.fetch(id: transcriptionId),
+                    transcription.sourceType == .meeting
+                else { return nil as MeetingArtifactSnapshot? }
+                let projection = try reader?.resolve(transcription: transcription)
+                let promptResults = try promptResultRepo.fetchAll(transcriptionId: transcriptionId)
+                if let projection {
+                    return try await meetingArtifactStore.materialize(
+                        projection: projection,
+                        promptResults: promptResults
+                    )
+                }
+                return try await meetingArtifactStore.materialize(
                     transcription: transcription,
                     promptResults: promptResults
                 )

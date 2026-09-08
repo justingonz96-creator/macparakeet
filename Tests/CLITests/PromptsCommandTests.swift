@@ -5,6 +5,105 @@ import XCTest
 
 final class PromptsCommandTests: XCTestCase {
 
+    func testPromptCompletionRefreshesArtifactsFromLatestMeetingProjection() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prompt-artifact-refresh-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let manager = try DatabaseManager()
+        let transcriptions = TranscriptionRepository(dbQueue: manager.dbQueue)
+        let results = PromptResultRepository(dbQueue: manager.dbQueue)
+        let reader = SpeakerAttributionReadService(dbQueue: manager.dbQueue)
+        let meeting = artifactRefreshMeeting(folder: folder)
+        try transcriptions.save(meeting)
+
+        // This is the immutable input captured before the provider request.
+        let input = try XCTUnwrap(reader.resolve(transcriptionId: meeting.id))
+        _ = try await SpeakerCorrectionService(dbQueue: manager.dbQueue).apply(
+            transcriptionId: meeting.id,
+            command: .rename(speakerID: "S1", label: "Alice"),
+            expectedFingerprint: input.attribution.fingerprint,
+            expectedRevision: 0
+        )
+        XCTAssertNotNil(try transcriptions.updateFileName(id: meeting.id, fileName: "Updated title"))
+        XCTAssertTrue(try transcriptions.updateUserNotes(id: meeting.id, userNotes: "Updated notes"))
+        let result = makeStoredPromptRunResult(
+            transcript: input.effectiveTranscription,
+            prompt: Prompt(name: "Summary", content: "Summarize", includeMeetingNotes: true),
+            extraInstructions: nil,
+            output: "Saved summary",
+            userNotesSnapshot: input.effectiveTranscription.userNotes,
+            effectiveSettings: nil
+        )
+        try results.save(result)
+
+        await refreshMeetingArtifacts(
+            transcriptionID: meeting.id,
+            attributionReader: reader,
+            resultRepo: results
+        )
+
+        let markdown = try String(
+            contentsOf: folder.appendingPathComponent(MeetingArtifactStore.markdownFileName),
+            encoding: .utf8
+        )
+        XCTAssertTrue(markdown.contains("Updated title"))
+        XCTAssertTrue(markdown.contains("Updated notes"))
+        XCTAssertTrue(markdown.contains("Alice"))
+        XCTAssertFalse(markdown.contains("Speaker 1"))
+        let artifactResults = try String(
+            contentsOf: folder.appendingPathComponent(MeetingArtifactStore.promptResultsFileName),
+            encoding: .utf8
+        )
+        XCTAssertTrue(artifactResults.contains("Saved summary"))
+        XCTAssertEqual(input.effectiveTranscription.speakers?.first?.label, "Speaker 1")
+        XCTAssertEqual(input.effectiveTranscription.userNotes, "Original notes")
+        XCTAssertEqual(
+            try results.fetchAll(transcriptionId: meeting.id).first(where: { $0.id == result.id })?.userNotesSnapshot,
+            "Original notes"
+        )
+    }
+
+    func testPromptCompletionDoesNotRecreateArtifactsForDeletedMeeting() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prompt-artifact-deleted-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let manager = try DatabaseManager()
+        let transcriptions = TranscriptionRepository(dbQueue: manager.dbQueue)
+        let reader = SpeakerAttributionReadService(dbQueue: manager.dbQueue)
+        let meeting = artifactRefreshMeeting(folder: folder)
+        try transcriptions.save(meeting)
+        let input = try XCTUnwrap(reader.resolve(transcriptionId: meeting.id))
+        XCTAssertTrue(try transcriptions.delete(id: meeting.id))
+
+        await refreshMeetingArtifacts(
+            transcriptionID: input.automaticTranscription.id,
+            attributionReader: reader,
+            resultRepo: PromptResultRepository(dbQueue: manager.dbQueue)
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
+    }
+
+    private func artifactRefreshMeeting(folder: URL) -> Transcription {
+        let words = [
+            WordTimestamp(word: "Hello", startMs: 0, endMs: 200, confidence: 1, speakerId: "S1"),
+            WordTimestamp(word: "world.", startMs: 220, endMs: 500, confidence: 1, speakerId: "S1"),
+        ]
+        let speakers = [SpeakerInfo(id: "S1", label: "Speaker 1")]
+        return Transcription(
+            fileName: "Original title",
+            meetingArtifactFolderPath: folder.path,
+            rawTranscript: "Hello world.",
+            wordTimestamps: words,
+            speakerCount: 1,
+            speakers: speakers,
+            transcriptSegments: TranscriptSegmenter.materializeSegments(words: words, speakers: speakers),
+            status: .completed,
+            sourceType: .meeting,
+            userNotes: "Original notes"
+        )
+    }
+
     func testStoredPromptRunResultUsesEffectiveSettingsReceipt() {
         let transcript = Transcription(
             fileName: "Meeting",
