@@ -578,21 +578,14 @@ struct PromptLibraryView: View {
                     if viewModel.hasCustomTargetingRules(for: prompt) {
                         Label("Custom availability", systemImage: "slider.horizontal.3")
                     } else if !targetLabels.isEmpty {
-                        ForEach(Array(targetLabels.prefix(3).enumerated()), id: \.element.id) { index, label in
+                        ForEach(targetLabels.prefix(3)) { label in
+                            let tint = MeetingLabelTint.color(for: label)
                             Label(label.name, systemImage: "tag.fill")
-                                .foregroundStyle(
-                                    MeetingClassificationTint.color(
-                                        for: label.colorToken,
-                                        fallback: index + 1
-                                    )
-                                )
+                                .foregroundStyle(tint)
                                 .padding(.horizontal, 7)
                                 .padding(.vertical, 3)
                                 .background(
-                                    MeetingClassificationTint.color(
-                                        for: label.colorToken,
-                                        fallback: index + 1
-                                    ).opacity(0.1)
+                                    tint.opacity(0.1)
                                 )
                                 .clipShape(Capsule())
                         }
@@ -1051,10 +1044,9 @@ struct PromptLibraryView: View {
                 }
                 .buttonStyle(.plain)
 
-                ForEach(Array(promptTargetingLabels(selection: selection).enumerated()), id: \.element.id) {
-                    index, label in
+                ForEach(promptTargetingLabels(selection: selection)) { label in
                     let selected = !hasCustomRules && selection.wrappedValue.contains(label.id)
-                    let tint = MeetingClassificationTint.color(for: label.colorToken, fallback: index + 1)
+                    let tint = MeetingLabelTint.color(for: label)
                     Button {
                         if selected {
                             selection.wrappedValue.remove(label.id)

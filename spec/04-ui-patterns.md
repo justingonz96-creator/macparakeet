@@ -122,7 +122,7 @@ The tile body is informational. Only the visible Start and Stop capsules are rea
 
 ### Library Layouts and Meeting States
 
-When list mode is selected, the view renders a date-grouped list (`Today` / `Yesterday` / `Previous 7 Days` / `Previous 30 Days` / `{Month Year}`) using `MeetingDateGroupHeader` + `MeetingRowCard`. Meeting rows surface saved-audio state directly (`Audio saved`, `Audio removed`, or `Audio missing`) so playback/retranscription expectations are visible before the user opens a menu.
+When list mode is selected, the view renders a date-grouped list (`Today` / `Yesterday` / `Previous 7 Days` / `Previous 30 Days` / `{Month Year}`) using `MeetingDateGroupHeader` + `MeetingRowCard`. Routine retained-audio state does not add repeated text pills: retained audio has no marker, while no retained path uses a quiet crossed-waveform icon with a tooltip and keyboard-accessible explanation that the transcript remains available. A no-retained-path state is not proof that a user deleted the audio. Unexpected missing audio remains an explicit amber warning so recovery expectations stay visible before the user opens a menu.
 
 A finalized meeting whose `meetingCaptureReport.quality` is `partial` shows the
 existing **Partial audio** badge in both its Library row and thumbnail card, and
@@ -160,14 +160,21 @@ contextual actions, pagination, export, and bulk selection behave identically in
 either layout.
 
 Thumbnail cards show transcription failure, stopped transcription, and pending
-background transcription independently of saved-audio state. Queued and running
+background transcription independently of routine retained-audio state. Queued and running
 finalization both use the persisted `processing` status and the existing
 **Transcribing** presentation, never a completed claim. A stale or partial snippet
-must not hide a card's non-completed status. Card metadata grows to fit lifecycle,
-saved-audio, recovery, and partial-capture labels rather than clipping them to a
-fixed height.
+must not hide a card's non-completed status. Missing audio, recovery, and
+partial-capture warnings remain explicit rather than being compressed into a
+routine state icon.
 List rows retain their existing snippet-first preview behavior, including while
 a meeting with saved transcript text is being retranscribed.
+
+Favorited Library items show a small filled amber star beside their title in
+grid, list, and transcript detail. It is a passive status marker with a
+**Favorite** tooltip and accessibility label; the existing item menu keeps the
+Add/Remove Favorite action. Unfavorited items show no empty star. The marker
+applies consistently to meetings, imports, and URLs without changing favorite
+persistence or filtering.
 
 Opening an empty processing meeting row must preserve that same lifecycle
 truth. The transcript pane shows an indeterminate "Transcribing meeting"
@@ -190,8 +197,9 @@ Label editing uses a compact popover anchored to the action that opened it from
 Library, the Meetings workspace, or any saved-transcription detail. Labels are
 shared by meetings, podcasts, videos, and local files. The popover floats above
 the current context without masking or resizing it and is never presented as a
-blocking sheet. It does not repeat the transcription title or add its own
-heading; clicking outside or pressing Escape dismisses it.
+blocking sheet. It has a **Labels** heading, a focused full-width **Search or
+create a label** field, and a content-sized results region capped to the space
+available for the popover. Clicking outside or pressing Escape dismisses it.
 
 The source tabs — Meetings, Podcasts, Video, and Local — are the transcription
 types. The product does not add a second, user-defined "meeting type" taxonomy.
@@ -205,16 +213,28 @@ podcasts, videos, and local files. The same availability gate applies before
 automatic generation; the prompt's existing per-source Auto-Run setting remains
 the source of truth for whether matching content runs automatically.
 
-Library's label filter opens a compact popover with an integrated search field.
-Its options use colored, wrapping chips instead of vertical menu rows, allowing
-multi-selection at a glance in every source tab.
+The label editor keeps assigned labels in a separate wrapping token area below
+search. Available labels appear even with an empty query; every match is
+reachable by scrolling, and a valid unmatched query puts **Create “name”** next
+to the available-label results. Selected and available rows use a color dot,
+name, and state icon; tokens retain a reachable remove action. Pressing Return
+reuses an exact match or creates and immediately assigns a new value. Long
+labels truncate visually only after preserving their full tooltip and
+accessibility name.
 
-Labels use the same search-or-create semantics with live suggestions from
-existing labels. Assigned labels render as removable
-tokens on the same row as the input; the token area scrolls horizontally so the
-control stays one line tall. Pressing Return reuses an exact match or
-creates and immediately assigns a new value; there is no separate **Add**
-button.
+Every rendering of a label resolves its color from the same stored label ID:
+supported persisted tokens (`coral`/`orange`, `green`, `amber`/`yellow`, `red`,
+`purple`, and `blue`) take precedence; missing or unsupported tokens map
+deterministically from UUID bytes. Reordering, renaming, filtering, or restart
+does not change the color. This is display-only: no migration, stored-token
+rewrite, or color picker is implied.
+
+Library's compact **Labels** / **Labels · N** filter trigger opens a searchable
+vertical option list with color dots, names, and selected checks. It states
+**Match any selected label**, retains the existing OR query semantics, offers
+**Show selected**, and provides a scoped Clear action. Search or Show selected
+only changes visible options; neither removes a label assignment. No Any/All
+mode or persistent toolbar row of filter pills is added.
 
 ### Saved Meeting Notes
 

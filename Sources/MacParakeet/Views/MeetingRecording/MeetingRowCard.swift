@@ -25,6 +25,11 @@ struct MeetingRowCard<MenuContent: View>: View {
             HStack(alignment: .top, spacing: DesignSystem.Spacing.md) {
                 rowActivationButton
 
+                if audioState == .removed {
+                    MeetingAudioStateChip(state: audioState)
+                        .padding(.top, 2)
+                }
+
                 if showsRetryButton {
                     retryButton
                         .padding(.top, 4)
@@ -151,6 +156,11 @@ struct MeetingRowCard<MenuContent: View>: View {
                 .contentTransition(.opacity)
                 .layoutPriority(1)
 
+            if transcription.isFavorite {
+                FavoriteStatusMarker()
+                    .fixedSize()
+            }
+
             if sourceLabelStyle != .hidden {
                 sourceInline
             }
@@ -186,7 +196,7 @@ struct MeetingRowCard<MenuContent: View>: View {
 
     @ViewBuilder
     private var audioInline: some View {
-        if showsAudioInline {
+        if audioState == .missing {
             MeetingAudioStateChip(state: audioState)
         }
     }
@@ -366,7 +376,7 @@ struct MeetingRowCard<MenuContent: View>: View {
         case .saved:
             return "Transcription failed — audio is saved"
         case .removed:
-            return "Transcription failed — audio removed"
+            return "Transcription failed — audio unavailable"
         case .missing:
             return "Transcription failed — audio missing"
         case .notMeeting:
@@ -398,14 +408,8 @@ struct MeetingRowCard<MenuContent: View>: View {
             : "Saved meeting audio is required before retrying transcription"
     }
 
-    private var showsAudioInline: Bool {
-        guard audioState != .notMeeting else { return false }
-        return transcription.status != .error && transcription.status != .cancelled
-    }
-
     private func statusLine(_ prefix: String) -> String {
-        guard let suffix = audioStateSuffix else { return prefix }
-        return "\(prefix) · \(suffix)"
+        prefix
     }
 
     private var audioStateSuffix: String? {
@@ -413,7 +417,7 @@ struct MeetingRowCard<MenuContent: View>: View {
         case .saved:
             return "audio saved"
         case .removed:
-            return "audio removed"
+            return "audio unavailable"
         case .missing:
             return "audio missing"
         case .notMeeting:
