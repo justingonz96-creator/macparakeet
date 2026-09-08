@@ -25,6 +25,12 @@ against the published CLI behavior. JSON transcript fields already provide an
 alternative for consumers, but do not make the changed default compatible.
 This audit does not change CLI behavior or select a release version.
 
+**Resolution (PR #982, 2026-09-07):** the change shipped as a deliberate major
+bump. `CLI.cliVersion` is `4.0.0`, the [CLI changelog](../../Sources/CLI/CHANGELOG.md)
+records it under a `Breaking` heading, and
+[cli-json-v1.md](../../spec/contracts/cli-json-v1.md) documents the JSON
+fallback for callers that need bare stored text. JSON schema v1 is unchanged.
+
 ## 2. Reconsider automatic legacy-license validation in free builds
 
 **Observed:** [AppEnvironmentConfigurer](../../Sources/MacParakeet/App/AppEnvironmentConfigurer.swift)

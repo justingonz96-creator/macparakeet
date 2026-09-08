@@ -17,6 +17,7 @@ python3 docs/qa/2026-09-07-0.8.0/scripts/verify_cli_contracts.py \
   --candidate 8548c099af5ee2ab0ed4dd9efe757d85c498cca0
 ```
 
+- The runner now defaults to expecting CLI `4.0.0` (PR #982). Reproducing this run-02 against the `3.3.0` candidate binary requires `--expected-cli-version 3.3.0`. The runner SHA-256 recorded below identifies the pre-#982 runner that produced run-02, not the current file.
 - Executed binary SHA-256: `db8626c81735d0484878f396cae83c6a911a6cba9ff97d0a9ee139eb2cdcf690`.
 - Candidate source identity was supplied by root's build record; `--version` and `spec --json` independently returned CLI `3.3.0`.
 - Runner SHA-256: `7fd4ee9979a7c77e912fda2fd44074e84db0abea4dd7899ce4d1bcf7b65a0271`.
