@@ -171,7 +171,8 @@ When a grid card has locally cached or successfully loaded remote artwork, that
 real artwork remains first. A remote image that is still loading keeps its loading
 surface. When no artwork exists or remote loading fails, the 16:9 area shows a
 static Branching Field cover derived only from the transcription UUID and fixed
-v1 recipe. The selected curated palette is decorative; it does not encode source,
+v1 recipe. Its legible focal mass grows into a bounded, fine recursive canopy;
+the selected curated palette is decorative and does not encode source,
 status, audio, transcript, confidence, title, duration, or time. The cover has no
 text or animation, so existing title, duration, source, and lifecycle chrome stay
 legible and authoritative outside the artwork.

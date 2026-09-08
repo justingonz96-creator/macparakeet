@@ -7,7 +7,8 @@ import Foundation
 /// this small value without reading audio, transcript, database, or cache state.
 public struct BranchingRecordingCoverRecipe: Sendable, Equatable {
     static let version = 1
-    static let maximumLimbCount = 96
+    static let maximumLimbCount = 192
+    static let maximumDepth = 4
     /// A bounded amount of off-canvas growth keeps the clipped composition
     /// organic without making a Canvas redraw unbounded.
     static let maximumNormalizedCoordinateMagnitude = 2.0
@@ -39,8 +40,10 @@ public struct BranchingRecordingCoverRecipe: Sendable, Equatable {
         )
 
         var generatedLimbs: [BranchingRecordingCoverLimb] = []
-        // Six roots remain safely below the 96-limb cap even when every
-        // descendant splits at each of the three bounded depths (6 × 15 = 90).
+        // Six roots remain below the 192-limb cap even when every descendant
+        // splits at each of the five bounded generations (6 × 31 = 186). The
+        // cap is therefore a hard safety guard, not a traversal order that can
+        // erase a late root's fine structure.
         let primaryCount = 5 + geometryRandom.nextInt(upperBound: 2)
         let phase = geometryRandom.nextUnit() * Double.pi * 2
 
@@ -52,10 +55,10 @@ public struct BranchingRecordingCoverRecipe: Sendable, Equatable {
             Self.appendLimb(
                 from: focalPoint,
                 angle: angle,
-                // Keep the first generation compact enough that its smaller
-                // descendants remain legible inside a thumbnail.
-                length: 0.14 + geometryRandom.nextUnit() * 0.065,
-                width: 0.060 + geometryRandom.nextUnit() * 0.025,
+                // The focal mass stays legible at card scale while four
+                // smaller generations give the cover its recursive canopy.
+                length: 0.155 + geometryRandom.nextUnit() * 0.055,
+                width: 0.032 + geometryRandom.nextUnit() * 0.016,
                 depth: 0,
                 random: &geometryRandom,
                 limbs: &generatedLimbs
@@ -101,7 +104,7 @@ public struct BranchingRecordingCoverRecipe: Sendable, Equatable {
         random: inout SplitMix64,
         limbs: inout [BranchingRecordingCoverLimb]
     ) {
-        guard limbs.count < maximumLimbCount, depth <= 3, length >= 0.035 else { return }
+        guard limbs.count < maximumLimbCount, depth <= maximumDepth, length >= 0.012 else { return }
 
         let bend = (random.nextUnit() - 0.5) * (0.36 + Double(depth) * 0.08)
         let endAngle = angle + bend
@@ -127,19 +130,19 @@ public struct BranchingRecordingCoverRecipe: Sendable, Equatable {
                 control: control,
                 end: endpoint,
                 startWidth: width,
-                endWidth: width * (0.30 + random.nextUnit() * 0.16),
+                endWidth: width * (0.34 + random.nextUnit() * 0.14),
                 depth: depth,
                 pigment: pigment,
-                opacity: 0.84 - Double(depth) * 0.14
+                opacity: 0.82 - Double(depth) * 0.10
             )
         )
 
-        guard depth < 3 else { return }
+        guard depth < maximumDepth else { return }
         let childCount: Int
         if depth == 0 {
             childCount = 2
         } else {
-            childCount = random.nextUnit() < 0.68 ? 2 : 1
+            childCount = random.nextUnit() < 0.83 ? 2 : 1
         }
 
         for childIndex in 0..<childCount where limbs.count < maximumLimbCount {
@@ -148,8 +151,8 @@ public struct BranchingRecordingCoverRecipe: Sendable, Equatable {
             appendLimb(
                 from: endpoint,
                 angle: endAngle + side * spread,
-                length: length * (0.53 + random.nextUnit() * 0.10),
-                width: width * (0.56 + random.nextUnit() * 0.07),
+                length: length * (0.55 + random.nextUnit() * 0.08),
+                width: width * (0.54 + random.nextUnit() * 0.08),
                 depth: depth + 1,
                 random: &random,
                 limbs: &limbs

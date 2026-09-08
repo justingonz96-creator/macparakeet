@@ -1,7 +1,7 @@
 # Branching recording covers — implementation plan
 
-Status: approved for implementation and PR/merge on September 8, 2026.
-Base: origin/main edfaa4889b8beac34b28712829d3850f88bd8fd3; land after Library UI polish.
+Status: v1 merged to development; Recursive Canopy refinement approved before release on September 8, 2026.
+Base: origin/main 5760cec90394ec9ed3fe7fd15e1d557c0677994e.
 
 ## Goal
 Replace generic missing-artwork placeholders with a stable, beautiful Branching Field cover using bounded native drawing that does not interfere with Library scrolling or capture.
@@ -10,6 +10,16 @@ Replace generic missing-artwork placeholders with a stable, beautiful Branching 
 User selected Branching Field above harmonic and orbital alternatives. Reference: seed72841659, density6, disruption0.44, negative space0.28; three approved curated palettes Tidal stone, Lichen dusk, Plum mineral. Automatically select family and restrained variant from domain-separated deterministic UUID seed streams. No product palette picker. Approximate uniform distribution, not quotas; adding/sorting/deleting recordings cannot recolor others. Color is decorative, never label/status identity.
 
 Use the local study as visual reference: /Users/dmoon/code/macparakeet/docs/design/2026-09-08-recording-art/index.html (renderBranch, paletteForSeed and paletteMap). Do not copy p5 runtime/HTML into the app. Preserve organic branch silhouette, hierarchy, small warm center; make primary limbs legible at thumbnail size. No animation/timers/particles needing continuous updates. Keep title, duration and status in existing card chrome.
+
+The user selected the Recursive Canopy refinement over a denser filigree
+alternative and a Mandelbrot comparison study. Before the first release, v1
+keeps the same UUID streams, focal-point range, and curated palettes while its
+geometry changes from three to four descendant generations, at most 192 limbs,
+and thinner primary limbs. The 192 hard cap is above the 186-limb theoretical
+six-root, full-binary maximum, so the cap cannot remove a late root merely
+because earlier roots branched densely. This is an explicit pre-release v1
+revision; after release a visual recipe change needs a new version rather than
+silently changing an existing identity.
 
 ## Stable inputs and architecture
 UUID only plus fixed version1 recipe, explicit reproducible PRNG and byte-order contract; not Swift hashValue, title, duration, text, timestamps, confidence, source path or audio data. No audio reads/FFT, network, inference, migration, sidecars or required post-processing job. Same item stays recognizable after rename/transcript edits/reprocess/restart/audio removal. V1 fixed globally; future selective v2 needs explicit version selection, do not promise preservation from cache alone.
@@ -31,6 +41,16 @@ Focused checks used `swift test --jobs 4 --filter BranchingRecordingCoverRecipeT
 On the final focused run, the complete Branching Field recipe plus renderer and PNG pipeline measured cold p50/p95 5.36/6.14 ms and warm p50/p95 5.38/6.49 ms across 24 UUIDs; twelve sequential covers took 62.45 ms. A flat waveform placeholder through the same pipeline measured p50/p95 1.41/3.19 ms and 18.89 ms for twelve. These are native synthetic export measurements, not a library scrolling profile; they do not establish a cache need or a no-lag claim. The implementation remains uncached and static pending combined UI QA.
 
 The combined-suite attempt on the stacked UI-plus-art head did not pass: `/tmp/macparakeet-library-art-combined-full-20260908.log` exited 1 after 5,855 XCTest tests with 21 skips and 46 assertion failures across 22 `HotkeyManagerTests`; Swift Testing reported 29 passed. At the same code head, `/tmp/macparakeet-hotkey-focused-20260908-rerun.log` ran the isolated `HotkeyManagerTests` 87/87 passed. Independent UI review found the Hotkey source and tests byte-identical to `origin/main`; all 22 failing cases use the live physical-keyboard default without injection, and the host state was not captured. This is evidence of a likely pre-existing test-isolation flake, not a full-suite pass. No source or test change was made for it; hosted exact-head CI remains required.
+
+## Recursive Canopy refinement evidence (in progress)
+The refined recipe preserves the static, UUID-only Canvas architecture with no
+cache or background job. A static arithmetic audit over 512 synthetic UUIDs
+produced 95–178 limbs per cover; every sample reached depth four and stayed
+within 1.423 normalized coordinate magnitude, below the accepted clipped bound
+of 2.0. Focused model/view tests, a direct 320×180 pt @2x native gallery, and
+the same native renderer/PNG measurement against the prior `origin/main`
+recipe are pending the coordinated SwiftPM build slot. Browser study timings are
+not used as native evidence.
 
 ## Execution and gates
 Read project instructions and governing specs. Swift6 clean build, focused checks only. Limit build concurrency (--jobs4) due previous process exhaustion. Root owns single final full swift test across combined changes after rebase; do not run full suite/gate baseline yourself. Do not launch/restart user's running app or publish a release. Commit with rich intent, push branch, open PR main, but do not merge. Root owns independent review and exact-head CI/merge. Report PR URL/head, files, native measurements and method, test counts, deviations and limitations honestly. Do not claim no lag without actual profiling.

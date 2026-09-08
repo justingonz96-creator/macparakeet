@@ -33,7 +33,7 @@ final class BranchingRecordingCoverRecipeTests: XCTestCase {
         XCTAssertEqual(recipe.palette.variant, 0)
         XCTAssertEqual(quantized(recipe.focalPoint.x), 453_199)
         XCTAssertEqual(quantized(recipe.focalPoint.y), 435_403)
-        XCTAssertEqual(recipeDigest(recipe), 0xE13C_E9C0_6B60_0272)
+        XCTAssertEqual(recipeDigest(recipe), 0x03F0_77C3_64BF_6AB9)
     }
 
     func testRepresentativeUUIDsProduceDistinctBoundedFiniteGeometry() throws {
@@ -52,6 +52,11 @@ final class BranchingRecordingCoverRecipeTests: XCTestCase {
             XCTAssertLessThanOrEqual(recipe.limbs.count, BranchingRecordingCoverRecipe.maximumLimbCount)
             XCTAssertFalse(recipe.limbs.isEmpty)
             XCTAssertTrue((5...6).contains(recipe.limbs.filter { $0.depth == 0 }.count))
+            XCTAssertEqual(recipe.limbs.map(\.depth).max(), BranchingRecordingCoverRecipe.maximumDepth)
+            XCTAssertGreaterThan(
+                recipe.limbs.filter { $0.depth == BranchingRecordingCoverRecipe.maximumDepth }.count,
+                recipe.limbs.filter { $0.depth == 0 }.count
+            )
             XCTAssertTrue(recipe.focalPoint.x.isFinite)
             XCTAssertTrue(recipe.focalPoint.y.isFinite)
             XCTAssertTrue(
