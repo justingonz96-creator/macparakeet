@@ -106,6 +106,47 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
         XCTAssertEqual(vm.filteredTranscriptions.first?.fileName, "episode.mp3")
     }
 
+    func testSourceLabelStyleStaysWithDisplayedRowsWhileFilterReloads() async {
+        let mockRepo = MockTranscriptionRepository()
+        let podcast = Transcription(fileName: "episode.mp3", status: .completed, sourceType: .podcast)
+        let local = Transcription(fileName: "recording.m4a", status: .completed, sourceType: .file)
+        mockRepo.transcriptions = [podcast, local]
+
+        let viewModel = TranscriptionLibraryViewModel()
+        viewModel.configure(transcriptionRepo: mockRepo)
+        viewModel.filter = .podcast
+        await viewModel.loadTranscriptions().value
+
+        XCTAssertEqual(viewModel.filteredTranscriptions.map(\.id), [podcast.id])
+        XCTAssertEqual(viewModel.displayedSourceLabelStyle, .hidden)
+
+        let gate = StaleFetchGate()
+        mockRepo.fetchAllHandler = { [mockRepo, gate] _ in
+            gate.blockFirstFetchUntilAllowed()
+            return mockRepo.transcriptions
+        }
+
+        viewModel.filter = .all
+        let reloadStarted = await Task.detached { gate.waitForFirstFetchStarted() }.value
+        XCTAssertTrue(reloadStarted)
+        guard reloadStarted else { return }
+
+        XCTAssertTrue(viewModel.isLoading)
+        XCTAssertEqual(viewModel.filter, .all)
+        XCTAssertEqual(viewModel.filteredTranscriptions.map(\.id), [podcast.id])
+        XCTAssertEqual(viewModel.displayedSourceLabelStyle, .hidden)
+
+        gate.allowFirstFetchToFinish()
+        let timeout = ContinuousClock.now + .seconds(1)
+        while viewModel.isLoading, ContinuousClock.now < timeout {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertFalse(viewModel.isLoading)
+        XCTAssertEqual(Set(viewModel.filteredTranscriptions.map(\.id)), [podcast.id, local.id])
+        XCTAssertEqual(viewModel.displayedSourceLabelStyle, .visible)
+    }
+
     func testFilterLocal() async throws {
         try repo.save(Transcription(fileName: "local.mp3", status: .completed, sourceType: .file))
         try repo.save(Transcription(fileName: "meeting.mp3", status: .completed, sourceType: .meeting))
@@ -525,9 +566,10 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
         viewModel.configure(transcriptionRepo: mockRepo)
 
         let staleLoad = viewModel.loadTranscriptions()
-        await Task.detached {
+        let staleLoadStarted = await Task.detached {
             gate.waitForFirstFetchStarted()
         }.value
+        XCTAssertTrue(staleLoadStarted)
 
         XCTAssertTrue(viewModel.renameTranscriptionTitle(transcription, to: "Q3 Vendor Notes"))
         XCTAssertEqual(viewModel.transcriptions.first?.titleOverride, "Q3 Vendor Notes")
@@ -612,9 +654,10 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
         viewModel.configure(transcriptionRepo: mockRepo)
 
         let staleLoad = viewModel.loadTranscriptions()
-        await Task.detached {
+        let staleLoadStarted = await Task.detached {
             gate.waitForFirstFetchStarted()
         }.value
+        XCTAssertTrue(staleLoadStarted)
 
         try mockRepo.updateFileName(id: renamedFirst.id, fileName: "Aardvark Review")
         viewModel.applyMeetingRename(MeetingRename(id: renamedFirst.id, title: "Aardvark Review"))
@@ -679,7 +722,8 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
         viewModel.configure(transcriptionRepo: mockRepo)
         let activeLoad = viewModel.loadTranscriptions()
         defer { gate.allowFirstFetchToFinish() }
-        await Task.detached { gate.waitForFirstFetchStarted() }.value
+        let activeLoadStarted = await Task.detached { gate.waitForFirstFetchStarted() }.value
+        XCTAssertTrue(activeLoadStarted)
 
         viewModel.applyMeetingRename(MeetingRename(id: UUID(), title: "Renamed meeting"))
 
@@ -733,7 +777,8 @@ final class TranscriptionLibraryViewModelTests: XCTestCase {
             staleLoad = viewModel.loadTranscriptions()
         }
         defer { gate.allowFirstFetchToFinish() }
-        await Task.detached { gate.waitForFirstFetchStarted() }.value
+        let staleLoadStarted = await Task.detached { gate.waitForFirstFetchStarted() }.value
+        XCTAssertTrue(staleLoadStarted)
         let renamed = meetings[loadMore ? 1 : 0]
         XCTAssertFalse(viewModel.transcriptions.contains { $0.id == renamed.id })
 
@@ -1432,8 +1477,8 @@ private final class StaleFetchGate: @unchecked Sendable {
         allowFirstFetch.wait()
     }
 
-    func waitForFirstFetchStarted() {
-        firstFetchStarted.wait()
+    func waitForFirstFetchStarted(timeout: DispatchTimeInterval = .seconds(2)) -> Bool {
+        firstFetchStarted.wait(timeout: .now() + timeout) == .success
     }
 
     func allowFirstFetchToFinish() {

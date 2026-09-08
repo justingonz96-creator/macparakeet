@@ -165,6 +165,13 @@ public final class TranscriptionLibraryViewModel {
     private let logger = Logger(subsystem: "com.macparakeet.viewmodels", category: "TranscriptionLibrary")
     public private(set) var transcriptions: [Transcription] = []
     public var filter: LibraryFilter = .all { didSet { reloadAfterStateChange() } }
+    /// The filter that produced the cards currently on screen.
+    ///
+    /// `filter` changes before its asynchronous query replaces the existing
+    /// cards. Keep their source presentation tied to the result set until the
+    /// next query publishes, so outgoing cards do not borrow the new filter's
+    /// label style.
+    private var displayedFilter: LibraryFilter = .all
     /// SQL-backed meeting classification filters. Type and label selections
     /// use ANY semantics; `unclassifiedMeetingsOnly` is mutually exclusive
     /// with an explicit type selection.
@@ -201,6 +208,10 @@ public final class TranscriptionLibraryViewModel {
     private var requestedWindowSize = 0
     private var bulkSelectionGeneration = 0
     public let scope: TranscriptionLibraryScope
+
+    public var displayedSourceLabelStyle: LibrarySourceLabelStyle {
+        scope.sourceLabelStyle(for: displayedFilter)
+    }
 
     public init(scope: TranscriptionLibraryScope = .all) {
         self.scope = scope
@@ -343,7 +354,7 @@ public final class TranscriptionLibraryViewModel {
                 } else {
                     transcriptions[idx].isFavorite = newValue
                 }
-                publishLoadedItems(transcriptions, hasMore: hasMore)
+                publishLoadedItems(transcriptions, hasMore: hasMore, filter: displayedFilter)
             }
             Telemetry.send(.transcriptionFavorited(isFavorite: newValue))
         } catch {
@@ -572,7 +583,7 @@ public final class TranscriptionLibraryViewModel {
             guard deleted else { return }
             transcriptions.removeAll { $0.id == transcription.id }
             selectedTranscriptionIDs.remove(transcription.id)
-            publishLoadedItems(transcriptions, hasMore: hasMore)
+            publishLoadedItems(transcriptions, hasMore: hasMore, filter: displayedFilter)
             Telemetry.send(.transcriptionDeleted)
         } catch {
             logger.error("Failed to delete transcription: \(error.localizedDescription, privacy: .private)")
@@ -598,7 +609,7 @@ public final class TranscriptionLibraryViewModel {
                     transcriptions[idx].meetingArtifactFolderPath
                     ?? MeetingArtifactStore.sessionFolderURL(for: transcription)?.standardizedFileURL.path
                 transcriptions[idx].filePath = nil
-                publishLoadedItems(transcriptions, hasMore: hasMore)
+                publishLoadedItems(transcriptions, hasMore: hasMore, filter: displayedFilter)
             }
         } catch TranscriptionAssetCleanupError.meetingAudioFinalizationInProgress {
             errorMessage = TranscriptionAssetCleanup.meetingAudioFinalizationInProgressMessage
@@ -638,7 +649,7 @@ public final class TranscriptionLibraryViewModel {
 
         transcriptions[index].fileName = rename.title
         transcriptions[index].derivedTitle = rename.title
-        publishLoadedItems(transcriptions, hasMore: hasMore)
+        publishLoadedItems(transcriptions, hasMore: hasMore, filter: displayedFilter)
     }
 
     @discardableResult
@@ -682,12 +693,12 @@ public final class TranscriptionLibraryViewModel {
     private func reloadLoadedWindow(limit: Int? = nil) throws {
         guard let repo = transcriptionRepo else { return }
         guard var query = makeQuery(offset: 0) else {
-            publishLoadedItems([], hasMore: false)
+            publishLoadedItems([], hasMore: false, filter: filter)
             return
         }
         query.limit = limit ?? max(pageSize, transcriptions.count)
         let page = try repo.fetchLibraryPage(query: query)
-        publishLoadedItems(page.items, hasMore: page.hasMore)
+        publishLoadedItems(page.items, hasMore: page.hasMore, filter: filter)
     }
 
     private func refreshLoadedTranscription(id: UUID) throws {
@@ -704,7 +715,7 @@ public final class TranscriptionLibraryViewModel {
             return
         }
         transcriptions[index] = refreshed
-        publishLoadedItems(transcriptions, hasMore: hasMore)
+        publishLoadedItems(transcriptions, hasMore: hasMore, filter: displayedFilter)
     }
 
     private func cancelActiveLoad() {
@@ -733,15 +744,16 @@ public final class TranscriptionLibraryViewModel {
         loadTask?.cancel()
         loadGeneration += 1
         let generation = loadGeneration
+        let requestedFilter = filter
 
         guard let repo = transcriptionRepo else {
             isLoading = false
-            publishLoadedItems([], hasMore: false)
+            publishLoadedItems([], hasMore: false, filter: requestedFilter)
             return Task {}
         }
         guard let query = makeQuery(offset: offset) else {
             isLoading = false
-            publishLoadedItems([], hasMore: false)
+            publishLoadedItems([], hasMore: false, filter: requestedFilter)
             return Task {}
         }
 
@@ -749,19 +761,19 @@ public final class TranscriptionLibraryViewModel {
         isLoading = true
         errorMessage = nil
 
-        let task = Task { @MainActor [weak self, repo, query] in
+        let task = Task { @MainActor [weak self, repo, query, requestedFilter] in
             do {
                 let page = try await Task.detached(priority: .userInitiated) {
                     try repo.fetchLibraryPage(query: query)
                 }.value
                 guard let self, !Task.isCancelled, self.loadGeneration == generation else { return }
                 let items = append ? self.transcriptions + page.items : page.items
-                self.publishLoadedItems(items, hasMore: page.hasMore)
+                self.publishLoadedItems(items, hasMore: page.hasMore, filter: requestedFilter)
                 self.isLoading = false
             } catch {
                 guard let self, !Task.isCancelled, self.loadGeneration == generation else { return }
                 self.logger.error("Failed to load transcriptions: \(error.localizedDescription, privacy: .private)")
-                self.publishLoadedItems([], hasMore: false)
+                self.publishLoadedItems([], hasMore: false, filter: requestedFilter)
                 self.isLoading = false
                 self.errorMessage = "Failed to load transcriptions: \(error.localizedDescription)"
             }
@@ -819,11 +831,16 @@ public final class TranscriptionLibraryViewModel {
         )
     }
 
-    private func publishLoadedItems(_ items: [Transcription], hasMore: Bool) {
+    private func publishLoadedItems(
+        _ items: [Transcription],
+        hasMore: Bool,
+        filter: LibraryFilter
+    ) {
         transcriptions = items
         filteredTranscriptions = items
         groupedTranscriptions = groupByDate(items)
         self.hasMore = hasMore
+        displayedFilter = filter
         meetingClassificationViewModel.loadClassifications(for: items)
         pruneSelectionToLoadedItems()
     }
@@ -847,7 +864,7 @@ public final class TranscriptionLibraryViewModel {
     private func removeLoadedTranscriptions(withIDs ids: Set<UUID>) {
         transcriptions.removeAll { ids.contains($0.id) }
         selectedTranscriptionIDs.subtract(ids)
-        publishLoadedItems(transcriptions, hasMore: hasMore)
+        publishLoadedItems(transcriptions, hasMore: hasMore, filter: displayedFilter)
     }
 
     private func clearLoadedMeetingAudio(forIDs ids: Set<UUID>) {
@@ -857,7 +874,7 @@ public final class TranscriptionLibraryViewModel {
                 ?? MeetingArtifactStore.sessionFolderURL(for: transcriptions[index])?.standardizedFileURL.path
             transcriptions[index].filePath = nil
         }
-        publishLoadedItems(transcriptions, hasMore: hasMore)
+        publishLoadedItems(transcriptions, hasMore: hasMore, filter: displayedFilter)
     }
 
     private func setLoadedStatus(
@@ -869,7 +886,7 @@ public final class TranscriptionLibraryViewModel {
         transcriptions[index].status = status
         transcriptions[index].errorMessage = errorMessage
         transcriptions[index].updatedAt = Date()
-        publishLoadedItems(transcriptions, hasMore: hasMore)
+        publishLoadedItems(transcriptions, hasMore: hasMore, filter: displayedFilter)
     }
 
     nonisolated private static func isRetryableMeetingTranscription(_ transcription: Transcription) -> Bool {

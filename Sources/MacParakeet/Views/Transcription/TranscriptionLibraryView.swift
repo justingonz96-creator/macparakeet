@@ -963,10 +963,10 @@ struct TranscriptionLibraryView: View {
         viewModel.scope == .meetings || viewModel.filter == .meeting
     }
 
-    /// Drawn from the same `(scope, filter)` pair the query uses, so the label
-    /// disappears exactly when the filter has already answered it.
+    /// Drawn from the result set's `(scope, filter)` pair, so outgoing cards
+    /// keep their source presentation until the next query replaces them.
     private var sourceLabelStyle: LibrarySourceLabelStyle {
-        viewModel.scope.sourceLabelStyle(for: viewModel.filter)
+        viewModel.displayedSourceLabelStyle
     }
 
     private var libraryLayoutMode: LibraryLayoutMode {

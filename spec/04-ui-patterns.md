@@ -146,6 +146,9 @@ resolved from the same `(scope, filter)` pair as the library query. `All` and
 `Favorites` admit any source and show the icon with its text. `Podcasts`,
 `Local`, `Meetings`, and every filter inside the Meetings workspace admit
 exactly one source, so the label is omitted rather than repeating the filter.
+While a source-filter query reloads, existing cards retain the attribution
+resolved for their displayed result set; the destination context applies only
+when its rows publish.
 
 `Video` has narrowed the source to one family but not to one platform, so it
 shows the platform's own brand mark from `Resources/BrandGlyphs` without the
