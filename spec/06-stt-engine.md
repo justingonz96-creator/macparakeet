@@ -143,7 +143,7 @@ let samples = try AudioConverter.resampleBuffer(buffer)
 
 For meeting recording specifically, this has an important consequence: the saved `meeting-playback.m4a` artifact may preserve microphone/system channel separation as stereo, but the current final Parakeet path still works on mono per-source WAVs. MacParakeet avoids collapsing the final meeting path to a single mono mix by transcribing `microphone-raw.m4a` and `system-raw.m4a` separately, then merging those fresh results with persisted source-alignment metadata. See `docs/research/meeting-dual-stream-transcription-pipeline.md` for the end-to-end meeting pipeline.
 
-### Custom Vocabulary Boosting (v0.11.0+)
+### Custom Vocabulary Boosting (FluidAudio 0.11.0+)
 
 MacParakeet Phase 1 uses FluidAudio's 110M CTC encoder as a post-TDT
 recognition sidecar, not as a replacement ASR runtime. The normal Parakeet TDT
@@ -157,7 +157,9 @@ transcript text. Adding an anchor alone does not enable this sidecar.
 Source of truth:
 
 - Enabled `CustomWord` rows with `replacement == nil` or blank replacement
-  become recognition-time vocabulary anchors.
+  become recognition-time vocabulary anchors. Independently of boosting,
+  deterministic custom-word processing uses these entries to restore stored
+  casing when a whole-word match exists.
 - Enabled rows with nonblank `replacement` remain deterministic
   post-transcription corrections/backstops.
 - Disabled rows and terms shorter than `minTermLength` (`3`) are ignored by
@@ -205,7 +207,7 @@ small user vocabularies rather than full dictionaries.
 | Capability | Model | Details |
 |-----------|-------|---------|
 | Streaming ASR | Parakeet EOU 1.1B | Real-time with end-of-utterance detection, 160ms-1600ms chunks |
-| Speaker diarization (offline) | Pyannote community-1 + WeSpeaker v2 + VBx clustering | ~15% DER (VoxConverse, CoreML), ~130 MB models, unlimited speakers. See ADR-010. |
+| Speaker diarization (offline) | Pyannote community-1 + WeSpeaker v2 + VBx clustering | ~130 MB assets; no fixed four-speaker cap. Uses the app high-accuracy preset; current-pin DER has not been measured. See ADR-010. |
 | Speaker diarization (streaming) | Sortformer (NVIDIA) | ~32% DER, 4 speaker max. Not used — see ADR-010 for rationale. |
 | Voice activity detection | Silero | 96% accuracy, 1220x RTF |
 | Custom vocabulary | CTC/TDT keyword boosting | 110M sidecar for Parakeet TDT v2/v3 enabled anchors |
@@ -524,10 +526,9 @@ This replaces the previous Python venv bootstrap (~500 MB deps + ~2.5 GB model).
 
 ### Timeout Handling
 
-- Transcription requests have a timeout proportional to audio duration
-- Short dictations: 30-second timeout
-- Long files: generous timeout (Parakeet builds measured ~81-93x steady RTFx on the current M4 Pro benchmark; other engines vary by model)
-- Warm-up/model download allows a longer timeout (first-run downloads can take minutes)
+- There is no global duration-proportional transcription deadline or fixed 30-second dictation deadline in `STTScheduler`.
+- Runtime lifecycle operations (including cancellation drain, model switching, cache clear, and shutdown) use a 30-second observability watchdog. It emits `stt_runtime_unhealthy` but continues awaiting completion; it does not safely terminate a hung inference.
+- Display-only dictation preview has a separate bounded drain (two seconds by default). Operation-specific network/subprocess deadlines belong to their adapters, not to a universal STT timeout.
 
 ---
 
@@ -626,7 +627,7 @@ Each word's time range is compared against diarization speaker segments. The spe
 ### API
 
 ```swift
-let config = OfflineDiarizerConfig()
+let config = DiarizationService.highAccuracyConfig
 let manager = OfflineDiarizerManager(config: config)
 try await manager.prepareModels()
 
@@ -637,20 +638,24 @@ for segment in result.segments {
 }
 ```
 
-### Performance
+### Configuration and measurement status
 
-| Metric | Value |
-|--------|-------|
-| DER (VoxConverse) | ~15% |
-| DER (AMI) | ~17.7% |
-| Speed | 64-122x RTF (config-dependent) |
-| Memory | ~100 MB models + minimal working RAM |
-| 1 hour audio | ~30-56 seconds processing |
-| Total (ASR + diarization) | ~53-79 seconds per hour of audio |
+`DiarizationService.highAccuracyConfig` starts from the library default and
+sets segmentation `stepRatio = 0.1`, embedding
+`minSegmentDurationSeconds = 0`, and zero-vote re-embedding enabled.
+Speaker-count constraints are applied to this preset per request.
+
+The app pins FluidAudio 0.15.6, including corrected clustering. Older upstream
+VoxConverse measurements (0.25-second collar, overlap ignored) reported
+13.89% DER for the denser preset versus 15.07% for the faster default under
+0.15.4; those figures have not been re-run for the corrected pin. They are
+not current app accuracy or throughput guarantees. Asset sizes above also
+do not measure peak process memory. See ADR-010's 2026-09-06 amendment for
+provenance and the remaining measurement gap.
 
 ### What's NOT included
 
-- **No streaming diarization** — file transcription is batch, no need for real-time
+- **No streaming diarization** — authoritative speaker assignment runs after capture/ASR; live diarizers remain research candidates
 - **No Sortformer** — 4-speaker hard limit and 32% DER (see ADR-010)
 - **No cross-file speaker identity** — Speaker 1 in file A is not linked to Speaker 1 in file B
 - **No dictation diarization** — single speaker by design

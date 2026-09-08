@@ -1,7 +1,9 @@
 # Speaker Attribution Editing and Speaker Management
 
-> **Status:** PR #960 CANDIDATE — correction editing, persistent history,
-> output integration, and focused hardening are implemented. The broader
+> **Status: PARTIAL — MERGED CORE.**
+> [PR #960](https://github.com/moona3k/macparakeet/pull/960) merged as `c79d3f52`;
+> correction editing, persistent history, output integration and focused
+> hardening are implemented on main, not yet a stable release claim. The broader
 > artifact-retry UI, dedicated remove-split UI, and replay work below remain
 > follow-ups; this plan is not a claim that all proposed phases shipped.
 > **Priority:** P1

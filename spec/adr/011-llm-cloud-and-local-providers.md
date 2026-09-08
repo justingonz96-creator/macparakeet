@@ -59,7 +59,7 @@ The current implementation supports these provider/runtime types through one sha
 2. **Provider-aware transport behind one shared service boundary.** Runtime choices are external providers, OpenAI-compatible endpoints, local servers, or Local CLI tools. Transport details may vary per provider.
 3. **LLM features are optional.** The app is fully functional without any provider configured. Transcription, dictation, export — all work without LLM.
 4. **No default provider.** User must explicitly choose and configure. No "sign up for our cloud" upsell.
-5. **Transcription stays local.** Audio never leaves the device. The app can remain fully local when users choose only local providers/features. Only transcript text is sent to providers/CLI tools when the user explicitly triggers an LLM feature. This distinction must be clear in the UI.
+5. **Transcription stays local.** Audio never leaves the device. The app can remain fully local when users choose only local providers/features. LLM requests may send transcript or selected text, user notes, prompts, questions, and chat history to the configured provider/CLI tool. Dispatch follows a user action or an enabled automation such as prompt auto-run or AI Formatter; it does not require a new click for every request. This distinction must be clear in the UI.
 
 **Amendment (2026-07-04): direction confirmed, positioning fixed.** Product decision: MacParakeet will offer a first-party local model (Qwen/Gemma-class via MLX) as a dead-simple, one-click *option* aimed at non-technical and privacy-first users, while cloud/frontier providers remain the recommended quality path per surface until the local model demonstrably reaches parity there. Phase 0 in `plans/active/2026-06-27-on-device-local-llm.md` gates the public product promise, any default/recommendation, and the shipped surface scope; it is not a denial that non-public foundation code can exist. Shipping bar per surface: fidelity-safe and clearly above the deterministic pipeline to *offer*; cloud parity to *recommend*. Agentic/tool-calling and whole-library analysis stay cloud-first until proven.
 
@@ -94,7 +94,7 @@ No GPU memory, model downloads, or ANE contention in the public/default product 
 | None (default) | No | No |
 | Ollama | No | No (localhost) |
 | Local CLI | No | Depends on the CLI tool |
-| Cloud API | No | **Yes (user-initiated, text only)** |
+| Cloud API | No | **Yes (user action or enabled automation, text only)** |
 
 Users choose their privacy/quality tradeoff. The app makes the tradeoff explicit in the UI. Audio NEVER leaves the device regardless of provider choice.
 
@@ -121,12 +121,12 @@ Users who want local-only LLM can install Ollama (`brew install ollama && ollama
 
 ### Negative
 
-- **Cloud providers require internet.** LLM features won't work offline unless user has Ollama running. This is acceptable because transcription (the core value) works fully offline.
+- **Cloud providers require internet.** Offline LLM features require a configured local runtime such as Ollama or LM Studio. This is acceptable because transcription (the core value) works fully offline.
 - **Cloud providers cost money.** API calls are cheap (cents per transcript) but non-zero. Users manage their own billing. We should show estimated token counts before sending.
 - **Privacy nuance.** "100% local" messaging needs updating to "speech stays local, and the app can remain fully local if you use only local paths." Must be clear and honest.
 - **Transcript text sent to cloud.** When using cloud providers, transcript text leaves the device. Audio never does. The distinction must be explicit in the UI and docs.
 - **Provider API changes.** Provider-native and OpenAI-compatible APIs may change independently. Mitigated by keeping routing isolated inside the client layer.
-- **No offline summarization.** Users without Ollama and without internet get no LLM features. The deterministic clean pipeline still works for basic text cleanup.
+- **No bundled offline summarization.** Offline LLM features require a separately configured local provider; the in-process option remains developer-gated. The deterministic clean pipeline still works for basic text cleanup.
 
 ## Architecture
 
@@ -148,6 +148,7 @@ Users who want local-only LLM can install Ollama (`brew install ollama && ollama
 │  ┌──────────────────┐    ┌──────────────────────────┐   │
 │  │ RoutingLLMClient │───▶│  LLMExecutionContext      │   │
 │  │                  │    │  - providerConfig          │   │
+│  │  .inProcessLocal ──▶ InProcessLLMClient (gated)    │   │
 │  │  .localCLI ──▶ LocalCLILLMClient                  │   │
 │  │  .other ────▶ LLMClient (HTTP)                    │   │
 │  └──────────────────┘    └──────────────────────────┘   │
@@ -164,6 +165,11 @@ Users who want local-only LLM can install Ollama (`brew install ollama && ollama
 ```
 
 ### Key Types
+
+The excerpts below illustrate the service boundary, not the complete current
+API. Source protocols also carry detailed/streaming completion receipts,
+operation/session context, user notes, and typed inference settings. See
+[spec/11](../11-llm-integration.md) and [spec/14](../14-per-prompt-inference-settings.md).
 
 ```swift
 /// Provider configuration — provider ID + model in UserDefaults, API key in Keychain
@@ -243,6 +249,6 @@ Historical note: this alternative has since been implemented. Anthropic now uses
 
 - ADR-002: Local-first processing (updated with LLM provider exception)
 - ADR-008: Previous local LLM approach (HISTORICAL)
-- `spec/11-llm-integration.md`: Previous integration spec (HISTORICAL)
+- `spec/11-llm-integration.md`: Current provider integration spec
 - Char (fastrepl/char): Meeting app with cloud + local-provider LLM support
 - Cursor, Raycast, Continue: Precedent for "bring your own API key" in developer tools

@@ -4,11 +4,13 @@
 
 ## Overview
 
-MacParakeet uses **SQLite via GRDB** for all persistent storage. Single database file, no cloud sync, no accounts. Data lives at `~/Library/Application Support/MacParakeet/macparakeet.db`.
+MacParakeet uses **SQLite via GRDB** for its canonical local library and derived retrieval data. The default database is `~/Library/Application Support/MacParakeet/macparakeet.db`; it has no cloud sync. Preferences use UserDefaults, provider credentials use Keychain, and retained audio, meeting artifacts, and downloaded models live in separate local files. The database alone is not a complete backup of those files.
+
+Version prefixes below identify database migrations, not product releases. `DatabaseManager.swift` is authoritative for the executable schema; the SQL and Swift excerpts here explain its shape rather than provide a standalone schema or complete API listing.
 
 **Design Principle (YAGNI):** Only add tables when a version needs them. Don't create empty tables for future features.
 
-## Relationship Diagram
+## Relationship Diagram (selected domains)
 
 ```
 ┌──────────────────┐       ┌──────────────────────────────┐
@@ -82,7 +84,7 @@ CREATE TABLE dictations (
     updatedAt TEXT NOT NULL,                          -- ISO 8601 timestamp
     hidden INTEGER NOT NULL DEFAULT 0,                -- v0.5: Private dictation mode (excluded from history)
     wordCount INTEGER NOT NULL DEFAULT 0,             -- v0.5: Cached word count for voice stats
-    engine TEXT,                                      -- v0.8: STT engine (`parakeet` / `nemotron` / `whisper`)
+    engine TEXT,                                      -- v0.8: STT engine (`parakeet` / `nemotron` / `cohere` / `whisper`)
     engineVariant TEXT,                               -- v0.8: Engine-specific model variant
     language TEXT,                                    -- v0.19: Normalized detected STT language code
     displayRawTranscript INTEGER NOT NULL DEFAULT 0,  -- v0.12: Show raw transcript instead of cleaned text
@@ -147,7 +149,7 @@ CREATE TABLE transcriptions (
     recoveredFromCrash INTEGER NOT NULL DEFAULT 0,       -- v0.7.5: recovered interrupted meeting flag
     isTranscriptEdited INTEGER NOT NULL DEFAULT 0,       -- v0.7.7: user-edited transcript flag
     userNotes TEXT,                                      -- v0.8: meeting notes used to steer prompt results
-    engine TEXT,                                         -- v0.8: STT engine (`parakeet` / `nemotron` / `whisper`)
+    engine TEXT,                                         -- v0.8: STT engine (`parakeet` / `nemotron` / `cohere` / `whisper`)
     engineVariant TEXT,                                  -- v0.8: Engine-specific model variant
     calendarEventSnapshot TEXT,                          -- v0.25: JSON local calendar context captured at meeting start
     titleOverride TEXT,                                  -- v0.26: User-authored non-meeting display title override
@@ -192,7 +194,7 @@ CREATE INDEX idx_transcriptions_status_created_at ON transcriptions(status, crea
 - `recoveredFromCrash` marks meeting recordings recovered from an interrupted session. Added in v0.7.5.
 - `isTranscriptEdited` marks transcript text changed by the user after automatic processing. Added in v0.7.7.
 - `userNotes` stores the canonical free-form meeting notes. Live capture writes
-  it at finalize; saved-meeting Add/Edit/Clear uses the same field. Prompt
+  it at finalize; the saved-meeting Notes tab autosaves to the same field. Prompt
   generation snapshots the exact effective notes sent
   to assembly on `summaries.userNotesSnapshot`. Added in v0.8.
 - `engine` / `engineVariant` record the STT engine attribution for Parakeet, Nemotron Beta, Cohere, and optional WhisperKit paths. Added in v0.8; legacy rows keep `NULL`.
@@ -299,9 +301,11 @@ legacy/no-timing pseudo-segmentation uses explicit Unicode-scalar boundaries
 without locale or NaturalLanguage dependencies. Dictations are not populated.
 `macparakeet-cli search-reindex` rebuilds both layers outside migrations.
 Version 2 fixed mixed word-token whitespace and punctuation joining. Version 3
-adds effective-speaker run boundaries so one durable citation segment can yield
+added effective-speaker run boundaries so one durable citation segment can yield
 multiple corrected retrieval rows without reminting its durable UUID;
-same-version rebuilds remain byte-identical.
+version 4 is current and preserves automatic speaker inheritance while
+excluding blank edge tokens from corrected retrieval timestamps. Same-version
+rebuilds remain byte-identical.
 
 ---
 
@@ -523,7 +527,7 @@ CREATE INDEX idx_summaries_transcription_id ON summaries(transcriptionId);
   generation, including the meaningful case where it was enabled but no notes
   existed yet. Retry reuses its queued snapshot; regenerate reuses this Boolean
   receipt with the meeting's current committed notes. The column defaults false
-  for historical results and is part of the in-progress additive migration.
+  for historical results and is installed by migration v0.33.
 - `inferenceSettingsSnapshot` (v0.31) stores the normalized effective settings
   actually sent after provider/model capability filtering, not merely the
   settings requested on the prompt. `NULL` preserves historical rows and means
@@ -565,6 +569,40 @@ CREATE INDEX idx_quick_prompts_pinned_sort ON quick_prompts(isPinned, sortOrder)
 - `isPinned` controls the after-response strip; the strip is a horizontal `ScrollView` with edge-fade affordance and renders all visible pinned rows by `sortOrder` — pinning is unbounded.
 - Hidden rows are never pinned. Repository writes normalize hidden+pinned rows to hidden+unpinned; hiding a pinned row auto-unpins it, and pinning a hidden row auto-shows it.
 - The CLI backup/share format is `QuickPromptBundle` with `schema: "macparakeet.quick_prompts"` and `version: 1`; each prompt carries `isPinned: Bool`.
+
+---
+
+### `transform_history` (v0.14; recreated in v0.17)
+
+Local history of completed GUI Transform runs, represented by
+`TransformHistoryEntry`. This table contains user content and is distinct from
+the metadata-only `llm_runs` ledger.
+
+```sql
+CREATE TABLE transform_history (
+    id TEXT PRIMARY KEY,
+    transformId TEXT,
+    transformName TEXT NOT NULL,
+    inputText TEXT NOT NULL,
+    outputText TEXT NOT NULL,
+    sourceAppBundleID TEXT,
+    sourceAppName TEXT,
+    capturePath TEXT NOT NULL,
+    replacementPath TEXT NOT NULL,
+    llmElapsedMs INTEGER NOT NULL DEFAULT 0,
+    totalElapsedMs INTEGER NOT NULL DEFAULT 0,
+    createdAt TEXT NOT NULL,
+    updatedAt TEXT NOT NULL
+);
+CREATE INDEX idx_transform_history_created_at ON transform_history(createdAt);
+CREATE INDEX idx_transform_history_transform_id ON transform_history(transformId);
+```
+
+`transformId` is an optional provenance value, not a foreign key to `prompts`;
+history retains the name and input/output snapshot independently of later
+prompt edits. `llm_runs.transformHistoryId` can link a metadata receipt to this
+row. The removed `transform_profiles` and `writing_samples` workbench tables
+are migration history, not active schema.
 
 ---
 
@@ -1375,8 +1413,8 @@ migrator.registerMigration("v0.7-prompts-and-summaries") { db in
 
 1. **Never delete a migration.** Once shipped, a migration is permanent.
 2. **Never modify an existing migration.** Add a new migration instead.
-3. **Name migrations with version prefix** (e.g., `v0.1-dictations`).
-4. **One table per migration** for clarity and debuggability.
+3. **Preserve the version-prefix naming convention** (e.g., `v0.1-dictations`). These are ordered schema identifiers, not a release-version trail.
+4. **One coherent schema change per migration.** Related tables may change together, as with prompt/result snapshots and speaker correction history/cursors.
 5. **Test migrations** with in-memory SQLite in unit tests.
 
 ---

@@ -1,7 +1,10 @@
 # MacParakeet: Features Specification
 
 > Status: **ACTIVE** - Authoritative, current
-> What we're building, in what order, and why.
+> Current behavior and historical feature groupings. Version headings below
+> record the original plan structure, not a complete release manifest; use
+> [the canonical release/flag table](README.md#release-channels-and-feature-flags)
+> for availability.
 
 **North Star:** Fast, private, local-first voice for Mac.
 
@@ -1367,7 +1370,9 @@ new scheduling architecture.
 
 **What:** Automatically detect and label different speakers in file transcriptions.
 
-**Scope:** File transcription and YouTube transcription only. Dictation is single-speaker by design.
+**Scope:** File/media URL transcription and optional refinement of the isolated
+system track during meeting finalization. The selected ASR engine must provide
+word timings for alignment; Cohere does not. Dictation is single-speaker by design.
 
 **Features:**
 - Automatic speaker segmentation (detect speaker changes)
@@ -1422,15 +1427,15 @@ are unaffected.
 **Technical notes:**
 - Uses FluidAudio's offline diarization pipeline (separate from ASR, see ADR-010)
 - Three-stage pipeline: pyannote community-1 (segmentation) + WeSpeaker v2 (embeddings) + VBx (clustering)
-- ~15% DER on VoxConverse (CoreML), ~11.2% PyTorch reference — competitive with commercial APIs
+- Current source pins FluidAudio 0.15.6 and uses `DiarizationService.highAccuracyConfig`. Older DER figures predate clustering fixes and are not a quality measurement of this build; see ADR-010's 2026-09-06 amendment.
 - ~130 MB additional model download (one-time, cached alongside ASR models)
 - Runs after ASR completes, merges speaker segments with word-level timestamps by time overlap
 - Diarization is non-fatal — if it fails, ASR result is still persisted without speaker data
-- Stable speaker IDs (`"S1"`, `"S2"`) stored on words; display labels in separate mapping (rename is O(1))
+- Automatic IDs (`"S1"`, `"S2"`) belong to one transcript version. User corrections are stored separately and resolved into effective attribution for display, search, exports, artifacts and AI; IDs are not cross-file or retranscription identity.
 - Overlapping speech regions are trimmed (exclusive output) — words in overlap zones may lack speaker assignment
 - No cross-file speaker identity (Speaker 1 in file A is not linked to Speaker 1 in file B)
-- Single-speaker files correctly return one speaker label with no overhead
-- Total file transcription time: ~53-79 seconds per hour of audio (ASR ~23s + diarization ~30-56s)
+- Single-speaker files can resolve to one label, but still incur diarization work.
+- End-to-end time depends on the selected ASR engine, high-accuracy diarizer preset, audio and hardware. Historical ASR-plus-diarization estimates are not current-release timing guarantees.
 
 **Acceptance criteria:**
 - [x] Speakers automatically detected and separated in transcript
@@ -1978,6 +1983,25 @@ The existing completion handler reads the auto-open preference before presenting
 
 ---
 
+## Development additions after 0.7.3
+
+These are implemented in source; release availability follows the
+[canonical status table](README.md#release-channels-and-feature-flags).
+
+| Surface | Current behavior | Governing reference |
+|---|---|---|
+| Saved meeting notes | Debounced editing, explicit save/flush boundaries and optional inclusion in result prompts; historical results retain the notes actually sent. | [ADR-020](adr/020-live-meeting-notepad-and-memo-summaries.md) |
+| Speaker corrections | Transcript-scoped add, rename, assign, split, merge, remove, reset and Undo/Redo; effective attribution flows into retrieval, AI and exported artifacts without rewriting recognized words. | [ADR-010](adr/010-speaker-diarization.md), [data model](01-data-model.md) |
+| Result generation settings | Per-prompt settings with validation, provider capability handling and effective-request snapshots. | [Spec 14](14-per-prompt-inference-settings.md) |
+| Rich AI output | Shared static/streaming Markdown rendering for results/chat while preserving source Markdown for copy and export. | [UI patterns](04-ui-patterns.md#llm-markdown-content) |
+| Local retrieval | Segment FTS search, bounded cited context and validated knowledge cards for file/URL/meeting transcripts; dictation history search remains separate. | [Integration guide](../integrations/README.md) |
+| Vocabulary cleanup | Confirmed deletion of selected rules, including all search matches, without rewriting existing transcripts. | [Deletion contract](contracts/custom-word-deletion.md) |
+| DAPT export | Timed speaker-attributed events when aligned; untimed fallback otherwise. | [DAPT contract](contracts/dapt-export-v1.md) |
+
+These do not enable activity-based meeting detection, app-aware AI Formatter
+profiles or public in-process MLX. Corpus-wide Ask and cross-file speaker
+identity remain future work.
+
 ## Future Features (Post-Launch)
 
 ### F30: iOS Companion App
@@ -2029,7 +2053,7 @@ MacParakeet's brand is privacy. These are non-negotiable.
 | No accounts | No email, no login, no registration |
 | No cloud STT | All speech recognition runs locally on Apple Silicon; Parakeet is default and Nemotron/Cohere/WhisperKit are optional |
 | User-controlled storage | Saved audio follows the relevant dictation/file/media/meeting storage setting; meeting audio is retained by default, with explicit deletion/retention choices |
-| Network surfaces | Model/helper setup, media/podcast imports, configured LLM features, opt-out telemetry/crash reporting, updates, explicit submissions/activation, and the independent default-on Discover feed (Settings opt-out) |
+| Network surfaces | Model/helper setup, media/podcast imports, configured LLM features, opt-out telemetry/crash reporting, updates, explicit submissions, retained-license validation, and the independent default-on Discover feed (Settings opt-out) |
 
 **What local-first means:**
 - Parakeet, Nemotron, and Cohere STT run locally via FluidAudio CoreML; WhisperKit also runs locally when selected

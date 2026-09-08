@@ -76,7 +76,7 @@ The deterministic pipeline has a sub-5ms latency target. LLM-based formatting or
 
 The deterministic pipeline includes three user-configurable features:
 
-- **Custom words**: Users define replacement corrections (for example, replace "kube" with "Kubernetes"). Recognition-time anchors without replacement text belong to the separate, opt-in STT sidecar described in [the engine spec](../06-stt-engine.md), not this deterministic replacement step.
+- **Custom words**: Users define replacement corrections (for example, replace "kube" with "Kubernetes"). Entries with nil or blank replacement still participate in this deterministic step: case-insensitive matches are replaced with the stored word, restoring its casing. Those entries also supply recognition-time anchors to the separate, opt-in STT sidecar described in [the engine spec](../06-stt-engine.md); the sidecar is not required for casing correction.
 - **Text snippets**: Users define natural language trigger phrases ("my address" expands to their full address, "my signature" expands to their email sign-off). Triggers are spoken phrases — not abbreviations — because STT outputs natural speech. These are instant and deterministic.
 - **Trailing action snippets**: Users can attach a post-paste action such as Voice Return to one or more terminal trigger phrases. The pipeline strips the trigger before normal snippet expansion and surfaces the action to the paste layer.
 

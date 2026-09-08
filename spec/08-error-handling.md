@@ -25,7 +25,7 @@
 | Error | Cause | User Action |
 |-------|-------|-------------|
 | CoreML failure | FluidAudio transcription error | Log error, offer retry |
-| Transcription timeout | Transcription took > 60s | "Transcription timed out. Try a shorter recording." |
+| Runtime operation stalled | Cancellation drain, model switch, cache clear, or shutdown exceeds the scheduler's 30-second watchdog | Emit `stt_runtime_unhealthy` diagnostics while continuing to await safe completion. This is not a global transcription deadline. |
 | Out of memory | Model too large for available RAM | "Close other apps to free memory" |
 | Model not found | First run, model not downloaded | Show download progress |
 | Model download failed | Network error during CoreML model download | "Check internet connection and retry" |
@@ -67,7 +67,7 @@
 |-------|-------|-------------|
 | File permission denied | Read-only directory or sandbox issue | "Choose a different save location" |
 | Disk full | No space for database or audio | "Free up disk space (need ~X MB)" |
-| Database corruption | Unexpected shutdown during write | Auto-recover from WAL, warn user if data lost |
+| Database open or migration failed | SQLite/GRDB cannot open or migrate the library | Surface startup failure and preserve the database. Automatic corruption repair or app-managed WAL recovery is not implemented. |
 | Import failed | Unsupported format or corrupt file | "This file format is not supported" |
 
 ## Meeting Recording Crash Recovery

@@ -3,6 +3,12 @@
 > Status: IMPLEMENTED
 > Date: 2026-04-24
 > Related: ADR-014 (meeting recording via ScreenCaptureKit system audio), ADR-016 (centralized STT runtime + scheduler)
+> Current implementation note (2026-09-07): the failure description in Context
+> records the pre-ADR writer. Current capture uses fragmented `AVAssetWriter`
+> source files and protective locks. The [recovery/retention contract](../contracts/meeting-recovery-retention.md)
+> governs active-writer ownership, settlement and discard safety; the
+> [artifact contract](../contracts/meeting-artifacts-v1.md) governs current filenames
+> and metadata. A lock is not by itself proof of an abandoned recording.
 
 ## Context
 

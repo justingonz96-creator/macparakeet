@@ -64,7 +64,7 @@ These decisions are final. Do not second-guess them.
 | Channel | Status | Notes |
 |---------|--------|-------|
 | Stable DMG `0.7.3` | User-facing release, recommended for normal use | Dictation, file/media URL transcription, System Default microphone routing, separate live/final speech-engine routes, meeting recording with cleaned-mic finalization and bounded capture lifecycle, calendar auto-start and activity-based auto-stop (both opt-in, default off), Transforms, VAD-guided meeting live-preview chunking, optional Nemotron Beta, Cohere, and WhisperKit, bundled CLI 3.0, exports, vocabulary, AI features |
-| Development source (this revision) | Unreleased; `main` and feature branches are not the stable download | CLI 3.3 per-prompt inference settings and effective-request receipts, additional JSON-mutator coverage, checked knowledge-card token accounting, DAPT export, Library grid/list layouts, menu-bar icon and Discover visibility preferences, quiet meeting completion, AI-setup preservation across failed draft operations, durable silent-system capture reporting and recovery corrections, bounded writer-finalization handling, and transcript AI-context task hardening. Check branch/commit identity; do not attribute these changes to the stable DMG. |
+| Development source (this revision) | Unreleased; `main` and feature branches are not the stable download | CLI 3.3 per-prompt inference settings and effective-request receipts; segment search/context and knowledge cards; saved meeting-note editing and opt-in notes context; transcript-scoped speaker corrections with Undo/Redo across display, retrieval, exports and AI; rich Markdown results/chat; DAPT export; confirmed bulk vocabulary deletion; Library grid/list layouts; menu-bar and Discover visibility preferences; quiet meeting completion; AI-setup preservation; capture/recovery and transcript-context hardening. Check branch/commit identity; do not attribute these changes to the stable DMG. |
 
 Feature gates in the current source (`Sources/MacParakeetCore/AppFeatures.swift`); an implemented gated surface is not a shipped feature:
 
@@ -83,13 +83,20 @@ Feature gates in the current source (`Sources/MacParakeetCore/AppFeatures.swift`
 | `aiFormatterProfilesEnabled` | `false` | App-aware AI Formatter profile code is present, but normal Settings/routing surfaces remain disabled |
 | `inProcessLocalLLMEnabled` | `false` | In-process MLX provider/setup code remains developer-gated. The real runtime links only in opt-in `MACPARAKEET_ENABLE_MLX_LOCAL_LLM=1` app builds; developer visibility overrides do not make it available in a build without that runtime |
 
+The 0.8.0 preparation evidence lives in
+[the dated QA package](../docs/qa/2026-09-07-0.8.0/README.md). Its results apply to
+the candidates named there, not automatically to later merges.
+
 Implementation status is not release verification. Candidate hardware capture,
 long-transcript interaction, signed upgrade, and full-suite evidence must be
 reported separately; a source/doc review does not establish those gates.
 
 ## Architecture Decision Records (ADRs)
 
-All ADRs live in `spec/adr/`. These are locked -- they record decisions already made.
+All ADRs live in `spec/adr/`. Accepted decisions govern implementation; explicit
+amendments supersede older implementation details. Historical, dormant,
+partially implemented and proposed portions retain their stated status. An
+accepted direction is not proof that every phase is implemented or released.
 
 | ADR | Decision |
 |-----|----------|
@@ -259,7 +266,7 @@ Dictation + transcription + history + settings. Get audio in, text out, pasted i
 - [x] Hotkey conflict prevention (dictation vs meeting)
 - [x] Concurrent dictation during meeting recording (ADR-015)
 - [x] Centralized STT runtime + two-slot scheduler (ADR-016)
-- [x] Live panel tabs: Transcript / Ask (ADR-018; Insights dropped per amendment 2026-04-24)
+- [x] Live panel tabs: Notes / Transcript / Ask, with Notes default (ADR-018 as amended by ADR-020; Insights dropped)
 - [x] Live Ask chat with thinking-partner quick prompts + pinned after-response pills + persist-on-finalize handoff
 - [x] Customizable Ask quick prompts: GRDB-backed unified prompt library with pinning, Ask Prompts sheet, and `macparakeet-cli quick-prompts` import/export
 - [x] Crash-resilient meeting recovery (ADR-019): session lock files, launch/settings recovery affordance, recovered badge
@@ -301,6 +308,13 @@ Calendar-related code is implemented and **enabled** (`AppFeatures.calendarEnabl
 - [x] Transforms sidebar tab and management UI enabled on `main` by `AppFeatures.transformsEnabled = true`
 - [x] Local Transform history with input/output/source-app/timing stored in `transform_history`
 - [x] CLI `transforms` and `transforms history` command trees for headless provisioning and verification
+
+## Documentation audit
+
+The [2026-09-07 alignment audit](../docs/audits/2026-09-07-documentation-alignment.md)
+records source coverage, corrected drift and verification limits. Its separate
+[improvement notes](../docs/research/2026-09-07-documentation-audit-followups.md)
+are proposals, not accepted architecture or release requirements.
 
 ## For Coding Agents
 

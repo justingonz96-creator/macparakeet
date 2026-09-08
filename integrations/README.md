@@ -693,9 +693,13 @@ OpenClaw, Hermes, or another local agent framework.
   enclosure downloads, explicitly configured LLM calls (including
   `cards generate`, prompt/Transform execution, and cloud-backed Local CLI
   commands), explicit feedback submission, and CLI telemetry below.
-  The app also checks Sparkle updates and unconditionally refreshes Discover's
-  public feed at launch, independently of telemetry; the CLI does not launch
-  that feed refresh. No captured audio is sent to an LLM by MacParakeet.
+  The app also checks Sparkle updates and refreshes Discover's public feed
+  at launch when **Show Discover in the sidebar** is enabled (the default),
+  independently of telemetry. Turning that preference off cancels pending
+  feed requests and prevents new loads; the CLI does not launch the feed refresh. No captured audio is sent to an LLM by MacParakeet.
+  Legacy activation validation can also contact LemonSqueezy during app setup
+  or CLI `transcribe --enforce-entitlements` when stored activation state needs
+  refresh; current free builds remain unlocked regardless of that result.
   CLI telemetry emits a single privacy-safe
   `cli_operation` event per successfully parsed CLI invocation, posted to the
   self-hosted endpoint at `https://macparakeet.com/api/telemetry`. The telemetry event
@@ -714,7 +718,8 @@ OpenClaw, Hermes, or another local agent framework.
   Auto-disabled in CI environments (`CI`, `GITHUB_ACTIONS`, `GITLAB_CI`,
   `BUILDKITE`, `CIRCLECI`, `TRAVIS`, `JENKINS_URL`, `TF_BUILD`,
   `TEAMCITY_VERSION` — any one set to a truthy value). Override CI auto-
-  disable with `MACPARAKEET_TELEMETRY=1`. See `docs/telemetry.md` for the
+  disable with `MACPARAKEET_TELEMETRY=1`. This explicit force-on also overrides
+  `DO_NOT_TRACK=1` and the saved off preference. See `docs/telemetry.md` for the
   full event catalog and the structured-error privacy contract. For read-only
   local audio-log JSON queries from a source checkout, see
   [the diagnostic query guide](../docs/local-audio-diagnostics-query.md).

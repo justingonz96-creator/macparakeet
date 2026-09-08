@@ -64,13 +64,16 @@ The [notarized DMG](https://downloads.macparakeet.com/MacParakeet.dmg) is the st
 | Channel | Status | Includes |
 |---------|--------|----------|
 | Stable DMG `0.7.3` | Recommended for normal use | Dictation, file/video/media URL and podcast transcription, meeting recording with selectable mic/system capture, cleaned-mic finalization and audio-retention controls, meeting calendar reminders and opt-in auto-start/auto-stop, System Default microphone routing, separate live/final speech-engine routes, bounded meeting-capture lifecycle handling, Transforms, VAD-guided meeting live-preview chunking, Parakeet v3/v2/Unified model selection, optional Nemotron Beta, Cohere, and WhisperKit, bundled CLI 3.0, exports, vocabulary, AI features |
-| Development source (this revision) | Unreleased; not the stable download | CLI 3.2 discovery/JSON coverage, local segment search/context reads, knowledge cards, DAPT export, silent-system capture and recovery reporting, bounded writer finalization, transcript AI-context hardening, and a default-on Discover feed with runtime Settings opt-out |
+| Development source (this revision) | Unreleased; not the stable download | CLI 3.3 inference settings and request receipts, local segment search/context and knowledge cards, saved meeting-note editing, speaker corrections with Undo/Redo, rich Markdown results/chat, DAPT export, bulk vocabulary deletion, Library layouts, and capture/recovery hardening; see the canonical status below for gates |
 
 See the [canonical release and feature-gate status](spec/README.md#release-channels-and-feature-flags). App-aware AI Formatter profiles, activity-based meeting detection, and the in-process MLX LLM remain gated; source presence does not mean they are available in the stable app.
 
 Meeting calendar support is live in the stable DMG. MacParakeet reads upcoming meetings from the local macOS Calendar store through EventKit, can show reminders, and can optionally start a recording after a countdown. Auto-start defaults to `.off` and must be opted into. Recordings stop manually unless the separate activity-based auto-stop setting is enabled; that setting also defaults off.
 
 ## What it does
+
+The feature descriptions below cover current source. Development additions such
+as DAPT export are not implied to be in the stable DMG; use the release table above.
 
 **Dictation** — Press a hotkey in any app, speak, text gets pasted. Hold for push-to-talk, or tap the hands-free shortcut to start and stop longer dictations. Works system-wide. The default uses Fn, but Settings -> Dictation can bind external-keyboard-friendly keys such as F13/F19 or End, modifier+key shortcuts, or modifier-only chords like Control+Option. A beta setting can pause supported Now Playing media while you dictate and resume it when capture stops.
 

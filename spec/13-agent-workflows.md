@@ -50,7 +50,7 @@ The broader processing layer may evolve into four related capabilities:
 │  ┌─ Prompt Library ──────────────────────────────┐  SHIPPED     │
 │  │  Named, reusable instruction templates        │  (spec/12)   │
 │  │  Prompt { id, name, content, category, ... }  │             │
-│  │  Summary { id, transcriptionId, ... }         │             │
+│  │  PromptResult { id, transcriptionId, ... }    │             │
 │  └───────────────────────────┬───────────────────┘             │
 │                              │                                  │
 │               ┌──── snapshot │ FK ────┐                         │
@@ -102,11 +102,13 @@ If MacParakeet introduces action execution, each action likely needs a standard 
 
 ### Transcript Context
 
-Already available in current models:
+Illustrative context assembled from current models (not an existing shared
+`ProcessingContext` type). Transcription source types include file, YouTube,
+podcast, and meeting; dictation is a separate model:
 
 ```
 transcript: String
-source: .file | .youtube | .dictation
+source: .file | .youtube | .podcast | .meeting | .dictation
 filename: String?
 duration: TimeInterval?
 speakers: Int?
@@ -239,7 +241,7 @@ This may be lower-risk than building a full native workflow engine, but it also 
 
 ## Open Questions
 
-1. Should future prompt categories expand beyond `.summary` and `.transform`, or should agents/workflows use separate models entirely?
+1. Should future prompt categories expand beyond `.result` and `.transform`, or should agents/workflows use separate models entirely?
 2. What desktop context is reliable and privacy-safe to collect on macOS?
 3. What permissions and user confirmation are required before an agent can act on other apps?
 4. Is `agentHandoff` a distinct action type, or just a constrained flavor of CLI execution?

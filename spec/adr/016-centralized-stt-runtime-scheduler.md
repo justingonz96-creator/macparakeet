@@ -116,7 +116,7 @@ This means:
 
 - dictation stays responsive even during other work
 - meeting finalization beats live preview
-- file transcription yields to meeting work
+- queued file transcription yields priority to meeting work; already-running file work is not preempted
 - file transcription does not receive dedicated always-on capacity
 
 Meeting recordings use `meetingFinalize` from the background finalization queue after durable stop and during archived retranscribe when the saved folder still contains `meeting-recording-metadata.json` plus the per-source files.
@@ -145,6 +145,9 @@ TranscriptionService -------┘
 ### 6. Backpressure is explicit
 
 Meeting live chunk transcription is best-effort and droppable under backlog.
+The current scheduler caps pending live chunks at 120 by default and drops
+the oldest pending live chunk when another arrives at the limit. Durable
+file/finalization jobs are not dropped by this admission rule.
 
 If the control plane exceeds configured queue or latency thresholds, it may:
 

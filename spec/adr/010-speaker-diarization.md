@@ -2,6 +2,7 @@
 
 > Status: **Accepted**
 > Date: 2026-03-04
+> Current scope (2026-09-07): offline file/URL transcription and optional isolated system-track meeting refinement. The original comparison tables and performance rationale below are historical; the 2026-09-06 amendment governs the corrected FluidAudio 0.15.6 configuration and measurement caveats.
 
 ## Context
 
@@ -40,13 +41,14 @@ FluidAudio's offline pipeline uses pyannote community-1 converted to CoreML, run
 
 ## Decision
 
-**Use FluidAudio's offline diarization pipeline (pyannote community-1 + WeSpeaker + VBx) for file transcription only. Do not use Sortformer. Do not add streaming diarization.**
+**Use FluidAudio's offline diarization pipeline (pyannote community-1 + WeSpeaker + VBx) for file/URL transcription and isolated system-track refinement after meeting capture. Do not use Sortformer or streaming diarization in the current product path.**
 
 ### Scope
 
 - **File transcription**: Run diarization after ASR on the same audio. Merge speaker segments with word-level timestamps.
 - **Dictation**: No diarization. Single-speaker by definition.
 - **YouTube transcription**: Diarization applies (same as file transcription).
+- **Meeting finalization**: Diarize the isolated system-audio side when enabled and supported; the microphone remains the local speaker track. Do not diarize the mixed playback artifact.
 
 ### Integration approach
 
@@ -269,10 +271,9 @@ model bundles.
 > assign, split, merge, remove, reset, Undo, and Redo operations are persisted
 > separately and resolved into one effective attribution; they never rewrite
 > raw word/source evidence. Effective attribution is the contract for the app,
-> search, exports, meeting artifacts, cards, LLM context, and CLI. A successful
-> retranscription starts a new fingerprint and resets the effective correction
-> cursor; failed retranscription leaves the prior transcript and corrections
-> intact. Attribution reads are scoped to the selected transcript snapshot,
+> search, exports, meeting artifacts, cards, LLM context, and CLI. Replacement transcript evidence is fingerprinted again; a changed fingerprint
+> resets the effective correction cursor. Failed retranscription leaves the prior
+> transcript and corrections intact. Attribution reads are scoped to the selected transcript snapshot,
 > including same-ID completion and refresh; older asynchronous reads cannot
 > replace a newer snapshot. Rich AI context caches include both the selected
 > transcript revision and speaker-correction revision, including the transition
@@ -315,11 +316,11 @@ Sortformer's 4-speaker cap is a non-starter. It's baked into the model architect
 
 Sortformer's strengths (noise robustness, overlapping speech) matter most for real-time meeting recording — Oatmeal's domain, not MacParakeet's. For file transcription of pre-recorded audio, the offline pipeline's higher accuracy and unlimited speakers are strictly better.
 
-### Why not streaming diarization
+### Why not streaming diarization (original rationale)
 
 MacParakeet's file transcription is batch by nature — the entire audio file is available upfront. Streaming diarization trades 10-15% DER for latency benefits we don't need. The offline pipeline processes faster than realtime anyway (64-122x RTF), so there's no UX benefit to streaming.
 
-Real-time meeting diarization is Oatmeal's territory.
+The original file-only rationale predates MacParakeet meeting recording. Current meetings still use offline final speaker assignment; tentative live diarization remains research, as recorded in the later amendments.
 
 ### Why not a separate dependency
 

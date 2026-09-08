@@ -41,3 +41,4 @@ Each contract document should include:
 - [DAPT Export v1](dapt-export-v1.md)
 - [File Transcription Audio Tracks](file-transcription-audio-tracks.md)
 - [Custom Word Deletion](custom-word-deletion.md)
+- [Telemetry and Diagnostic Evidence](telemetry-v1.md)

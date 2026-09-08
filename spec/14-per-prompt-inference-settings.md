@@ -46,7 +46,7 @@ the context and token budget unnecessarily.
 
 ### Prompt Library
 
-The create and edit forms gain a collapsed **Generation settings** section.
+The create and edit forms expose a collapsed **Generation settings** section.
 Every field starts at **Default**. This means inheriting MacParakeet's current
 prompt-result and adapter behavior, not forcing the upstream provider to omit
 the parameter. The user may set only the values needed by that prompt.
@@ -111,7 +111,7 @@ omitted from the request; they are never reinterpreted as different settings.
 
 ## Domain model
 
-Add a shared Core model rather than putting provider wire keys on `Prompt`:
+The shared Core model keeps provider wire keys off `Prompt` (abridged):
 
 ```swift
 public struct PromptInferenceSettings: Codable, Sendable, Equatable {
@@ -143,28 +143,27 @@ default value has all numeric fields `nil` and `thinkingMode ==
 reasoning effort unless thinking is explicitly enabled, preventing a hidden or
 stale effort from reaching a request.
 
-Extend `ChatCompletionOptions` with the same transport-neutral fields. Keep
+`ChatCompletionOptions` carries the same transport-neutral fields. Keep
 `responseFormat` separate: it is controlled by an operation such as knowledge
 card generation, not by a user prompt.
 
-Add:
+`Prompt` and the in-memory `PendingGeneration` store:
 
 ```swift
 public var inferenceSettings: PromptInferenceSettings?
 ```
 
-to `Prompt`, and:
+`PromptResult` stores:
 
 ```swift
 public var inferenceSettingsSnapshot: PromptInferenceSettings?
 ```
 
-to `PromptResult` and `PendingGeneration`. Normalize `nil` and an all-default
-value to `nil` before persistence.
+Normalize `nil` and an all-default value to `nil` before persistence.
 
 ## Persistence
 
-Register a new, never-rewritten migration after the current `v0.30` migration:
+The registered migration follows `v0.30-meeting-capture-report`:
 
 ```text
 v0.31-prompt-inference-settings
@@ -187,9 +186,9 @@ No settings belong in `llm_runs`. That table remains the metadata-only ledger;
 the reproducibility snapshot belongs with the full prompt result in
 `summaries`.
 
-Update `spec/01-data-model.md`, `spec/12-processing-layer.md`, and
-`spec/11-llm-integration.md` in the implementation change. If the provider
-mapping is considered an architectural contract, add an ADR or amend ADR-013.
+The schema and processing contracts are also recorded in
+`spec/01-data-model.md`, `spec/12-processing-layer.md`,
+`spec/11-llm-integration.md`, and the inference-settings amendment to ADR-013.
 
 ## Provider adaptation
 
@@ -351,7 +350,7 @@ verification, per repository guidance.
 - The feature introduces no arbitrary request-body injection surface and no
   new leakage of transcript or prompt content.
 
-## Suggested implementation slices
+## Original implementation slices (historical)
 
 1. Domain model, `ChatCompletionOptions`, provider normalization, and adapter
    request tests.

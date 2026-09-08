@@ -67,6 +67,25 @@ bounded JSON evidence with explicit missing, truncated and unparseable states.
 It reads the log only. It does not record audio, change app settings, upload
 diagnostics or claim that the absence of logged failures means successful audio.
 
+## Enforcement and compatibility
+
+- `TelemetryServiceTests` pins payload encoding, omitted free-form error/crash
+  fields, and opt-out admission/queue-generation races.
+- `TelemetryErrorClassifierTests` pins bounded error categories and recognized
+  native CoreAudio status extraction.
+- `CLITelemetryTests` pins successful thrown exits, environment overrides, and
+  privacy-safe invocation metadata.
+- `AudioCaptureDiagnosticsTests` pins local correlation fields, bridged error
+  codes, and append/rotation behavior. The offline parser's synthetic-file
+  tests live in `scripts/dev/tests/test_query_audio_diagnostics.py`.
+
+Update the typed event factories, focused tests, and
+[telemetry catalog](../../docs/telemetry.md) together when this boundary changes.
+A new event name also requires the paired website ingestion allowlist before
+clients ship. Preserve existing aggregate fields and the local query's
+`schema_version: 1`; breaking changes need an explicit compatibility/version
+plan. App-repo tests do not verify the deployed website contract or ingestion.
+
 ## Rollout
 
 App changes require a new app/CLI build. Website changes are in the separate

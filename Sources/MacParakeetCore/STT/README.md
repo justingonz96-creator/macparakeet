@@ -139,7 +139,8 @@ self-contained for the CLI and tests.
 interactive latency is preserved. The other three share a
 background slot, with explicit priority: meeting finalize
 > meeting live chunk > file transcription. Backpressure on the
-shared slot drops the lowest-priority pending work.
+shared slot drops the oldest pending `meetingLiveChunk` when the live-chunk
+backlog limit is reached; durable file and finalization jobs are retained.
 
 **Meeting stop does not create a second ASR lane.** Back-to-back meeting
 recording is implemented by returning the recorder to idle after the stopped
@@ -252,8 +253,8 @@ real events into the controller's input shape.
 - `swift test --filter STT` — scheduler, runtime, slot ordering,
   backpressure, engine routing, lease semantics.
 - `swift test --filter FnKeyStateMachine` — gesture state machine.
-- `swift test` — full suite (~100 s). STT changes ripple through
-  dictation and meeting recording tests.
+- For code changes, run the full suite at most once as the final gate,
+  after focused checks; follow the repository verification scope.
 - Manual: dev-app smoke covering all four job classes — dictate
   during a file transcription (file work should yield to
   dictation), start a meeting and dictate during it, kick off a

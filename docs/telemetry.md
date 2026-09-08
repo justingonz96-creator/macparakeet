@@ -202,7 +202,7 @@ when the question is "what happened to this operation?"
 
 | Event | Props | Question It Answers |
 |---|---|---|
-| `app_launched` | — | How many active users? DAU/WAU/MAU? |
+| `app_launched` | — | How many GUI launch sessions occurred? Unique people or installs cannot be counted from per-launch session IDs. |
 | `app_quit` | `session_duration_seconds` | How long are sessions? |
 | `onboarding_completed` | `duration_seconds` | How long does setup take? |
 | `onboarding_step` | `step`, `action`, optional `elapsed_seconds`, `step_index`, `total_steps`, `engine_state` | Where do people get stuck in onboarding? `elapsed_seconds` is cumulative time since this onboarding window/run started, not per-step dwell time. `engine_state` is present only for Speech Model step events. Distinguishes viewed, forward/back/jump navigation, dismissed setup, engine ready/failed, and completion without adding a new allowlisted event name. |
@@ -593,7 +593,8 @@ public final class TelemetryService: TelemetryServiceProtocol, @unchecked Sendab
   - On **app termination** (`NSApplication.willTerminateNotification`)
   - When queue hits **50 events**
   - **Immediately** for critical events: `telemetry_opted_out`, `onboarding_completed`, `app_quit`, `crash_occurred`, `license_activated`, and all licensing events
-- On flush: POST batch as JSON array to `/api/telemetry`
+- On flush: POST an object containing the `events` array to `/api/telemetry`,
+  splitting queued events into batches of at most 100.
 - On network failure: failed events are requeued in memory and retried until queue pressure trims them. Events are still not persisted to disk.
 - Max queue size: **200 events** (prevent memory issues if network is down for extended period)
 
