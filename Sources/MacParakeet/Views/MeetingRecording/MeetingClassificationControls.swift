@@ -200,7 +200,7 @@ private struct MeetingLabelFilterPopover: View {
     @ViewBuilder
     private var filterRows: some View {
         if labels.isEmpty {
-            Text(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No labels yet." : "No matching labels")
+            Text(filterEmptyMessage)
                 .font(DesignSystem.Typography.caption)
                 .foregroundStyle(DesignSystem.Colors.textTertiary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -221,7 +221,9 @@ private struct MeetingLabelFilterPopover: View {
                         Spacer(minLength: 0)
                         Image(systemName: selected ? "checkmark" : "circle")
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(selected ? MeetingLabelTint.color(for: label) : DesignSystem.Colors.textTertiary)
+                            .foregroundStyle(
+                                selected ? MeetingLabelTint.color(for: label) : DesignSystem.Colors.textTertiary
+                            )
                     }
                     .font(DesignSystem.Typography.caption.weight(.medium))
                     .foregroundStyle(DesignSystem.Colors.textPrimary)
@@ -234,6 +236,16 @@ private struct MeetingLabelFilterPopover: View {
                 .accessibilityValue(selected ? "Selected" : "Not selected")
             }
         }
+    }
+
+    private var filterEmptyMessage: String {
+        if showingSelectedOnly && libraryViewModel.selectedMeetingLabelIDs.isEmpty {
+            return "No selected labels"
+        }
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "No labels yet."
+        }
+        return "No matching labels"
     }
 }
 
@@ -285,7 +297,7 @@ struct MeetingClassificationEditor: View {
                     }
 
                     if suggestedLabels.isEmpty {
-                        Text(trimmedLabelQuery.isEmpty ? "No labels yet. Type a name to create one." : "No matching labels")
+                        Text(suggestedLabelsEmptyMessage)
                             .font(DesignSystem.Typography.caption)
                             .foregroundStyle(DesignSystem.Colors.textTertiary)
                             .padding(.vertical, DesignSystem.Spacing.xs)
@@ -370,6 +382,13 @@ struct MeetingClassificationEditor: View {
         }
     }
 
+    private var suggestedLabelsEmptyMessage: String {
+        if trimmedLabelQuery.isEmpty {
+            return "No labels yet. Type a name to create one."
+        }
+        return "No matching labels"
+    }
+
     private var exactLabelMatch: MeetingLabel? {
         displayedLabels.first {
             $0.name.compare(trimmedLabelQuery, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
@@ -436,6 +455,7 @@ struct MeetingClassificationEditor: View {
         .accessibilityLabel(label.name)
         .accessibilityValue(isAssigned ? "Assigned" : "Available")
         .accessibilityHint(isAssigned ? "Already assigned" : "Adds this label")
+        .disabled(isAssigned)
     }
 
     private func createLabel() {
@@ -716,7 +736,7 @@ private struct MeetingClassificationPopoverModifier: ViewModifier {
                 MeetingClassificationEditor(
                     transcription: transcription,
                     viewModel: viewModel,
-                    onDismiss: { item.wrappedValue = nil }
+                    onDismiss: { item = nil }
                 )
                 .frame(width: 340)
             }

@@ -56,6 +56,12 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
                 .opacity(hovered ? 1 : 0)
                 .allowsHitTesting(hovered)
         }
+        .overlay(alignment: .bottomTrailing) {
+            if showsUnavailableAudioIndicator {
+                MeetingAudioStateChip(state: .removed)
+                    .padding(8)
+            }
+        }
         .onHover { hovered = $0 }
         .animation(DesignSystem.Animation.hoverTransition, value: hovered)
         .onAppear {
@@ -228,11 +234,19 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
 
     private var infoArea: some View {
         VStack(alignment: .leading, spacing: 4) {
-            highlightedText(displayTitle)
-                .font(DesignSystem.Typography.bodySmall.weight(.medium))
-                .foregroundStyle(DesignSystem.Colors.textPrimary)
-                .lineLimit(2)
-                .truncationMode(.tail)
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                highlightedText(displayTitle)
+                    .font(DesignSystem.Typography.bodySmall.weight(.medium))
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
+
+                if transcription.isFavorite {
+                    FavoriteStatusMarker()
+                        .fixedSize()
+                }
+            }
 
             if let channelName = transcription.channelName {
                 highlightedText(channelName)
@@ -256,7 +270,9 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
 
             transcriptionStatus
 
-            if transcription.sourceType == .meeting {
+            if transcription.sourceType == .meeting,
+                MeetingAudioFile.state(for: transcription) == .missing
+            {
                 MeetingAudioStateChip(state: MeetingAudioFile.state(for: transcription))
             }
 
@@ -286,8 +302,13 @@ struct TranscriptionThumbnailCard<MenuContent: View>: View {
             MeetingClassificationBadges(classification: classification)
         }
         .padding(DesignSystem.Spacing.sm)
+        .padding(.trailing, showsUnavailableAudioIndicator ? 36 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(minHeight: 100, alignment: .top)
+    }
+
+    private var showsUnavailableAudioIndicator: Bool {
+        transcription.sourceType == .meeting && MeetingAudioFile.state(for: transcription) == .removed
     }
 
     @ViewBuilder

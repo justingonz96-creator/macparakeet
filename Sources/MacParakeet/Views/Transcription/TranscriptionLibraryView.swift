@@ -915,16 +915,12 @@ struct TranscriptionLibraryView: View {
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(DesignSystem.Colors.textTertiary)
             Text(
-                viewModel.searchText.isEmpty
-                    ? emptyStateTitle
-                    : "No matching transcriptions"
+                emptyStateTitle
             )
             .font(DesignSystem.Typography.body)
             .foregroundStyle(DesignSystem.Colors.textSecondary)
             Text(
-                viewModel.searchText.isEmpty
-                    ? emptyStateMessage
-                    : "Try different words or clear your search."
+                emptyStateMessage
             )
             .font(DesignSystem.Typography.bodySmall)
             .foregroundStyle(DesignSystem.Colors.textTertiary)
@@ -1070,18 +1066,38 @@ struct TranscriptionLibraryView: View {
     }
 
     private var emptyStateIcon: String {
+        if hasLabelFilter { return "tag" }
         if !viewModel.searchText.isEmpty { return "magnifyingglass" }
         return isMeetingContext ? "waveform.badge.mic" : "square.grid.2x2"
     }
 
     private var emptyStateTitle: String {
-        isMeetingContext ? "No meetings recorded yet" : emptyTitle
+        if hasLabelFilter {
+            if !viewModel.searchText.isEmpty {
+                return isMeetingContext
+                    ? "No meetings match this search and these labels"
+                    : "No transcriptions match this search and these labels"
+            }
+            return isMeetingContext ? "No meetings match these labels" : "No transcriptions match these labels"
+        }
+        if !viewModel.searchText.isEmpty { return "No matching transcriptions" }
+        return isMeetingContext ? "No meetings recorded yet" : emptyTitle
     }
 
     private var emptyStateMessage: String {
-        isMeetingContext
+        if hasLabelFilter {
+            return viewModel.searchText.isEmpty
+                ? "Clear filters to show every transcription."
+                : "Clear filters or search to broaden the results."
+        }
+        if !viewModel.searchText.isEmpty { return "Try different words or clear your search." }
+        return isMeetingContext
             ? "Press Record Meeting on the Transcribe tab to capture system audio and transcribe locally."
             : emptyMessage
+    }
+
+    private var hasLabelFilter: Bool {
+        !viewModel.selectedMeetingLabelIDs.isEmpty
     }
 }
 

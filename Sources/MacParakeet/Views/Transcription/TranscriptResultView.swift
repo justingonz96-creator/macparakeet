@@ -1695,6 +1695,11 @@ struct TranscriptResultView: View {
                     .foregroundStyle(DesignSystem.Colors.textPrimary)
                     .lineLimit(headerExpanded ? 3 : 1)
 
+                if transcription.isFavorite {
+                    FavoriteStatusMarker()
+                        .fixedSize()
+                }
+
                 if canRenameTitle {
                     Button(action: beginTitleRename) {
                         Image(systemName: "pencil")
