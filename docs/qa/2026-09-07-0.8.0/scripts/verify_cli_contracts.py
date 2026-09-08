@@ -275,13 +275,13 @@ def main():
         with sqlite3.connect(legacy) as connection:
             original_text = connection.execute("SELECT id, rawTranscript FROM transcriptions").fetchall()
             original_results = connection.execute("SELECT id, content FROM summaries ORDER BY rowid").fetchall()
-            for table, column in (("transcriptions", "audioTrackOrdinal"), ("transcriptions", "meetingCaptureReport"), ("summaries", "inferenceSettingsSnapshot")):
-                connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
-            connection.execute("DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?)", (
-                "v0.29-transcription-audio-track", "v0.30-meeting-capture-report", "v0.31-prompt-inference-settings",
+            for column in ("audioTrackOrdinal", "meetingCaptureReport"):
+                connection.execute(f"ALTER TABLE transcriptions DROP COLUMN {column}")
+            connection.execute("DELETE FROM grdb_migrations WHERE identifier IN (?, ?)", (
+                "v0.29-transcription-audio-track", "v0.30-meeting-capture-report",
             ))
             write_json(args.output / "legacy-before.json", {
-                "method": "Synthetic pre-v0.29 transcription/summary columns reconstructed from owned current fixture; prompt values stay in prompt_versions (v0.36); not produced by an old binary",
+                "method": "Synthetic pre-v0.29 transcription columns reconstructed from owned current fixture; the v0.31 legacy prompt column is not reconstructed because v0.36 removed it and cannot rerun; not produced by an old binary",
                 "migrations": [row[0] for row in connection.execute("SELECT identifier FROM grdb_migrations ORDER BY rowid")],
                 "transcriptionCount": len(original_text), "resultCount": len(original_results),
             })
@@ -293,13 +293,13 @@ def main():
                 "SELECT v.inferenceSettings FROM prompts p JOIN prompt_versions v ON v.id = p.activeVersionId WHERE p.name = 'QA receipt'"
             ).fetchone()[0]
             check(json.loads(active_settings) == settings, "Migration changed versioned prompt settings")
-            check(all(row[0] is None for row in connection.execute("SELECT inferenceSettingsSnapshot FROM summaries")), "Legacy receipt not nil")
+            check("inferenceSettings" not in [row[1] for row in connection.execute("PRAGMA table_info(prompts)")], "Removed legacy prompt column reappeared")
             check(connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "Integrity check failed")
             check(connection.execute("PRAGMA foreign_key_check").fetchall() == [], "Foreign keys failed")
             write_json(args.output / "legacy-after.json", {
                 "migrations": [row[0] for row in connection.execute("SELECT identifier FROM grdb_migrations ORDER BY rowid")],
                 "preservedTranscriptions": len(original_text), "preservedResults": len(original_results),
-                "versionedPromptSettings": settings, "legacyReceipts": None, "integrity": "ok", "foreignKeyViolations": [],
+                "versionedPromptSettings": settings, "legacyPromptColumnAbsent": True, "integrity": "ok", "foreignKeyViolations": [],
             })
         check(all(not request["authorizationPresent"] for request in requests), "Unexpected authentication header")
         outcome = {"status": "pass", "commands": len(records), "providerRequests": len(requests)}
