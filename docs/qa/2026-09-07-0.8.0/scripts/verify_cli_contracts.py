@@ -153,7 +153,7 @@ def main():
         "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "database": str(database), "stateDir": str(state_dir),
         "foundationHome": str(fixed_home), "endpoint": endpoint,
-        "fixtureSetup": "CLI creates schema/prompt; direct SQLite inserts synthetic transcription and settings",
+        "fixtureSetup": "CLI creates schema/prompt and seeds prompt settings; direct SQLite inserts synthetic transcription",
     }
     write_json(args.output / "metadata.json", metadata)
 

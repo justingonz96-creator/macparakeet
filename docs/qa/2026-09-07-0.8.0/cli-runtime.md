@@ -8,7 +8,12 @@ Fixture setup is explicit: the CLI initializes its schema and adds a custom prom
 
 Reusable runner: [`scripts/verify_cli_contracts.py`](scripts/verify_cli_contracts.py). Runtime evidence is retained under `/tmp/macparakeet-080-qa/cli-contract-runtime/` with binary identity, arguments, exit codes, stdout/stderr, synthetic requests and stored results. No Swift build/test, audio or GUI invocation is performed by this runner.
 
-## Exact execution
+## Historical run-02 execution
+
+This recorded command uses the original runner identified by the SHA-256 below,
+not the current reusable runner. Keep the original runner and CLI 3.3.0 binary
+together when reproducing run-02; the current runner requires the newer schema
+and defaults to CLI 4.0.0.
 
 ```bash
 python3 docs/qa/2026-09-07-0.8.0/scripts/verify_cli_contracts.py \
