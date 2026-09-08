@@ -66,9 +66,13 @@ final class AppEnvironment {
             runtimePreferences.meetingAudioSourceMode
         }
 
+        let vocabularyRepo = customWordRepo
         sttRuntime = STTRuntime(
             speechEngine: SpeechEnginePreference.current(),
-            whisperModelVariant: SpeechEnginePreference.whisperModelVariant()
+            whisperModelVariant: SpeechEnginePreference.whisperModelVariant(),
+            whisperVocabularyProvider: {
+                ((try? vocabularyRepo.fetchEnabled()) ?? []).map { $0.replacement ?? $0.word }
+            }
         )
         sttScheduler = STTScheduler(runtime: sttRuntime)
         // Ship raw meeting mic capture by default. VPIO remains available for

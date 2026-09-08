@@ -113,6 +113,31 @@ final class STTClientTests: XCTestCase {
         #endif
     }
 
+    func testVocabularyPromptJoinsUniqueTermsAndCapsLength() {
+        let prompt = WhisperEngine.makeVocabularyPrompt(
+            terms: ["Echelon", "FitPass", "echelon", "  ", "cadence"])
+        XCTAssertEqual(prompt, "Glossary: Echelon, FitPass, cadence.")
+
+        let long = WhisperEngine.makeVocabularyPrompt(
+            terms: (0..<200).map { "instructorname\($0)" }, maxCharacters: 120)
+        XCTAssertNotNil(long)
+        XCTAssertLessThanOrEqual(long!.count, 120)
+        XCTAssertTrue(long!.hasSuffix("."))
+    }
+
+    func testVocabularyPromptIsNilWhenNoTerms() {
+        XCTAssertNil(WhisperEngine.makeVocabularyPrompt(terms: []))
+        XCTAssertNil(WhisperEngine.makeVocabularyPrompt(terms: ["", "  "]))
+    }
+
+    func testWhisperDecodeOptionsCarryPromptTokens() {
+        #if canImport(WhisperKit)
+        let options = WhisperEngine.makeDecodingOptions(language: "en", promptTokens: [50257, 9012])
+        XCTAssertEqual(options.promptTokens, [50257, 9012])
+        XCTAssertNil(WhisperEngine.makeDecodingOptions(language: "en").promptTokens)
+        #endif
+    }
+
     func testWhisperForcedLanguageFallbackOnlyRetriesEmptyResults() {
         #if canImport(WhisperKit)
         let empty = TranscriptionResult(text: "  \n", segments: [], language: "ko", timings: TranscriptionTimings())

@@ -116,6 +116,7 @@ public actor WhisperEngine: STTTranscribing {
     /// every production caller (runtime + CLI). Injected so the write-path and
     /// the VM's read-path are coupled by construction, not by convention.
     private let defaults: UserDefaults
+    private let vocabularyProvider: (@Sendable () -> [String])?
     private let transcriptionPermit = AsyncPermit()
 
     #if canImport(WhisperKit)
@@ -127,12 +128,14 @@ public actor WhisperEngine: STTTranscribing {
         model: String = WhisperEngine.defaultModelVariant,
         language: String? = nil,
         downloadBase: URL? = nil,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        vocabularyProvider: (@Sendable () -> [String])? = nil
     ) {
         self.modelVariant = Self.normalizeModelVariant(model)
         self.defaultLanguage = SpeechEnginePreference.normalizeLanguage(language)
         self.downloadBase = downloadBase ?? Self.defaultDownloadBase
         self.defaults = defaults
+        self.vocabularyProvider = vocabularyProvider
     }
 
     public static func make(
@@ -245,11 +248,19 @@ public actor WhisperEngine: STTTranscribing {
                 onProgress?(50, 100)
                 return true
             }
+            let promptTokens: [Int]? = {
+                guard let terms = vocabularyProvider?(), !terms.isEmpty,
+                      let prompt = Self.makeVocabularyPrompt(terms: terms),
+                      let tokenizer = whisperKit.tokenizer else { return nil }
+                return tokenizer.encode(text: " " + prompt)
+            }()
+
             let result = try await Self.transcribeWithLanguageFallback(
                 whisperKit,
                 audioPath: audioURL.path,
                 requestedLanguage: requestedLanguage,
                 tuning: tuning,
+                promptTokens: promptTokens,
                 callback: callback
             )
 
@@ -393,10 +404,35 @@ public actor WhisperEngine: STTTranscribing {
         )
     }
 
+    /// Builds Whisper's optional initial text prompt from the user's Custom
+    /// Words. Whisper treats the prompt as "text that came before", so a
+    /// comma list of proper nouns steers spelling (instructor names, product
+    /// names) without changing what is recognised. Capped so it never crowds
+    /// out the 224-token prompt window; WhisperKit trims to the model limit
+    /// as well.
+    static func makeVocabularyPrompt(terms: [String], maxCharacters: Int = 600) -> String? {
+        var seen = Set<String>()
+        var kept: [String] = []
+        for raw in terms {
+            let term = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !term.isEmpty, seen.insert(term.lowercased()).inserted else { continue }
+            kept.append(term)
+        }
+        guard !kept.isEmpty else { return nil }
+        var prompt = "Glossary: "
+        for (index, term) in kept.enumerated() {
+            let piece = (index == 0 ? "" : ", ") + term
+            guard prompt.count + piece.count + 1 <= maxCharacters else { break }
+            prompt += piece
+        }
+        return prompt + "."
+    }
+
     #if canImport(WhisperKit)
     static func makeDecodingOptions(
         language: String?,
-        tuning: WhisperEngineTuning = SpeechEnginePreference.whisperTuning()
+        tuning: WhisperEngineTuning = SpeechEnginePreference.whisperTuning(),
+        promptTokens: [Int]? = nil
     ) -> DecodingOptions {
         let resolvedLanguage = SpeechEnginePreference.normalizeLanguage(language)
         return DecodingOptions(
@@ -406,6 +442,7 @@ public actor WhisperEngine: STTTranscribing {
             usePrefillPrompt: resolvedLanguage != nil,
             detectLanguage: resolvedLanguage == nil,
             wordTimestamps: true,
+            promptTokens: promptTokens,
             compressionRatioThreshold: Float(tuning.compressionRatioThreshold),
             logProbThreshold: Float(tuning.logProbThreshold),
             noSpeechThreshold: Float(tuning.noSpeechThreshold),
@@ -418,12 +455,13 @@ public actor WhisperEngine: STTTranscribing {
         audioPath: String,
         requestedLanguage: String?,
         tuning: WhisperEngineTuning,
+        promptTokens: [Int]? = nil,
         callback: @escaping TranscriptionCallback
     ) async throws -> TranscriptionResult {
         let result = try await transcribeWithWhisperKit(
             whisperKit,
             audioPaths: [audioPath],
-            decodeOptions: makeDecodingOptions(language: requestedLanguage, tuning: tuning),
+            decodeOptions: makeDecodingOptions(language: requestedLanguage, tuning: tuning, promptTokens: promptTokens),
             callback: callback
         )
 
@@ -434,7 +472,7 @@ public actor WhisperEngine: STTTranscribing {
         return try await transcribeWithWhisperKit(
             whisperKit,
             audioPaths: [audioPath],
-            decodeOptions: makeDecodingOptions(language: nil, tuning: tuning),
+            decodeOptions: makeDecodingOptions(language: nil, tuning: tuning, promptTokens: promptTokens),
             callback: callback
         )
     }

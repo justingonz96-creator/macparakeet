@@ -58,6 +58,7 @@ public actor STTRuntime: STTRuntimeProtocol {
     private var speechEngine: SpeechEnginePreference
     private var whisperEngine: WhisperEngine?
     private let whisperModelVariant: String
+    private let whisperVocabularyProvider: (@Sendable () -> [String])?
     private var activeTranscriptionCount = 0
 
     private var backgroundWarmUpState: STTWarmUpState = .idle
@@ -68,11 +69,13 @@ public actor STTRuntime: STTRuntimeProtocol {
     public init(
         modelVersion: AsrModelVersion = .v3,
         speechEngine: SpeechEnginePreference = .parakeet,
-        whisperModelVariant: String = SpeechEnginePreference.defaultWhisperModelVariant
+        whisperModelVariant: String = SpeechEnginePreference.defaultWhisperModelVariant,
+        whisperVocabularyProvider: (@Sendable () -> [String])? = nil
     ) {
         self.modelVersion = modelVersion
         self.speechEngine = speechEngine
         self.whisperModelVariant = WhisperEngine.normalizeModelVariant(whisperModelVariant)
+        self.whisperVocabularyProvider = whisperVocabularyProvider
     }
 
     func transcribe(
@@ -114,7 +117,7 @@ public actor STTRuntime: STTRuntimeProtocol {
         onProgress: (@Sendable (Int, Int) -> Void)?
     ) async throws -> STTResult {
         let tuning = SpeechEnginePreference.whisperTuning()
-        let engine = whisperEngine ?? WhisperEngine(model: whisperModelVariant)
+        let engine = whisperEngine ?? WhisperEngine(model: whisperModelVariant, vocabularyProvider: whisperVocabularyProvider)
         whisperEngine = engine
         return try await engine.transcribe(
             audioURL: URL(fileURLWithPath: audioPath),
@@ -208,7 +211,7 @@ public actor STTRuntime: STTRuntimeProtocol {
             case .parakeet:
                 try await ensureInitialized()
             case .whisper:
-                let engine = whisperEngine ?? WhisperEngine(model: whisperModelVariant)
+                let engine = whisperEngine ?? WhisperEngine(model: whisperModelVariant, vocabularyProvider: whisperVocabularyProvider)
                 whisperEngine = engine
                 try await engine.prepare(onProgress: onProgress)
             }
@@ -431,7 +434,8 @@ public actor STTRuntime: STTRuntimeProtocol {
         case .whisper:
             let engine = whisperEngine ?? WhisperEngine(
                 model: whisperModelVariant,
-                language: SpeechEnginePreference.whisperDefaultLanguage()
+                language: SpeechEnginePreference.whisperDefaultLanguage(),
+                vocabularyProvider: whisperVocabularyProvider
             )
             try await engine.prepare(onProgress: onProgress)
             preparedWhisper = engine
