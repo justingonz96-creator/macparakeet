@@ -40,17 +40,35 @@ Focused checks used `swift test --jobs 4 --filter BranchingRecordingCoverRecipeT
 
 On the final focused run, the complete Branching Field recipe plus renderer and PNG pipeline measured cold p50/p95 5.36/6.14 ms and warm p50/p95 5.38/6.49 ms across 24 UUIDs; twelve sequential covers took 62.45 ms. A flat waveform placeholder through the same pipeline measured p50/p95 1.41/3.19 ms and 18.89 ms for twelve. These are native synthetic export measurements, not a library scrolling profile; they do not establish a cache need or a no-lag claim. The implementation remains uncached and static pending combined UI QA.
 
-The combined-suite attempt on the stacked UI-plus-art head did not pass: `/tmp/macparakeet-library-art-combined-full-20260908.log` exited 1 after 5,855 XCTest tests with 21 skips and 46 assertion failures across 22 `HotkeyManagerTests`; Swift Testing reported 29 passed. At the same code head, `/tmp/macparakeet-hotkey-focused-20260908-rerun.log` ran the isolated `HotkeyManagerTests` 87/87 passed. Independent UI review found the Hotkey source and tests byte-identical to `origin/main`; all 22 failing cases use the live physical-keyboard default without injection, and the host state was not captured. This is evidence of a likely pre-existing test-isolation flake, not a full-suite pass. No source or test change was made for it; hosted exact-head CI remains required.
+The combined-suite attempt on the stacked UI-plus-art head did not pass: `/tmp/macparakeet-library-art-combined-full-20260908.log` exited 1 after 5,855 XCTest tests with 21 skips and 46 assertion failures across 22 `HotkeyManagerTests`; Swift Testing reported 29 passed. At the same code head, `/tmp/macparakeet-hotkey-focused-20260908-rerun.log` ran the isolated `HotkeyManagerTests` 87/87 passed. Independent UI review found the Hotkey source and tests byte-identical to `origin/main`; all 22 failing cases use the live physical-keyboard default without injection, and the host state was not captured. This remains historical evidence of a likely pre-existing test-isolation flake, not a local full-suite pass. No source or test change was made for it. Hosted exact-head CI subsequently passed in runs 34279191343 and 34279276556.
 
-## Recursive Canopy refinement evidence (in progress)
+## Recursive Canopy refinement evidence (September 8, 2026)
 The refined recipe preserves the static, UUID-only Canvas architecture with no
 cache or background job. A static arithmetic audit over 512 synthetic UUIDs
 produced 95–178 limbs per cover; every sample reached depth four and stayed
 within 1.423 normalized coordinate magnitude, below the accepted clipped bound
-of 2.0. Focused model/view tests, a direct 320×180 pt @2x native gallery, and
-the same native renderer/PNG measurement against the prior `origin/main`
-recipe are pending the coordinated SwiftPM build slot. Browser study timings are
-not used as native evidence.
+of 2.0. `swift test --jobs 4 --filter 'BranchingRecordingCoverRecipeTests|BranchingRecordingCoverViewTests'`
+passed all eight focused tests for both the exact prior `origin/main` recipe
+and the refinement. Each renderer run constructed a fresh 320×180 pt SwiftUI
+`ImageRenderer` at 2×, rasterized Canvas, encoded `NSBitmapImageRep` PNG, and
+wrote twelve synthetic covers. The baseline outputs are in
+`/tmp/macparakeet-recursive-canopy-baseline-gallery-20260908`; refined outputs
+are in `/tmp/macparakeet-recursive-canopy-refinement-gallery-20260908`.
+
+Using that same combined synthetic method, the prior recipe measured cold
+p50/p95 5.66/6.09 ms, warm p50/p95 5.63/6.02 ms, and 67.82 ms for twelve
+sequential covers. Recursive Canopy measured cold p50/p95 6.26/6.66 ms, warm
+p50/p95 6.24/6.37 ms, and 74.36 ms for twelve: roughly 0.6 ms per exported
+cover and 6.54 ms per twelve above baseline. The direct comparison confirms
+that the new terminal forks remain visible at normal thumbnail scale. These
+renderer-plus-PNG timings are not a library scrolling profile and do not imply
+no lag; the bounded increase did not justify a cache or a background job.
 
 ## Execution and gates
-Read project instructions and governing specs. Swift6 clean build, focused checks only. Limit build concurrency (--jobs4) due previous process exhaustion. Root owns single final full swift test across combined changes after rebase; do not run full suite/gate baseline yourself. Do not launch/restart user's running app or publish a release. Commit with rich intent, push branch, open PR main, but do not merge. Root owns independent review and exact-head CI/merge. Report PR URL/head, files, native measurements and method, test counts, deviations and limitations honestly. Do not claim no lag without actual profiling.
+Read project instructions and governing specs. Use focused checks and limit build
+concurrency to `--jobs 4` due prior process exhaustion. The user authorized the
+three reviewed fixes to land directly on `main`; root owns the combined review
+and one final rebuild/restart QA after they are integrated. This worker must not
+launch or restart the user's running app, publish a release, or claim no lag
+without a real scrolling profile. Report native measurement method, test count,
+deviations, and limitations honestly.
