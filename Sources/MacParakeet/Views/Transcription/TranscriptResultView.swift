@@ -519,6 +519,7 @@ struct TranscriptResultView: View {
     @State private var retranscriptionConfirmation: RetranscriptionConfirmation?
     @State private var showingRetranscribeOptions = false
     @State private var pendingRetranscribePick: RetranscribePick?
+    @State private var retranscriptionCanConfigureSpeakers = false
     @State private var retranscriptionUsesExactSpeakerCount = false
     @State private var retranscriptionExactSpeakerCount = 2
     @State private var selectedRetranscriptionSpeechEngineOverride: SpeechEngineSelection?
@@ -570,8 +571,9 @@ struct TranscriptResultView: View {
     private var contextObservationContent: some View {
         transcriptObservationContent
             .onChange(of: viewModel.speakerAttribution?.correctionRevision) {
-                let ids = viewModel.speakerAttribution?.editableSegments.map(\.id) ?? []
-                speakerSelection.reconcile(with: ids)
+                if let attribution = viewModel.speakerAttribution {
+                    speakerSelection.reconcile(with: attribution.editableSegments.map(\.id))
+                }
                 if transcriptDisplayMode == .timed {
                     scheduleSegmentCacheRebuild()
                 }
@@ -712,6 +714,11 @@ struct TranscriptResultView: View {
         editingSpeakerLabel = ""
         editingSpeakers = false
         speakerSelection.clear()
+        showingNewSpeakerPrompt = false
+        newSpeakerLabel = ""
+        pendingNewSpeakerSegments = []
+        pendingSplitSegment = nil
+        pendingSplitWordIndex = 0
         showConversationPopover = false
         hoveredConversationId = nil
         lastScrolledSegmentMs = -1
@@ -1000,23 +1007,31 @@ struct TranscriptResultView: View {
                 )
             {
                 let engineOption = viewModel.retranscriptionEngineOption(for: activeTranscription)
-                let canConfigureSpeakers = viewModel.canConfigureSpeakersForRetranscription(activeTranscription)
                 Button {
-                    if engineOption != nil || canConfigureSpeakers {
-                        selectedRetranscriptionSpeechEngineOverride = nil
-                        retranscriptionExactSpeakerCount = min(
-                            max(defaultRetranscriptionSpeakerCount, RetranscriptionSpeakerSelection.supportedExactCount.lowerBound),
-                            RetranscriptionSpeakerSelection.supportedExactCount.upperBound
-                        )
-                        showingRetranscribeOptions.toggle()
-                    } else {
-                        retranscriptionConfirmation = RetranscriptionConfirmation(
-                            transcriptionID: activeTranscription.id,
-                            speechEngineOverride: nil,
-                            speakerSelection: nil,
-                            countsOtherSpeakers: false,
-                            resetsSpeakerCorrections: viewModel.speakerCorrectionsApplied
-                        )
+                    let source = activeTranscription
+                    let viewModel = viewModel
+                    Task { @MainActor in
+                        let canConfigureSpeakers = await Task.detached(priority: .userInitiated) {
+                            viewModel.canConfigureSpeakersForRetranscription(source)
+                        }.value
+                        guard activeTranscription.id == source.id else { return }
+                        retranscriptionCanConfigureSpeakers = canConfigureSpeakers
+                        if engineOption != nil || canConfigureSpeakers {
+                            selectedRetranscriptionSpeechEngineOverride = nil
+                            retranscriptionExactSpeakerCount = min(
+                                max(defaultRetranscriptionSpeakerCount, RetranscriptionSpeakerSelection.supportedExactCount.lowerBound),
+                                RetranscriptionSpeakerSelection.supportedExactCount.upperBound
+                            )
+                            showingRetranscribeOptions.toggle()
+                        } else {
+                            retranscriptionConfirmation = RetranscriptionConfirmation(
+                                transcriptionID: activeTranscription.id,
+                                speechEngineOverride: nil,
+                                speakerSelection: nil,
+                                countsOtherSpeakers: false,
+                                resetsSpeakerCorrections: viewModel.speakerCorrectionsApplied
+                            )
+                        }
                     }
                 } label: {
                     HStack(spacing: 6) {
@@ -1035,7 +1050,7 @@ struct TranscriptResultView: View {
                 .popover(isPresented: $showingRetranscribeOptions, arrowEdge: .top) {
                     retranscribeOptionsPopover(
                         for: engineOption,
-                        canConfigureSpeakers: canConfigureSpeakers
+                        canConfigureSpeakers: retranscriptionCanConfigureSpeakers
                     )
                 }
             }
@@ -3943,7 +3958,7 @@ struct TranscriptResultView: View {
                 Button("Clear") {
                     speakerSelection.clear()
                 }
-                .buttonStyle(.plain)
+                .parakeetAction(.subtle)
                 .foregroundStyle(DesignSystem.Colors.textSecondary)
                 .disabled(viewModel.isApplyingSpeakerCorrection)
                 .help("Deselect all transcript segments")
@@ -4107,6 +4122,7 @@ struct TranscriptResultView: View {
             HStack {
                 Spacer()
                 Button("Cancel") { pendingSplitSegment = nil }
+                    .parakeetAction(.secondary)
                 Button("Split") {
                     viewModel.applySpeakerCorrection(
                         .split(
@@ -4722,11 +4738,19 @@ struct TranscriptResultView: View {
     // MARK: - Actions
 
     private func copyMeetingToClipboard() {
-        let markdown = MeetingMarkdownRenderer().renderForClipboard(
-            transcription: activeTranscription
-        )
-        TranscriptResultActions.copyText(markdown, source: .meeting)
-        showCopiedFeedback()
+        let selectedID = activeTranscription.id
+        Task { @MainActor in
+            let prepared = await viewModel.currentTranscriptionForSpeakerOutput()
+            guard activeTranscription.id == selectedID else { return }
+            guard let source = prepared, source.id == selectedID
+            else {
+                viewModel.setError(message: "Couldn't prepare the current speaker changes. Please try copying again.")
+                return
+            }
+            let markdown = MeetingMarkdownRenderer().renderForClipboard(transcription: source)
+            TranscriptResultActions.copyText(markdown, source: .meeting)
+            showCopiedFeedback()
+        }
     }
 
     private func copyTranscriptToClipboard() {
@@ -5019,32 +5043,40 @@ struct TranscriptResultView: View {
     }
 
     private func exportToDownloads(format: TranscriptExportFormat) {
-        // Use the ViewModel's copy which reflects any in-flight renames
-        let source = activeTranscription
-        do {
-            let fileURL = try TranscriptResultActions.exportTranscriptToDownloads(
-                transcription: source,
-                format: format,
-                options: format.supportsTranscriptOptions ? resolvedTranscriptExportOptions : .default
-            )
-            exportErrorMessage = nil
-            SoundManager.shared.play(.transcriptionComplete)
-            dismissTask?.cancel()
-            exportConfirmation = ExportConfirmation(
-                url: fileURL,
-                title: "Exported \(format.displayName)"
-            )
-            dismissTask = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(5.0))
-                guard !Task.isCancelled else { return }
-                exportConfirmation = nil
+        let selectedID = activeTranscription.id
+        Task { @MainActor in
+            let prepared = await viewModel.currentTranscriptionForSpeakerOutput()
+            guard activeTranscription.id == selectedID else { return }
+            guard let source = prepared, source.id == selectedID
+            else {
+                exportErrorMessage = "Couldn't prepare the current speaker changes. Please try exporting again."
+                return
             }
-        } catch let cocoaError as CocoaError where cocoaError.code == .fileNoSuchFile {
-            exportErrorMessage = "Your Downloads folder could not be found."
-            SoundManager.shared.play(.errorSoft)
-        } catch {
-            exportErrorMessage = error.localizedDescription
-            SoundManager.shared.play(.errorSoft)
+            do {
+                let fileURL = try TranscriptResultActions.exportTranscriptToDownloads(
+                    transcription: source,
+                    format: format,
+                    options: format.supportsTranscriptOptions ? resolvedTranscriptExportOptions : .default
+                )
+                exportErrorMessage = nil
+                SoundManager.shared.play(.transcriptionComplete)
+                dismissTask?.cancel()
+                exportConfirmation = ExportConfirmation(
+                    url: fileURL,
+                    title: "Exported \(format.displayName)"
+                )
+                dismissTask = Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(5.0))
+                    guard !Task.isCancelled else { return }
+                    exportConfirmation = nil
+                }
+            } catch let cocoaError as CocoaError where cocoaError.code == .fileNoSuchFile {
+                exportErrorMessage = "Your Downloads folder could not be found."
+                SoundManager.shared.play(.errorSoft)
+            } catch {
+                exportErrorMessage = error.localizedDescription
+                SoundManager.shared.play(.errorSoft)
+            }
         }
     }
 

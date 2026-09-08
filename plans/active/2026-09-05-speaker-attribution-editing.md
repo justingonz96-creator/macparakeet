@@ -1,7 +1,9 @@
 # Speaker Attribution Editing and Speaker Management
 
-> **Status:** IN PROGRESS — Phases 0–2 and output parity implemented; final UX
-> hardening and Phase 4 remain.
+> **Status:** PR #960 CANDIDATE — correction editing, persistent history,
+> output integration, and focused hardening are implemented. The broader
+> artifact-retry UI, dedicated remove-split UI, and replay work below remain
+> follow-ups; this plan is not a claim that all proposed phases shipped.
 > **Priority:** P1
 > **Date:** 2026-09-05
 > **Tracks:** [#542](https://github.com/moona3k/macparakeet/issues/542),
@@ -34,7 +36,7 @@ retranscribing audio:
 The feature is a correction layer over diarization, not a new diarizer and not
 cross-recording speaker recognition.
 
-## Verified Current State
+## Baseline at design time (2026-09-05)
 
 - `WordTimestamp.speakerId` is the effective attribution consumed by most
   renderers today. `SpeakerInfo` stores only an ID and display label.

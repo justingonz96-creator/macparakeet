@@ -31,6 +31,7 @@ public struct SpeakerAttributionProjection: Sendable {
     /// immutable; callers must never save this materialized copy as canonical
     /// diarization output.
     public var effectiveTranscription: Transcription {
+        guard correctionsApplied else { return automaticTranscription }
         let automaticWords = automaticTranscription.wordTimestamps ?? []
         let automaticSpeakers = automaticTranscription.speakers ?? []
         let automaticDiarization = automaticTranscription.diarizationSegments ?? []
@@ -113,6 +114,21 @@ public final class SpeakerAttributionReadService: SpeakerAttributionReading,
         }
     }
 
+    /// Card provenance only needs exported transcript content, not the full
+    /// timed-display projection when no correction branch is active.
+    static func effectiveTranscription(
+        transcription: Transcription,
+        in db: Database
+    ) throws -> Transcription {
+        guard let state = try SpeakerCorrectionRepository.fetchState(
+            transcriptionId: transcription.id,
+            in: db
+        ), state.headId != nil else {
+            return transcription
+        }
+        return try resolve(transcription: transcription, in: db).effectiveTranscription
+    }
+
     static func resolve(
         transcription: Transcription,
         in db: Database
@@ -121,8 +137,9 @@ public final class SpeakerAttributionReadService: SpeakerAttributionReading,
             transcriptionId: transcription.id,
             in: db
         )
-        let fingerprint = SpeakerAttributionResolver.fingerprint(for: transcription)
-        guard let state, state.transcriptFingerprint == fingerprint.rawValue else {
+        guard let state,
+              state.transcriptFingerprint == SpeakerAttributionResolver.fingerprint(for: transcription).rawValue
+        else {
             return SpeakerAttributionProjection(
                 automaticTranscription: transcription,
                 attribution: SpeakerAttributionResolver.resolve(transcription: transcription),

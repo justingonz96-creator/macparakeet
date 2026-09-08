@@ -109,9 +109,11 @@ the four-field tuple `(transcriptHash, promptVersion, cardSchemaVersion,
 segmenterVersion)`; model and generation time are audit provenance only.
 After provider latency, generation revalidates the transcript and segment
 snapshot, and the repository repeats that comparison inside the save
-transaction. Retranscription publishes replacement segments and deletes the old
-card atomically; list queries suppress any stale card that remains after other
-canonical edits.
+transaction, including the speaker fingerprint and correction revision. Card
+hashes use effective attribution; listing avoids building the full timed-display
+projection when no correction head exists. Retranscription publishes replacement
+segments and deletes the old card atomically; list queries suppress any stale
+card that remains after other canonical edits.
 
 **Never use raw SQL `WHERE id = ?` with `uuid.uuidString`.**
 GRDB stores UUID values via Codable encoding, which produces a

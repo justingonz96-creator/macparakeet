@@ -39,9 +39,11 @@ private final class DelayedSpeakerAttributionReader: SpeakerAttributionReading, 
     private let lock = NSLock()
     private var readCount = 0
     let firstReadReturned: XCTestExpectation
+    let storedProjection: SpeakerAttributionProjection?
 
-    init(firstReadReturned: XCTestExpectation) {
+    init(firstReadReturned: XCTestExpectation, projection: SpeakerAttributionProjection? = nil) {
         self.firstReadReturned = firstReadReturned
+        self.storedProjection = projection
     }
 
     func resolve(transcriptionId: UUID) throws -> SpeakerAttributionProjection? {
@@ -58,7 +60,7 @@ private final class DelayedSpeakerAttributionReader: SpeakerAttributionReading, 
             started.signal()
             _ = release.wait(timeout: .now() + 5)
         }
-        let projection = SpeakerAttributionProjection(
+        let projection = storedProjection ?? SpeakerAttributionProjection(
             automaticTranscription: transcription,
             attribution: SpeakerAttributionResolver.resolve(transcription: transcription),
             correctionsApplied: false
@@ -413,6 +415,127 @@ final class TranscriptionSpeakerCorrectionViewModelTests: XCTestCase {
 
         try await waitUntil { viewModel.speakerAttribution?.correctionRevision == 1 }
         XCTAssertEqual(viewModel.effectiveCurrentTranscription?.speakers?.first?.label, "Alice")
+    }
+
+    func testSpeakerOutputWaitsForPersistedCorrections() async throws {
+        let original = makeTranscription()
+        var corrected = original
+        corrected.speakers = [.init(id: "S1", label: "Alice")]
+        let returned = expectation(description: "Attribution returned")
+        let reader = DelayedSpeakerAttributionReader(
+            firstReadReturned: returned,
+            projection: SpeakerAttributionProjection(
+                automaticTranscription: original,
+                attribution: SpeakerAttributionResolver.resolve(transcription: corrected),
+                correctionsApplied: true
+            )
+        )
+        defer { reader.release.signal() }
+        let viewModel = TranscriptionViewModel()
+        viewModel.configure(
+            transcriptionService: MockTranscriptionService(),
+            transcriptionRepo: MockTranscriptionRepository(),
+            speakerAttributionReader: reader
+        )
+        viewModel.currentTranscription = original
+        let didStart = await Task.detached { reader.started.wait(timeout: .now() + 2) == .success }.value
+        XCTAssertTrue(didStart)
+        let outputStarted = expectation(description: "Output requested")
+        var outputFinished = false
+        let output = Task { @MainActor in
+            outputStarted.fulfill()
+            let result = await viewModel.currentTranscriptionForSpeakerOutput()
+            outputFinished = true
+            return result
+        }
+        await fulfillment(of: [outputStarted], timeout: 2)
+        XCTAssertFalse(outputFinished, "Do not emit the automatic display fallback")
+        reader.release.signal()
+        await fulfillment(of: [returned], timeout: 2)
+
+        let prepared = await output.value
+        let source = try XCTUnwrap(prepared)
+        XCTAssertEqual(source.speakers?.first?.label, "Alice")
+        XCTAssertEqual(viewModel.currentTranscription?.speakers, original.speakers)
+        XCTAssertTrue(MeetingMarkdownRenderer().renderForClipboard(transcription: source).contains("Alice"))
+        XCTAssertTrue(ExportService().formatMarkdown(transcription: source).contains("Alice"))
+    }
+
+    func testSpeakerOutputRejectsSelectionChangedDuringAttributionRead() async throws {
+        let original = makeTranscription()
+        let returned = expectation(description: "Old attribution returned")
+        let reader = DelayedSpeakerAttributionReader(firstReadReturned: returned)
+        defer { reader.release.signal() }
+        let viewModel = TranscriptionViewModel()
+        viewModel.configure(
+            transcriptionService: MockTranscriptionService(),
+            transcriptionRepo: MockTranscriptionRepository(),
+            speakerAttributionReader: reader
+        )
+        viewModel.currentTranscription = original
+        let didStart = await Task.detached { reader.started.wait(timeout: .now() + 2) == .success }.value
+        XCTAssertTrue(didStart)
+        let outputStarted = expectation(description: "Output requested")
+        let output = Task { @MainActor in
+            outputStarted.fulfill()
+            return await viewModel.currentTranscriptionForSpeakerOutput()
+        }
+        await fulfillment(of: [outputStarted], timeout: 2)
+        let replacement = makeTranscription()
+        viewModel.currentTranscription = replacement
+        reader.release.signal()
+        await fulfillment(of: [returned], timeout: 2)
+
+        let source = await output.value
+        XCTAssertNil(source)
+        XCTAssertEqual(viewModel.currentTranscription?.id, replacement.id)
+    }
+
+    func testCorrectionFailureDoesNotAppearOnNewSelection() async throws {
+        let original = makeTranscription()
+        let attribution = SpeakerAttributionResolver.resolve(transcription: original)
+        let service = StubSpeakerCorrectionService(
+            result: .init(attribution: attribution, revision: 0, canUndo: false, canRedo: false),
+            applyError: .conflict
+        )
+        let viewModel = TranscriptionViewModel()
+        viewModel.configure(
+            transcriptionService: MockTranscriptionService(),
+            transcriptionRepo: MockTranscriptionRepository(),
+            speakerCorrectionService: service
+        )
+        viewModel.currentTranscription = original
+        try await waitUntil { viewModel.speakerAttribution != nil }
+        viewModel.applySpeakerCorrection(.rename(speakerID: "S1", label: "Alice"))
+        let replacement = makeTranscription()
+        viewModel.currentTranscription = replacement
+
+        try await waitUntil { !viewModel.isApplyingSpeakerCorrection }
+
+        XCTAssertEqual(viewModel.currentTranscription?.id, replacement.id)
+        XCTAssertNil(viewModel.errorMessage)
+    }
+
+    func testCorrectionRequestedBeforeAttributionLoadsReportsRetry() async {
+        let original = makeTranscription()
+        let service = StubSpeakerCorrectionService(
+            result: .init(
+                attribution: SpeakerAttributionResolver.resolve(transcription: original),
+                revision: 0, canUndo: false, canRedo: false
+            )
+        )
+        let viewModel = TranscriptionViewModel()
+        viewModel.configure(
+            transcriptionService: MockTranscriptionService(),
+            transcriptionRepo: MockTranscriptionRepository(),
+            speakerCorrectionService: service
+        )
+        viewModel.currentTranscription = original
+        viewModel.applySpeakerCorrection(.rename(speakerID: "S1", label: "Alice"))
+
+        XCTAssertEqual(viewModel.errorMessage, "Speaker changes are still loading or saving. Please try again.")
+        let calls = await service.applyCalls
+        XCTAssertTrue(calls.isEmpty)
     }
 
     private func makeTranscription() -> Transcription {

@@ -3,6 +3,27 @@ import XCTest
 @testable import MacParakeetCore
 
 final class SpeakerAttributionReadServiceTests: XCTestCase {
+    func testNoCorrectionsPreservesNilSpeakerGapsInExportedProjection() throws {
+        let manager = try DatabaseManager()
+        var transcription = fixture()
+        transcription.wordTimestamps?[1].speakerId = nil
+        try TranscriptionRepository(dbQueue: manager.dbQueue).save(transcription)
+        let projection = try XCTUnwrap(
+            SpeakerAttributionReadService(dbQueue: manager.dbQueue)
+                .resolve(transcriptionId: transcription.id)
+        )
+
+        XCTAssertFalse(projection.correctionsApplied)
+        // Timed display may inherit automatic gaps, but exported evidence must
+        // remain the untouched automatic transcript without active corrections.
+        XCTAssertEqual(projection.attribution.words[1].speakerId, "S1")
+        XCTAssertNil(projection.effectiveTranscription.wordTimestamps?[1].speakerId)
+        XCTAssertEqual(projection.effectiveTranscription.transcriptSegments, transcription.transcriptSegments)
+        let exporter = ExportService()
+        XCTAssertEqual(exporter.formatSRT(projection: projection), exporter.formatSRT(transcription: transcription))
+        XCTAssertEqual(exporter.formatDAPT(projection: projection), exporter.formatDAPT(transcription: transcription))
+    }
+
     func testNoCorrectionsPreservesTranscriptionAndRendererParity() throws {
         let manager = try DatabaseManager()
         let transcription = fixture()

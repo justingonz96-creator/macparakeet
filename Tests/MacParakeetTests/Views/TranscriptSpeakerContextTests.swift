@@ -222,6 +222,7 @@ final class TranscriptSpeakerContextTests: XCTestCase {
                      speakerAttributionReader: reader)
         vm.currentTranscription = row
         try await waitUntil { vm.speakerAttribution != nil }
+        let previousSegments = vm.speakerAttribution?.editableSegments.map(\.id)
         reader.arm()
         let editor = SavedMeetingNotesViewModel()
         editor.configure(meetingID: row.id, text: nil) { text in
@@ -236,7 +237,8 @@ final class TranscriptSpeakerContextTests: XCTestCase {
             sentContext = TranscriptAIContextFormatter.format(transcription: current)
         }
         await fulfillment(of: [started], timeout: 3)
-        XCTAssertNil(vm.speakerAttribution)
+        XCTAssertEqual(vm.speakerAttribution?.editableSegments.map(\.id), previousSegments)
+        XCTAssertEqual(vm.effectiveCurrentTranscription?.speakers?.first?.label, "Alice")
         XCTAssertNil(sentContext)
         reader.release.signal()
         await action.value
@@ -277,6 +279,37 @@ final class TranscriptSpeakerContextTests: XCTestCase {
         XCTAssertEqual(payload["userNotes"] as? String, "Newest notes")
         XCTAssertEqual(payload["speakerCorrectionRevision"] as? Int, 1)
         XCTAssertEqual((payload["speakers"] as? [[String: Any]])?.first?["label"] as? String, "Alice")
+    }
+
+    func testCommittedCorrectionReplacesSupersededReadForOutputActions() async throws {
+        let manager = try DatabaseManager()
+        let repository = TranscriptionRepository(dbQueue: manager.dbQueue)
+        let row = makeTranscription()
+        try repository.save(row)
+        let started = expectation(description: "Metadata attribution read blocked")
+        let reader = BlockingAttributionReader(delegate: .init(dbQueue: manager.dbQueue), started: started)
+        defer { reader.release.signal() }
+        let vm = TranscriptionViewModel()
+        vm.configure(
+            transcriptionService: MockTranscriptionService(), transcriptionRepo: repository,
+            speakerAttributionReader: reader,
+            speakerCorrectionService: SpeakerCorrectionService(dbQueue: manager.dbQueue)
+        )
+        vm.currentTranscription = row
+        try await waitUntil { vm.speakerAttribution != nil }
+        reader.arm()
+        var metadataUpdate = row
+        metadataUpdate.userNotes = "Fresh notes"
+        vm.currentTranscription = metadataUpdate
+        await fulfillment(of: [started], timeout: 2)
+        vm.applySpeakerCorrection(.rename(speakerID: "S1", label: "Alice"))
+        try await waitUntil { vm.speakerAttribution?.correctionRevision == 1 && !vm.isApplyingSpeakerCorrection }
+        reader.release.signal()
+
+        let ready = await vm.waitForCurrentSpeakerAttribution()
+        XCTAssertTrue(ready, "Committed attribution supersedes a rejected older read")
+        let source = await vm.currentTranscriptionForSpeakerOutput()
+        XCTAssertEqual(source?.speakers?.first?.label, "Alice")
     }
 
     private func makeFixture(folder: URL? = nil, artifactStore: MeetingArtifactStoring? = nil) throws -> (

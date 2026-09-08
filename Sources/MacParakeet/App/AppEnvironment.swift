@@ -383,7 +383,8 @@ final class AppEnvironment {
             podcastResolver: PodcastEpisodeResolver(),
             podcastSearchResolver: PodcastQueryResolver(),
             podcastAudioFetcher: PodcastAudioDownloader(),
-            diarizationService: diarizationService
+            diarizationService: diarizationService,
+            meetingArtifactStore: MeetingArtifactStore(speakerAttributionReader: speakerAttributionReader)
         )
 
         meetingRecordingRecoveryService = MeetingRecordingRecoveryService(

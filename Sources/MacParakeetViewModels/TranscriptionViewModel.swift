@@ -128,11 +128,23 @@ public final class TranscriptionViewModel {
             // Attribution belongs to a selected snapshot, including updates of
             // the same row when a queued meeting finishes transcription.
             speakerAttributionLoadToken = nil
-            speakerAttributionTranscriptionID = nil
-            speakerAttribution = nil
-            speakerCorrectionsApplied = false
-            canUndoSpeakerCorrection = false
-            canRedoSpeakerCorrection = false
+            // Notes and title updates do not change speaker evidence. Keep
+            // the displayed projection stable while refreshing its DB state.
+            let sameSpeakerSource = currentTranscription != nil
+                && oldValue?.id == currentTranscription?.id
+                && oldValue?.status == currentTranscription?.status
+                && oldValue?.sourceType == currentTranscription?.sourceType
+                && oldValue?.wordTimestamps == currentTranscription?.wordTimestamps
+                && oldValue?.transcriptSegments == currentTranscription?.transcriptSegments
+                && oldValue?.speakers == currentTranscription?.speakers
+                && oldValue?.diarizationSegments == currentTranscription?.diarizationSegments
+            if !sameSpeakerSource {
+                speakerAttributionTranscriptionID = nil
+                speakerAttribution = nil
+                speakerCorrectionsApplied = false
+                canUndoSpeakerCorrection = false
+                canRedoSpeakerCorrection = false
+            }
             if let currentTranscription {
                 loadSpeakerAttribution(for: currentTranscription)
             }
@@ -307,7 +319,7 @@ public final class TranscriptionViewModel {
     private static let configurationError = "Transcription services are unavailable. Please try again."
     private let logger = Logger(subsystem: "com.macparakeet.viewmodels", category: "TranscriptionViewModel")
     private let defaults: UserDefaults
-    private var speakerAttributionLoadTask: Task<Void, Never>?
+    private var speakerAttributionLoadTask: Task<Bool, Never>?
     private let meetingArtifactStore: MeetingArtifactStoring
     private let isWhisperModelDownloaded: () -> Bool
     private let isNemotronModelDownloaded: () -> Bool
@@ -1037,14 +1049,14 @@ public final class TranscriptionViewModel {
     /// Archived meetings require their retained isolated system track; applying
     /// a remote-speaker count to the mixed-audio fallback would include `Me` and
     /// change the option's meaning.
-    public func canConfigureSpeakersForRetranscription(_ original: Transcription) -> Bool {
+    public nonisolated func canConfigureSpeakersForRetranscription(_ original: Transcription) -> Bool {
         guard original.sourceType == .meeting else { return true }
         guard let filePath = original.filePath else { return false }
-        return archivedMeetingRecording(
-            for: original,
+        return (try? MeetingRecordingOutput.loadArchived(
+            displayName: original.fileName,
             mixedAudioURL: URL(fileURLWithPath: filePath),
-            logFailure: false
-        )?.sourceAlignment.system != nil
+            durationSeconds: Double(original.durationMs ?? 0) / 1000.0
+        ))?.sourceAlignment.system != nil
     }
 
     private func archivedMeetingRecording(
@@ -1910,10 +1922,22 @@ public final class TranscriptionViewModel {
     /// AI actions must await that exact read instead of accepting a nil revision.
     public func waitForCurrentSpeakerAttribution() async -> Bool {
         let revision = currentTranscriptionRevision
-        await speakerAttributionLoadTask?.value
-        return currentTranscriptionRevision == revision
+        let token = speakerAttributionLoadToken
+        let loaded = await speakerAttributionLoadTask?.value ?? (speakerAttribution != nil)
+        return loaded && speakerAttributionLoadToken == token
+            && currentTranscriptionRevision == revision
             && speakerAttribution != nil
             && speakerAttributionTranscriptionID == currentTranscription?.id
+    }
+
+    /// Output actions must not use the automatic display fallback while the
+    /// selected snapshot's persisted corrections are still loading.
+    public func currentTranscriptionForSpeakerOutput() async -> Transcription? {
+        guard !isApplyingSpeakerCorrection,
+              await waitForCurrentSpeakerAttribution(),
+              !isApplyingSpeakerCorrection
+        else { return nil }
+        return effectiveCurrentTranscription
     }
 
     public func loadSpeakerAttribution(for transcription: Transcription) {
@@ -1938,31 +1962,35 @@ public final class TranscriptionViewModel {
                       self.speakerAttributionLoadToken == token,
                       self.currentTranscriptionRevision == selectedRevision,
                       self.currentTranscription?.id == transcriptionID
-                else { return }
+                else { return false }
                 self.speakerAttribution = projection.attribution
                 self.speakerAttributionTranscriptionID = transcriptionID
                 self.speakerCorrectionsApplied = projection.correctionsApplied
                 self.canUndoSpeakerCorrection = projection.canUndo
                 self.canRedoSpeakerCorrection = projection.canRedo
+                return true
             } catch {
                 guard let self,
                       self.speakerAttributionLoadToken == token,
                       self.currentTranscriptionRevision == selectedRevision
-                else { return }
+                else { return false }
                 self.setError(message: "Couldn't load speaker corrections.")
                 self.logger.error(
                     "speaker_correction_load_failed error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
                 )
+                return false
             }
         }
     }
 
     public func applySpeakerCorrection(_ command: SpeakerCorrectionCommand) {
         guard let transcriptionID = currentTranscription?.id,
-              let attribution = speakerAttribution,
-              let speakerCorrectionService,
-              !isApplyingSpeakerCorrection
+              let speakerCorrectionService
         else { return }
+        guard let attribution = speakerAttribution, !isApplyingSpeakerCorrection else {
+            setError(message: "Speaker changes are still loading or saving. Please try again.")
+            return
+        }
         isApplyingSpeakerCorrection = true
         let selectedRevision = currentTranscriptionRevision
         Task { [weak self, speakerCorrectionService] in
@@ -1992,10 +2020,12 @@ public final class TranscriptionViewModel {
 
     private func performSpeakerHistoryAction(isUndo: Bool) {
         guard let transcriptionID = currentTranscription?.id,
-              let attribution = speakerAttribution,
-              let speakerCorrectionService,
-              !isApplyingSpeakerCorrection
+              let speakerCorrectionService
         else { return }
+        guard let attribution = speakerAttribution, !isApplyingSpeakerCorrection else {
+            setError(message: "Speaker changes are still loading or saving. Please try again.")
+            return
+        }
         isApplyingSpeakerCorrection = true
         let selectedRevision = currentTranscriptionRevision
         Task { [weak self, speakerCorrectionService] in
@@ -2033,6 +2063,7 @@ public final class TranscriptionViewModel {
             if currentTranscriptionRevision == selectedRevision {
                 // A committed correction is newer than the read that initiated it.
                 speakerAttributionLoadToken = UUID()
+                speakerAttributionLoadTask = nil
                 speakerAttribution = result.attribution
                 speakerAttributionTranscriptionID = transcriptionID
                 speakerCorrectionsApplied = result.canUndo
@@ -2056,6 +2087,7 @@ public final class TranscriptionViewModel {
 
     private func handleSpeakerCorrectionFailure(_ error: Error, transcriptionID: UUID) {
         isApplyingSpeakerCorrection = false
+        guard currentTranscription?.id == transcriptionID else { return }
         if error as? SpeakerCorrectionServiceError == .conflict,
            let transcription = currentTranscription,
            transcription.id == transcriptionID {

@@ -113,13 +113,15 @@ public final class CardRepository: CardRepositoryProtocol, @unchecked Sendable {
             )
             return try rows.compactMap { row in
                 let transcription = try Transcription(row: row)
-                let currentCardTranscriptHash: String? = row["currentCardTranscriptHash"]
-                let projection = try SpeakerAttributionReadService.resolve(
+                guard let currentCardTranscriptHash: String = row["currentCardTranscriptHash"] else {
+                    return transcription.id
+                }
+                let effective = try SpeakerAttributionReadService.effectiveTranscription(
                     transcription: transcription,
                     in: db
                 )
                 return currentCardTranscriptHash
-                    == CardContentFingerprint.transcriptHash(for: projection.effectiveTranscription)
+                    == CardContentFingerprint.transcriptHash(for: effective)
                     ? nil
                     : transcription.id
             }
@@ -193,14 +195,14 @@ public final class CardRepository: CardRepositoryProtocol, @unchecked Sendable {
         transcription: Transcription,
         in db: Database
     ) throws -> Bool {
-        let projection = try SpeakerAttributionReadService.resolve(
+        let effective = try SpeakerAttributionReadService.effectiveTranscription(
             transcription: transcription,
             in: db
         )
         return card.provenance
             == CardProvenance(
                 transcriptHash: CardContentFingerprint.transcriptHash(
-                    for: projection.effectiveTranscription
+                    for: effective
                 ),
                 segmenterVersion: KnowledgeSegmenter.currentVersion,
                 promptVersion: Card.currentPromptVersion,

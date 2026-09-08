@@ -279,8 +279,12 @@ model bundles.
 > from loading to resolved attribution. A correction during context preparation
 > invalidates that request before submission. After saving notes, AI actions
 > await the corresponding attribution read before preparing context. Automatic
-> nil word assignments inherit the preceding speaker, matching the original
-> segmenter; explicit Unassigned corrections stay independent. Chunked cards
+> nil word assignments inherit the preceding speaker in timed presentation
+> and retrieval, matching the original segmenter; explicit Unassigned corrections
+> stay independent. With no active corrections, export projections preserve the
+> original stored word assignments. TXT/Markdown paragraphs keep nil assignments
+> separate (including automatic gaps) and label them Unassigned when named
+> speakers exist. Chunked cards
 > retain the complete logical turn for speaker actions. Notes, meeting rename,
 > and speaker edits serialize their artifact refreshes per meeting and reread
 > canonical data after earlier writes complete. Search derivation version 4

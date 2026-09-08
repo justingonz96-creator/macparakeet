@@ -549,7 +549,8 @@ extension PromptsCommand {
                     )
                     try resultRepo.save(result)
                     await refreshMeetingArtifacts(
-                        projection: projection,
+                        transcriptionID: transcript.id,
+                        attributionReader: speakerAttributionReader,
                         resultRepo: resultRepo
                     )
                     // Status messages on stderr so stdout stays grep-able as the prompt output.
@@ -585,16 +586,19 @@ func makeStoredPromptRunResult(
     )
 }
 
-/// Refreshes meeting artifacts; failures are logged and never surfaced or thrown, and refresh never blocks or fails the triggering user action.
-private func refreshMeetingArtifacts(
-    projection: SpeakerAttributionProjection,
+/// Refreshes current meeting artifacts without failing an already stored prompt result.
+func refreshMeetingArtifacts(
+    transcriptionID: UUID,
+    attributionReader: any SpeakerAttributionReading,
     resultRepo: PromptResultRepositoryProtocol
 ) async {
-    let transcription = projection.effectiveTranscription
-    guard transcription.sourceType == .meeting else { return }
-
     do {
-        let promptResults = try resultRepo.fetchAll(transcriptionId: transcription.id)
+        // Provider latency may outlive edits to this meeting. The input receipt
+        // stays immutable, but derived files must use the current database row.
+        guard let projection = try attributionReader.resolve(transcriptionId: transcriptionID),
+              projection.automaticTranscription.sourceType == .meeting
+        else { return }
+        let promptResults = try resultRepo.fetchAll(transcriptionId: transcriptionID)
         _ = try await MeetingArtifactStore().materialize(
             projection: projection,
             promptResults: promptResults

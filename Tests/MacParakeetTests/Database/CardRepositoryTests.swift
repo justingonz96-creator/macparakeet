@@ -317,6 +317,54 @@ final class CardRepositoryTests: XCTestCase {
         XCTAssertEqual(try cards.staleCompletedTranscriptionIDs(), [changed.id])
     }
 
+    func testCardListingsTrackCorrectedContentAndUndoToAutomaticContent() async throws {
+        var transcription = makeTranscription(source: .meeting)
+        let words = [
+            WordTimestamp(word: "Hello", startMs: 0, endMs: 200, confidence: 1, speakerId: "S1"),
+            WordTimestamp(word: "world.", startMs: 220, endMs: 500, confidence: 1, speakerId: "S1"),
+        ]
+        let speakers = [SpeakerInfo(id: "S1", label: "Speaker 1")]
+        transcription.wordTimestamps = words
+        transcription.speakers = speakers
+        transcription.transcriptSegments = TranscriptSegmenter.materializeSegments(words: words, speakers: speakers)
+        try transcriptions.save(transcription)
+        let automaticCard = try makeCard(transcriptionId: transcription.id)
+        let service = SpeakerCorrectionService(dbQueue: manager.dbQueue)
+        let fingerprint = SpeakerAttributionResolver.fingerprint(for: transcription)
+        let correction = try await service.apply(
+            transcriptionId: transcription.id,
+            command: .rename(speakerID: "S1", label: "Alice"),
+            expectedFingerprint: fingerprint,
+            expectedRevision: 0
+        )
+
+        // Even if an older card remains, listings must compare corrected content.
+        try cards.save(automaticCard)
+        XCTAssertTrue(try cards.list(CardListQuery(limit: 10)).isEmpty)
+        XCTAssertEqual(try cards.staleCompletedTranscriptionIDs(), [transcription.id])
+        let projection = try XCTUnwrap(
+            SpeakerAttributionReadService(dbQueue: manager.dbQueue)
+                .resolve(transcriptionId: transcription.id)
+        )
+        var correctedCard = automaticCard
+        correctedCard.transcriptHash = CardContentFingerprint.transcriptHash(for: projection.effectiveTranscription)
+        try cards.save(correctedCard)
+        XCTAssertEqual(try cards.list(CardListQuery(limit: 10)).map(\.transcriptionId), [transcription.id])
+        XCTAssertTrue(try cards.staleCompletedTranscriptionIDs().isEmpty)
+
+        _ = try await service.undo(
+            transcriptionId: transcription.id,
+            expectedFingerprint: fingerprint,
+            expectedRevision: correction.revision
+        )
+        try cards.save(correctedCard)
+        XCTAssertTrue(try cards.list(CardListQuery(limit: 10)).isEmpty)
+        XCTAssertEqual(try cards.staleCompletedTranscriptionIDs(), [transcription.id])
+        try cards.save(automaticCard)
+        XCTAssertEqual(try cards.list(CardListQuery(limit: 10)).map(\.transcriptionId), [transcription.id])
+        XCTAssertTrue(try cards.staleCompletedTranscriptionIDs().isEmpty)
+    }
+
     func testURLSourceFilterIncludesYouTubeAndPodcast() throws {
         let meeting = makeTranscription(source: .meeting)
         let youtube = makeTranscription(source: .youtube)
