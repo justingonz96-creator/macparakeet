@@ -195,7 +195,7 @@ public struct LLMSettingsDraft: Equatable, Sendable {
         aiFormatterEnabled: Bool = false,
         aiFormatterPrompt: String = AIFormatter.defaultPromptTemplate
     ) -> Self {
-        let selectedCLITemplate = cliConfig.map { LocalCLITemplate.inferredTemplate(for: $0.commandTemplate) } ?? nil
+        let selectedCLITemplate = cliConfig.flatMap { LocalCLITemplate.inferredTemplate(for: $0.commandTemplate) }
         return LLMSettingsDraft(
             providerID: providerID,
             apiKeyInput: providerID?.supportsAPIKey == true ? apiKey : "",
@@ -221,7 +221,7 @@ public struct LLMSettingsDraft: Equatable, Sendable {
         aiFormatterPrompt: String = AIFormatter.defaultPromptTemplate
     ) -> Self {
         let isSuggestedModel = suggestedModels.contains(config.modelName)
-        let selectedCLITemplate = cliConfig.map { LocalCLITemplate.inferredTemplate(for: $0.commandTemplate) } ?? nil
+        let selectedCLITemplate = cliConfig.flatMap { LocalCLITemplate.inferredTemplate(for: $0.commandTemplate) }
         return LLMSettingsDraft(
             providerID: config.id,
             apiKeyInput: config.apiKey ?? "",

@@ -187,10 +187,8 @@ public actor CalendarService {
         // participant list — otherwise we lose the signal needed to honor
         // declined events.
         var userStatus: EventParticipant.ParticipantStatus?
-        if let attendees = ekEvent.attendees {
-            if let currentUser = attendees.first(where: { $0.isCurrentUser }) {
-                userStatus = mapStatus(currentUser.participantStatus)
-            }
+        if let currentUser = ekEvent.attendees?.first(where: { $0.isCurrentUser }) {
+            userStatus = mapStatus(currentUser.participantStatus)
         }
 
         let participants = (ekEvent.attendees ?? []).compactMap { attendee -> EventParticipant? in

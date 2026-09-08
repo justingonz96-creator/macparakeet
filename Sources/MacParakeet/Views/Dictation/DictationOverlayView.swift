@@ -301,7 +301,7 @@ struct DictationOverlayView: View {
             // padding than the circular phase, so the bloom animation stretches the
             // 46×46 circle horizontally while also slimming down vertically into a
             // low-profile terminal pill.
-            let isNoSpeechState = { if case .noSpeech = viewModel.state { return true } else { return false } }()
+            let isNoSpeechState = if case .noSpeech = viewModel.state { true } else { false }
             let isNoSpeechExpanded = isNoSpeechState && noSpeechExpanded
             // Ready uses equal horizontal/vertical padding so the breathing
             // ring sits inside a tight ~32×32 circular pill — distinctly

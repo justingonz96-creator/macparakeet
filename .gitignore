@@ -80,3 +80,8 @@ Assets/local-videos/
 
 # Data recovery
 recup_dir*/
+
+# local agent worktrees / scratch
+.claire/
+.superpowers/
+benchmarks/asr/venv/

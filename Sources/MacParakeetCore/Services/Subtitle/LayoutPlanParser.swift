@@ -96,7 +96,7 @@ enum LayoutPlanParser {
 
         var ranges: [CueRange] = []
         ranges.reserveCapacity(cueArray.count)
-        for (_, item) in cueArray.enumerated() {
+        for item in cueArray {
             // Accept either Int or NSNumber from JSON.
             guard let startRaw = item["start"] as? NSNumber,
                   let endRaw = item["end"] as? NSNumber else {

@@ -32,8 +32,6 @@ struct FlowerCompletionView: View {
     // Overall fade
     @State private var overallOpacity: CGFloat = 1.0
 
-    private let greenColor = Color(red: 0.4, green: 0.85, blue: 0.4)
-    private let goldColor = Color(red: 1.0, green: 0.85, blue: 0.4)
     private let stemColor = Color(red: 0.35, green: 0.65, blue: 0.35)
 
     var body: some View {

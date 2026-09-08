@@ -1828,9 +1828,6 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             let shouldBreakOnClause = endsWithClausePunctuation
                 && currentWords.count >= config.minWordsBeforePunctuationBreak
 
-            if shouldBreakOnClause {
-            }
-
             currentWords.append(word)
 
             if shouldBreakOnClause {
@@ -2038,7 +2035,6 @@ public final class ExportService: ExportServiceProtocol, Sendable {
                 let w0 = lowerWords[splitIdx - 1]
                 let w1 = lowerWords[splitIdx]
                 let w2 = lowerWords[splitIdx + 1]
-                let _ = (splitIdx + 2 < words.count) ? lowerWords[splitIdx + 2] : nil
                 // "between X and Y" → don't split at "and"
                 if w0 == "between" && w1 == "and" && w2.rangeOfCharacter(from: .decimalDigits) != nil {
                     score -= 150

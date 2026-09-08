@@ -296,8 +296,7 @@ extension TransformsCommand {
                             duplicate.name
                         )
                     }
-                    let appHotkeyCollision = appHotkeyCollision(for: parsed)
-                    if let appHotkeyCollision {
+                    if let appHotkeyCollision = appHotkeyCollision(for: parsed) {
                         throw appHotkeyCollision
                     }
                     shortcutValue = parsed
