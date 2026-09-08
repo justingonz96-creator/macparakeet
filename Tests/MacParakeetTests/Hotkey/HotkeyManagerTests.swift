@@ -806,11 +806,13 @@ final class HotkeyManagerTests: XCTestCase {
             changedKeyCode: HotkeyTrigger.canonicalFnKeyCode
         )
         XCTAssertEqual(manager.startupDebounceElapsedForTesting(), [.startRecording(mode: .holdToTalk)])
-        XCTAssertEqual(manager.modifierKeyDownOutputsForTesting(keyCode: 0, timestampMs: 1_150), [
-            .cancelStartupDebounce,
-            .cancelHoldWindow,
-            .cancelRecording,
-        ])
+        XCTAssertEqual(
+            manager.modifierKeyDownOutputsForTesting(keyCode: 0, timestampMs: 1_150),
+            [
+                .cancelStartupDebounce,
+                .cancelHoldWindow,
+                .cancelRecording,
+            ])
         XCTAssertEqual(
             manager.modifierKeyUpOutputsForTesting(keyCode: 0, timestampMs: 1_200),
             [.cancelStartupDebounce, .cancelHoldWindow]

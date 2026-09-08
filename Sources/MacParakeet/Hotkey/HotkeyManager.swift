@@ -97,7 +97,8 @@ public final class HotkeyManager {
     }
 
     static func eventMask(for trigger: HotkeyTrigger) -> CGEventMask {
-        var mask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue)
+        var mask: CGEventMask =
+            (1 << CGEventType.flagsChanged.rawValue)
             | (1 << CGEventType.keyDown.rawValue)
         if trigger == .fn || trigger.kind == .keyCode || trigger.kind == .chord {
             mask |= (1 << CGEventType.keyUp.rawValue)
@@ -387,7 +388,8 @@ public final class HotkeyManager {
                 to: flags,
                 changedKeyCode: changedKeyCode
             ).subtracting([HotkeyTrigger.canonicalFnKeyCode])
-            let capsLockChanged = changedKeyCode == 57
+            let capsLockChanged =
+                changedKeyCode == 57
                 && previousModifierFlags.contains(.maskAlphaShift) != flags.contains(.maskAlphaShift)
             guard !changedModifiers.isEmpty || capsLockChanged else { return [] }
 
@@ -449,7 +451,8 @@ public final class HotkeyManager {
     ) -> [HotkeyGestureController.Output] {
         let physicalKeyCode = UInt16(keyCode)
         guard trigger == .fn,
-              Self.isTrackableNonFnKeyCode(physicalKeyCode) else {
+            Self.isTrackableNonFnKeyCode(physicalKeyCode)
+        else {
             return []
         }
         pressedNonFnKeyCodes.remove(physicalKeyCode)
@@ -912,8 +915,9 @@ public final class HotkeyManager {
                 && (targetModifierGestureIsActive || gestureController.hasPendingTriggerPress)
             reconcilePassiveFnKeyState()
             if triggerPressed,
-               passiveFnInputIsContaminated(flags: currentFlags)
-               || capsLockContaminatesCurrentGesture {
+                passiveFnInputIsContaminated(flags: currentFlags)
+                    || capsLockContaminatesCurrentGesture
+            {
                 cancelStartupTimer()
                 cancelHoldTimer()
                 syncRecoveredTriggerState(
