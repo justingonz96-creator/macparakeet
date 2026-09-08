@@ -1394,6 +1394,91 @@ final class SettingsViewModelTests: XCTestCase {
         viewModel.onAccessibilityGranted = nil
     }
 
+    private func makeBackgroundGrantViewModel() -> SettingsViewModel {
+        let vm = SettingsViewModel(
+            defaults: testDefaults,
+            youtubeDownloadsDirPath: { [youtubeDownloadsTestDir] in
+                youtubeDownloadsTestDir?.path ?? AppPaths.youtubeDownloadsDir
+            },
+            meetingRecordingsDirPath: { [meetingRecordingsTestDir] in
+                meetingRecordingsTestDir?.path ?? AppPaths.meetingRecordingsDir
+            },
+            permissionPollingInterval: .milliseconds(20)
+        )
+        vm.configure(
+            permissionService: mockPermissions,
+            dictationRepo: mockRepo,
+            entitlementsService: entitlements,
+            checkoutURL: nil
+        )
+        return vm
+    }
+
+    func testBackgroundAccessibilityGrantRecoversShortcutsWithoutSettingsOrActivation() async throws {
+        mockPermissions.accessibilityPermission = false
+        var recoveryCount = 0
+        let vm = makeBackgroundGrantViewModel()
+        vm.onAccessibilityGranted = { recoveryCount += 1 }
+        try await waitUntil { self.mockPermissions.checkAccessibilityPermissionCallCount >= 3 }
+        XCTAssertFalse(vm.accessibilityGranted)
+        XCTAssertEqual(recoveryCount, 0)
+        XCTAssertEqual(mockPermissions.checkScreenRecordingPermissionCallCount, 1,
+                       "Accessibility watch must not poll the other permissions")
+
+        mockPermissions.accessibilityPermission = true
+        try await waitUntil { recoveryCount == 1 }
+        XCTAssertTrue(vm.accessibilityGranted)
+
+        try await waitUntil { self.mockPermissions.checkAccessibilityPermissionCallCount >= 1 }
+        let checksAfterGrant = mockPermissions.checkAccessibilityPermissionCallCount
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(recoveryCount, 1, "Recovery must fire once per grant")
+        XCTAssertEqual(mockPermissions.checkAccessibilityPermissionCallCount, checksAfterGrant,
+                       "Watch must stop once access is granted")
+        XCTAssertEqual(mockPermissions.checkScreenRecordingPermissionCallCount, 1)
+        vm.onAccessibilityGranted = nil
+    }
+
+    func testAccessibilityWatchStopsWhenSharedRefreshObservesGrant() async throws {
+        mockPermissions.accessibilityPermission = false
+        var recoveryCount = 0
+        let vm = makeBackgroundGrantViewModel()
+        vm.onAccessibilityGranted = { recoveryCount += 1 }
+        try await waitUntil { self.mockPermissions.checkAccessibilityPermissionCallCount >= 2 }
+
+        mockPermissions.accessibilityPermission = true
+        vm.refreshPermissions()
+        try await waitUntil { recoveryCount == 1 }
+        try await waitUntil { self.mockPermissions.checkScreenRecordingPermissionCallCount == 2 }
+
+        let checksAfterGrant = mockPermissions.checkAccessibilityPermissionCallCount
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(recoveryCount, 1)
+        XCTAssertEqual(mockPermissions.checkAccessibilityPermissionCallCount, checksAfterGrant,
+                       "Shared refresh observing the grant must cancel the watch")
+        vm.onAccessibilityGranted = nil
+    }
+
+    func testAccessibilityWatchRestartsAfterAccessIsRevoked() async throws {
+        mockPermissions.accessibilityPermission = true
+        var recoveryCount = 0
+        let vm = makeBackgroundGrantViewModel()
+        vm.onAccessibilityGranted = { recoveryCount += 1 }
+        try await waitUntil { recoveryCount == 1 }
+        let checksWhileGranted = mockPermissions.checkAccessibilityPermissionCallCount
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(mockPermissions.checkAccessibilityPermissionCallCount, checksWhileGranted,
+                       "No Accessibility watch runs while access is granted")
+
+        mockPermissions.accessibilityPermission = false
+        vm.refreshPermissions()
+        try await waitUntil { !vm.accessibilityGranted }
+        mockPermissions.accessibilityPermission = true
+        try await waitUntil { recoveryCount == 2 }
+        XCTAssertTrue(vm.accessibilityGranted)
+        vm.onAccessibilityGranted = nil
+    }
+
     func testFirstGrantedPermissionRefreshRecoversFailedStartupShortcuts() async throws {
         // Permission can be granted while environment setup is finishing,
         // before the first asynchronous permission refresh publishes its state.

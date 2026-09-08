@@ -89,4 +89,7 @@ The app retries configured dictation, auxiliary and Transform shortcuts through
 their existing lifecycle methods. Repeated granted checks do not restart taps,
 and shortcut recording keeps production listeners suspended until it finishes.
 Permission status refreshes on application activation as well as the existing
-Settings polling, so returning from System Settings does not require a restart.
+Settings polling. While Accessibility is denied, the app additionally re-checks
+only that permission on the Settings polling interval, so granting access while
+MacParakeet stays in the background with Settings closed still restores the
+shortcuts. The watch stops once access is granted and restarts if it is revoked.
