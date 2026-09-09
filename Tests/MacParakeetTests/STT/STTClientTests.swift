@@ -40,6 +40,18 @@ final class STTClientTests: XCTestCase {
         XCTAssertEqual(SpeechEnginePreference.current(defaults: defaults), .parakeet)
     }
 
+    func testEchoDefaultsToParakeetUnifiedForEnglishCaptions() {
+        let suiteName = "com.echelonfit.tests.default-variant.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        // Echo captions English classes; Unified is the best English build that
+        // keeps word timestamps (bake-off, benchmarks/echelon/README.md).
+        XCTAssertEqual(SpeechEnginePreference.current(defaults: defaults), .parakeet)
+        XCTAssertEqual(SpeechEnginePreference.parakeetModelVariant(defaults: defaults), .unified)
+    }
+
     func testSpeechEnginePreferencePersistsWhisperLanguage() {
         let suiteName = "com.macparakeet.tests.whisper-language.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

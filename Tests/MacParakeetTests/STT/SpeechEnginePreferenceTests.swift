@@ -275,11 +275,11 @@ final class SpeechEnginePreferenceTests: XCTestCase {
 
     // MARK: - Parakeet model variant
 
-    func testParakeetModelVariantDefaultsToMultilingualV3() {
+    func testParakeetModelVariantDefaultsToUnified() {
         let (defaults, suite) = makeIsolatedDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        XCTAssertEqual(SpeechEnginePreference.parakeetModelVariant(defaults: defaults), .v3)
+        XCTAssertEqual(SpeechEnginePreference.parakeetModelVariant(defaults: defaults), .unified)
     }
 
     func testParakeetModelVariantRoundTrips() {
@@ -298,7 +298,7 @@ final class SpeechEnginePreferenceTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
 
         defaults.set("nonsense", forKey: SpeechEnginePreference.parakeetModelVariantKey)
-        XCTAssertEqual(SpeechEnginePreference.parakeetModelVariant(defaults: defaults), .v3)
+        XCTAssertEqual(SpeechEnginePreference.parakeetModelVariant(defaults: defaults), .unified)
     }
 
     func testParakeetModelVariantBridgesToAsrModelVersion() {

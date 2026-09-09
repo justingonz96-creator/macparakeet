@@ -310,7 +310,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
 
         XCTAssertEqual(
             try resolveSelectableSpeechModel("parakeet", defaults: defaults),
-            SelectableSpeechModelSelection(engine: .parakeet, whisperVariant: nil, parakeetVariant: .v3)
+            SelectableSpeechModelSelection(engine: .parakeet, whisperVariant: nil, parakeetVariant: .unified)
         )
         XCTAssertEqual(
             try resolveSelectableSpeechModel("parakeet-v2", defaults: defaults),
@@ -789,7 +789,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
         XCTAssertTrue(isModelInUse(.init(kind: .cohere, displayName: "cohere"), defaults: defaults))
         // The configured Parakeet build is also protected: it is what Parakeet
         // would load if the user switches back from Cohere.
-        XCTAssertTrue(isModelInUse(.init(kind: .parakeet(.v3), displayName: "v3"), defaults: defaults))
+        XCTAssertTrue(isModelInUse(.init(kind: .parakeet(.unified), displayName: "unified"), defaults: defaults))
         XCTAssertFalse(
             isModelInUse(.init(kind: .nemotron(.multilingual1120), displayName: "nemotron"), defaults: defaults))
         XCTAssertFalse(
@@ -920,7 +920,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
             sttClient: stt,
             diarizationService: diarization,
             defaults: defaults,
-            isParakeetModelCached: { $0 == .v3 },
+            isParakeetModelCached: { $0 == .unified },
             nemotronModelVariant: .multilingual1120,
             isNemotronModelDownloaded: { $0 == .multilingual1120 },
             whisperModelVariant: "large-v3-v20240930_turbo_632MB",
@@ -936,7 +936,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
                 speechRuntimeReady: true,
                 speakerModelsCached: false,
                 speakerModelsPrepared: false,
-                parakeetModelVariant: .v3,
+                parakeetModelVariant: .unified,
                 parakeetModelDownloaded: true,
                 nemotronModelVariant: .multilingual1120,
                 nemotronModelDownloaded: true,

@@ -29,9 +29,13 @@ public enum SpeechEnginePreference: String, CaseIterable, Codable, Sendable {
     /// "fr", …); the engine maps it to `CohereAsrConfig.Language`.
     public static let cohereDefaultLanguageKey = "cohereDefaultLanguage"
 
-    /// New users stay on the `v3` build for the default local coverage lane.
-    /// `v2` (English-only) is surfaced as a clearly-labeled opt-in.
-    public static let defaultParakeetModelVariant: ParakeetModelVariant = .v3
+    /// Echo captions English classes; the engine bake-off (benchmarks/echelon,
+    /// Task 8, 2026-09-08) found Parakeet Unified significantly more accurate
+    /// than `v3` on English audio (13.00% vs Cohere pseudo-reference, tie with
+    /// Whisper, ~1.5x faster) while keeping word timestamps, so new users
+    /// default there. `v2` (English-only TDT) is surfaced as a clearly-labeled
+    /// opt-in.
+    public static let defaultParakeetModelVariant: ParakeetModelVariant = .unified
 
     /// Variants whose one-time CoreML compile/ANE specialization has already
     /// completed on this Mac. The first load of a Whisper variant pays a

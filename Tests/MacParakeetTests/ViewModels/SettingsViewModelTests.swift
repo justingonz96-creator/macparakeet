@@ -2053,7 +2053,7 @@ final class SettingsViewModelTests: XCTestCase {
         try await waitUntil { vm.engine.whisperModelStatus == .ready }
         XCTAssertEqual(vm.engine.whisperModelStatusDetail, "Large v3 Turbo · Loaded in memory.")
         XCTAssertEqual(vm.engine.parakeetStatus, .notLoaded)
-        XCTAssertEqual(vm.engine.parakeetStatusDetail, "Parakeet TDT 0.6B v3 · Installed locally, loads when selected.")
+        XCTAssertEqual(vm.engine.parakeetStatusDetail, "Parakeet Unified 0.6B · Installed locally, loads when selected.")
     }
 
     func testRefreshModelStatusChecksNemotronCacheWithStoredLanguage() async throws {
@@ -2333,7 +2333,7 @@ final class SettingsViewModelTests: XCTestCase {
             speechEngineSwitcher: switcher
         )
 
-        XCTAssertEqual(viewModel.engine.parakeetModelVariant, .v3)
+        XCTAssertEqual(viewModel.engine.parakeetModelVariant, .unified)
         viewModel.engine.parakeetModelVariant = .v2
         try await waitForSpeechEngineSwitchingToFinish()
 
@@ -2359,8 +2359,8 @@ final class SettingsViewModelTests: XCTestCase {
         viewModel.engine.parakeetModelVariant = .v2
         try await waitForSpeechEngineSwitchingToFinish()
 
-        XCTAssertEqual(viewModel.engine.parakeetModelVariant, .v3)
-        XCTAssertEqual(SpeechEnginePreference.parakeetModelVariant(defaults: testDefaults), .v3)
+        XCTAssertEqual(viewModel.engine.parakeetModelVariant, .unified)
+        XCTAssertEqual(SpeechEnginePreference.parakeetModelVariant(defaults: testDefaults), .unified)
         XCTAssertEqual(viewModel.engine.speechEngineError, "Stop the meeting recording to switch engines")
         let variants = await switcher.parakeetVariants
         XCTAssertTrue(variants.isEmpty)
@@ -2383,8 +2383,8 @@ final class SettingsViewModelTests: XCTestCase {
         // and the published value snaps back to the previous build.
         let variants = await switcher.parakeetVariants
         XCTAssertEqual(variants, [.v2])
-        XCTAssertEqual(viewModel.engine.parakeetModelVariant, .v3)
-        XCTAssertEqual(SpeechEnginePreference.parakeetModelVariant(defaults: testDefaults), .v3)
+        XCTAssertEqual(viewModel.engine.parakeetModelVariant, .unified)
+        XCTAssertEqual(SpeechEnginePreference.parakeetModelVariant(defaults: testDefaults), .unified)
         XCTAssertEqual(viewModel.engine.speechEngineError, STTError.engineBusy.localizedDescription)
         XCTAssertFalse(viewModel.engine.speechEngineSwitching)
         XCTAssertFalse(viewModel.engine.isParakeetVariantSwitch)

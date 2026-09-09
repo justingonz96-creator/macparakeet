@@ -81,7 +81,7 @@ final class ConfigCommandTests: XCTestCase {
     func testReadAgentDefaultsReflectGUIFallbacks() throws {
         XCTAssertEqual(try ConfigCommand.read(key: "processing-mode", defaults: defaults), "raw")
         XCTAssertEqual(try ConfigCommand.read(key: "speech-engine", defaults: defaults), "parakeet")
-        XCTAssertEqual(try ConfigCommand.read(key: "parakeet-model", defaults: defaults), "v3")
+        XCTAssertEqual(try ConfigCommand.read(key: "parakeet-model", defaults: defaults), "unified")
         XCTAssertEqual(try ConfigCommand.read(key: "nemotron-model", defaults: defaults), "multilingual-1120ms")
         XCTAssertEqual(try ConfigCommand.read(key: "nemotron-language", defaults: defaults), "auto")
         XCTAssertEqual(try ConfigCommand.read(key: "whisper-language", defaults: defaults), "auto")
