@@ -281,6 +281,29 @@ final class PromptsCommandTests: XCTestCase {
             Prompt(name: "Atomic membership", content: "Keep this version.", collectionId: first.id)
         )
 
+        let malformedTarget = try PromptsCommand.SetSubcommand.parse([
+            prompt.id.uuidString,
+            "--collection", "not-a-uuid",
+            "--temperature", "0.4",
+            "--json",
+            "--database", databaseURL.path,
+        ])
+        var malformedError: Error?
+        let malformedOutput = try captureStandardOutput {
+            do {
+                try malformedTarget.run()
+            } catch {
+                malformedError = error
+            }
+        }
+        XCTAssertEqual(CLI.normalizedExitCode(for: try XCTUnwrap(malformedError)).rawValue, 2)
+        let malformedFailure = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(malformedOutput.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(malformedFailure["errorType"] as? String, "validation")
+        XCTAssertEqual(try promptRepository.fetch(id: prompt.id)?.collectionId, first.id)
+        XCTAssertEqual(try versionRepository.fetchAll(promptId: prompt.id).count, 1)
+
         let invalidTarget = try PromptsCommand.SetSubcommand.parse([
             prompt.id.uuidString,
             "--collection", UUID().uuidString,

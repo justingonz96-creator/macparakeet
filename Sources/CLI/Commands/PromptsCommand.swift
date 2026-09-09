@@ -135,7 +135,7 @@ extension PromptsCommand {
             )
 
             @Argument(help: "Full prompt collection UUID.")
-            var id: UUID
+            var id: String
 
             @Option(name: .long, help: "New collection display name (must be unique).")
             var name: String
@@ -155,10 +155,11 @@ extension PromptsCommand {
             func run() throws {
                 try emitJSONOrRethrow(json: json) {
                     let repository = try promptCollectionRepository(database: database)
-                    var collection = try requirePromptCollection(id: id, repository: repository)
+                    let collectionID = try fullPromptCollectionID(id)
+                    var collection = try requirePromptCollection(id: collectionID, repository: repository)
                     collection.name = name
                     try repository.save(collection)
-                    let saved = try requirePromptCollection(id: id, repository: repository)
+                    let saved = try requirePromptCollection(id: collectionID, repository: repository)
                     if json {
                         try printJSON(saved)
                     } else {
@@ -175,7 +176,7 @@ extension PromptsCommand {
             )
 
             @Argument(help: "Full prompt collection UUID.")
-            var id: UUID
+            var id: String
 
             @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
             var json = false
@@ -186,12 +187,13 @@ extension PromptsCommand {
             func run() throws {
                 try emitJSONOrRethrow(json: json) {
                     let repository = try promptCollectionRepository(database: database)
-                    let collection = try requirePromptCollection(id: id, repository: repository)
-                    guard try repository.delete(id: id) else {
-                        throw PromptCollectionRepositoryError.collectionNotFound(id)
+                    let collectionID = try fullPromptCollectionID(id)
+                    let collection = try requirePromptCollection(id: collectionID, repository: repository)
+                    guard try repository.delete(id: collectionID) else {
+                        throw PromptCollectionRepositoryError.collectionNotFound(collectionID)
                     }
                     if json {
-                        try printJSON(PromptCollectionDeleteResult(id: id, name: collection.name))
+                        try printJSON(PromptCollectionDeleteResult(id: collectionID, name: collection.name))
                     } else {
                         print("Deleted prompt collection '\(collection.name)'; prompts are now unfiled.")
                     }
@@ -206,7 +208,7 @@ extension PromptsCommand {
             )
 
             @Argument(help: "Complete ordered list of prompt collection UUIDs.")
-            var ids: [UUID] = []
+            var ids: [String] = []
 
             @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
             var json = false
@@ -217,7 +219,7 @@ extension PromptsCommand {
             func run() throws {
                 try emitJSONOrRethrow(json: json) {
                     let repository = try promptCollectionRepository(database: database)
-                    try repository.reorder(ids: ids)
+                    try repository.reorder(ids: ids.map(fullPromptCollectionID))
                     let collections = try repository.fetchAll()
                     if json {
                         try printJSON(collections)
@@ -477,7 +479,7 @@ extension PromptsCommand {
         var autoRun: Bool = false
 
         @Option(name: .long, help: "Assign the new prompt to this full collection UUID.")
-        var collection: UUID?
+        var collection: String?
 
         @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
         var json = false
@@ -497,9 +499,10 @@ extension PromptsCommand {
         func run() throws {
             try emitJSONOrRethrow(json: json) {
                 let db = try makeDatabaseManager(database: database)
-                if let collection {
+                let collectionID = try collection.map(fullPromptCollectionID)
+                if let collectionID {
                     _ = try requirePromptCollection(
-                        id: collection,
+                        id: collectionID,
                         repository: PromptCollectionRepository(dbQueue: db.dbQueue)
                     )
                 }
@@ -523,7 +526,7 @@ extension PromptsCommand {
                     content: body,
                     isVisible: true,
                     isAutoRun: autoRun,
-                    collectionId: collection
+                    collectionId: collectionID
                 )
                 let repo = PromptRepository(dbQueue: db.dbQueue)
                 try repo.save(prompt)
@@ -608,7 +611,7 @@ extension PromptsCommand {
         var providerDefaultSettings = false
 
         @Option(name: .long, help: "Assign the prompt to this full collection UUID.")
-        var collection: UUID?
+        var collection: String?
 
         @Flag(name: .long, help: "Remove the prompt from its collection.")
         var noCollection = false
@@ -760,7 +763,8 @@ extension PromptsCommand {
                 let db = try DatabaseManager(path: resolvedDatabasePath(database))
                 let repo = PromptRepository(dbQueue: db.dbQueue)
                 let collectionChangeSpecified = collection != nil || noCollection
-                let targetCollection = try collection.map {
+                let collectionID = try collection.map(fullPromptCollectionID)
+                let targetCollection = try collectionID.map {
                     try requirePromptCollection(
                         id: $0,
                         repository: PromptCollectionRepository(dbQueue: db.dbQueue)
@@ -1209,6 +1213,13 @@ func refreshMeetingArtifacts(
 private func promptCollectionRepository(database: String?) throws -> PromptCollectionRepository {
     let db = try makeDatabaseManager(database: database)
     return PromptCollectionRepository(dbQueue: db.dbQueue)
+}
+
+private func fullPromptCollectionID(_ value: String) throws -> UUID {
+    guard let id = UUID(uuidString: value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+        throw ValidationError("Prompt collection IDs must be full UUIDs.")
+    }
+    return id
 }
 
 private func requirePromptCollection(
