@@ -1112,6 +1112,142 @@ final class ExportServiceTests: XCTestCase {
         }
     }
 
+    // The three tests below pin `splitCuesOnSpeakerChange` (reinstated post-merge
+    // after being removed as untested). Unlike `testCueSplitsOnSpeakerChange`
+    // above (1100ms inter-speaker gap, so the cue builder already emits
+    // separate per-speaker cues and the split pass is a no-op), these use a
+    // SHORT 200ms inter-speaker gap. That's short enough that `mergeOrphanedCues`
+    // (which is speaker-blind) re-absorbs the tiny single-word "Yeah." cue into
+    // its speaker-1 neighbor, producing one cue mislabeled under a single
+    // speaker — the exact bug the split pass exists to undo. The middle
+    // speaker-2 utterance is kept a single short word, and the trailing
+    // speaker-1 utterance is padded to 38 chars, so the re-glued cue lands at
+    // 44 chars — under `mergeOrphanedCues`'s 52-char budget (so the harmful
+    // merge happens) but over the 42-char `maxChars` budget the later
+    // `mergeAdjacentCuesForTwoLine` / `absorbShortNeighbours` passes require
+    // (so they don't ALSO glue it to the first speaker-1 cue and mark it
+    // `forcedText`, which would make it unsplittable). `maxCPS: 0` disables
+    // `enforceReadingSpeed`, which is unrelated to speaker-splitting and would
+    // otherwise re-fragment the padded speaker-1 utterance for reasons that
+    // have nothing to do with what's under test here.
+    func testCueSplitsOnSpeakerChangeWithShortInterSpeakerGap() {
+        let words = [
+            WordTimestamp(word: "Hello", startMs: 0, endMs: 300, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "there", startMs: 310, endMs: 600, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "Alice.", startMs: 610, endMs: 900, confidence: 0.99, speakerId: "S1"),
+            // 200ms gap: short enough that mergeOrphanedCues would otherwise
+            // re-absorb this tiny cue into a neighbor, losing the speaker split.
+            WordTimestamp(word: "Yeah.", startMs: 1100, endMs: 1400, confidence: 0.99, speakerId: "S2"),
+            // Another 200ms gap back to speaker 1.
+            WordTimestamp(word: "Good", startMs: 1600, endMs: 1800, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "morning", startMs: 1810, endMs: 2100, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "today", startMs: 2110, endMs: 2300, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "my", startMs: 2310, endMs: 2400, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "dear", startMs: 2410, endMs: 2600, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "old", startMs: 2610, endMs: 2750, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "friend.", startMs: 2760, endMs: 3000, confidence: 0.99, speakerId: "S1"),
+        ]
+        let config = SubtitleExportConfig(maxCPS: 0)
+
+        let cues = exportService.buildSubtitleCues(from: words, config: config, breakOnSpeakerChange: true)
+
+        XCTAssertEqual(cues.count, 3, "Expected one cue per speaker run, got: \(cues.map { ($0.speakerId, $0.text) })")
+        guard cues.count == 3 else { return }
+
+        XCTAssertEqual(cues[0].speakerId, "S1")
+        XCTAssertTrue(cues[0].text.contains("Hello"))
+        XCTAssertTrue(cues[0].text.contains("Alice"))
+        XCTAssertFalse(cues[0].text.contains("Yeah"))
+        XCTAssertFalse(cues[0].text.contains("Good"))
+
+        XCTAssertEqual(cues[1].speakerId, "S2")
+        XCTAssertTrue(cues[1].text.contains("Yeah"))
+        XCTAssertFalse(cues[1].text.contains("Hello"))
+        XCTAssertFalse(cues[1].text.contains("Good"))
+
+        XCTAssertEqual(cues[2].speakerId, "S1")
+        XCTAssertTrue(cues[2].text.contains("Good"))
+        XCTAssertTrue(cues[2].text.contains("friend"))
+        XCTAssertFalse(cues[2].text.contains("Yeah"))
+
+        for cue in cues {
+            XCTAssertGreaterThan(cue.endMs, cue.startMs, "Cue must have positive duration: \(cue)")
+        }
+        for (prev, next) in zip(cues, cues.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(next.startMs, prev.endMs, "Cues must be monotonic and non-overlapping")
+        }
+    }
+
+    func testCueDoesNotSplitOnSpeakerChangeWhenLabelsDisabled() {
+        let words = [
+            WordTimestamp(word: "Hello", startMs: 0, endMs: 300, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "there", startMs: 310, endMs: 600, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "Alice.", startMs: 610, endMs: 900, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "Yeah.", startMs: 1100, endMs: 1400, confidence: 0.99, speakerId: "S2"),
+            WordTimestamp(word: "Good", startMs: 1600, endMs: 1800, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "morning", startMs: 1810, endMs: 2100, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "today", startMs: 2110, endMs: 2300, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "my", startMs: 2310, endMs: 2400, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "dear", startMs: 2410, endMs: 2600, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "old", startMs: 2610, endMs: 2750, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "friend.", startMs: 2760, endMs: 3000, confidence: 0.99, speakerId: "S1"),
+        ]
+        let config = SubtitleExportConfig(maxCPS: 0)
+
+        let labelsOnCues = exportService.buildSubtitleCues(from: words, config: config, breakOnSpeakerChange: true)
+        let labelsOffCues = exportService.buildSubtitleCues(from: words, config: config, breakOnSpeakerChange: false)
+
+        // Same identical input, differing only in breakOnSpeakerChange. With
+        // labels on, splitCuesOnSpeakerChange runs and separates the 3 speaker
+        // runs (see testCueSplitsOnSpeakerChangeWithShortInterSpeakerGap).
+        // With labels off, the pass is gated off entirely, so the words stay
+        // glued together with no speaker-based split: strictly fewer cues.
+        XCTAssertLessThan(labelsOffCues.count, labelsOnCues.count,
+            "Labels-off output must not be speaker-split: \(labelsOffCues.map { ($0.speakerId, $0.text) })")
+
+        // The "Yeah." word (speaker 2) must remain in the same cue as the
+        // following speaker-1 continuation ("friend.") — i.e. never split
+        // apart — proving the speaker-change split simply did not run.
+        let mergedCue = labelsOffCues.first { $0.text.contains("Yeah") }
+        XCTAssertNotNil(mergedCue, "Expected the labels-off output to still contain the word \"Yeah.\"")
+        XCTAssertTrue(mergedCue?.text.contains("friend") ?? false,
+            "Labels off: speaker 2's word must remain glued to speaker 1's continuation, not split out")
+    }
+
+    func testShortSpeakerChangeFragmentIsNotReabsorbed() {
+        // Pins the reviewer-flagged, currently-accepted limitation:
+        // splitCuesOnSpeakerChange runs after mergeOrphanedCues/
+        // enforceReadingSpeed, so a genuine one-word aside from a different
+        // speaker survives as its own short cue — nothing downstream
+        // re-absorbs it. A future change to that behavior should be
+        // deliberate, not accidental.
+        let words = [
+            WordTimestamp(word: "Hello", startMs: 0, endMs: 300, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "there", startMs: 310, endMs: 600, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "Alice.", startMs: 610, endMs: 900, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "Yeah.", startMs: 1100, endMs: 1400, confidence: 0.99, speakerId: "S2"),
+            WordTimestamp(word: "Good", startMs: 1600, endMs: 1800, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "morning", startMs: 1810, endMs: 2100, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "today", startMs: 2110, endMs: 2300, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "my", startMs: 2310, endMs: 2400, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "dear", startMs: 2410, endMs: 2600, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "old", startMs: 2610, endMs: 2750, confidence: 0.99, speakerId: "S1"),
+            WordTimestamp(word: "friend.", startMs: 2760, endMs: 3000, confidence: 0.99, speakerId: "S1"),
+        ]
+        let config = SubtitleExportConfig(maxCPS: 0)
+
+        let cues = exportService.buildSubtitleCues(from: words, config: config, breakOnSpeakerChange: true)
+
+        XCTAssertEqual(cues.count, 3)
+        guard cues.count == 3 else { return }
+
+        let fragment = cues[1]
+        XCTAssertEqual(fragment.speakerId, "S2")
+        XCTAssertEqual(fragment.text, "Yeah.")
+        XCTAssertGreaterThan(fragment.endMs, fragment.startMs,
+            "Even a single-word fragment cue must have positive duration")
+    }
+
     func testFormatMarkdownWithSpeakers() {
         let transcription = Transcription(
             fileName: "interview.mp3",

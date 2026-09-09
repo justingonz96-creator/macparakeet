@@ -2030,6 +2030,16 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             cues = mergeOrphanedCues(cues, maxChars: config.maxCharsPerLine, maxLines: config.maxLinesPerCue, gapThresholdMs: config.gapThresholdMs)
         }
 
+        // When the caller asked to break cues on speaker change, no finished cue
+        // may span two speakers. The merge passes above optimise for reading
+        // comfort and are speaker-blind, so they can glue two speakers back into
+        // one cue, which then renders under a single — wrong — name. Split any
+        // mixed cue apart again on the speaker boundary. Only runs when speaker
+        // labels were requested, so the default (label-free) output is untouched.
+        if breakOnSpeakerChange {
+            cues = splitCuesOnSpeakerChange(cues)
+        }
+
         // Post-process: extend cue endMs by endTimeBufferMs to cover acoustic decay.
         // Runs before gap enforcement so any overlaps get cleaned up.
         if config.endTimeBufferMs > 0 {
@@ -2056,6 +2066,53 @@ public final class ExportService: ExportServiceProtocol, Sendable {
                 speakerId: cue.speakerId
             )
         }
+    }
+
+    /// Splits any cue whose words belong to more than one speaker into one cue
+    /// per consecutive same-speaker run. Cues whose text was forced from the
+    /// cleaned transcript are left alone — their text no longer maps 1:1 onto
+    /// the word list, so a split could not reproduce it faithfully.
+    private func splitCuesOnSpeakerChange(_ cues: [MutableCue]) -> [MutableCue] {
+        var result: [MutableCue] = []
+        for cue in cues {
+            guard cue.forcedText == nil,
+                  cue.wordTimestamps.count == cue.words.count,
+                  cue.wordTimestamps.count > 1
+            else {
+                result.append(cue)
+                continue
+            }
+
+            func makeCue(_ range: Range<Int>) -> MutableCue? {
+                let stamps = Array(cue.wordTimestamps[range])
+                guard let first = stamps.first, let last = stamps.last else { return nil }
+                return MutableCue(
+                    startMs: first.startMs,
+                    endMs: last.endMs,
+                    words: Array(cue.words[range]),
+                    wordTimestamps: stamps,
+                    speakerId: first.speakerId
+                )
+            }
+
+            var runs: [MutableCue] = []
+            var runStart = 0
+            for index in 1..<cue.wordTimestamps.count
+            where cue.wordTimestamps[index].speakerId != cue.wordTimestamps[runStart].speakerId {
+                if let piece = makeCue(runStart..<index) { runs.append(piece) }
+                runStart = index
+            }
+
+            if runStart == 0 {
+                // Single speaker: keep the cue exactly as the pipeline built it,
+                // including any timings the earlier passes adjusted.
+                result.append(cue)
+            } else {
+                if let piece = makeCue(runStart..<cue.wordTimestamps.count) { runs.append(piece) }
+                result.append(contentsOf: runs)
+            }
+        }
+        return result
     }
 
     /// Detect if a word starts a new sentence (capitalized, or short pronouns).
