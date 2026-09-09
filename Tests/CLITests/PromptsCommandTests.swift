@@ -187,7 +187,7 @@ final class PromptsCommandTests: XCTestCase {
         let firstRecord = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(firstOutput.utf8)) as? [String: Any]
         )
-        let firstID = try XCTUnwrap(firstRecord["id"] as? String).lowercased()
+        let firstID = try XCTUnwrap(firstRecord["id"] as? String)
         let first = try XCTUnwrap(try collectionRepository.fetch(id: UUID(uuidString: firstID)!))
 
         let addSecond = try PromptsCommand.CollectionsSubcommand.AddSubcommand.parse([
@@ -210,7 +210,7 @@ final class PromptsCommandTests: XCTestCase {
             JSONSerialization.jsonObject(with: Data(promptOutput.utf8)) as? [String: Any]
         )
         let promptID = try XCTUnwrap(UUID(uuidString: try XCTUnwrap(promptRecord["id"] as? String)))
-        XCTAssertEqual(promptRecord["collectionId"] as? String, first.id.uuidString.lowercased())
+        XCTAssertEqual(promptRecord["collectionId"] as? String, first.id.uuidString)
         XCTAssertEqual(promptRecord["activeVersionNumber"] as? Int, 1)
 
         let moveAndConfigure = try PromptsCommand.SetSubcommand.parse([
@@ -224,7 +224,7 @@ final class PromptsCommandTests: XCTestCase {
         let movedRecord = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(moveOutput.utf8)) as? [String: Any]
         )
-        XCTAssertEqual(movedRecord["collectionId"] as? String, second.id.uuidString.lowercased())
+        XCTAssertEqual(movedRecord["collectionId"] as? String, second.id.uuidString)
         XCTAssertEqual(movedRecord["activeVersionNumber"] as? Int, 2)
         XCTAssertEqual(try versionRepository.fetchAll(promptId: promptID).count, 2)
 
@@ -247,7 +247,7 @@ final class PromptsCommandTests: XCTestCase {
         XCTAssertEqual(
             reordered.compactMap { $0["id"] as? String },
             [
-                second.id.uuidString.lowercased(), first.id.uuidString.lowercased(),
+                second.id.uuidString, first.id.uuidString,
             ]
         )
 
