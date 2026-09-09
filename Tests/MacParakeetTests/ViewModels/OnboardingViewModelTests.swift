@@ -1704,4 +1704,35 @@ final class OnboardingViewModelTests: XCTestCase {
         let sttCalls = await stt.warmUpCallCount
         XCTAssertEqual(sttCalls, 0)
     }
+
+    // MARK: - Default speech-model cache check follows the Parakeet variant
+
+    func testDefaultSpeechModelCacheCheckUsesUnifiedEngineForUnifiedVariant() {
+        let suite = "com.macparakeet.tests.default-speech-cache.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        // No parakeetModelVariant persisted => resolves to the `.unified` default
+        // (Task 9). Onboarding preflight must therefore consult
+        // ParakeetUnifiedEngine's cache, not the TDT v3 path, or it will demand
+        // the 7 GB first-time download forever even after Unified is cached.
+
+        nonisolated(unsafe) var unifiedCalls = 0
+        nonisolated(unsafe) var tdtCalls = 0
+
+        let cached = OnboardingViewModel.defaultSpeechModelCacheCheck(
+            defaults: defaults,
+            unifiedCached: {
+                unifiedCalls += 1
+                return true
+            },
+            tdtCached: { (_: ParakeetModelVariant) in
+                tdtCalls += 1
+                return true
+            }
+        )
+
+        XCTAssertTrue(cached)
+        XCTAssertEqual(unifiedCalls, 1)
+        XCTAssertEqual(tdtCalls, 0)
+    }
 }

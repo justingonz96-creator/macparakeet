@@ -208,7 +208,8 @@ public final class OnboardingViewModel {
         self.isRuntimeSupported = isRuntimeSupported ?? { Self.defaultRuntimeSupportedCheck() }
         self.availableDiskBytes = availableDiskBytes ?? { Self.defaultAvailableDiskBytes() }
         self.isNetworkReachable = isNetworkReachable ?? { await Self.defaultNetworkReachabilityCheck() }
-        self.isSpeechModelCached = isSpeechModelCached ?? { STTRuntime.isModelCached() }
+        self.isSpeechModelCached =
+            isSpeechModelCached ?? { Self.defaultSpeechModelCacheCheck(defaults: defaults) }
         self.isWhisperModelDownloaded =
             isWhisperModelDownloaded ?? {
                 WhisperEngine.isModelDownloaded(model: SpeechEnginePreference.whisperModelVariant())
@@ -1213,6 +1214,30 @@ public final class OnboardingViewModel {
         } catch {
             return false
         }
+    }
+
+    /// Mirrors ``EngineSettingsViewModel``'s cache-check dispatch: Parakeet
+    /// Unified is a separate FluidAudio runtime with no `AsrModelVersion`
+    /// (see `ParakeetModelVariant.usesUnifiedEngine`), so it must be checked
+    /// via ``ParakeetUnifiedEngine`` rather than the TDT `STTRuntime` path.
+    /// Getting this wrong makes onboarding preflight report the model as
+    /// never cached once Unified is the default, demanding the 7 GB
+    /// first-time download on every run. `unifiedCached`/`tdtCached` are
+    /// injectable so tests can prove which path a variant takes without
+    /// depending on real on-disk model state.
+    nonisolated static func defaultSpeechModelCacheCheck(
+        defaults: UserDefaults,
+        unifiedCached: @Sendable () -> Bool = { ParakeetUnifiedEngine.isModelCached() },
+        tdtCached: @Sendable (ParakeetModelVariant) -> Bool = {
+            guard let version = $0.asrModelVersion else { return false }
+            return STTRuntime.isModelCached(version: version)
+        }
+    ) -> Bool {
+        let variant = SpeechEnginePreference.parakeetModelVariant(defaults: defaults)
+        if variant.usesUnifiedEngine {
+            return unifiedCached()
+        }
+        return tdtCached(variant)
     }
 
     private nonisolated static func defaultRuntimeSupportedCheck() -> Bool {
