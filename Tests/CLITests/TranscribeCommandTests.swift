@@ -9,6 +9,50 @@ final class TranscribeCommandTests: XCTestCase {
         case restore
     }
 
+    func testSubtitlePresetOptionDefaultsToDefault() throws {
+        let command = try TranscribeCommand.parse(["episode.mp3", "--format", "srt"])
+
+        XCTAssertEqual(command.subtitlePreset, .default)
+        XCTAssertNil(command.subtitlePreset.config.snapToFrameRate)
+    }
+
+    func testSubtitlePresetOptionParsesEchelon() throws {
+        let command = try TranscribeCommand.parse([
+            "episode.mp3", "--format", "srt", "--subtitle-preset", "echelon",
+        ])
+
+        XCTAssertEqual(command.subtitlePreset, .echelon)
+        XCTAssertEqual(command.subtitlePreset.config.maxCharsPerLine, 65)
+        XCTAssertEqual(command.subtitlePreset.config.snapToFrameRate, 29.97)
+    }
+
+    @MainActor
+    func testFormattedStringUsesSubtitleConfigForSRTAndVTT() {
+        let words = [
+            WordTimestamp(word: "hello", startMs: 0, endMs: 400, confidence: 0.9, speakerId: "S1"),
+            WordTimestamp(word: "world", startMs: 400, endMs: 900, confidence: 0.95, speakerId: "S1"),
+        ]
+        let transcription = Transcription(
+            fileName: "clip.mp3",
+            durationMs: 900,
+            rawTranscript: "hello world",
+            wordTimestamps: words,
+            speakers: [SpeakerInfo(id: "S1", label: "Speaker 1")],
+            status: .completed
+        )
+        let exporter = ExportService()
+
+        let srt = TranscribeCommand.formattedString(
+            for: transcription,
+            format: .srt,
+            subtitleConfig: .echelon
+        )
+        XCTAssertEqual(
+            srt,
+            exporter.formatSRT(transcription: transcription, config: .echelon, includeSpeakerLabels: false)
+        )
+    }
+
     func testAudioTrackOptionIsOneBasedAndResolvesToAudioOrdinal() throws {
         let command = try TranscribeCommand.parse(["episode.mkv", "--audio-track", "2"])
 

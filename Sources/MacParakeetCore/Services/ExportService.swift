@@ -191,6 +191,17 @@ public struct SubtitleExportConfig: Sendable, Equatable, Codable {
     }
 
     public static let `default` = SubtitleExportConfig()
+
+    /// Echelon class captions: 29.97 fps video, two 65-char lines, held ~1 s
+    /// after the last word so cues do not flicker between shouted cues.
+    /// Values copied from the production Echo install on 2026-09-08.
+    public static let echelon = SubtitleExportConfig(
+        maxWordsPerCue: 12, maxCharsPerLine: 65, maxLinesPerCue: 2, maxDurationMs: 4000,
+        gapThresholdMs: 0, breakOnPunctuation: true, minWordsBeforePunctuationBreak: 4,
+        preferBalancedLines: true, useLLMRefinement: true, maxCPS: 17,
+        endTimeBufferMs: 1000, snapToFrameRate: 29.97, normalizeNumbers: false,
+        reviewerPairsPerBatch: 5
+    )
 }
 
 // Explicit Codable conformance so new optional fields (endTimeBufferMs, snapToFrameRate)
@@ -371,7 +382,9 @@ extension TranscriptExportOptions: RawRepresentable {
     }
 
     public var rawValue: String {
-        guard let data = try? JSONEncoder().encode(self),
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        guard let data = try? encoder.encode(self),
               let string = String(data: data, encoding: .utf8) else {
             return ""
         }

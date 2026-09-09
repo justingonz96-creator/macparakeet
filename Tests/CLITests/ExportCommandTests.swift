@@ -26,6 +26,27 @@ final class ExportCommandTests: XCTestCase {
         XCTAssertNil(ExportFormat(rawValue: "docx"))
     }
 
+    func testSubtitlePresetEchelonAppliesTunedCaptionValues() throws {
+        let command = try ExportCommand.parse([
+            "abcd",
+            "--format", "srt",
+            "--subtitle-preset", "echelon",
+        ])
+
+        XCTAssertEqual(command.subtitleConfig.maxCharsPerLine, 65)
+        XCTAssertEqual(command.subtitleConfig.snapToFrameRate, 29.97)
+    }
+
+    func testSubtitlePresetDefaultsToDefault() throws {
+        let command = try ExportCommand.parse([
+            "abcd",
+            "--format", "srt",
+        ])
+
+        XCTAssertEqual(command.subtitleConfig.maxCharsPerLine, SubtitleExportConfig.default.maxCharsPerLine)
+        XCTAssertNil(command.subtitleConfig.snapToFrameRate)
+    }
+
     func testResolveOutputURLExpandsTilde() throws {
         let command = try ExportCommand.parse([
             "abcd",

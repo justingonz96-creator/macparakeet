@@ -30,16 +30,15 @@ git push origin main
 ```
 
 **Open upstream PRs (contributions, not dependencies):**
-- #305 — Subtitle: configurable export with presets, min-duration, gap enforcement
-- #307 — Subtitle preset picker: Settings, CLI flag, persistence (stacked on #305)
-- #308 — Text processing: split fused letter+digit tokens (stacked on #307, draft)
+- #305 — Subtitle: configurable export with presets, min-duration, gap enforcement (closed/stale)
+- #307 — Subtitle preset picker: Settings, CLI flag, persistence (stacked on #305) (closed/stale)
+- #308 — Text processing: split fused letter+digit tokens (stacked on #307, draft) (closed/stale)
 
 These PRs contain work that is already shipping in this fork. If they get merged upstream, the next sync will be a clean no-op for those files.
 
 **Custom features in this fork (relative to upstream `main`):**
-- `SubtitleExportConfig` struct with Standard / Netflix / BBC / YouTube presets
+- `SubtitleExportConfig.echelon` preset (29.97 fps, 65×2, 1 s hold, AI refinement) + "Apply Echelon preset" button in the export popover + `--subtitle-preset default|echelon` on CLI export/transcribe
 - `enforceMinDuration` and `enforceMinGap` post-processing passes
-- Subtitle preset picker in Settings (Modes tab, Transcription card) + `--subtitle-preset` CLI flag
 - `WordNumberSplitter` — fixes fused Parakeet tokens like `next30` → `next 30` in both subtitle and text pipeline paths
 - Whisper: VAD chunking (`chunkingStrategy: .vad`) and a Custom-Words glossary prompt (`WhisperEngine.makeVocabularyPrompt`, `vocabularyProvider`) — Tasks 3/4 of docs/superpowers/plans/2026-09-08-echo-accuracy-utility-upgrade.md
 - WhisperKit pin: fork stays on argmax-oss-swift 1.0.0 (upstream pins 0.18.0); do not downgrade on sync.

@@ -22,6 +22,21 @@ enum ExportFormat: String, ExpressibleByArgument, CaseIterable {
     }
 }
 
+/// Named `SubtitleExportConfig` starting points for the `--subtitle-preset`
+/// flag on `export` and `transcribe`. There is no preset picker in the GUI
+/// (see `SubtitleExportConfig.echelon`'s doc comment) — this is CLI-only.
+enum SubtitlePreset: String, ExpressibleByArgument, CaseIterable {
+    case `default`
+    case echelon
+
+    var config: SubtitleExportConfig {
+        switch self {
+        case .default: return .default
+        case .echelon: return .echelon
+        }
+    }
+}
+
 struct ExportCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "export",
@@ -44,6 +59,9 @@ struct ExportCommand: AsyncParsableCommand {
     @Option(help: "Path to SQLite database file (defaults to the app database).")
     var database: String?
 
+    @Option(name: .long, help: "Subtitle preset to start SRT/VTT cue layout from: default, echelon.")
+    var subtitlePreset: SubtitlePreset = .default
+
     @Flag(name: .long, help: "Convert spelled-out cardinals to digits in SRT/VTT cue text.")
     var normalizeNumbers: Bool = false
 
@@ -52,8 +70,8 @@ struct ExportCommand: AsyncParsableCommand {
 
     /// SubtitleExportConfig with the CLI flag overlay applied. Used by the
     /// SRT/VTT branches; the other formats ignore it.
-    private var subtitleConfig: SubtitleExportConfig {
-        var c = SubtitleExportConfig.default
+    var subtitleConfig: SubtitleExportConfig {
+        var c = subtitlePreset.config
         c.normalizeNumbers = normalizeNumbers
         c.useLLMRefinement = llmRefinement
         return c

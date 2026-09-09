@@ -101,6 +101,9 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
     @Option(name: .shortAndLong, help: "Output format: text, transcript, json, srt, vtt, dapt. srt/vtt emit timed subtitles; dapt emits a structured W3C original transcript. Pair with --output-dir to write one file per input.")
     var format: TranscribeOutputFormat = .text
 
+    @Option(name: .long, help: "Subtitle preset for srt/vtt cue layout: default, echelon.")
+    var subtitlePreset: SubtitlePreset = .default
+
     @Option(help: "Processing mode: raw, clean, app-default.")
     var mode: TranscribeMode = .appDefault
 
@@ -683,7 +686,7 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
                 }
                 if let outputDir {
                     let dir = try Self.prepareOutputDir(outputDir)
-                    let url = try await Self.writeOutput(result, to: dir, format: format)
+                    let url = try await Self.writeOutput(result, to: dir, format: format, subtitleConfig: subtitlePreset.config)
                     printErr("  \u{2192} \(url.path)")
                 } else {
                     stdoutEmission = .transcription(result, format)
@@ -763,7 +766,7 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
             case .text:
                 printText(result)
             case .srt, .vtt, .dapt:
-                print(await Self.formattedString(for: result, format: outputFormat), terminator: "")
+                print(await Self.formattedString(for: result, format: outputFormat, subtitleConfig: subtitlePreset.config), terminator: "")
             }
             printSaveHintIfSaved(result, format: outputFormat)
         }
@@ -791,7 +794,7 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
                     service: service,
                     speechEngine: speechEngine
                 )
-                let url = try await Self.writeOutput(result, to: dir, format: format)
+                let url = try await Self.writeOutput(result, to: dir, format: format, subtitleConfig: subtitlePreset.config)
                 printErr("  \u{2192} \(url.path)")
                 ok += 1
             } catch {
@@ -975,11 +978,15 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
     /// Render SRT, VTT, and DAPT using the same `ExportService` implementation
     /// as the `export` command and GUI, keeping public output paths identical.
     @MainActor
-    static func formattedString(for t: Transcription, format: TranscribeOutputFormat) -> String {
+    static func formattedString(
+        for t: Transcription,
+        format: TranscribeOutputFormat,
+        subtitleConfig: SubtitleExportConfig = .default
+    ) -> String {
         let exporter = ExportService()
         switch format {
-        case .srt: return exporter.formatSRT(transcription: t, includeSpeakerLabels: false)
-        case .vtt: return exporter.formatVTT(transcription: t, includeSpeakerLabels: false)
+        case .srt: return exporter.formatSRT(transcription: t, config: subtitleConfig, includeSpeakerLabels: false)
+        case .vtt: return exporter.formatVTT(transcription: t, config: subtitleConfig, includeSpeakerLabels: false)
         case .dapt: return exporter.formatDAPT(transcription: t)
         case .text, .transcript, .json: return ""
         }
@@ -988,7 +995,12 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
     /// Write one transcript file for `t` into `dir`, named after the source and
     /// suffixed by format (`.json`/`.srt`/`.vtt`/`.dapt.xml`, else `.txt`). Never
     /// overwrites — collisions get a `-2`, `-3`, … suffix.
-    static func writeOutput(_ t: Transcription, to dir: URL, format: TranscribeOutputFormat) async throws -> URL {
+    static func writeOutput(
+        _ t: Transcription,
+        to dir: URL,
+        format: TranscribeOutputFormat,
+        subtitleConfig: SubtitleExportConfig = .default
+    ) async throws -> URL {
         let ext = fileExtension(for: format)
         let base = sanitizedBasename(t.fileName)
         let url = uniqueURL(in: dir, base: base, fileExtension: ext)
@@ -1004,7 +1016,7 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
         case .text:
             contents = plainTextOutput(for: t)
         case .srt, .vtt, .dapt:
-            contents = await formattedString(for: t, format: format)
+            contents = await formattedString(for: t, format: format, subtitleConfig: subtitleConfig)
         }
         try Data(contents.utf8).write(to: url)
         return url

@@ -128,6 +128,15 @@ struct ExportOptionsPopoverView: View {
                     .font(DesignSystem.Typography.caption)
                     .disabled(!hasSpeakerLabelsForExport)
 
+                Button {
+                    transcriptExportOptions.subtitleConfig = .echelon
+                } label: {
+                    Text("Apply Echelon preset")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("29.97 fps, two 65-character lines, 1 s hold, AI refinement on")
+
                 Divider()
                 SubtitleConfigSection(config: $transcriptExportOptions.subtitleConfig)
                     .disabled(!hasAlignedTimestampsForExport)

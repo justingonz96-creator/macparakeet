@@ -171,4 +171,11 @@ final class SubtitleExportConfigTests: XCTestCase {
         XCTAssertNil(TranscriptExportOptions(rawValue: "not json"))
         XCTAssertNil(TranscriptExportOptions(rawValue: ""))
     }
+
+    // Proves the JSON key order is deterministic (encoder.outputFormatting =
+    // .sortedKeys) rather than dependent on JSONEncoder's unspecified default
+    // order. `includeMetadata` sorts first alphabetically among the top-level keys.
+    func testRawValueUsesSortedKeys() {
+        XCTAssertTrue(TranscriptExportOptions().rawValue.hasPrefix("{\"includeMetadata\""))
+    }
 }

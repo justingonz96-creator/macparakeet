@@ -3,7 +3,23 @@ import XCTest
 
 @MainActor
 final class SubtitleExportTests: XCTestCase {
-    
+
+    func testEchelonPresetPinsTodaysTunedCaptionValues() {
+        let c = SubtitleExportConfig.echelon
+        XCTAssertEqual(c.maxCharsPerLine, 65)
+        XCTAssertEqual(c.maxLinesPerCue, 2)
+        XCTAssertEqual(c.maxDurationMs, 4000)
+        XCTAssertEqual(c.maxCPS, 17)
+        XCTAssertEqual(c.endTimeBufferMs, 1000)
+        XCTAssertEqual(c.snapToFrameRate, 29.97)
+        XCTAssertEqual(c.minWordsBeforePunctuationBreak, 4)
+        XCTAssertEqual(c.reviewerPairsPerBatch, 5)
+        XCTAssertTrue(c.breakOnPunctuation)
+        XCTAssertTrue(c.preferBalancedLines)
+        XCTAssertTrue(c.useLLMRefinement)
+        XCTAssertFalse(c.normalizeNumbers)   // numbers handled by NumberRefinementMode.smart instead
+    }
+
     func testTranscriptCueBoundaries() throws {
         let words = makeTranscriptWordsWithSpaces()
         let config = SubtitleExportConfig(
