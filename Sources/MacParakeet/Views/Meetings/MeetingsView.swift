@@ -424,7 +424,7 @@ struct MeetingsView: View {
                     icon: "sparkles",
                     title: "Set up AI for auto-notes",
                     detail:
-                        "Choose an AI provider and MacParakeet will write notes for you automatically when a meeting ends.",
+                        "Choose an AI provider and Echo will write notes for you automatically when a meeting ends.",
                     actionTitle: "Set Up AI",
                     actionIcon: "gearshape",
                     action: onOpenAISettings

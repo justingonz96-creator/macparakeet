@@ -1319,10 +1319,10 @@ public final class TranscriptionViewModel {
         switch result {
         case .folderUnavailable:
             warning =
-                "Meeting saved in MacParakeet, but the selected auto-save folder is unavailable. Choose another folder in Settings."
+                "Meeting saved in Echo, but the selected auto-save folder is unavailable. Choose another folder in Settings."
         case .failed:
             warning =
-                "Meeting saved in MacParakeet, but it couldn't be saved to the selected folder. Check the folder in Settings and try again."
+                "Meeting saved in Echo, but it couldn't be saved to the selected folder. Check the folder in Settings and try again."
         case .disabled, .saved:
             return
         }

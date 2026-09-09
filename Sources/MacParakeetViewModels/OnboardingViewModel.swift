@@ -67,7 +67,7 @@ public final class OnboardingViewModel {
                 case .network:
                     return [
                         "Check your internet connection, then tap Retry.",
-                        "Keep MacParakeet open on a stable network until the download completes.",
+                        "Keep Echo open on a stable network until the download completes.",
                         "Use Open Settings to repair an incomplete local model download.",
                     ]
                 case .storage:
@@ -84,20 +84,20 @@ public final class OnboardingViewModel {
                     ]
                 case .fileAccess:
                     return [
-                        "Confirm MacParakeet can write to your user Library folder.",
-                        "Restart MacParakeet, then tap Retry.",
+                        "Confirm Echo can write to your user Library folder.",
+                        "Restart Echo, then tap Retry.",
                         "Use Open Settings to repair the local model cache.",
                     ]
                 case .unsupportedRuntime:
                     return [
-                        "MacParakeet requires an Apple Silicon Mac (M1 or newer).",
+                        "Echo requires an Apple Silicon Mac (M1 or newer).",
                         "Intel-based Macs are not supported.",
                     ]
                 case .opaque:
                     return [
                         "Tap Retry once in case the failure was temporary.",
                         "Use Open Settings to repair the local model cache if it fails again.",
-                        "Restart MacParakeet before one final retry.",
+                        "Restart Echo before one final retry.",
                     ]
                 }
             }

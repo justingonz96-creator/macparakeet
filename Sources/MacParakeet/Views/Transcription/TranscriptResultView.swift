@@ -420,7 +420,7 @@ struct MeetingTimedTranscriptRecoveryBannerPresentation: Equatable {
         return MeetingTimedTranscriptRecoveryBannerPresentation(
             title: "No timed transcript",
             message:
-                "\(baseMessage) Saved audio is no longer available, so MacParakeet cannot rerun the meeting to try adding timestamps.",
+                "\(baseMessage) Saved audio is no longer available, so Echo cannot rerun the meeting to try adding timestamps.",
             action: nil
         )
     }

@@ -978,8 +978,8 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
     static func formattedString(for t: Transcription, format: TranscribeOutputFormat) -> String {
         let exporter = ExportService()
         switch format {
-        case .srt: return exporter.formatSRT(transcription: t)
-        case .vtt: return exporter.formatVTT(transcription: t)
+        case .srt: return exporter.formatSRT(transcription: t, includeSpeakerLabels: false)
+        case .vtt: return exporter.formatVTT(transcription: t, includeSpeakerLabels: false)
         case .dapt: return exporter.formatDAPT(transcription: t)
         case .text, .transcript, .json: return ""
         }

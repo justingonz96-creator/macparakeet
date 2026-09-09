@@ -30,7 +30,7 @@ enum MeetingFinalizationReconciler {
     )
 
     static let staleProcessingErrorMessage =
-        "MacParakeet quit before meeting transcription finished. Your audio is saved."
+        "Echo quit before meeting transcription finished. Your audio is saved."
 
     @discardableResult
     static func reconcileStaleProcessingRows(

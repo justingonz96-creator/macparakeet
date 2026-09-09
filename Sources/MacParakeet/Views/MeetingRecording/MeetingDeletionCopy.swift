@@ -33,7 +33,7 @@ enum MeetingDeletionCopy {
         status: Transcription.TranscriptionStatus
     ) -> String {
         nonCompletedWarning(status: status)
-            + "This permanently deletes the saved audio for this meeting. The meeting stays in \(surface.name) with its transcript. Notes, AI results, and chats stay too if they exist. Playback and re-transcription will no longer be available, and MacParakeet will not be able to detect or backfill speakers for this recording."
+            + "This permanently deletes the saved audio for this meeting. The meeting stays in \(surface.name) with its transcript. Notes, AI results, and chats stay too if they exist. Playback and re-transcription will no longer be available, and Echo will not be able to detect or backfill speakers for this recording."
     }
 
     static func bulkAudioOnlyMessage(
@@ -51,7 +51,7 @@ enum MeetingDeletionCopy {
         let prefix = skippedCount > 0 ? "\(selectedCount) selected \(selectedWord). " : ""
         var message =
             bulkNonCompletedWarning(hasNonCompletedMeeting: hasNonCompletedMeeting)
-            + "\(prefix)This permanently deletes saved audio from \(count) \(meetingWord). \(meetingSubject) in \(surface.name) with \(transcriptObject). Notes, AI results, and chats stay too if they exist. Playback and re-transcription will no longer be available, and MacParakeet will not be able to detect or backfill speakers for \(recordingObject)."
+            + "\(prefix)This permanently deletes saved audio from \(count) \(meetingWord). \(meetingSubject) in \(surface.name) with \(transcriptObject). Notes, AI results, and chats stay too if they exist. Playback and re-transcription will no longer be available, and Echo will not be able to detect or backfill speakers for \(recordingObject)."
         if skippedCount > 0 {
             if skippedCount == 1 {
                 message += " 1 selected meeting cannot have its audio removed right now, so it will be skipped."

@@ -1466,7 +1466,7 @@ private struct GenerationSettingsEditor: View {
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
-                Text("Blank fields inherit MacParakeet's current defaults for the selected provider and model.")
+                Text("Blank fields inherit Echo's current defaults for the selected provider and model.")
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(DesignSystem.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)

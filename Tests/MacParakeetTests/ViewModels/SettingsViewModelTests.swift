@@ -677,7 +677,7 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.microphoneDeviceOptions.last?.displayName, "Selected microphone (unavailable)")
         XCTAssertEqual(
             vm.selectedMicrophoneStatusText,
-            "Selected microphone is unavailable. MacParakeet will use System Default until it returns."
+            "Selected microphone is unavailable. Echo will use System Default until it returns."
         )
     }
 

@@ -962,7 +962,7 @@ final class TranscriptionViewModelTests: XCTestCase {
 
         XCTAssertEqual(
             viewModel.errorMessage,
-            "Meeting saved in MacParakeet, but the selected auto-save folder is unavailable. Choose another folder in Settings."
+            "Meeting saved in Echo, but the selected auto-save folder is unavailable. Choose another folder in Settings."
         )
     }
 
@@ -995,7 +995,7 @@ final class TranscriptionViewModelTests: XCTestCase {
         )
 
         let warning =
-            "Meeting saved in MacParakeet, but the selected auto-save folder is unavailable. Choose another folder in Settings."
+            "Meeting saved in Echo, but the selected auto-save folder is unavailable. Choose another folder in Settings."
         XCTAssertEqual(viewModel.errorMessage, "Primary failure\n\n\(warning)")
         XCTAssertEqual(viewModel.errorDetail, "Primary failure details\n\n\(warning)")
     }

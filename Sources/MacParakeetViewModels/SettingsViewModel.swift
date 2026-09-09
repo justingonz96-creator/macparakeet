@@ -377,10 +377,10 @@ public final class SettingsViewModel {
             return "Using macOS System Default."
         }
         guard let selected = microphoneDeviceOptions.first(where: { $0.uid == selectedMicrophoneDeviceUID }) else {
-            return "Selected microphone is unavailable. MacParakeet will use System Default until it returns."
+            return "Selected microphone is unavailable. Echo will use System Default until it returns."
         }
         guard selected.isAvailable else {
-            return "Selected microphone is unavailable. MacParakeet will use System Default until it returns."
+            return "Selected microphone is unavailable. Echo will use System Default until it returns."
         }
         if meetingAudioSourceMode == .systemOnly {
             return "Using \(selected.name) for dictation. Meeting recording is set to \(MeetingAudioSourceMode.systemOnly.displayTitle)."

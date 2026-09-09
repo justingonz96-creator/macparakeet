@@ -713,7 +713,7 @@ struct SettingsView: View {
     private var appearanceCard: some View {
         settingsCard(
             title: "Appearance",
-            subtitle: "Choose how MacParakeet looks across app windows.",
+            subtitle: "Choose how Echo looks across app windows.",
             icon: "circle.lefthalf.filled"
         ) {
             VStack(spacing: DesignSystem.Spacing.md) {
@@ -729,7 +729,7 @@ struct SettingsView: View {
                     .labelsHidden()
                     .pickerStyle(.segmented)
                     .frame(width: 260)
-                    .accessibilityHint("Choose whether MacParakeet follows macOS or uses a fixed light or dark appearance.")
+                    .accessibilityHint("Choose whether Echo follows macOS or uses a fixed light or dark appearance.")
                 }
 
                 Divider()
@@ -1005,7 +1005,7 @@ struct SettingsView: View {
 
                 settingsToggleRow(
                     title: "Hide menu bar icon",
-                    detail: "Remove MacParakeet from the menu bar. The Dock icon stays available.",
+                    detail: "Remove Echo from the menu bar. The Dock icon stays available.",
                     isOn: Binding(
                         get: { !viewModel.showMenuBarIcon },
                         set: { viewModel.setMenuBarIconHidden($0) }
@@ -1209,7 +1209,7 @@ struct SettingsView: View {
 
                 settingsToggleRow(
                     title: "Keep dictation on clipboard",
-                    detail: "Leaves the same text MacParakeet pastes on the clipboard, useful when remote desktops need a manual ⌘V.",
+                    detail: "Leaves the same text Echo pastes on the clipboard, useful when remote desktops need a manual ⌘V.",
                     isOn: $viewModel.keepDictationOnClipboard
                 )
             }
@@ -1260,7 +1260,7 @@ struct SettingsView: View {
 
                 settingsToggleRow(
                     title: "Open app when meeting ends",
-                    detail: "Brings MacParakeet forward showing the transcript when a recording finishes. Turn this off to keep working — the meeting saves to your library in the background.",
+                    detail: "Brings Echo forward showing the transcript when a recording finishes. Turn this off to keep working — the meeting saves to your library in the background.",
                     isOn: $viewModel.openAppAfterMeetingEnd
                 )
 
@@ -1303,7 +1303,7 @@ struct SettingsView: View {
 
                 settingsToggleRow(
                     title: "Also save meetings to a folder",
-                    detail: "MacParakeet keeps the complete meeting in its managed storage. Turn this on to also save the selected format to a folder you choose.",
+                    detail: "Echo keeps the complete meeting in its managed storage. Turn this on to also save the selected format to a folder you choose.",
                     isOn: $viewModel.meetingAutoSave
                 )
 
@@ -1505,7 +1505,7 @@ struct SettingsView: View {
 
                 settingsToggleRow(
                     title: "Notify when transcription finishes",
-                    detail: "Play a sound when a file, YouTube, or batch transcription completes — plus a notification banner when MacParakeet is in the background.",
+                    detail: "Play a sound when a file, YouTube, or batch transcription completes — plus a notification banner when Echo is in the background.",
                     isOn: $viewModel.notifyOnTranscriptionComplete
                 )
 
@@ -1857,7 +1857,7 @@ struct SettingsView: View {
             HStack(alignment: .center, spacing: DesignSystem.Spacing.md) {
                 rowText(
                     title: "Meeting audio retention",
-                    detail: "Choose how long MacParakeet keeps meeting audio after the transcript is saved."
+                    detail: "Choose how long Echo keeps meeting audio after the transcript is saved."
                 )
                 Spacer(minLength: DesignSystem.Spacing.md)
                 Picker("Meeting audio retention", selection: meetingAudioRetentionModeBinding) {
@@ -1894,7 +1894,7 @@ struct SettingsView: View {
                 }
             }
 
-            Text("Transcripts stay. Auto-removed audio is deleted permanently; playback and re-transcription will no longer be available, and MacParakeet cannot detect or backfill speakers for swept meetings.")
+            Text("Transcripts stay. Auto-removed audio is deleted permanently; playback and re-transcription will no longer be available, and Echo cannot detect or backfill speakers for swept meetings.")
                 .font(DesignSystem.Typography.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1943,9 +1943,9 @@ struct SettingsView: View {
         case .keepForever:
             return ""
         case .deleteAfterDays(let days):
-            return "MacParakeet will remove saved meeting audio older than \(MeetingAudioRetention.normalizedDeleteAfterDays(days)) days. Transcripts stay, and notes, AI results, and chats stay if they exist. Playback and re-transcription will no longer be available, and MacParakeet cannot detect or backfill speakers for swept meetings."
+            return "Echo will remove saved meeting audio older than \(MeetingAudioRetention.normalizedDeleteAfterDays(days)) days. Transcripts stay, and notes, AI results, and chats stay if they exist. Playback and re-transcription will no longer be available, and Echo cannot detect or backfill speakers for swept meetings."
         case .deleteImmediately:
-            return "New recordings will not keep audio after each final transcript is saved. Audio already saved from past meetings is kept. The meeting stays with its transcript, and notes, AI results, and chats stay if they exist. Playback and re-transcription will no longer be available for new recordings, and MacParakeet cannot detect or backfill speakers for them."
+            return "New recordings will not keep audio after each final transcript is saved. Audio already saved from past meetings is kept. The meeting stays with its transcript, and notes, AI results, and chats stay if they exist. Playback and re-transcription will no longer be available for new recordings, and Echo cannot detect or backfill speakers for them."
         }
     }
 
@@ -2286,7 +2286,7 @@ struct SettingsView: View {
             DisclosureGroup(isExpanded: $advancedTranscriptionExpanded) {
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
                     Text(
-                        "MacParakeet uses your selected speech engine for everything by default. "
+                        "Echo uses your selected speech engine for everything by default. "
                             + "You can choose another engine for completed meeting recordings, files, media, and URLs—for example, for higher accuracy or broader language support when a longer wait is okay."
                     )
                     .font(DesignSystem.Typography.caption)
@@ -2676,7 +2676,7 @@ struct SettingsView: View {
                             title: "Not applied yet",
                             detail: viewModel.isMeetingRecordingActive
                                 ? "Finish the meeting recording, then relaunch to apply."
-                                : "Your change is saved but takes effect after MacParakeet relaunches."
+                                : "Your change is saved but takes effect after Echo relaunches."
                         )
                         Spacer(minLength: DesignSystem.Spacing.md)
                         Button(coherePolicyRelaunchInFlight ? "Relaunching..." : "Relaunch to apply") {

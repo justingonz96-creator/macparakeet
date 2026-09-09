@@ -944,11 +944,11 @@ final class TranscribeCommandTests: XCTestCase {
         let exporter = ExportService()
 
         let vtt = TranscribeCommand.formattedString(for: transcription, format: .vtt)
-        XCTAssertEqual(vtt, exporter.formatVTT(transcription: transcription))
+        XCTAssertEqual(vtt, exporter.formatVTT(transcription: transcription, includeSpeakerLabels: false))
         XCTAssertTrue(vtt.hasPrefix("WEBVTT"))
 
         let srt = TranscribeCommand.formattedString(for: transcription, format: .srt)
-        XCTAssertEqual(srt, exporter.formatSRT(transcription: transcription))
+        XCTAssertEqual(srt, exporter.formatSRT(transcription: transcription, includeSpeakerLabels: false))
 
         let dapt = TranscribeCommand.formattedString(for: transcription, format: .dapt)
         XCTAssertEqual(dapt, exporter.formatDAPT(transcription: transcription))
