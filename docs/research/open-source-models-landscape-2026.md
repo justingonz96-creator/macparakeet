@@ -1,6 +1,6 @@
 # Open Source Models Landscape (February 2026)
 
-> Status: **HISTORICAL** — Research snapshot as of February 12, 2026. The local Qwen3-8B / MLX-Swift path discussed here was removed from MacParakeet on 2026-02-23. Current LLM support uses external providers or local CLI; Parakeet STT via FluidAudio CoreML remains the speech engine.
+> Status: **HISTORICAL** — Research snapshot as of February 12, 2026. The local Qwen3-8B / MLX-Swift path discussed here was removed from MacParakeet on 2026-02-23. Current LLM support uses external providers or local CLI; Parakeet STT via FluidAudio CoreML remains the default speech family, with v3 default and v2 English-only available as an opt-in build.
 
 Deep dive into the current state of open source models relevant to MacParakeet: STT, small LLMs, and the Apple MLX ecosystem.
 
@@ -23,7 +23,7 @@ Deep dive into the current state of open source models relevant to MacParakeet: 
 
 **Key takeaways:**
 
-- **At snapshot time, Parakeet TDT 0.6B-v2 was assessed as the best English-first STT choice.** Current project decision is v3-only via FluidAudio CoreML (see ADR-007 and spec docs).
+- **At snapshot time, Parakeet TDT 0.6B-v2 was assessed as the best English-first STT choice.** Current project decision is v3 default via FluidAudio CoreML with v2 exposed as an English-only opt-in (see ADR-001/007 and spec docs).
 - **Qwen3-8B is the right LLM** — the most consistent model across all benchmarks, chosen for text refinement, command mode, and chat-with-transcript features. Available as `mlx-community/Qwen3-8B-4bit`.
 - **MLX is now Apple-endorsed** (WWDC 2025). MLX-Swift has breaking API changes. The ecosystem is maturing fast.
 - **FluidAudio** is the most interesting new development — a Swift CoreML package that runs Parakeet natively on the ANE without a Python daemon. VoiceInk (competitor) already uses it.
@@ -318,7 +318,7 @@ Apple Silicon's unified memory = zero-copy for MLX operations. A $2,000 Mac Stud
 
 1. **Use Qwen3-8B as the primary LLM.** The most consistent model across all benchmarks, handling text refinement, command mode, and chat-with-transcript features. HuggingFace model ID: `mlx-community/Qwen3-8B-4bit`. ~5 GB RAM at 4-bit quantization.
 
-2. **Snapshot recommendation (historical): keep Parakeet TDT 0.6B-v2 for STT.** Current project decision is v3-only via FluidAudio CoreML.
+2. **Snapshot recommendation (historical): keep Parakeet TDT 0.6B-v2 for STT.** Current project decision is v3 default via FluidAudio CoreML with v2 available as an English-only opt-in.
 
 3. **Monitor MLX-Swift breaking changes.** When upgrading mlx-swift-lm, prepare for `LLMModelFactory`, `UserInput`/`LMInput`, and throwing `ModelContainer.perform` changes.
 

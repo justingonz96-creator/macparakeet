@@ -30,10 +30,25 @@ final class ConfigCommandTests: XCTestCase {
             "telemetry",
             "processing-mode",
             "speech-engine",
+            "parakeet-model",
+            "nemotron-model",
+            "nemotron-language",
             "whisper-language",
+            "cohere-language",
             "speaker-detection",
+            "meeting-speaker-detection",
+            "auto-meeting-titles",
+            "voice-return-enabled",
+            "voice-return-triggers",
             "save-transcription-audio",
+            "meeting-audio-retention",
+            "meeting-audio-source",
+            "save-meeting-audio",
             "youtube-audio-quality",
+            "meeting-artifacts-folder",
+            "meeting-hook-enabled",
+            "meeting-hook-path",
+            "meeting-hook-timeout",
         ])
     }
 
@@ -53,23 +68,54 @@ final class ConfigCommandTests: XCTestCase {
         XCTAssertEqual(try ConfigCommand.read(key: "telemetry", defaults: defaults), "on")
     }
 
+    func testReadSpeakerDetectionReflectsExplicitFalse() throws {
+        defaults.set(false, forKey: UserDefaultsAppRuntimePreferences.speakerDiarizationKey)
+        XCTAssertEqual(try ConfigCommand.read(key: "speaker-detection", defaults: defaults), "off")
+    }
+
+    func testReadMeetingSpeakerDetectionReflectsExplicitFalse() throws {
+        defaults.set(false, forKey: UserDefaultsAppRuntimePreferences.meetingSpeakerDiarizationKey)
+        XCTAssertEqual(try ConfigCommand.read(key: "meeting-speaker-detection", defaults: defaults), "off")
+    }
+
     func testReadAgentDefaultsReflectGUIFallbacks() throws {
         XCTAssertEqual(try ConfigCommand.read(key: "processing-mode", defaults: defaults), "raw")
         XCTAssertEqual(try ConfigCommand.read(key: "speech-engine", defaults: defaults), "parakeet")
+        XCTAssertEqual(try ConfigCommand.read(key: "parakeet-model", defaults: defaults), "v3")
+        XCTAssertEqual(try ConfigCommand.read(key: "nemotron-model", defaults: defaults), "multilingual-1120ms")
+        XCTAssertEqual(try ConfigCommand.read(key: "nemotron-language", defaults: defaults), "auto")
         XCTAssertEqual(try ConfigCommand.read(key: "whisper-language", defaults: defaults), "auto")
-        XCTAssertEqual(try ConfigCommand.read(key: "speaker-detection", defaults: defaults), "off")
+        XCTAssertEqual(try ConfigCommand.read(key: "cohere-language", defaults: defaults), "en")
+        XCTAssertEqual(try ConfigCommand.read(key: "speaker-detection", defaults: defaults), "on")
+        XCTAssertEqual(try ConfigCommand.read(key: "meeting-speaker-detection", defaults: defaults), "on")
+        XCTAssertEqual(try ConfigCommand.read(key: "auto-meeting-titles", defaults: defaults), "on")
+        XCTAssertEqual(try ConfigCommand.read(key: "voice-return-enabled", defaults: defaults), "off")
+        XCTAssertEqual(try ConfigCommand.read(key: "voice-return-triggers", defaults: defaults), "press return")
         XCTAssertEqual(try ConfigCommand.read(key: "save-transcription-audio", defaults: defaults), "on")
+        XCTAssertEqual(try ConfigCommand.read(key: "meeting-audio-retention", defaults: defaults), "keep-forever")
+        XCTAssertEqual(try ConfigCommand.read(key: "meeting-audio-source", defaults: defaults), "microphone-and-system")
+        XCTAssertEqual(try ConfigCommand.read(key: "save-meeting-audio", defaults: defaults), "on")
         XCTAssertEqual(try ConfigCommand.read(key: "youtube-audio-quality", defaults: defaults), "m4a")
+        XCTAssertEqual(try ConfigCommand.read(key: "meeting-artifacts-folder", defaults: defaults), AppPaths.defaultMeetingRecordingsDir)
+        XCTAssertEqual(try ConfigCommand.read(key: "meeting-hook-enabled", defaults: defaults), "off")
+        XCTAssertEqual(try ConfigCommand.read(key: "meeting-hook-path", defaults: defaults), "none")
+        XCTAssertEqual(try ConfigCommand.read(key: "meeting-hook-timeout", defaults: defaults), "20")
     }
 
     func testReadCanonicalizesUnderscoreKeys() throws {
         defaults.set(YouTubeAudioQuality.bestAvailable.rawValue, forKey: UserDefaultsAppRuntimePreferences.youtubeAudioQualityKey)
         XCTAssertEqual(try ConfigCommand.read(key: "youtube_audio_quality", defaults: defaults), "best-available")
+        defaults.set(
+            MeetingAudioSourceMode.microphoneOnly.rawValue,
+            forKey: UserDefaultsAppRuntimePreferences.meetingAudioSourceModeKey
+        )
+        XCTAssertEqual(try ConfigCommand.read(key: "meeting_audio_source", defaults: defaults), "microphone-only")
     }
 
     func testCanonicalKeyNormalizesUnderscoreAliases() throws {
         XCTAssertEqual(try ConfigCommand.canonicalKey(" youtube_audio_quality "), "youtube-audio-quality")
         XCTAssertEqual(try ConfigCommand.canonicalKey("SPEAKER_DETECTION"), "speaker-detection")
+        XCTAssertEqual(try ConfigCommand.canonicalKey("MEETING_SPEAKER_DETECTION"), "meeting-speaker-detection")
     }
 
     func testReadUnknownKeyThrowsValidationError() {
@@ -77,6 +123,17 @@ final class ConfigCommandTests: XCTestCase {
         XCTAssertThrowsError(try ConfigCommand.read(key: "bogus", defaults: defaults)) { error in
             XCTAssertTrue(error is ValidationError, "Expected ValidationError, got \(type(of: error))")
             XCTAssertTrue("\(error)".contains("bogus"))
+        }
+    }
+
+    func testRemovedBluetoothMicPreferenceIsRejected() {
+        let key = "prefer-built-in-mic-bluetooth-output"
+
+        XCTAssertThrowsError(try ConfigCommand.read(key: key, defaults: defaults)) { error in
+            XCTAssertTrue(error is ValidationError, "Expected ValidationError, got \(type(of: error))")
+        }
+        XCTAssertThrowsError(try ConfigCommand.write(key: key, value: "on", defaults: defaults)) { error in
+            XCTAssertTrue(error is ValidationError, "Expected ValidationError, got \(type(of: error))")
         }
     }
 
@@ -105,14 +162,88 @@ final class ConfigCommandTests: XCTestCase {
         XCTAssertEqual(try ConfigCommand.write(key: "speech-engine", value: "whisper", defaults: defaults), "whisper")
         XCTAssertEqual(defaults.string(forKey: SpeechEnginePreference.defaultsKey), SpeechEnginePreference.whisper.rawValue)
 
+        XCTAssertEqual(try ConfigCommand.write(key: "speech-engine", value: "nemotron", defaults: defaults), "nemotron")
+        XCTAssertEqual(defaults.string(forKey: SpeechEnginePreference.defaultsKey), SpeechEnginePreference.nemotron.rawValue)
+
+        XCTAssertEqual(
+            try ConfigCommand.write(
+                key: "speech-engine",
+                value: "cohere",
+                defaults: defaults,
+                physicalMemoryBytes: 32 * 1024 * 1024 * 1024
+            ),
+            "cohere"
+        )
+        XCTAssertEqual(defaults.string(forKey: SpeechEnginePreference.defaultsKey), SpeechEnginePreference.cohere.rawValue)
+
+        XCTAssertEqual(try ConfigCommand.write(key: "nemotron-language", value: "en_US", defaults: defaults), "en-US")
+        XCTAssertEqual(defaults.string(forKey: SpeechEnginePreference.nemotronDefaultLanguageKey), "en-US")
+
         XCTAssertEqual(try ConfigCommand.write(key: "whisper-language", value: "ko", defaults: defaults), "ko")
         XCTAssertEqual(defaults.string(forKey: SpeechEnginePreference.whisperDefaultLanguageKey), "ko")
+
+        XCTAssertEqual(try ConfigCommand.write(key: "cohere-language", value: "JA", defaults: defaults), "ja")
+        XCTAssertEqual(defaults.string(forKey: SpeechEnginePreference.cohereDefaultLanguageKey), "ja")
 
         XCTAssertEqual(try ConfigCommand.write(key: "speaker-detection", value: "on", defaults: defaults), "on")
         XCTAssertEqual(defaults.object(forKey: UserDefaultsAppRuntimePreferences.speakerDiarizationKey) as? Bool, true)
 
+        XCTAssertEqual(try ConfigCommand.write(key: "meeting-speaker-detection", value: "off", defaults: defaults), "off")
+        XCTAssertEqual(
+            defaults.object(forKey: UserDefaultsAppRuntimePreferences.meetingSpeakerDiarizationKey) as? Bool,
+            false
+        )
+
+        XCTAssertEqual(try ConfigCommand.write(key: "auto-meeting-titles", value: "off", defaults: defaults), "off")
+        XCTAssertEqual(defaults.object(forKey: UserDefaultsAppRuntimePreferences.autoGenerateMeetingTitlesKey) as? Bool, false)
+
+        XCTAssertEqual(try ConfigCommand.write(key: "voice-return-enabled", value: "on", defaults: defaults), "on")
+        XCTAssertEqual(defaults.object(forKey: UserDefaultsAppRuntimePreferences.voiceReturnEnabledKey) as? Bool, true)
+
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "voice-return-triggers", value: "press return|submit", defaults: defaults),
+            "press return|submit"
+        )
+        XCTAssertEqual(
+            defaults.stringArray(forKey: UserDefaultsAppRuntimePreferences.voiceReturnTriggersKey),
+            ["press return", "submit"]
+        )
+        XCTAssertEqual(defaults.string(forKey: UserDefaultsAppRuntimePreferences.voiceReturnTriggerKey), "press return")
+
         XCTAssertEqual(try ConfigCommand.write(key: "save-transcription-audio", value: "off", defaults: defaults), "off")
         XCTAssertEqual(defaults.object(forKey: UserDefaultsAppRuntimePreferences.saveTranscriptionAudioKey) as? Bool, false)
+
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting-audio-retention", value: "delete-after-14-days", defaults: defaults),
+            "delete-after-14-days"
+        )
+        XCTAssertEqual(
+            UserDefaultsAppRuntimePreferences.meetingAudioRetention(defaults: defaults),
+            .deleteAfterDays(14)
+        )
+        XCTAssertEqual(try ConfigCommand.read(key: "save-meeting-audio", defaults: defaults), "on")
+
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting-audio-source", value: "microphone-only", defaults: defaults),
+            "microphone-only"
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: UserDefaultsAppRuntimePreferences.meetingAudioSourceModeKey),
+            MeetingAudioSourceMode.microphoneOnly.rawValue
+        )
+
+        XCTAssertEqual(try ConfigCommand.write(key: "save-meeting-audio", value: "off", defaults: defaults), "off")
+        XCTAssertEqual(defaults.object(forKey: UserDefaultsAppRuntimePreferences.saveMeetingAudioKey) as? Bool, false)
+        XCTAssertEqual(
+            UserDefaultsAppRuntimePreferences.meetingAudioRetention(defaults: defaults),
+            .deleteImmediately
+        )
+
+        XCTAssertEqual(try ConfigCommand.write(key: "save-meeting-audio", value: "on", defaults: defaults), "on")
+        XCTAssertEqual(
+            UserDefaultsAppRuntimePreferences.meetingAudioRetention(defaults: defaults),
+            .keepForever
+        )
 
         XCTAssertEqual(try ConfigCommand.write(key: "youtube-audio-quality", value: "best-available", defaults: defaults), "best-available")
         XCTAssertEqual(
@@ -121,9 +252,251 @@ final class ConfigCommandTests: XCTestCase {
         )
     }
 
+    func testWriteSpeechEngineRejectsCohereBelowMemoryFloor() {
+        XCTAssertThrowsError(
+            try ConfigCommand.write(
+                key: "speech-engine",
+                value: "cohere",
+                defaults: defaults,
+                physicalMemoryBytes: 8 * 1024 * 1024 * 1024
+            )
+        ) { error in
+            XCTAssertTrue(error is ValidationError)
+            XCTAssertTrue(String(describing: error).contains("16 GB"), String(describing: error))
+        }
+        XCTAssertNil(defaults.string(forKey: SpeechEnginePreference.defaultsKey))
+    }
+
     func testWriteCanonicalizesUnderscoreKeys() throws {
         XCTAssertEqual(try ConfigCommand.write(key: "speaker_detection", value: "on", defaults: defaults), "on")
         XCTAssertEqual(defaults.object(forKey: UserDefaultsAppRuntimePreferences.speakerDiarizationKey) as? Bool, true)
+        XCTAssertEqual(try ConfigCommand.write(key: "meeting_speaker_detection", value: "off", defaults: defaults), "off")
+        XCTAssertEqual(
+            defaults.object(forKey: UserDefaultsAppRuntimePreferences.meetingSpeakerDiarizationKey) as? Bool,
+            false
+        )
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting_audio_retention", value: "30d", defaults: defaults),
+            "delete-after-30-days"
+        )
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting_audio_source", value: "system-only", defaults: defaults),
+            "system-only"
+        )
+    }
+
+    func testVoiceReturnTriggersReadLegacyAndNormalizeWrites() throws {
+        defaults.set("  New Line  ", forKey: UserDefaultsAppRuntimePreferences.voiceReturnTriggerKey)
+
+        XCTAssertEqual(try ConfigCommand.read(key: "voice-return-triggers", defaults: defaults), "New Line")
+
+        XCTAssertEqual(
+            try ConfigCommand.write(
+                key: "voice-return-triggers",
+                value: " press return |PRESS RETURN| zatwierdź ",
+                defaults: defaults
+            ),
+            "press return|zatwierdź"
+        )
+        XCTAssertEqual(
+            defaults.stringArray(forKey: UserDefaultsAppRuntimePreferences.voiceReturnTriggersKey),
+            ["press return", "zatwierdź"]
+        )
+        XCTAssertEqual(defaults.string(forKey: UserDefaultsAppRuntimePreferences.voiceReturnTriggerKey), "press return")
+    }
+
+    func testMeetingAudioRetentionAcceptsAnyDayCountInRange() throws {
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting-audio-retention", value: "delete-after-13-days", defaults: defaults),
+            "delete-after-13-days"
+        )
+        XCTAssertEqual(
+            UserDefaultsAppRuntimePreferences.meetingAudioRetention(defaults: defaults),
+            .deleteAfterDays(13)
+        )
+
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting-audio-retention", value: "1d", defaults: defaults),
+            "delete-after-1-day"
+        )
+        XCTAssertEqual(
+            UserDefaultsAppRuntimePreferences.meetingAudioRetention(defaults: defaults),
+            .deleteAfterDays(1)
+        )
+
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting-audio-retention", value: "365", defaults: defaults),
+            "delete-after-365-days"
+        )
+        XCTAssertEqual(
+            UserDefaultsAppRuntimePreferences.meetingAudioRetention(defaults: defaults),
+            .deleteAfterDays(365)
+        )
+    }
+
+    func testMeetingAudioRetentionRejectsOutOfRangeDayCount() {
+        XCTAssertThrowsError(
+            try ConfigCommand.write(key: "meeting-audio-retention", value: "delete-after-0-days", defaults: defaults)
+        ) { error in
+            XCTAssertTrue(error is ValidationError)
+        }
+
+        XCTAssertThrowsError(
+            try ConfigCommand.write(key: "meeting-audio-retention", value: "delete-after-366-days", defaults: defaults)
+        ) { error in
+            XCTAssertTrue(error is ValidationError)
+        }
+    }
+
+    func testMeetingAudioSourceAcceptsAliasesAndRejectsUnknownValues() throws {
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting-audio-source", value: "both", defaults: defaults),
+            "microphone-and-system"
+        )
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting-audio-source", value: "Microphone + system audio", defaults: defaults),
+            "microphone-and-system"
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: UserDefaultsAppRuntimePreferences.meetingAudioSourceModeKey),
+            MeetingAudioSourceMode.microphoneAndSystem.rawValue
+        )
+
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting-audio-source", value: "mic", defaults: defaults),
+            "microphone-only"
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: UserDefaultsAppRuntimePreferences.meetingAudioSourceModeKey),
+            MeetingAudioSourceMode.microphoneOnly.rawValue
+        )
+
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting-audio-source", value: "computer-audio", defaults: defaults),
+            "system-only"
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: UserDefaultsAppRuntimePreferences.meetingAudioSourceModeKey),
+            MeetingAudioSourceMode.systemOnly.rawValue
+        )
+
+        XCTAssertThrowsError(
+            try ConfigCommand.write(key: "meeting-audio-source", value: "echo-cancelled", defaults: defaults)
+        ) { error in
+            XCTAssertTrue(error is ValidationError)
+        }
+    }
+
+    func testWriteMeetingArtifactFolderPersistsAndResets() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macparakeet-config-artifacts-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting-artifacts-folder", value: folder.path, defaults: defaults),
+            folder.path
+        )
+        XCTAssertEqual(defaults.string(forKey: AppPaths.meetingArtifactsFolderKey), folder.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path))
+        XCTAssertEqual(try ConfigCommand.read(key: "meeting-artifacts-folder", defaults: defaults), folder.path)
+
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting-artifacts-folder", value: "default", defaults: defaults),
+            AppPaths.defaultMeetingRecordingsDir
+        )
+        XCTAssertNil(defaults.string(forKey: AppPaths.meetingArtifactsFolderKey))
+    }
+
+    func testMeetingArtifactFolderRejectsRelativePath() {
+        XCTAssertThrowsError(
+            try ConfigCommand.write(key: "meeting-artifacts-folder", value: "relative/path", defaults: defaults)
+        ) { error in
+            XCTAssertTrue(error is ValidationError)
+        }
+    }
+
+    func testWriteMeetingHookConfigPersists() throws {
+        XCTAssertEqual(try ConfigCommand.write(key: "meeting-hook-enabled", value: "on", defaults: defaults), "on")
+        XCTAssertEqual(defaults.object(forKey: MeetingAutomationHookConfiguration.enabledKey) as? Bool, true)
+
+        XCTAssertEqual(try ConfigCommand.write(key: "meeting-hook-timeout", value: "3.5", defaults: defaults), "3.5")
+        XCTAssertEqual(defaults.object(forKey: MeetingAutomationHookConfiguration.timeoutSecondsKey) as? Double, 3.5)
+
+        let executable = URL(fileURLWithPath: "/bin/cat")
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "meeting-hook-path", value: executable.path, defaults: defaults),
+            executable.path
+        )
+        XCTAssertEqual(defaults.string(forKey: MeetingAutomationHookConfiguration.executablePathKey), executable.path)
+        XCTAssertEqual(try ConfigCommand.read(key: "meeting-hook-path", defaults: defaults), executable.path)
+
+        XCTAssertEqual(try ConfigCommand.write(key: "meeting-hook-path", value: "none", defaults: defaults), "none")
+        XCTAssertNil(defaults.string(forKey: MeetingAutomationHookConfiguration.executablePathKey))
+    }
+
+    func testMeetingHookConfigRejectsUnsafeValues() {
+        XCTAssertThrowsError(
+            try ConfigCommand.write(key: "meeting-hook-path", value: "relative-hook", defaults: defaults)
+        ) { error in
+            XCTAssertTrue(error is ValidationError)
+        }
+
+        XCTAssertThrowsError(
+            try ConfigCommand.write(key: "meeting-hook-timeout", value: "0", defaults: defaults)
+        ) { error in
+            XCTAssertTrue(error is ValidationError)
+        }
+    }
+
+    func testWriteParakeetModelPersistsAndCanonicalizesAliases() throws {
+        XCTAssertEqual(try ConfigCommand.write(key: "parakeet-model", value: "v2", defaults: defaults), "v2")
+        XCTAssertEqual(SpeechEnginePreference.parakeetModelVariant(defaults: defaults), .v2)
+
+        // Friendly aliases canonicalize to the stable Parakeet ids.
+        XCTAssertEqual(try ConfigCommand.write(key: "parakeet-model", value: "english", defaults: defaults), "v2")
+        XCTAssertEqual(try ConfigCommand.write(key: "parakeet-model", value: "multilingual", defaults: defaults), "v3")
+        XCTAssertEqual(SpeechEnginePreference.parakeetModelVariant(defaults: defaults), .v3)
+
+        // Underscore-aliased key resolves too.
+        XCTAssertEqual(try ConfigCommand.write(key: "parakeet_model", value: "v2", defaults: defaults), "v2")
+        XCTAssertEqual(try ConfigCommand.read(key: "parakeet-model", defaults: defaults), "v2")
+
+        // Unified (issue #520) persists and its aliases canonicalize.
+        XCTAssertEqual(try ConfigCommand.write(key: "parakeet-model", value: "unified", defaults: defaults), "unified")
+        XCTAssertEqual(SpeechEnginePreference.parakeetModelVariant(defaults: defaults), .unified)
+        XCTAssertEqual(try ConfigCommand.write(key: "parakeet-model", value: "english-unified", defaults: defaults), "unified")
+        XCTAssertEqual(try ConfigCommand.read(key: "parakeet-model", defaults: defaults), "unified")
+    }
+
+    func testWriteParakeetModelRejectsInvalidValue() {
+        XCTAssertThrowsError(try ConfigCommand.write(key: "parakeet-model", value: "v9", defaults: defaults)) { error in
+            XCTAssertTrue(error is ValidationError)
+        }
+    }
+
+    func testWriteNemotronModelPersistsAndCanonicalizesAliases() throws {
+        XCTAssertEqual(try ConfigCommand.write(key: "nemotron-model", value: "english-1120ms", defaults: defaults), "english-1120ms")
+        XCTAssertEqual(SpeechEnginePreference.nemotronModelVariant(defaults: defaults), .english1120)
+
+        // Friendly aliases canonicalize to the tier ids.
+        XCTAssertEqual(try ConfigCommand.write(key: "nemotron-model", value: "english", defaults: defaults), "english-1120ms")
+        XCTAssertEqual(try ConfigCommand.write(key: "nemotron-model", value: "english-only", defaults: defaults), "english-1120ms")
+        XCTAssertEqual(try ConfigCommand.write(key: "nemotron-model", value: "en", defaults: defaults), "english-1120ms")
+        XCTAssertEqual(try ConfigCommand.write(key: "nemotron-model", value: "multilingual", defaults: defaults), "multilingual-1120ms")
+        XCTAssertEqual(try ConfigCommand.write(key: "nemotron-model", value: "multi", defaults: defaults), "multilingual-1120ms")
+        XCTAssertEqual(SpeechEnginePreference.nemotronModelVariant(defaults: defaults), .multilingual1120)
+
+        // Underscore-aliased key resolves too.
+        XCTAssertEqual(try ConfigCommand.write(key: "nemotron_model", value: "english-1120ms", defaults: defaults), "english-1120ms")
+        XCTAssertEqual(try ConfigCommand.read(key: "nemotron-model", defaults: defaults), "english-1120ms")
+    }
+
+    func testWriteNemotronModelRejectsInvalidValue() {
+        XCTAssertThrowsError(try ConfigCommand.write(key: "nemotron-model", value: "english-9999ms", defaults: defaults)) { error in
+            XCTAssertTrue(error is ValidationError)
+        }
+        // Defaults must not have been mutated.
+        XCTAssertNil(defaults.string(forKey: SpeechEnginePreference.nemotronModelVariantKey))
     }
 
     func testWriteWhisperLanguageAutoClearsStoredDefault() throws {
@@ -131,6 +504,48 @@ final class ConfigCommandTests: XCTestCase {
 
         XCTAssertEqual(try ConfigCommand.write(key: "whisper-language", value: "auto", defaults: defaults), "auto")
         XCTAssertNil(defaults.string(forKey: SpeechEnginePreference.whisperDefaultLanguageKey))
+    }
+
+    func testWriteNemotronLanguageAutoClearsStoredDefault() throws {
+        defaults.set("en-US", forKey: SpeechEnginePreference.nemotronDefaultLanguageKey)
+
+        XCTAssertEqual(try ConfigCommand.write(key: "nemotron-language", value: "auto", defaults: defaults), "auto")
+        XCTAssertNil(defaults.string(forKey: SpeechEnginePreference.nemotronDefaultLanguageKey))
+    }
+
+    func testWriteNemotronLanguageCanonicalizesScriptAndRegion() throws {
+        XCTAssertEqual(
+            try ConfigCommand.write(key: "nemotron-language", value: "zh_hant_tw", defaults: defaults),
+            "zh-Hant-TW"
+        )
+        XCTAssertEqual(defaults.string(forKey: SpeechEnginePreference.nemotronDefaultLanguageKey), "zh-Hant-TW")
+    }
+
+    func testWriteNemotronLanguagePersistsWhileEnglishModelSelected() throws {
+        // The English-only build ignores the language hint, but the value still
+        // persists so it applies once the multilingual build is selected again.
+        SpeechEnginePreference.saveNemotronModelVariant(.english1120, defaults: defaults)
+
+        XCTAssertEqual(try ConfigCommand.write(key: "nemotron-language", value: "ko", defaults: defaults), "ko")
+        XCTAssertEqual(defaults.string(forKey: SpeechEnginePreference.nemotronDefaultLanguageKey), "ko")
+    }
+
+    func testWriteNemotronLanguageRejectsInvalidValue() {
+        XCTAssertThrowsError(
+            try ConfigCommand.write(key: "nemotron-language", value: "definitely-not-a-language", defaults: defaults)
+        ) { error in
+            XCTAssertTrue(error is ValidationError)
+        }
+        XCTAssertNil(defaults.string(forKey: SpeechEnginePreference.nemotronDefaultLanguageKey))
+    }
+
+    func testWriteCohereLanguageRejectsUnsupportedCode() {
+        XCTAssertThrowsError(
+            try ConfigCommand.write(key: "cohere-language", value: "zz", defaults: defaults)
+        ) { error in
+            XCTAssertTrue(error is ValidationError)
+        }
+        XCTAssertNil(defaults.string(forKey: SpeechEnginePreference.cohereDefaultLanguageKey))
     }
 
     func testWriteAcceptsAllBoolSynonyms() throws {
@@ -155,6 +570,9 @@ final class ConfigCommandTests: XCTestCase {
             XCTAssertTrue(error is ValidationError)
         }
         XCTAssertThrowsError(try ConfigCommand.write(key: "youtube-audio-quality", value: "wav", defaults: defaults)) { error in
+            XCTAssertTrue(error is ValidationError)
+        }
+        XCTAssertThrowsError(try ConfigCommand.write(key: "voice-return-triggers", value: " | ", defaults: defaults)) { error in
             XCTAssertTrue(error is ValidationError)
         }
     }

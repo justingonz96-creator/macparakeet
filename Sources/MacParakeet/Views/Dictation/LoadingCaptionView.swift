@@ -37,6 +37,8 @@ struct LoadingCaptionView: View {
         switch caption {
         case .preparing, .preparingExtended:
             "Preparing speech engine…"
+        case .optimizing, .optimizingExtended:
+            "Optimizing Cohere…"
         case .failed:
             "Couldn't load speech engine."
         }
@@ -45,15 +47,17 @@ struct LoadingCaptionView: View {
     private var subcopy: String? {
         switch caption {
         case .preparingExtended:
-            "First-time setup — this happens once"
-        case .preparing, .failed:
+            "First-time setup — may take a few minutes"
+        case .optimizingExtended:
+            "Model setup — may take a few minutes"
+        case .preparing, .optimizing, .failed:
             nil
         }
     }
 
     private var titleColor: Color {
         switch caption {
-        case .preparing, .preparingExtended:
+        case .preparing, .preparingExtended, .optimizing, .optimizingExtended:
             .white.opacity(0.85)
         case .failed:
             DesignSystem.Colors.recordingRed
@@ -72,6 +76,8 @@ struct LoadingCaptionView: View {
     VStack(spacing: 10) {
         LoadingCaptionView(caption: .preparing)
         LoadingCaptionView(caption: .preparingExtended)
+        LoadingCaptionView(caption: .optimizing)
+        LoadingCaptionView(caption: .optimizingExtended)
         LoadingCaptionView(caption: .failed)
     }
     .padding(24)

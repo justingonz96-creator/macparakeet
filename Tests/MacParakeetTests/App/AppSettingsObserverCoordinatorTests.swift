@@ -22,8 +22,15 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         var meetingHotkeyTriggerCount = 0
         var fileTranscriptionHotkeyTriggerCount = 0
         var youtubeTranscriptionHotkeyTriggerCount = 0
+        var appearanceModeCount = 0
         var menuBarOnlyCount = 0
+        var menuBarIconVisibilityCount = 0
         var showIdlePillCount = 0
+        var showDiscoverCount = 0
+        var showMeetingRecordingPillCount = 0
+        var instantDictationCount = 0
+        var microphoneSelectionCount = 0
+        var meetingAudioRetentionCount = 0
         var onCallback: (() -> Void)?
 
         lazy var coordinator: AppSettingsObserverCoordinator = AppSettingsObserverCoordinator(
@@ -57,12 +64,40 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
                 self.youtubeTranscriptionHotkeyTriggerCount += 1
                 self.onCallback?()
             },
+            onAppearanceModeChanged: { [unowned self] in
+                self.appearanceModeCount += 1
+                self.onCallback?()
+            },
             onMenuBarOnlyModeChanged: { [unowned self] in
                 self.menuBarOnlyCount += 1
                 self.onCallback?()
             },
+            onMenuBarIconVisibilityChanged: { [unowned self] in
+                self.menuBarIconVisibilityCount += 1
+                self.onCallback?()
+            },
             onShowIdlePillChanged: { [unowned self] in
                 self.showIdlePillCount += 1
+                self.onCallback?()
+            },
+            onShowDiscoverChanged: { [unowned self] in
+                self.showDiscoverCount += 1
+                self.onCallback?()
+            },
+            onShowMeetingRecordingPillChanged: { [unowned self] in
+                self.showMeetingRecordingPillCount += 1
+                self.onCallback?()
+            },
+            onInstantDictationChanged: { [unowned self] in
+                self.instantDictationCount += 1
+                self.onCallback?()
+            },
+            onMicrophoneSelectionChanged: { [unowned self] in
+                self.microphoneSelectionCount += 1
+                self.onCallback?()
+            },
+            onMeetingAudioRetentionChanged: { [unowned self] in
+                self.meetingAudioRetentionCount += 1
                 self.onCallback?()
             }
         )
@@ -73,7 +108,7 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
     func test_startObserving_routesEachNotificationToItsCallback() async {
         let fx = Fixture()
         let callbacks = expectation(description: "all callbacks fire")
-        callbacks.expectedFulfillmentCount = 9
+        callbacks.expectedFulfillmentCount = 16
         fx.onCallback = { callbacks.fulfill() }
         fx.coordinator.startObserving()
 
@@ -84,8 +119,15 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         fx.center.post(name: .macParakeetMeetingHotkeyTriggerDidChange, object: nil)
         fx.center.post(name: .macParakeetFileTranscriptionHotkeyTriggerDidChange, object: nil)
         fx.center.post(name: .macParakeetYouTubeTranscriptionHotkeyTriggerDidChange, object: nil)
+        fx.center.post(name: .macParakeetAppearanceModeDidChange, object: nil)
         fx.center.post(name: .macParakeetMenuBarOnlyModeDidChange, object: nil)
+        fx.center.post(name: .macParakeetMenuBarIconVisibilityDidChange, object: nil)
         fx.center.post(name: .macParakeetShowIdlePillDidChange, object: nil)
+        fx.center.post(name: .macParakeetShowDiscoverDidChange, object: nil)
+        fx.center.post(name: .macParakeetShowMeetingRecordingPillDidChange, object: nil)
+        fx.center.post(name: .macParakeetInstantDictationDidChange, object: nil)
+        fx.center.post(name: .macParakeetMicrophoneSelectionDidChange, object: nil)
+        fx.center.post(name: .macParakeetMeetingAudioRetentionDidChange, object: nil)
 
         await fulfillment(of: [callbacks], timeout: 1.0)
 
@@ -97,8 +139,35 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         XCTAssertEqual(fx.meetingHotkeyTriggerCount, 1)
         XCTAssertEqual(fx.fileTranscriptionHotkeyTriggerCount, 1)
         XCTAssertEqual(fx.youtubeTranscriptionHotkeyTriggerCount, 1)
+        XCTAssertEqual(fx.appearanceModeCount, 1)
         XCTAssertEqual(fx.menuBarOnlyCount, 1)
+        XCTAssertEqual(fx.menuBarIconVisibilityCount, 1)
         XCTAssertEqual(fx.showIdlePillCount, 1)
+        XCTAssertEqual(fx.showDiscoverCount, 1)
+        XCTAssertEqual(fx.showMeetingRecordingPillCount, 1)
+        XCTAssertEqual(fx.instantDictationCount, 1)
+        XCTAssertEqual(fx.microphoneSelectionCount, 1)
+        XCTAssertEqual(fx.meetingAudioRetentionCount, 1)
+    }
+
+    func test_discoverPreferenceTransitionsAreNotCoalesced() {
+        let fx = Fixture()
+        var showDiscover = true
+        var appliedPreferences: [Bool] = []
+        fx.onCallback = { appliedPreferences.append(showDiscover) }
+        fx.coordinator.startObserving()
+        defer { fx.coordinator.stopObserving() }
+
+        // No actor yield between changes: disabling must take effect before
+        // re-enabling, rather than all callbacks reading the final value.
+        showDiscover = false
+        fx.center.post(name: .macParakeetShowDiscoverDidChange, object: nil)
+        showDiscover = true
+        fx.center.post(name: .macParakeetShowDiscoverDidChange, object: nil)
+        showDiscover = false
+        fx.center.post(name: .macParakeetShowDiscoverDidChange, object: nil)
+
+        XCTAssertEqual(appliedPreferences, [false, true, false])
     }
 
     func test_stopObserving_removesAllObservers() async {
@@ -116,8 +185,15 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         fx.center.post(name: .macParakeetMeetingHotkeyTriggerDidChange, object: nil)
         fx.center.post(name: .macParakeetFileTranscriptionHotkeyTriggerDidChange, object: nil)
         fx.center.post(name: .macParakeetYouTubeTranscriptionHotkeyTriggerDidChange, object: nil)
+        fx.center.post(name: .macParakeetAppearanceModeDidChange, object: nil)
         fx.center.post(name: .macParakeetMenuBarOnlyModeDidChange, object: nil)
+        fx.center.post(name: .macParakeetMenuBarIconVisibilityDidChange, object: nil)
         fx.center.post(name: .macParakeetShowIdlePillDidChange, object: nil)
+        fx.center.post(name: .macParakeetShowDiscoverDidChange, object: nil)
+        fx.center.post(name: .macParakeetShowMeetingRecordingPillDidChange, object: nil)
+        fx.center.post(name: .macParakeetInstantDictationDidChange, object: nil)
+        fx.center.post(name: .macParakeetMicrophoneSelectionDidChange, object: nil)
+        fx.center.post(name: .macParakeetMeetingAudioRetentionDidChange, object: nil)
 
         await fulfillment(of: [noCallbacks], timeout: 0.2)
 
@@ -129,8 +205,15 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         XCTAssertEqual(fx.meetingHotkeyTriggerCount, 0)
         XCTAssertEqual(fx.fileTranscriptionHotkeyTriggerCount, 0)
         XCTAssertEqual(fx.youtubeTranscriptionHotkeyTriggerCount, 0)
+        XCTAssertEqual(fx.appearanceModeCount, 0)
         XCTAssertEqual(fx.menuBarOnlyCount, 0)
+        XCTAssertEqual(fx.menuBarIconVisibilityCount, 0)
         XCTAssertEqual(fx.showIdlePillCount, 0)
+        XCTAssertEqual(fx.showDiscoverCount, 0)
+        XCTAssertEqual(fx.showMeetingRecordingPillCount, 0)
+        XCTAssertEqual(fx.instantDictationCount, 0)
+        XCTAssertEqual(fx.microphoneSelectionCount, 0)
+        XCTAssertEqual(fx.meetingAudioRetentionCount, 0)
     }
 
     func test_startObserving_isIdempotent_doesNotDoubleFire() async {
@@ -207,7 +290,11 @@ final class AppSettingsObserverCoordinatorTests: XCTestCase {
         XCTAssertEqual(fx.meetingHotkeyTriggerCount, 0)
         XCTAssertEqual(fx.fileTranscriptionHotkeyTriggerCount, 0)
         XCTAssertEqual(fx.youtubeTranscriptionHotkeyTriggerCount, 0)
+        XCTAssertEqual(fx.appearanceModeCount, 0)
         XCTAssertEqual(fx.menuBarOnlyCount, 0)
+        XCTAssertEqual(fx.menuBarIconVisibilityCount, 0)
         XCTAssertEqual(fx.showIdlePillCount, 0)
+        XCTAssertEqual(fx.showDiscoverCount, 0)
+        XCTAssertEqual(fx.meetingAudioRetentionCount, 0)
     }
 }

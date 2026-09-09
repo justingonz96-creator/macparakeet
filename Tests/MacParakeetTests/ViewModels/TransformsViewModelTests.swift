@@ -62,7 +62,7 @@ final class TransformsViewModelTests: XCTestCase {
 
         XCTAssertEqual(
             viewModel.heroShortcutInstruction,
-            "Press a Transform's hotkey (⇧⌘1, ⌥2, ⌥3)."
+            "Press a Transform's hotkey (⇧⌘1, ⌃⌥2, ⌃⌥3)."
         )
     }
 
@@ -101,11 +101,12 @@ final class TransformsViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.transforms.contains(where: { $0.id == prompt.id }))
     }
 
-    func testDeleteBuiltInIsRejected() async {
+    func testDeleteBuiltInRemovesRow() async {
         let polish = viewModel.transforms.first(where: { $0.name == "Polish" })!
         let deleted = await viewModel.delete(polish)
-        XCTAssertFalse(deleted, "Built-ins must be protected from deletion.")
-        XCTAssertEqual(viewModel.transforms.count, 3)
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(viewModel.transforms.count, 2)
+        XCTAssertFalse(viewModel.transforms.contains(where: { $0.id == polish.id }))
     }
 
     func testConfirmPendingDeleteClearsAndDeletes() async {
@@ -157,12 +158,12 @@ final class TransformsViewModelTests: XCTestCase {
 
         let custom = Prompt(
             id: UUID(),
-            name: "Custom Opt One",
+            name: "Custom Ctrl-Opt One",
             content: "Body.",
             category: .transform,
             isBuiltIn: false,
             sortOrder: 200,
-            keyboardShortcut: KeyboardShortcut.parse("opt+1")!.encodedString()
+            keyboardShortcut: KeyboardShortcut.parse("ctrl+opt+1")!.encodedString()
         )
         let savedCustom = await viewModel.save(custom)
         XCTAssertTrue(savedCustom)
@@ -176,7 +177,7 @@ final class TransformsViewModelTests: XCTestCase {
         XCTAssertEqual(reloadedPolish.shortcut?.displayString, "⌥4")
 
         let reloadedCustom = try XCTUnwrap(viewModel.transforms.first(where: { $0.id == custom.id }))
-        XCTAssertEqual(reloadedCustom.shortcut?.displayString, "⌥1")
+        XCTAssertEqual(reloadedCustom.shortcut?.displayString, "⌃⌥1")
     }
 
     func testResetBuiltInRejectsDefaultShortcutWhenReservedByAppHotkey() async throws {
@@ -194,6 +195,40 @@ final class TransformsViewModelTests: XCTestCase {
         )
         XCTAssertFalse(reset)
         XCTAssertTrue(viewModel.errorMessage?.contains("conflicts with hands-free dictation") ?? false)
+
+        let reloadedPolish = try XCTUnwrap(viewModel.transforms.first(where: { $0.id == polish.id }))
+        XCTAssertEqual(reloadedPolish.content, "Custom polish prompt body.")
+        XCTAssertEqual(reloadedPolish.shortcut?.displayString, "⌥4")
+    }
+
+    func testStaleAutoLoadCannotOverwriteSavedTransformSnapshot() async throws {
+        let repo = BlockingPromptRepository(prompts: Prompt.builtInPrompts())
+        repo.blockNextFetchAll()
+        let viewModel = TransformsViewModel()
+        viewModel.configure(
+            repo: repo,
+            historyRepo: nil,
+            clipboardService: nil,
+            hasLLMProvider: true
+        )
+
+        let staleLoadStarted = await Task.detached {
+            repo.waitForBlockedFetch()
+        }.value
+        XCTAssertTrue(staleLoadStarted, "Bootstrap load did not reach the controlled fetch.")
+
+        var polish = try XCTUnwrap(Prompt.builtInPrompts().first(where: { $0.name == "Polish" }))
+        polish.content = "Custom polish prompt body."
+        polish.keyboardShortcut = KeyboardShortcut.parse("opt+4")!.encodedString()
+        let savedPolish = await viewModel.save(polish)
+        XCTAssertTrue(savedPolish)
+
+        repo.releaseBlockedFetch()
+        let staleLoadFinished = await Task.detached {
+            repo.waitForReleasedFetch()
+        }.value
+        XCTAssertTrue(staleLoadFinished, "Bootstrap load did not finish after release.")
+        await Task.yield()
 
         let reloadedPolish = try XCTUnwrap(viewModel.transforms.first(where: { $0.id == polish.id }))
         XCTAssertEqual(reloadedPolish.content, "Custom polish prompt body.")
@@ -220,7 +255,7 @@ final class TransformsViewModelTests: XCTestCase {
         XCTAssertTrue(reset)
 
         let reloadedPolish = try XCTUnwrap(viewModel.transforms.first(where: { $0.id == polish.id }))
-        XCTAssertEqual(reloadedPolish.shortcut?.displayString, "⌥1")
+        XCTAssertEqual(reloadedPolish.shortcut?.displayString, "⌃⌥1")
     }
 
     func testReseedMissingBuiltInsRecreatesDeletedDefault() async throws {
@@ -254,6 +289,26 @@ final class TransformsViewModelTests: XCTestCase {
         XCTAssertEqual(reloaded.content, customContent, "Reseed must not overwrite existing built-in customizations.")
     }
 
+    func testReseedRevealsHiddenBuiltInWithoutOverwriting() async throws {
+        var polish = try XCTUnwrap(viewModel.transforms.first(where: { $0.name == "Polish" }))
+        let customContent = "User-customized hidden Polish body."
+        polish.content = customContent
+        polish.isVisible = false
+        try repo.save(polish)
+
+        await viewModel.load()
+        XCTAssertEqual(viewModel.transforms.count, 2)
+        XCTAssertTrue(viewModel.hasMissingBuiltInTransforms)
+
+        let reseeded = await viewModel.reseedMissingBuiltIns()
+        XCTAssertTrue(reseeded)
+
+        let reloaded = try XCTUnwrap(viewModel.transforms.first(where: { $0.id == polish.id }))
+        XCTAssertTrue(reloaded.isVisible)
+        XCTAssertEqual(reloaded.content, customContent)
+        XCTAssertFalse(viewModel.hasMissingBuiltInTransforms)
+    }
+
     func testReseedDoesNotOverwriteExistingBuiltInWhenVisibleStateIsStale() async throws {
         var polish = try XCTUnwrap(viewModel.transforms.first(where: { $0.name == "Polish" }))
         let customContent = "User-customized Polish body while UI state is stale."
@@ -280,12 +335,12 @@ final class TransformsViewModelTests: XCTestCase {
 
         let custom = Prompt(
             id: UUID(),
-            name: "Custom Opt One",
+            name: "Custom Ctrl-Opt One",
             content: "Body.",
             category: .transform,
             isBuiltIn: false,
             sortOrder: 200,
-            keyboardShortcut: KeyboardShortcut.parse("opt+1")!.encodedString()
+            keyboardShortcut: KeyboardShortcut.parse("ctrl+opt+1")!.encodedString()
         )
         let savedCustom = await viewModel.save(custom)
         XCTAssertTrue(savedCustom)
@@ -296,7 +351,7 @@ final class TransformsViewModelTests: XCTestCase {
         let restoredPolish = try XCTUnwrap(viewModel.transforms.first(where: { $0.name == "Polish" }))
         XCTAssertNil(restoredPolish.shortcut)
         let reloadedCustom = try XCTUnwrap(viewModel.transforms.first(where: { $0.id == custom.id }))
-        XCTAssertEqual(reloadedCustom.shortcut?.displayString, "⌥1")
+        XCTAssertEqual(reloadedCustom.shortcut?.displayString, "⌃⌥1")
         XCTAssertTrue(viewModel.errorMessage?.contains("without conflicting shortcuts") ?? false)
     }
 
@@ -527,7 +582,13 @@ final class MockTransformsClipboardService: ClipboardServiceProtocol, @unchecked
 
     func pasteText(_ text: String) async throws {}
 
+    func pasteText(_ text: String, restoresClipboard: Bool) async throws {}
+
     func pasteTextWithAction(_ text: String, postPasteAction: KeyAction?) async throws -> Bool {
+        false
+    }
+
+    func pasteTextWithAction(_ text: String, postPasteAction: KeyAction?, restoresClipboard: Bool) async throws -> Bool {
         false
     }
 
@@ -536,6 +597,107 @@ final class MockTransformsClipboardService: ClipboardServiceProtocol, @unchecked
         lastCopied = text
         return copyReturnValue
     }
+}
+
+private final class BlockingPromptRepository: PromptRepositoryProtocol, @unchecked Sendable {
+    private let lock = NSLock()
+    private var prompts: [Prompt]
+    private var shouldBlockNextFetch = false
+    private let fetchBlocked = DispatchSemaphore(value: 0)
+    private let releaseFetch = DispatchSemaphore(value: 0)
+    private let fetchReleased = DispatchSemaphore(value: 0)
+
+    init(prompts: [Prompt]) {
+        self.prompts = prompts
+    }
+
+    func blockNextFetchAll() {
+        lock.lock()
+        shouldBlockNextFetch = true
+        lock.unlock()
+    }
+
+    func waitForBlockedFetch() -> Bool {
+        fetchBlocked.wait(timeout: .now() + 5) == .success
+    }
+
+    func releaseBlockedFetch() {
+        releaseFetch.signal()
+    }
+
+    func waitForReleasedFetch() -> Bool {
+        fetchReleased.wait(timeout: .now() + 5) == .success
+    }
+
+    func save(_ prompt: Prompt) throws {
+        lock.lock()
+        if let index = prompts.firstIndex(where: { $0.id == prompt.id }) {
+            prompts[index] = prompt
+        } else {
+            prompts.append(prompt)
+        }
+        lock.unlock()
+    }
+
+    func fetch(id: UUID) throws -> Prompt? {
+        lock.lock()
+        let prompt = prompts.first { $0.id == id }
+        lock.unlock()
+        return prompt
+    }
+
+    func fetchIncludingDeleted(id: UUID) throws -> Prompt? { try fetch(id: id) }
+
+    func fetchDeleted() throws -> [Prompt] { [] }
+
+    func fetchAll() throws -> [Prompt] {
+        lock.lock()
+        let snapshot = prompts
+        let shouldBlock = shouldBlockNextFetch
+        shouldBlockNextFetch = false
+        lock.unlock()
+
+        if shouldBlock {
+            fetchBlocked.signal()
+            _ = releaseFetch.wait(timeout: .now() + 5)
+            fetchReleased.signal()
+        }
+
+        return snapshot.sorted {
+            if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    func fetchVisible(category: Prompt.Category?) throws -> [Prompt] {
+        try fetchAll().filter { prompt in
+            prompt.isVisible && (category == nil || prompt.category == category)
+        }
+    }
+
+    func fetchAutoRunPrompts() throws -> [Prompt] {
+        try fetchAll().filter { $0.isAutoRun && $0.isVisible && $0.category == .result }
+    }
+
+    func fetchAutoRunPrompts(for sourceType: Transcription.SourceType) throws -> [Prompt] {
+        try fetchAutoRunPrompts().filter { $0.autoRuns(for: sourceType) }
+    }
+
+    func delete(id: UUID) throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = prompts.firstIndex(where: { $0.id == id }),
+              !prompts[index].isBuiltIn else {
+            return false
+        }
+        prompts.remove(at: index)
+        return true
+    }
+
+    func toggleVisibility(id: UUID) throws {}
+    func toggleAutoRun(id: UUID) throws {}
+    func setAutoRun(id: UUID, source: Transcription.SourceType, enabled: Bool) throws {}
+    func restoreDefaults() throws {}
 }
 
 private final class BlockingTransformHistoryRepository: TransformHistoryRepositoryProtocol, @unchecked Sendable {

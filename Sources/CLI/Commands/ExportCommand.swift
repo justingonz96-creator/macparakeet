@@ -7,6 +7,7 @@ enum ExportFormat: String, ExpressibleByArgument, CaseIterable {
     case markdown
     case srt
     case vtt
+    case dapt
     case json
 
     var fileExtension: String {
@@ -15,6 +16,7 @@ enum ExportFormat: String, ExpressibleByArgument, CaseIterable {
         case .markdown: return "md"
         case .srt: return "srt"
         case .vtt: return "vtt"
+        case .dapt: return "dapt.xml"
         case .json: return "json"
         }
     }
@@ -24,13 +26,13 @@ struct ExportCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "export",
         abstract: "Export a transcription to a file.",
-        discussion: "Supported formats: txt, markdown, srt, vtt, json."
+        discussion: "Supported formats: txt, markdown, srt, vtt, dapt, json."
     )
 
     @Argument(help: "The UUID (or prefix) of the transcription to export.")
     var id: String
 
-    @Option(name: .shortAndLong, help: "Output format: txt, markdown, srt, vtt, json.")
+    @Option(name: .shortAndLong, help: "Output format: txt, markdown, srt, vtt, dapt, json.")
     var format: ExportFormat = .txt
 
     @Option(name: .shortAndLong, help: "Output file path (defaults to current directory with auto-generated name).")
@@ -62,12 +64,14 @@ struct ExportCommand: AsyncParsableCommand {
             try AppPaths.ensureDirectories()
             let dbManager = try DatabaseManager(path: resolvedDatabasePath(database))
             let repo = TranscriptionRepository(dbQueue: dbManager.dbQueue)
+            let attributionReader = SpeakerAttributionReadService(dbQueue: dbManager.dbQueue)
 
             let transcription = try findTranscription(id: id, repo: repo)
-            let exportService = await ExportService()
+            let projection = try attributionReader.resolve(transcription: transcription)
+            let exportService = ExportService()
 
             if stdout {
-                let content = await formatContent(transcription: transcription, exportService: exportService)
+                let content = try await formatContent(projection: projection, exportService: exportService)
                 print(content)
             } else {
                 let outputURL = resolveOutputURL(transcription: transcription)
@@ -75,7 +79,7 @@ struct ExportCommand: AsyncParsableCommand {
                     at: outputURL.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                try await writeExport(transcription: transcription, exportService: exportService, url: outputURL)
+                try await writeExport(projection: projection, exportService: exportService, url: outputURL)
                 print("Exported to \(outputURL.path)")
             }
         }
@@ -90,60 +94,97 @@ struct ExportCommand: AsyncParsableCommand {
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(fileName)
     }
 
-    private func formatContent(transcription: Transcription, exportService: ExportService) async -> String {
+    /// Text/Markdown exports from the CLI include speaker labels, matching
+    /// upstream. The fork keeps `TranscriptExportOptions.default` with speaker
+    /// labels OFF for GUI exports (see `SubtitleExportConfigTests`), so the CLI
+    /// asks for them explicitly instead of flipping the shared default.
+    private static let textExportOptions = TranscriptExportOptions.speakerAttributed
+
+    private func formatContent(
+        projection: SpeakerAttributionProjection,
+        exportService: ExportService
+    ) async throws -> String {
         switch format {
         case .txt:
-            return await exportService.formatForClipboard(transcription: transcription)
+            return exportService.formatPlainText(projection: projection, options: Self.textExportOptions)
         case .markdown:
-            return await exportService.formatMarkdown(transcription: transcription)
+            return exportService.formatMarkdown(projection: projection, options: Self.textExportOptions)
         case .srt:
-            return await exportService.formatSRT(transcription: transcription, config: subtitleConfig)
+            // Fork: the subtitle preset/flag overlay drives cue layout, so the
+            // config-aware formatter replaces upstream's `formatSRT(projection:)`
+            // convenience (same speaker-corrected transcript underneath).
+            return exportService.formatSRT(
+                transcription: projection.effectiveTranscription,
+                config: subtitleConfig
+            )
         case .vtt:
-            return await exportService.formatVTT(transcription: transcription, config: subtitleConfig)
+            return exportService.formatVTT(
+                transcription: projection.effectiveTranscription,
+                config: subtitleConfig
+            )
+        case .dapt:
+            return exportService.formatDAPT(projection: projection)
         case .json:
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            if let data = try? encoder.encode(transcription),
-               let str = String(data: data, encoding: .utf8) {
-                return str
-            }
-            return "{}"
+            return try projectedJSON(projection)
         }
     }
 
-    private func writeExport(transcription: Transcription, exportService: ExportService, url: URL) async throws {
+    private func writeExport(
+        projection: SpeakerAttributionProjection,
+        exportService: ExportService,
+        url: URL
+    ) async throws {
         switch format {
         case .txt:
-            try await exportService.exportToTxt(transcription: transcription, url: url)
+            try exportService.exportToTxt(
+                transcription: projection.effectiveTranscription,
+                url: url,
+                options: Self.textExportOptions
+            )
         case .markdown:
-            try await exportService.exportToMarkdown(transcription: transcription, url: url)
+            try exportService.exportToMarkdown(
+                transcription: projection.effectiveTranscription,
+                url: url,
+                options: Self.textExportOptions
+            )
         case .srt:
             if llmRefinement {
                 let llmService = buildLLMServiceFromGUIDefaults()
                 try await exportService.exportToSRT(
-                    transcription: transcription,
+                    transcription: projection.effectiveTranscription,
                     url: url,
                     config: subtitleConfig,
                     llmService: llmService
                 )
             } else {
-                try await exportService.exportToSRT(transcription: transcription, url: url, config: subtitleConfig)
+                try exportService.exportToSRT(
+                    transcription: projection.effectiveTranscription,
+                    url: url,
+                    config: subtitleConfig,
+                    includeSpeakerLabels: false
+                )
             }
         case .vtt:
             if llmRefinement {
                 let llmService = buildLLMServiceFromGUIDefaults()
                 try await exportService.exportToVTT(
-                    transcription: transcription,
+                    transcription: projection.effectiveTranscription,
                     url: url,
                     config: subtitleConfig,
                     llmService: llmService
                 )
             } else {
-                try await exportService.exportToVTT(transcription: transcription, url: url, config: subtitleConfig)
+                try exportService.exportToVTT(
+                    transcription: projection.effectiveTranscription,
+                    url: url,
+                    config: subtitleConfig,
+                    includeSpeakerLabels: false
+                )
             }
+        case .dapt:
+            try exportService.exportToDAPT(transcription: projection.effectiveTranscription, url: url)
         case .json:
-            try await exportService.exportToJSON(transcription: transcription, url: url)
+            try Data(projectedJSON(projection).utf8).write(to: url, options: .atomic)
         }
     }
 
@@ -173,5 +214,21 @@ struct ExportCommand: AsyncParsableCommand {
         // No GUI config found — fall through to default-everything
         // (which will throw `notConfigured` per chunk).
         return LLMService()
+    }
+
+    private func projectedJSON(_ projection: SpeakerAttributionProjection) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let encoded = try encoder.encode(projection.effectiveTranscription)
+        guard var object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        object["speakerCorrectionsApplied"] = projection.correctionsApplied
+        object["speakerCorrectionRevision"] = projection.correctionRevision
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        guard let string = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
+        }
+        return string
     }
 }

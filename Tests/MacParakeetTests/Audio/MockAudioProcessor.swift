@@ -6,6 +6,7 @@ public actor MockAudioProcessor: AudioProcessorProtocol {
     public var convertError: Error?
     public var captureResult: URL?
     public var captureError: Error?
+    public var captureHealth: AudioCaptureHealth?
     private var _audioLevel: Float = 0.0
     private var _isRecording = false
     private var startCaptureDelayMs: UInt64 = 0
@@ -13,7 +14,9 @@ public actor MockAudioProcessor: AudioProcessorProtocol {
     public var stopCaptureCalled = false
     public var convertCallCount = 0
     public var lastConvertURL: URL?
+    public var lastAudioTrackOrdinal: Int?
     public var convertURLs: [URL] = []
+    public var liveSampleSink: DictationAudioSampleSink?
 
     public init() {}
 
@@ -25,6 +28,10 @@ public actor MockAudioProcessor: AudioProcessorProtocol {
     public func configure(captureResult: URL) {
         self.captureResult = captureResult
         self.captureError = nil
+    }
+
+    public func configure(lastCaptureHealth: AudioCaptureHealth?) {
+        self.captureHealth = lastCaptureHealth
     }
 
     public func configureConvertError(_ error: Error) {
@@ -55,27 +62,56 @@ public actor MockAudioProcessor: AudioProcessorProtocol {
         nil
     }
 
+    public var lastCaptureHealth: AudioCaptureHealth? {
+        captureHealth
+    }
+
     public func convert(fileURL: URL) async throws -> URL {
+        try await convert(fileURL: fileURL, audioTrackOrdinal: nil)
+    }
+
+    public func convert(fileURL: URL, audioTrackOrdinal: Int?) async throws -> URL {
         convertCallCount += 1
         lastConvertURL = fileURL
+        lastAudioTrackOrdinal = audioTrackOrdinal
         convertURLs.append(fileURL)
         if let error = convertError { throw error }
         return convertResult ?? URL(fileURLWithPath: "/tmp/converted.wav")
     }
 
     public func startCapture() async throws {
+        try await startCapture(sampleSink: nil)
+    }
+
+    public func startCapture(sampleSink: DictationAudioSampleSink?) async throws {
         startCaptureCalled = true
         if startCaptureDelayMs > 0 {
             try await Task.sleep(for: .milliseconds(Int(startCaptureDelayMs)))
         }
-        if let error = captureError { throw error }
+        if let error = captureError {
+            sampleSink?.onFinish()
+            throw error
+        }
         _isRecording = true
+        liveSampleSink = sampleSink
     }
 
     public func stopCapture() async throws -> URL {
         stopCaptureCalled = true
         _isRecording = false
+        liveSampleSink?.onFinish()
+        liveSampleSink = nil
         if let error = captureError { throw error }
         return captureResult ?? URL(fileURLWithPath: "/tmp/recording.wav")
+    }
+
+    public func emitLiveSamples(_ samples: [Float]) {
+        liveSampleSink?.onSamples(samples)
+    }
+
+    public var discardPreRollCallCount = 0
+
+    public func discardPreRollForActiveCapture() async {
+        discardPreRollCallCount += 1
     }
 }

@@ -38,10 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dictationFlowCoordinator: DictationFlowCoordinator?
     private var meetingRecordingFlowCoordinator: MeetingRecordingFlowCoordinator?
     private var meetingAutoStartCoordinator: MeetingAutoStartCoordinator?
-    /// Transforms spike (see `AppFeatures.transformsSpikeEnabled` and
-    /// `docs/research/transforms-design-2026-05.md`). Always created; `start()`
-    /// is a no-op when the flag is off so the binary surface stays clean.
-    private var transformsSpikeCoordinator: TransformsSpikeCoordinator?
+    private var meetingAutoStopCoordinator: MeetingAutoStopCoordinator?
     /// Productized Transforms coordinator (ADR-022). Owns the process-wide
     /// `TransformsHotkeyRegistry` + dispatch from registered hotkeys to the
     /// `TransformExecutor` pipeline. Gated on `AppFeatures.transformsEnabled`.
@@ -50,7 +47,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hasPresentedHotkeyConflictAlert = false
     private var environmentSetupTask: Task<Void, Never>?
     private var meetingQuitTask: Task<Void, Never>?
+    private let savedMeetingNotesCoordinator = SavedMeetingNotesCoordinator.shared
+    private var isPresentingQuitAlert = false
     private var speechPreWarmTask: Task<Void, Never>?
+    private var instantDictationPreferenceTask: Task<Void, Never>?
+    #if DEBUG
+    private var debugDictationPreviewQA: DebugDictationPreviewQA?
+    #endif
+    private var instantDictationPreferenceGeneration = 0
     private var isHotkeyRecorderActive = false
     // Let first paint and onboarding routing settle before starting CoreML cache work.
     private let preWarmDeferralMs: Int = 1500
@@ -66,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let feedbackViewModel = FeedbackViewModel()
     private let discoverViewModel = DiscoverViewModel()
     private let libraryViewModel = TranscriptionLibraryViewModel()
+    private let meetingsLibraryViewModel = TranscriptionLibraryViewModel(scope: .meetings)
     private let llmSettingsViewModel = LLMSettingsViewModel()
     private let chatViewModel = TranscriptChatViewModel()
     private let promptResultsViewModel = PromptResultsViewModel()
@@ -76,6 +81,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `MeetingRecordingFlowCoordinator` writes state into it; both the floating
     /// pill and the tile bind to the same instance.
     private let meetingPillViewModel = MeetingRecordingPillViewModel()
+    private lazy var meetingsWorkspaceViewModel = MeetingsWorkspaceViewModel(
+        recentMeetingsViewModel: meetingsLibraryViewModel,
+        meetingPillViewModel: meetingPillViewModel,
+        settingsViewModel: settingsViewModel,
+        llmSettingsViewModel: llmSettingsViewModel
+    )
     private let onboardingWindowController = OnboardingWindowController()
 
     private lazy var youtubeInputController = YouTubeInputPanelController(
@@ -85,6 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Coordinators
 
     private let startupBootstrapper = AppStartupBootstrapper()
+    private let meetingAudioRetentionSweepCoordinator = MeetingAudioRetentionSweepCoordinator()
 
     private lazy var environmentConfigurer = AppEnvironmentConfigurer(
         transcriptionViewModel: transcriptionViewModel,
@@ -94,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         textSnippetsViewModel: textSnippetsViewModel,
         vocabularyBackupViewModel: vocabularyBackupViewModel,
         libraryViewModel: libraryViewModel,
+        meetingsWorkspaceViewModel: meetingsWorkspaceViewModel,
         llmSettingsViewModel: llmSettingsViewModel,
         chatViewModel: chatViewModel,
         promptResultsViewModel: promptResultsViewModel,
@@ -156,9 +169,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         },
         settingsViewModel: settingsViewModel,
         libraryViewModel: libraryViewModel,
+        onRecoveredTranscriptionsChanged: { [weak self] in
+            self?.meetingsWorkspaceViewModel.refreshRecentMeetings()
+        },
         onPresentRecoveredTranscription: { [weak self] transcription in
             guard let self else { return }
-            self.transcriptionViewModel.presentCompletedTranscription(transcription, autoSave: true)
+            // Keep recovery input intact while it is turned back into a
+            // transcript; the scheduled retention sweep can apply after the
+            // lock is gone.
+            self.transcriptionViewModel.presentCompletedTranscription(
+                transcription,
+                autoSave: true,
+                runAutoPrompts: true,
+                applyMeetingRetention: false
+            )
             self.mainWindowState.navigateToTranscription(from: .library)
             self.windowCoordinator.openMainWindow()
         }
@@ -180,10 +204,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         feedbackViewModel: feedbackViewModel,
         discoverViewModel: discoverViewModel,
         libraryViewModel: libraryViewModel,
+        meetingsWorkspaceViewModel: meetingsWorkspaceViewModel,
         meetingPillViewModel: meetingPillViewModel,
         updaterController: updaterController,
         onRecordMeeting: { [weak self] in
             self?.toggleMeetingRecording(originatesFromWindow: true)
+        },
+        onRecordMeetingFromWorkspace: { [weak self] in
+            self?.startMeetingRecordingFromWorkspace()
         },
         onPauseToggleMeeting: { [weak self] in
             self?.meetingRecordingFlowCoordinator?.togglePause()
@@ -232,6 +260,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         meetingRecordingActiveProvider: { [weak self] in
             self?.meetingRecordingFlowCoordinator?.isMeetingRecordingActive == true
         },
+        liveMeetingPanelAvailableProvider: { [weak self] in
+            self?.meetingRecordingFlowCoordinator?.canPresentLiveMeetingPanel == true
+        },
         dictationCaptureActiveProvider: { [weak self] in
             self?.dictationFlowCoordinator?.isCapturingAudio == true
         },
@@ -253,6 +284,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         },
         onToggleMeetingRecording: { [weak self] in
             self?.toggleMeetingRecording(originatesFromWindow: false)
+        },
+        onOpenLiveMeetingPanel: { [weak self] in
+            self?.meetingRecordingFlowCoordinator?.presentLiveMeetingPanel()
         },
         onCreateTransform: { [weak self] in
             self?.mainWindowState.beginCreatingTransform()
@@ -288,11 +322,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onYouTubeTranscriptionHotkeyTriggerChanged: { [weak self] in
             self?.handleYouTubeTranscriptionHotkeyTriggerChange()
         },
+        onAppearanceModeChanged: { [weak self] in
+            self?.applyAppAppearance()
+        },
         onMenuBarOnlyModeChanged: { [weak self] in
             self?.windowCoordinator.applyActivationPolicyFromSettings()
         },
+        onMenuBarIconVisibilityChanged: { [weak self] in
+            guard let self else { return }
+            self.menuBarCoordinator.setMenuBarIconVisible(self.settingsViewModel.showMenuBarIcon)
+        },
         onShowIdlePillChanged: { [weak self] in
             self?.handleShowIdlePillChange()
+        },
+        onShowDiscoverChanged: { [weak self] in
+            self?.setupDiscoverContent()
+        },
+        onShowMeetingRecordingPillChanged: { [weak self] in
+            self?.handleShowMeetingRecordingPillChange()
+        },
+        onInstantDictationChanged: { [weak self] in
+            self?.applyInstantDictationPreference(refreshWarmCapture: false)
+        },
+        onMicrophoneSelectionChanged: { [weak self] in
+            self?.applyInstantDictationPreference(refreshWarmCapture: true)
+        },
+        onMeetingAudioRetentionChanged: { [weak self] in
+            self?.scheduleMeetingAudioRetentionSweepForPreferenceChange()
         }
     )
 
@@ -314,12 +370,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        applyAppAppearance()
         startEnvironmentSetup()
         menuBarCoordinator.setupMainMenu()
-        menuBarCoordinator.setupMenuBar()
+        menuBarCoordinator.setMenuBarIconVisible(settingsViewModel.showMenuBarIcon)
         settingsObserverCoordinator.startObserving()
         windowCoordinator.applyActivationPolicyFromSettings()
         setupDiscoverContent()
+        #if DEBUG
+        showDebugDictationPreviewQAIfRequested()
+        #endif
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -328,9 +388,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // would send duplicate appQuit events and double the termination delay.
         dictationFlowCoordinator?.releaseMediaPauseForTermination()
         dictationFlowCoordinator?.hideIdlePill()
+        // Tear down the floating meeting pill so it can't outlive the app as a
+        // draggable-but-dead window during the final moments of termination.
+        meetingRecordingFlowCoordinator?.dismissFloatingPillForQuit()
         hotkeyCoordinator?.stopAll()
         meetingAutoStartCoordinator?.stop()
-        transformsSpikeCoordinator?.stop()
+        meetingAutoStopCoordinator?.stop()
         transformsCoordinator?.stop()
         settingsObserverCoordinator.stopObserving()
         environmentSetupTask?.cancel()
@@ -348,12 +411,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    #if DEBUG
+    private func showDebugDictationPreviewQAIfRequested() {
+        let arguments = CommandLine.arguments
+        guard DebugDictationPreviewQA.isRequested(arguments: arguments) else { return }
+        let fixture = DebugDictationPreviewQA(arguments: arguments)
+        fixture.show()
+        debugDictationPreviewQA = fixture
+    }
+    #endif
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         // Don't quit when window closes — dictation/menu bar features stay available.
         false
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Repeated Quit commands share the original deferred decision. Do not
+        // replace its completion or cancel it while notes are being saved.
+        if savedMeetingNotesCoordinator.isPreparingToQuit { return .terminateLater }
+        guard !isPresentingQuitAlert else { return .terminateCancel }
+        if savedMeetingNotesCoordinator.prepareToQuit(completion: { [weak self, weak sender] saved in
+            guard let sender else { return }
+            guard let self else {
+                sender.reply(toApplicationShouldTerminate: false)
+                return
+            }
+            if !saved {
+                sender.reply(toApplicationShouldTerminate: false)
+                self.presentMeetingNotesQuitFailure(sender)
+            } else if self.meetingRecordingFlowCoordinator?.quitState != nil {
+                // Resume the existing recording-specific confirmation only
+                // after saved-meeting drafts are durable. Its completion calls
+                // terminate again after recording finalization.
+                sender.reply(toApplicationShouldTerminate: false)
+                _ = self.presentActiveMeetingQuitAlert()
+            } else {
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+        }) {
+            return .terminateLater
+        }
+
         guard meetingRecordingFlowCoordinator?.quitState != nil else {
             return .terminateNow
         }
@@ -365,6 +464,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return presentActiveMeetingQuitAlert()
     }
 
+    private func presentMeetingNotesQuitFailure(_ sender: NSApplication) {
+        guard !isPresentingQuitAlert else { return }
+        isPresentingQuitAlert = true
+        sender.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Meeting Notes Could Not Be Saved"
+        alert.informativeText = "MacParakeet is staying open to preserve your notes. Retry saving before quitting, or keep the app open and return to the meeting."
+        alert.addButton(withTitle: "Retry & Quit")
+        alert.addButton(withTitle: "Keep Open")
+        let response = alert.runModal()
+        isPresentingQuitAlert = false
+        if response == .alertFirstButtonReturn {
+            sender.terminate(nil)
+        }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows _: Bool) -> Bool {
         windowCoordinator.handleAppReopen()
     }
@@ -374,7 +490,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        settingsViewModel.refreshPermissions()
         onboardingCoordinator.handleApplicationDidBecomeActive(environment: appEnvironment)
+        if let appEnvironment {
+            meetingAudioRetentionSweepCoordinator.scheduleForegroundSweepIfDue(environment: appEnvironment)
+        }
     }
 
     // MARK: - Startup
@@ -397,6 +517,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupEnvironment(_ env: AppEnvironment) {
         appEnvironment = env
+        settingsViewModel.onAccessibilityGranted = { [weak self] in
+            self?.handleAccessibilityGrant()
+        }
 
         let runtime = environmentConfigurer.configure(
             environment: env,
@@ -448,20 +571,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         meetingRecordingFlowCoordinator = runtime.meetingRecordingFlowCoordinator
         hotkeyCoordinator = runtime.hotkeyCoordinator
         meetingAutoStartCoordinator = runtime.meetingAutoStartCoordinator
+        meetingAutoStopCoordinator = runtime.meetingAutoStopCoordinator
+        applyInstantDictationPreference(refreshWarmCapture: false)
 
-        // Transforms spike — registers Opt+Ctrl+1 only when the feature flag
-        // is on (see `AppFeatures.transformsSpikeEnabled`). Always-created so
-        // we can `stop()` it cleanly during termination even if the flag
-        // flipped after launch.
+        // Shared resolver for the user's LLM provider — returns the live
+        // service when a provider is configured, nil otherwise. Consumed by
+        // the Transforms coordinator below.
         let configStore = env.llmConfigStore
         let llmService = env.llmService
         let llmServiceProvider: () -> LLMServiceProtocol? = { [weak configStore, llmService] in
             guard let configStore else { return nil }
             return (try? configStore.loadConfig()) != nil ? llmService : nil
         }
-        let spike = TransformsSpikeCoordinator(llmServiceProvider: llmServiceProvider)
-        spike.start()
-        transformsSpikeCoordinator = spike
 
         // Productized Transforms coordinator (ADR-022). Reads `.transform`
         // prompts from the shared `PromptRepository` and dispatches their
@@ -471,6 +592,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             llmServiceProvider: llmServiceProvider,
             promptRepository: env.promptRepo,
             historyRepository: env.transformHistoryRepo,
+            activeModelNameProvider: { [weak configStore] in
+                try? configStore?.loadConfig()?.modelName
+            },
             reservedHotkeysProvider: { [weak self] in
                 self?.transformReservedHotkeysForTransforms() ?? []
             },
@@ -486,25 +610,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarCoordinator.refreshTranscriptionHotkeyShortcuts()
         onboardingCoordinator.maybeShow(environment: env)
         scheduleDeferredSpeechPreWarm(environment: env)
-        meetingRecoveryCoordinator.scheduleLaunchRecoveryScanIfReady(environment: env)
+        let recoveryTask = meetingRecoveryCoordinator.scheduleLaunchRecoveryScanIfReady(environment: env)
+        meetingAudioRetentionSweepCoordinator.scheduleLaunchSweep(environment: env, after: recoveryTask)
+    }
+
+    private func scheduleMeetingAudioRetentionSweepForPreferenceChange() {
+        guard let appEnvironment else { return }
+        meetingAudioRetentionSweepCoordinator.schedulePreferenceChangeSweep(environment: appEnvironment)
     }
 
     private func scheduleDeferredSpeechPreWarm(environment env: AppEnvironment) {
         guard speechPreWarmTask == nil else { return }
         let sttRuntime = env.sttRuntime
+        let vadModelPreparer = env.meetingVADModelPreparer
         let deferralMs = preWarmDeferralMs
         let onboardingCompletedKey = OnboardingViewModel.onboardingCompletedKey
 
-        speechPreWarmTask = Task(priority: .utility) { @MainActor [weak self, sttRuntime] in
+        speechPreWarmTask = Task(priority: .utility) { @MainActor [weak self, sttRuntime, vadModelPreparer] in
             defer {
                 self?.speechPreWarmTask = nil
             }
 
-            try? await Task.sleep(for: .milliseconds(deferralMs))
-            guard !Task.isCancelled else { return }
             let onboardingDone = UserDefaults.standard.string(forKey: onboardingCompletedKey) != nil
             guard onboardingDone else { return }
+
+            // Queue microphone preparation immediately. It runs off the main
+            // actor and independently of the slower speech-model warm-up, so an
+            // early first dictation does not wait for model initialization.
+            env.sharedMicStream.prewarmDictation()
+
+            try? await Task.sleep(for: .milliseconds(deferralMs))
+            guard !Task.isCancelled else { return }
             await sttRuntime.backgroundWarmUp()
+
+            // Universal VAD model availability (Phase 4.5,
+            // plans/completed/2026-05-meeting-vad-guided-live-chunking.md §6).
+            // Runs every launch for every user so flipping the live-chunking
+            // flag reaches the installed base, not just fresh installs. Kept
+            // independent of the speech warm-up above: idempotent, silent-fail,
+            // and the meeting path falls back to fixed chunking if it never
+            // succeeds. No-op when the flag is off.
+            guard !Task.isCancelled else { return }
+            let prepOutcome = await MeetingVADLaunchPrep.run(
+                featureEnabled: AppFeatures.meetingVadLiveChunkingEnabled,
+                preparer: vadModelPreparer
+            )
+            // Only surface the transitions worth seeing. `alreadyCached`
+            // (steady state) and `disabled` are silent to avoid per-launch
+            // telemetry spam; `cancelled` (app quit mid-download) is dropped
+            // because `run` already treats cancellation as non-failure. No
+            // post-call `Task.isCancelled` guard here: once `run` has returned
+            // a terminal outcome the work genuinely completed, so a late
+            // cancellation shouldn't drop the one event we care about
+            // (`prepared` — proof the installed base acquired the model).
+            switch prepOutcome {
+            case .prepared:
+                Telemetry.send(.vadModelPrep(outcome: .prepared))
+            case .failed:
+                Telemetry.send(.vadModelPrep(outcome: .failed))
+            case .alreadyCached, .disabled, .cancelled:
+                break
+            }
         }
     }
 
@@ -524,6 +690,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupDiscoverContent() {
+        // Respect the user preference before touching the network. When
+        // Discover is hidden the feed is neither loaded nor fetched, so the
+        // app makes no request to the Discover endpoint at launch.
+        guard settingsViewModel.showDiscover else {
+            discoverViewModel.cancelDiscover()
+            if mainWindowState.selectedItem == .discover {
+                mainWindowState.selectedItem = .transcribe
+            }
+            return
+        }
         guard let fallbackURL = Bundle.module.url(forResource: "discover-fallback", withExtension: "json"),
               let data = try? Data(contentsOf: fallbackURL) else { return }
 
@@ -554,6 +730,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Event Handlers
 
+    private func handleAccessibilityGrant() {
+        // Startup may have discarded every event tap before access was granted.
+        // Reuse the normal refresh path, which preserves recorder suspension.
+        hotkeyCoordinator?.refreshAllHotkeys()
+        if !isHotkeyRecorderActive {
+            transformsCoordinator?.resumeHotkeys()
+        }
+    }
+
     private func handleHotkeyTriggerChange() {
         hotkeyCoordinator?.refreshAllHotkeys()
         menuBarCoordinator.refreshHotkeyTitle()
@@ -574,6 +759,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleYouTubeTranscriptionHotkeyTriggerChange() {
         refreshAuxiliaryHotkeys()
+    }
+
+    private func applyAppAppearance() {
+        AppAppearanceController.apply(settingsViewModel.appAppearanceMode)
     }
 
     private func refreshAuxiliaryHotkeys() {
@@ -598,7 +787,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 conflictMode: .bareModifierDictation
             ),
             TransformShortcutReservedHotkey(name: "file transcription", trigger: settingsViewModel.fileTranscriptionHotkeyTrigger),
-            TransformShortcutReservedHotkey(name: "YouTube transcription", trigger: settingsViewModel.youtubeTranscriptionHotkeyTrigger),
+            TransformShortcutReservedHotkey(name: "video URL transcription", trigger: settingsViewModel.youtubeTranscriptionHotkeyTrigger),
         ]
         if AppFeatures.meetingRecordingEnabled {
             reserved.append(TransformShortcutReservedHotkey(name: "meeting recording", trigger: settingsViewModel.meetingHotkeyTrigger))
@@ -621,6 +810,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dictationFlowCoordinator?.showIdlePill()
         } else {
             dictationFlowCoordinator?.hideIdlePill()
+        }
+    }
+
+    private func handleShowMeetingRecordingPillChange() {
+        meetingRecordingFlowCoordinator?.refreshFloatingPillVisibility()
+    }
+
+    private func applyInstantDictationPreference(refreshWarmCapture: Bool) {
+        guard let env = appEnvironment else { return }
+        instantDictationPreferenceGeneration += 1
+        let generation = instantDictationPreferenceGeneration
+        instantDictationPreferenceTask?.cancel()
+        instantDictationPreferenceTask = Task { [weak self, env] in
+            guard !Task.isCancelled else { return }
+            let enabled = env.runtimePreferences.instantDictationEnabled
+            let isCurrent = await MainActor.run {
+                self?.instantDictationPreferenceGeneration == generation
+            }
+            guard isCurrent, !Task.isCancelled else { return }
+            await env.audioProcessor.setInstantDictationEnabled(enabled)
+            let shouldRefresh = await MainActor.run {
+                self?.instantDictationPreferenceGeneration == generation
+            }
+            guard shouldRefresh, !Task.isCancelled else { return }
+            if refreshWarmCapture {
+                if enabled {
+                    await env.audioProcessor.refreshInstantDictationWarmCapture()
+                } else {
+                    env.sharedMicStream.refreshIdlePrewarm()
+                }
+            }
         }
     }
 
@@ -689,12 +909,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         meetingRecordingFlowCoordinator?.toggleRecording(trigger: trigger)
     }
 
+    private func startMeetingRecordingFromWorkspace() {
+        guard appEnvironment != nil else { return }
+
+        if meetingRecordingFlowCoordinator?.isMeetingRecordingActive == true {
+            meetingRecordingFlowCoordinator?.toggleRecording()
+            return
+        }
+
+        meetingRecordingFlowCoordinator?.startRecording(
+            trigger: .manual,
+            presentLivePanelWhenReady: true
+        )
+    }
+
     private func presentActiveMeetingQuitAlert() -> NSApplication.TerminateReply {
+        guard meetingQuitTask == nil, !isPresentingQuitAlert else {
+            return .terminateCancel
+        }
         guard let quitState = meetingRecordingFlowCoordinator?.quitState else {
             return .terminateNow
         }
+        isPresentingQuitAlert = true
+        defer { isPresentingQuitAlert = false }
 
         NSApp.activate(ignoringOtherApps: true)
+
+        // Hide the floating pill while the quit alert is up. It joins all
+        // Spaces, so during this app-modal alert it would otherwise linger as a
+        // draggable, non-interactive window — and if the alert lands on another
+        // Space the pill is all the user sees, reading as a frozen ghost.
+        // Restored below if the user keeps the app open.
+        meetingRecordingFlowCoordinator?.dismissFloatingPillForQuit()
+        var committedToQuit = false
 
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -709,6 +956,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 alert.buttons[0].hasDestructiveAction = true
             }
             if alert.runModal() == .alertFirstButtonReturn {
+                committedToQuit = true
                 finishMeetingThenQuit(discard: true)
             }
 
@@ -723,8 +971,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             switch alert.runModal() {
             case .alertFirstButtonReturn:
+                committedToQuit = true
                 finishMeetingThenQuit(discard: false)
             case .alertSecondButtonReturn:
+                committedToQuit = true
                 finishMeetingThenQuit(discard: true)
             default:
                 break
@@ -736,8 +986,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "Finish & Quit")
             alert.addButton(withTitle: "Cancel Quit")
             if alert.runModal() == .alertFirstButtonReturn {
+                committedToQuit = true
                 finishMeetingThenQuit(discard: false)
             }
+        }
+
+        if !committedToQuit {
+            meetingRecordingFlowCoordinator?.restoreFloatingPillIfRecording()
         }
 
         return .terminateCancel
@@ -745,6 +1000,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func finishMeetingThenQuit(discard: Bool) {
         guard let coordinator = meetingRecordingFlowCoordinator else { return }
+
+        // The user committed to quitting — tear the floating pill down now so it
+        // doesn't sit on screen as a non-interactive window while the final
+        // transcription finishes in the background ahead of `NSApp.terminate`.
+        coordinator.dismissFloatingPillForQuit()
 
         meetingQuitTask?.cancel()
         meetingQuitTask = Task { @MainActor [weak self, coordinator] in

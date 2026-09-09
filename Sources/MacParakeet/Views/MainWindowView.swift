@@ -7,6 +7,8 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     case transcribe = "Transcribe"
     case library = "Library"
     case dictations = "Dictations"
+    case meetings = "Meetings"
+    case prompts = "Prompts"
     case transforms = "Transforms"
     case vocabulary = "Vocabulary"
     case feedback = "Feedback"
@@ -18,8 +20,10 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .transcribe: return "waveform"
+        case .meetings: return "person.2.wave.2"
         case .library: return "square.grid.2x2"
         case .dictations: return "clock.arrow.circlepath"
+        case .prompts: return "text.quote"
         case .transforms: return "wand.and.stars"
         case .vocabulary: return "book.fill"
         case .feedback: return "bubble.left.and.text.bubble.right"
@@ -28,27 +32,35 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Primary features — the core things users do. Meeting recording is
-    /// reachable from the Transcribe tab's third tile (when feature flag is
-    /// on); meeting browse lives in `Library` under the `Meetings` filter.
-    static let primaryItems: [SidebarItem] = [.transcribe, .library, .dictations]
+    /// Primary features — the core things users do. Library remains the
+    /// universal archive; Meetings is the workflow space for live/upcoming
+    /// and saved meeting work.
+    static var primaryItems: [SidebarItem] {
+        var items: [SidebarItem] = [.transcribe, .library, .dictations]
+        if AppFeatures.meetingRecordingEnabled {
+            items.append(.meetings)
+        }
+        return items
+    }
 
-    /// Configuration and support items. Transforms (ADR-022) is inserted
-    /// here at runtime when `AppFeatures.transformsEnabled == true`.
+    /// Automation, configuration, and support items. Prompt automation stays
+    /// above Transforms (ADR-022) when the latter feature is enabled.
     static var configItems: [SidebarItem] {
-        var items: [SidebarItem] = [.vocabulary, .feedback, .settings]
+        var items: [SidebarItem] = [.prompts, .vocabulary, .feedback, .settings]
         if AppFeatures.transformsEnabled {
-            items.insert(.transforms, at: 0)
+            items.insert(.transforms, at: 1)
         }
         return items
     }
 
     /// Note: `.discover` is intentionally excluded from the arrays above.
-    /// It renders as a pinned card below the sidebar list via `safeAreaInset`.
+    /// It renders as a pinned card below the sidebar list via `safeAreaInset`,
+    /// gated on the user preference `SettingsViewModel.showDiscover`.
 }
 
 struct MainWindowView: View {
     @Bindable var state: MainWindowState
+    @State private var showGlobalCancelConfirmation = false
 
     let transcriptionViewModel: TranscriptionViewModel
     let historyViewModel: DictationHistoryViewModel
@@ -64,9 +76,11 @@ struct MainWindowView: View {
     let feedbackViewModel: FeedbackViewModel
     let discoverViewModel: DiscoverViewModel
     let libraryViewModel: TranscriptionLibraryViewModel
+    let meetingsWorkspaceViewModel: MeetingsWorkspaceViewModel
     let meetingPillViewModel: MeetingRecordingPillViewModel
     let updater: SPUUpdater
     let onRecordMeeting: () -> Void
+    let onRecordMeetingFromWorkspace: () -> Void
     let onPauseToggleMeeting: (() -> Void)?
     /// Routed to `AppHotkeyCoordinator.suspend` / `resume` while a hotkey
     /// recorder is active. Passed through to `SettingsView`.
@@ -93,11 +107,13 @@ struct MainWindowView: View {
                 .listStyle(.sidebar)
                 .tint(DesignSystem.Colors.accent)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    DiscoverSidebarCard(
-                        viewModel: discoverViewModel,
-                        isSelected: state.selectedItem == .discover,
-                        onTap: { state.selectedItem = .discover }
-                    )
+                    if settingsViewModel.showDiscover {
+                        DiscoverSidebarCard(
+                            viewModel: discoverViewModel,
+                            isSelected: state.selectedItem == .discover,
+                            onTap: { state.selectedItem = .discover }
+                        )
+                    }
                 }
                 .navigationSplitViewColumnWidth(min: 170, ideal: DesignSystem.Layout.sidebarMinWidth, max: 240)
             } detail: {
@@ -110,11 +126,33 @@ struct MainWindowView: View {
                             promptResultsViewModel: promptResultsViewModel,
                             promptsViewModel: promptsViewModel,
                             meetingPillViewModel: meetingPillViewModel,
+                            meetingsWorkspaceViewModel: meetingsWorkspaceViewModel,
                             meetingPermissionState: meetingPermissionState,
                             showingProgressDetail: $state.showingProgressDetail,
                             onRecordMeeting: onRecordMeeting,
                             onPauseToggleMeeting: onPauseToggleMeeting,
                             onRefreshPermissions: settingsViewModel.refreshPermissions
+                        )
+                    case .meetings:
+                        MeetingsView(
+                            viewModel: meetingsWorkspaceViewModel,
+                            onRecordMeeting: {
+                                onRecordMeetingFromWorkspace()
+                            },
+                            onPauseToggleMeeting: onPauseToggleMeeting,
+                            onOpenCalendarSettings: {
+                                state.navigateToSettings(tab: .capture, anchor: "meeting")
+                            },
+                            onOpenAISettings: {
+                                state.navigateToSettings(tab: .ai)
+                            },
+                            onRecoverMeetings: {
+                                settingsViewModel.requestPendingMeetingRecovery()
+                            },
+                            onSelectMeeting: { transcription in
+                                transcriptionViewModel.currentTranscription = transcription
+                                state.navigateToTranscription(from: .meetings)
+                            }
                         )
                     case .library:
                         if let transcription = transcriptionViewModel.currentTranscription {
@@ -124,6 +162,7 @@ struct MainWindowView: View {
                                 chatViewModel: chatViewModel,
                                 promptResultsViewModel: promptResultsViewModel,
                                 promptsViewModel: promptsViewModel,
+                                meetingClassificationViewModel: libraryViewModel.meetingClassificationViewModel,
                                 onBack: {
                                     transcriptionViewModel.showInputPortal()
                                 },
@@ -131,8 +170,12 @@ struct MainWindowView: View {
                                     transcriptionViewModel.showInputPortal()
                                     state.selectedItem = .transcribe
                                 },
-                                onRetranscribe: { original, speechEngineOverride in
-                                    transcriptionViewModel.retranscribe(original, speechEngineOverride: speechEngineOverride)
+                                onRetranscribe: { original, speechEngineOverride, speakerSelection in
+                                    transcriptionViewModel.retranscribe(
+                                        original,
+                                        speechEngineOverride: speechEngineOverride,
+                                        speakerSelection: speakerSelection
+                                    )
                                 },
                                 onSetUpAI: {
                                     state.navigateToSettings(tab: .ai)
@@ -152,6 +195,11 @@ struct MainWindowView: View {
                         }
                     case .dictations:
                         DictationHistoryView(viewModel: historyViewModel)
+                    case .prompts:
+                        PromptLibraryView(
+                            viewModel: promptsViewModel,
+                            showsDismissButton: false
+                        )
                     case .transforms:
                         TransformsView(
                             viewModel: transformsViewModel,
@@ -227,6 +275,7 @@ struct MainWindowView: View {
                             updater: updater,
                             transformHotkeys: transformsViewModel.transforms,
                             requestedTab: state.requestedSettingsTab,
+                            requestedAnchor: state.requestedSettingsAnchor,
                             requestedTabRevision: state.requestedSettingsTabRevision,
                             onRequestedTabConsumed: {
                                 state.consumeRequestedSettingsTab()
@@ -234,7 +283,10 @@ struct MainWindowView: View {
                             onHotkeyRecordingStateChanged: onHotkeyRecordingStateChanged
                         )
                     case .discover:
-                        DiscoverView(viewModel: discoverViewModel, thoughtsService: DiscoverThoughtsService())
+                        DiscoverView(
+                            viewModel: discoverViewModel,
+                            thoughtsService: DiscoverThoughtsService()
+                        )
                     }
                 }
             }
@@ -247,6 +299,14 @@ struct MainWindowView: View {
             minWidth: 860,
             minHeight: DesignSystem.Layout.windowMinHeight
         )
+        .alert("Cancel All Transcriptions?", isPresented: $showGlobalCancelConfirmation) {
+            Button("Cancel All", role: .destructive) {
+                transcriptionViewModel.cancelBatch()
+            }
+            Button("Continue", role: .cancel) {}
+        } message: {
+            Text("This stops the remaining files in the batch. Files already transcribed are kept in your Library.")
+        }
         .onChange(of: transcriptionViewModel.isTranscribing) { _, isTranscribing in
             if !isTranscribing {
                 state.showingProgressDetail = false
@@ -257,11 +317,22 @@ struct MainWindowView: View {
                 state.selectedItem = .library
             }
         }
+        .onChange(of: state.selectedItem) { _, newItem in
+            // Bulk-selection mode is a History-only affordance living on a
+            // process-lifetime singleton, so tear it down at the navigation
+            // boundary when the user leaves the Dictations section. Handled here
+            // rather than via `DictationHistoryView.onDisappear`, which can fire
+            // on transient macOS view-lifecycle events and reset an active
+            // selection mid-browse.
+            if newItem != .dictations {
+                historyViewModel.exitBulkSelection()
+            }
+        }
     }
 
     /// Show the global bottom bar when transcribing on any tab except Transcribe (which has its own detailed view)
     private var showGlobalProgressBar: Bool {
-        transcriptionViewModel.isTranscribing
+        (transcriptionViewModel.isTranscribing || transcriptionViewModel.isBatchActive)
             && state.selectedItem != .transcribe
     }
 
@@ -278,7 +349,7 @@ struct MainWindowView: View {
                 conflictMode: .bareModifierDictation
             ),
             TransformShortcutReservedHotkey(name: "file transcription", trigger: settingsViewModel.fileTranscriptionHotkeyTrigger),
-            TransformShortcutReservedHotkey(name: "YouTube transcription", trigger: settingsViewModel.youtubeTranscriptionHotkeyTrigger),
+            TransformShortcutReservedHotkey(name: "video URL transcription", trigger: settingsViewModel.youtubeTranscriptionHotkeyTrigger),
         ]
         if AppFeatures.meetingRecordingEnabled {
             reserved.append(TransformShortcutReservedHotkey(name: "meeting recording", trigger: settingsViewModel.meetingHotkeyTrigger))
@@ -314,7 +385,9 @@ struct MainWindowView: View {
                 }
 
                 HStack(spacing: 6) {
-                    Text(transcriptionViewModel.progressHeadline)
+                    Text(transcriptionViewModel.isBatchActive
+                        ? transcriptionViewModel.batchStatusHeadline
+                        : transcriptionViewModel.progressHeadline)
                         .font(DesignSystem.Typography.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -346,21 +419,38 @@ struct MainWindowView: View {
 
             Spacer()
 
-            Button {
-                transcriptionViewModel.currentTranscription = nil
-                state.selectedItem = .transcribe
-            } label: {
-                Text("View")
-                    .font(DesignSystem.Typography.caption.weight(.semibold))
-                    .foregroundStyle(DesignSystem.Colors.accent)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: DesignSystem.Layout.buttonCornerRadius)
-                            .fill(DesignSystem.Colors.accent.opacity(0.1))
-                    )
+            if transcriptionViewModel.isBatchActive {
+                Button {
+                    showGlobalCancelConfirmation = true
+                } label: {
+                    Text("Cancel all")
+                        .font(DesignSystem.Typography.caption.weight(.semibold))
+                        .foregroundStyle(DesignSystem.Colors.errorRed)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: DesignSystem.Layout.buttonCornerRadius)
+                                .fill(DesignSystem.Colors.errorRed.opacity(0.1))
+                        )
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button {
+                    transcriptionViewModel.currentTranscription = nil
+                    state.selectedItem = .transcribe
+                } label: {
+                    Text("View")
+                        .font(DesignSystem.Typography.caption.weight(.semibold))
+                        .foregroundStyle(DesignSystem.Colors.accent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: DesignSystem.Layout.buttonCornerRadius)
+                                .fill(DesignSystem.Colors.accent.opacity(0.1))
+                        )
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, DesignSystem.Spacing.lg)
         .padding(.vertical, DesignSystem.Spacing.sm)

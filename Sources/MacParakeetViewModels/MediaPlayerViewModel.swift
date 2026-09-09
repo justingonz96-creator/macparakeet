@@ -117,8 +117,9 @@ public final class MediaPlayerViewModel {
             return
         }
 
-        // Local files: load immediately (no rate limiting concern)
-        if transcription.sourceURL == nil {
+        // Non-YouTube files and saved podcast audio load immediately; only
+        // YouTube has a deferred remote video stream fallback.
+        guard transcription.sourceType == .youtube, transcription.sourceURL != nil else {
             await load(for: transcription)
             return
         }
@@ -258,11 +259,11 @@ public final class MediaPlayerViewModel {
         playerState = .loading
         loadingElapsed = 0
         startLoadingTimer()
-        logger.info("Loading media: mode=\(String(describing: mode), privacy: .public), source=\(transcription.sourceURL ?? transcription.filePath ?? "none", privacy: .private)")
+        logger.info("Loading media: mode=\(String(describing: mode), privacy: .public), sourceType=\(transcription.sourceType.rawValue, privacy: .public)")
 
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            if let sourceURL = transcription.sourceURL {
+            if transcription.sourceType == .youtube, let sourceURL = transcription.sourceURL {
                 await self.loadYouTubeStream(sourceURL)
             } else if let filePath = transcription.filePath {
                 self.loadLocalFile(filePath)
@@ -357,7 +358,7 @@ public final class MediaPlayerViewModel {
     // MARK: - Playback Mode Detection
 
     nonisolated public static func detectPlaybackMode(for transcription: Transcription) -> PlaybackMode {
-        if transcription.sourceURL != nil {
+        if transcription.sourceType == .youtube, transcription.sourceURL != nil {
             return .video
         }
         guard let filePath = transcription.filePath,
@@ -378,7 +379,7 @@ public final class MediaPlayerViewModel {
 
         let start = ContinuousClock.now
         do {
-            logger.info("Extracting stream URL via yt-dlp for source=\(sourceURL, privacy: .private)")
+            logger.info("Extracting stream URL via yt-dlp")
             let streamURL = try await videoStreamService.streamURL(for: sourceURL)
             let extractionTime = ContinuousClock.now - start
             logger.info("Stream URL extracted in \(extractionTime)")

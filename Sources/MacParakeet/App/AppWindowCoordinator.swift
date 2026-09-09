@@ -21,9 +21,11 @@ final class AppWindowCoordinator: NSObject, NSWindowDelegate {
     private let feedbackViewModel: FeedbackViewModel
     private let discoverViewModel: DiscoverViewModel
     private let libraryViewModel: TranscriptionLibraryViewModel
+    private let meetingsWorkspaceViewModel: MeetingsWorkspaceViewModel
     private let meetingPillViewModel: MeetingRecordingPillViewModel
     private let updaterController: SPUStandardUpdaterController
     private let onRecordMeeting: () -> Void
+    private let onRecordMeetingFromWorkspace: () -> Void
     private let onPauseToggleMeeting: (() -> Void)?
     private let onHotkeyRecordingStateChanged: (Bool) -> Void
     private let onQuit: () -> Void
@@ -47,9 +49,11 @@ final class AppWindowCoordinator: NSObject, NSWindowDelegate {
         feedbackViewModel: FeedbackViewModel,
         discoverViewModel: DiscoverViewModel,
         libraryViewModel: TranscriptionLibraryViewModel,
+        meetingsWorkspaceViewModel: MeetingsWorkspaceViewModel,
         meetingPillViewModel: MeetingRecordingPillViewModel,
         updaterController: SPUStandardUpdaterController,
         onRecordMeeting: @escaping () -> Void,
+        onRecordMeetingFromWorkspace: @escaping () -> Void,
         onPauseToggleMeeting: (() -> Void)? = nil,
         onHotkeyRecordingStateChanged: @escaping (Bool) -> Void,
         onQuit: @escaping () -> Void,
@@ -70,9 +74,11 @@ final class AppWindowCoordinator: NSObject, NSWindowDelegate {
         self.feedbackViewModel = feedbackViewModel
         self.discoverViewModel = discoverViewModel
         self.libraryViewModel = libraryViewModel
+        self.meetingsWorkspaceViewModel = meetingsWorkspaceViewModel
         self.meetingPillViewModel = meetingPillViewModel
         self.updaterController = updaterController
         self.onRecordMeeting = onRecordMeeting
+        self.onRecordMeetingFromWorkspace = onRecordMeetingFromWorkspace
         self.onPauseToggleMeeting = onPauseToggleMeeting
         self.onHotkeyRecordingStateChanged = onHotkeyRecordingStateChanged
         self.onQuit = onQuit
@@ -106,17 +112,17 @@ final class AppWindowCoordinator: NSObject, NSWindowDelegate {
     }
 
     func applyActivationPolicyFromSettings() {
-        let menuBarOnly = settingsViewModel.menuBarOnlyMode
-        let wasMainWindowVisible = mainWindow?.isVisible ?? false
-        let mode: NSApplication.ActivationPolicy = menuBarOnly ? .accessory : .regular
-        NSApp.setActivationPolicy(mode)
+        NSApp.setActivationPolicy(Self.activationPolicy(
+            menuBarOnlyMode: settingsViewModel.menuBarOnlyMode,
+            hasVisiblePrimaryWindow: hasVisiblePrimaryWindow
+        ))
+    }
 
-        // macOS hides all windows when switching to .accessory policy.
-        // Re-show the main window so the user isn't surprised by it disappearing.
-        if menuBarOnly && wasMainWindowVisible {
-            mainWindow?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-        }
+    static func activationPolicy(
+        menuBarOnlyMode: Bool,
+        hasVisiblePrimaryWindow: Bool
+    ) -> NSApplication.ActivationPolicy {
+        menuBarOnlyMode && !hasVisiblePrimaryWindow ? .accessory : .regular
     }
 
     func makeDockMenu() -> NSMenu {
@@ -180,9 +186,11 @@ final class AppWindowCoordinator: NSObject, NSWindowDelegate {
             feedbackViewModel: feedbackViewModel,
             discoverViewModel: discoverViewModel,
             libraryViewModel: libraryViewModel,
+            meetingsWorkspaceViewModel: meetingsWorkspaceViewModel,
             meetingPillViewModel: meetingPillViewModel,
             updater: updaterController.updater,
             onRecordMeeting: onRecordMeeting,
+            onRecordMeetingFromWorkspace: onRecordMeetingFromWorkspace,
             onPauseToggleMeeting: onPauseToggleMeeting,
             onHotkeyRecordingStateChanged: onHotkeyRecordingStateChanged
         )
@@ -220,6 +228,8 @@ final class AppWindowCoordinator: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window === mainWindow else { return }
+        window.contentView = nil
+        mainWindow = nil
         // Delay slightly so macOS finishes closing the window before we check visibility.
         Task { @MainActor [weak self] in
             self?.hideDockIconIfNeeded()

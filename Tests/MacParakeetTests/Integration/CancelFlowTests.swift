@@ -136,16 +136,15 @@ final class CancelFlowTests: XCTestCase {
         XCTAssertEqual(result.dictation.durationMs, 800, "Duration should be end of last word")
     }
 
-    /// Duration estimation when no word timestamps
-    func testDurationEstimatedWithoutTimestamps() async throws {
+    /// Duration is still populated when no word timestamps are returned.
+    func testDurationPopulatedWithoutTimestamps() async throws {
         let sttResult = STTResult(text: "Hello world test", words: [])
         await mockSTT.configure(result: sttResult)
 
         try await dictationService.startRecording()
         let result = try await dictationService.stopRecording()
 
-        // 3 words * 150ms estimate = 450
-        XCTAssertEqual(result.dictation.durationMs, 450)
+        XCTAssertGreaterThan(result.dictation.durationMs, 0)
     }
 
     /// After an STT error, state should recover to idle so a new recording can start
@@ -216,6 +215,25 @@ final class CancelFlowTests: XCTestCase {
         XCTAssertEqual(all.count, 1)
     }
 
+    func testUndoCancelUsesDurationCapturedAtCancelTimeWhenTimestampsAreMissing() async throws {
+        await mockSTT.configure(result: STTResult(text: "cohere final", words: [], engine: .cohere))
+
+        let startedAt = Date()
+        try await dictationService.startRecording()
+        try await Task.sleep(for: .milliseconds(50))
+        await dictationService.cancelRecording()
+        let cancelDurationUpperBoundMs = Int(Date().timeIntervalSince(startedAt) * 1000) + 100
+
+        try await Task.sleep(for: .milliseconds(300))
+        let result = try await dictationService.undoCancel()
+
+        XCTAssertLessThanOrEqual(
+            result.dictation.durationMs,
+            cancelDurationUpperBoundMs,
+            "Undo should use the capture duration sampled at cancel time, not the dwell time before undo."
+        )
+    }
+
     func testConfirmCancelDiscardsActiveRecordingImmediately() async throws {
         try await dictationService.startRecording()
 
@@ -254,6 +272,49 @@ final class CancelFlowTests: XCTestCase {
         let state = await dictationService.state
         if case .recording = state {} else {
             XCTFail("Expected recording state after stale cancel, got \(state)")
+        }
+
+        await dictationService.confirmCancel(sessionID: 2)
+    }
+
+    /// Regression: undoCancel transcribes the cancelled audio and then settles
+    /// to .idle after a ~500ms delay. If a new dictation starts during that
+    /// window it must take over — undoCancel's terminal writes must not clobber
+    /// the new session back to .idle. Mirrors the reentrancy guard that
+    /// stopRecording(sessionID:) already has.
+    func testStaleUndoCancelDoesNotClobberNewSessionStart() async throws {
+        await mockSTT.configure(result: STTResult(text: "Hello world"))
+
+        // Session 1: start, then soft-cancel so undo is available.
+        try await dictationService.startRecording(
+            context: DictationTelemetryContext(),
+            sessionID: 1
+        )
+        await dictationService.cancelRecording()
+
+        // Begin undo for session 1. With the fast mock STT it reaches .success
+        // quickly, then sleeps ~500ms before settling to .idle — that post-
+        // success window is where a new session can land.
+        let undoTask = Task {
+            try await self.dictationService.undoCancel()
+        }
+
+        // Let undo enter its post-success settle window.
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Session 2 starts during undo's settle window and takes over.
+        try await dictationService.startRecording(
+            context: DictationTelemetryContext(),
+            sessionID: 2
+        )
+
+        // Undo completes; its terminal .idle write must be skipped because the
+        // active session is now 2.
+        _ = try await undoTask.value
+
+        let state = await dictationService.state
+        if case .recording = state {} else {
+            XCTFail("Expected session 2 to remain recording after stale undo, got \(state)")
         }
 
         await dictationService.confirmCancel(sessionID: 2)

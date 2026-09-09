@@ -5,6 +5,8 @@ import SwiftUI
 
 struct MeetingRecordingPanelView: View {
     @Bindable var viewModel: MeetingRecordingPanelViewModel
+    @AppStorage(UserDefaultsAppRuntimePreferences.transcriptAIContextModeKey)
+    private var transcriptAIContextModeRaw = TranscriptAIContextMode.richTranscript.rawValue
     @State private var autoScroll = true
     /// Tab currently under the cursor — drives the hover-revealed `⌘N` chip
     /// next to the tab label. Discoverability for the keyboard shortcuts
@@ -29,6 +31,9 @@ struct MeetingRecordingPanelView: View {
         }
         .frame(minWidth: 360, idealWidth: 420, minHeight: 320, idealHeight: 520)
         .background(DesignSystem.Colors.surface)
+        .onChange(of: transcriptAIContextModeRaw) {
+            viewModel.refreshChatTranscriptContext()
+        }
     }
 
     @ViewBuilder
@@ -149,7 +154,8 @@ struct MeetingRecordingPanelView: View {
         isActive: Bool
     ) -> some View {
         let weight: Font.Weight = isActive ? .medium : .regular
-        let foreground: Color = isActive
+        let foreground: Color =
+            isActive
             ? DesignSystem.Colors.textPrimary
             : DesignSystem.Colors.textTertiary
         let hasTrailing = isStreaming || badge != nil
@@ -181,9 +187,11 @@ struct MeetingRecordingPanelView: View {
                                 .foregroundStyle(DesignSystem.Colors.textTertiary.opacity(0.6))
                             Text(badge)
                                 .font(.system(size: 11, weight: .regular).monospacedDigit())
-                                .foregroundStyle(isActive
-                                    ? DesignSystem.Colors.accent
-                                    : DesignSystem.Colors.textTertiary)
+                                .foregroundStyle(
+                                    isActive
+                                        ? DesignSystem.Colors.accent
+                                        : DesignSystem.Colors.textTertiary
+                                )
                                 .lineLimit(1)
                         }
                     }
@@ -205,10 +213,7 @@ struct MeetingRecordingPanelView: View {
         VStack(spacing: DesignSystem.Spacing.xs) {
             HStack(alignment: .center, spacing: DesignSystem.Spacing.sm) {
                 if viewModel.showsAudioLevels {
-                    DualAudioOrbView(
-                        micLevel: viewModel.micLevel,
-                        systemLevel: viewModel.systemLevel
-                    )
+                    LiveAudioOrb(viewModel: viewModel)
                 } else {
                     statusDot
                 }
@@ -250,6 +255,19 @@ struct MeetingRecordingPanelView: View {
                 }
             }
 
+            if !visibleSourceHealthChips.isEmpty {
+                MeetingSourceHealthChips(chips: visibleSourceHealthChips)
+            }
+
+            if let attribution = viewModel.speechRouteAttribution {
+                Text(attribution)
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if viewModel.showsLaggingIndicator {
                 Label("Transcript preview is catching up", systemImage: "exclamationmark.triangle.fill")
                     .font(DesignSystem.Typography.caption.weight(.semibold))
@@ -259,6 +277,10 @@ struct MeetingRecordingPanelView: View {
         }
         .padding(.horizontal, DesignSystem.Spacing.md)
         .padding(.vertical, DesignSystem.Spacing.sm)
+    }
+
+    var visibleSourceHealthChips: [MeetingSourceHealthChip] {
+        viewModel.visibleSourceHealthWarnings
     }
 
     @ViewBuilder
@@ -350,6 +372,8 @@ struct MeetingRecordingPanelView: View {
     @ViewBuilder
     private var statusDot: some View {
         switch viewModel.state {
+        case .starting:
+            ParakeetSpinner(.inline, tint: DesignSystem.Colors.textTertiary)
         case .hidden, .recording:
             // Recording: vivid success green. Paused: shifts to warning
             // amber — the same color language used by the pause button on
@@ -358,19 +382,36 @@ struct MeetingRecordingPanelView: View {
             // lights). 0.85 opacity keeps it slightly quieter than the
             // recording dot — paused is a held-breath, not a shout.
             Circle()
-                .fill(viewModel.isPaused
-                    ? DesignSystem.Colors.warningAmber.opacity(0.85)
-                    : DesignSystem.Colors.successGreen
+                .fill(
+                    viewModel.isPaused
+                        ? DesignSystem.Colors.warningAmber.opacity(0.85)
+                        : DesignSystem.Colors.successGreen
                 )
                 .frame(width: 8, height: 8)
                 .animation(.easeInOut(duration: 0.2), value: viewModel.isPaused)
         case .transcribing:
-            ProgressView()
-                .controlSize(.small)
+            ParakeetSpinner(.inline, tint: DesignSystem.Colors.accent)
         case .error:
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(DesignSystem.Colors.warningAmber)
         }
+    }
+}
+
+/// Isolates the fast-changing `micLevel` / `systemLevel` reads into a leaf so
+/// the live audio orb can breathe in near-real-time without re-evaluating the
+/// whole panel `body` (header + tab bar + transcript `ForEach`). Same pattern
+/// as `MeetingsLiveStatusChip`: the coordinator's ~30 fps glow loop writes these
+/// levels, and with the read scoped here only this 20pt view re-renders — the
+/// transcript list stays put. The orb's own `.easeOut(0.12)` smooths each step.
+private struct LiveAudioOrb: View {
+    @Bindable var viewModel: MeetingRecordingPanelViewModel
+
+    var body: some View {
+        DualAudioOrbView(
+            micLevel: viewModel.micLevel,
+            systemLevel: viewModel.systemLevel
+        )
     }
 }
 
@@ -397,121 +438,275 @@ private struct AskStreamingDot: View {
     }
 }
 
-/// A slowly rotating seed-of-life (1 center + 6 outer circles) for the
-/// empty listening state. Matches the flower head from the recording pill,
-/// without the stem. Also reused as the summary-generation loading indicator.
+/// A slowly rotating seed-of-life (1 center + 6 outer circles) for the empty
+/// listening / loading states. Matches the flower head from the recording pill,
+/// without the stem. Reused as the summary-generation loading indicator and as
+/// the live-notes / transcript watermark behind meeting text.
 ///
-/// `freeze`: when `true`, the rotation and glow-breathing animations halt
-/// at their current frame. Used by meeting surfaces while a recording is
-/// paused so the panel rosette stops spinning to match the dimmed,
-/// non-animating pill rosette. Defaults to `false` so non-meeting consumers
-/// (AI streaming indicator, summary generation) are unaffected.
+/// **Core Animation backed — not SwiftUI.** This rosette is resident on screen
+/// for the entire duration of a meeting recording. A SwiftUI
+/// `TimelineView(.animation)` or `repeatForever` here re-evaluates `body` and
+/// re-commits an `NSHostingView` display list on *every* display refresh, and
+/// that per-frame, main-thread render churn was the dominant cost in the
+/// v0.6.14 meeting-recording CPU regression — `sample` pointed straight at
+/// `NSHostingView.layout` / `DisplayList.ViewUpdater` through this view.
+/// `CABasicAnimation` on `CALayer`s is interpolated by the render server, so
+/// the rotation and breathing pulse cost ~0 app-side CPU per frame. This mirrors
+/// the floating pill's `MerkabaPillIconView`. See
+/// `plans/active/2026-05-meeting-recording-cpu-debug.md`.
 ///
-/// Implementation note: driven by `TimelineView(.animation(paused:))` rather
-/// than `withAnimation(.linear.repeatForever)` because freezing a
-/// `repeatForever` mid-cycle isn't reliably cancellable from outside the
-/// withAnimation scope. `TimelineView`'s `paused:` parameter halts frame
-/// requests cleanly; `accumulatedPause` is subtracted from elapsed time so
-/// the rotation continues smoothly from where it stopped instead of
-/// snapping forward by the pause duration.
-struct BreathingSeedOfLifeView: View {
+/// `freeze`: when `true`, the animations halt at their current frame via the
+/// canonical Core Animation pause (`layer.speed = 0` + `timeOffset`) and resume
+/// seamlessly from the same frame — the clean, externally-cancellable pause the
+/// old `TimelineView(paused:)` was reaching for. `reduceMotion` renders a still
+/// rosette (same shape and color, no rotation or pulse).
+struct BreathingSeedOfLifeView: NSViewRepresentable {
     var freeze: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var startDate = Date()
-    @State private var pauseStartDate: Date?
-    @State private var accumulatedPause: TimeInterval = 0
 
-    private let size: CGFloat = 140
+    func makeNSView(context: Context) -> BreathingSeedOfLifeNSView {
+        let view = BreathingSeedOfLifeNSView()
+        view.update(animating: !reduceMotion, frozen: freeze)
+        return view
+    }
+
+    func updateNSView(_ nsView: BreathingSeedOfLifeNSView, context: Context) {
+        nsView.update(animating: !reduceMotion, frozen: freeze)
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        nsView: BreathingSeedOfLifeNSView,
+        context: Context
+    ) -> CGSize? {
+        CGSize(width: BreathingSeedOfLifeNSView.designSize, height: BreathingSeedOfLifeNSView.designSize)
+    }
+}
+
+/// CALayer-backed seed-of-life. Centers a 140pt rosette in its bounds so it
+/// renders correctly both at intrinsic size (summary skeleton) and stretched to
+/// fill (`.frame(maxWidth: .infinity, maxHeight: .infinity)` watermarks).
+final class BreathingSeedOfLifeNSView: NSView {
+    static let designSize: CGFloat = 140
+
     private let circleRadius: CGFloat = 28
-    private let strokeColor = DesignSystem.Colors.accent
     private let rotationPeriod: TimeInterval = 18
-    /// Half-cycle of the breathing pulse — full ease-in-out up takes
-    /// `breathingHalfPeriod` seconds, the same back down. Matches the
-    /// 3s-up / 3s-down feel of the original `easeInOut(duration: 3)
-    /// .repeatForever(autoreverses: true)` shape.
+    /// Each half of the breathing pulse (up, then down) takes this long. Matches
+    /// the original `easeInOut(duration: 3).repeatForever(autoreverses: true)`.
     private let breathingHalfPeriod: TimeInterval = 3
 
-    var body: some View {
-        // Honor System Settings → Accessibility → Display → Reduce Motion.
-        // Vestibular-sensitive users get a still seed-of-life — same shape,
-        // color, and brand vocabulary, just no rotation or pulse.
-        TimelineView(.animation(paused: freeze || reduceMotion)) { context in
-            // Live pause adjustment: SwiftUI's `.onChange(of: freeze)` fires
-            // AFTER `body`, which would otherwise leave one transitional frame
-            // on resume where `accumulatedPause` is stale and the rotation
-            // snap-jumps forward by the full pause duration. Reading
-            // `pauseStartDate` here folds the in-flight pause window into
-            // `elapsed` so the math is correct even before onChange runs.
-            let activePauseAdjustment: TimeInterval = pauseStartDate.map {
-                context.date.timeIntervalSince($0)
-            } ?? 0
-            let elapsed = context.date.timeIntervalSince(startDate)
-                - accumulatedPause
-                - activePauseAdjustment
+    // Rest / trough values, taken from the original SwiftUI `breathFactor == 0`
+    // frame so the still rosette (reduce-motion, or settled after stop) looks
+    // identical to an animated one paused at the start of its cycle.
+    private let restGlowOpacity: Float = 0.2
+    private let restGlowScale: CGFloat = 0.9
+    private let restShadowOpacity: Float = 0.15
+    private let peakGlowOpacity: Float = 0.5
+    private let peakGlowScale: CGFloat = 1.2
+    private let peakShadowOpacity: Float = 0.4
 
-            let rotationProgress = elapsed
-                .truncatingRemainder(dividingBy: rotationPeriod) / rotationPeriod
-            let rotation = rotationProgress * 360
+    private let glowLayer = CAShapeLayer()
+    private let flowerLayer = CALayer()
+    private var ringLayers: [CAShapeLayer] = []
 
-            let breathFactor = breathFactor(for: elapsed)
-            let glowOpacity = 0.2 + 0.3 * breathFactor          // 0.2 → 0.5
-            let glowShadowOpacity = 0.15 + 0.25 * breathFactor   // 0.15 → 0.4
-            let glowScale = 0.9 + 0.3 * breathFactor             // 0.9 → 1.2
+    private var didBuild = false
+    private var isAnimating = false
+    private var isFrozen = false
 
-            ZStack {
-                Circle()
-                    .fill(strokeColor.opacity(glowOpacity))
-                    .frame(width: circleRadius * 2, height: circleRadius * 2)
-                    .shadow(color: strokeColor.opacity(glowShadowOpacity), radius: 12)
-                    .scaleEffect(glowScale)
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        commonInit()
+    }
 
-                Circle()
-                    .stroke(strokeColor.opacity(0.7), lineWidth: 1.2)
-                    .frame(width: circleRadius * 2, height: circleRadius * 2)
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        commonInit()
+    }
 
-                ForEach(0..<6, id: \.self) { i in
-                    Circle()
-                        .stroke(strokeColor.opacity(0.5), lineWidth: 1.2)
-                        .frame(width: circleRadius * 2, height: circleRadius * 2)
-                        .offset(x: circleRadius * CGFloat(cos(Double(i) * .pi / 3)),
-                                y: circleRadius * CGFloat(sin(Double(i) * .pi / 3)))
-                }
-            }
-            .frame(width: size, height: size)
-            .rotationEffect(.degrees(reduceMotion ? 0 : rotation))
-        }
-        .onChange(of: freeze) { _, isFrozen in
-            if isFrozen {
-                pauseStartDate = Date()
-            } else if let pauseStart = pauseStartDate {
-                accumulatedPause += Date().timeIntervalSince(pauseStart)
-                pauseStartDate = nil
+    private func commonInit() {
+        wantsLayer = true
+        layer?.masksToBounds = false
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: Self.designSize, height: Self.designSize)
+    }
+
+    override func layout() {
+        super.layout()
+        buildIfNeeded()
+        layoutLayers()
+    }
+
+    func update(animating: Bool, frozen: Bool) {
+        buildIfNeeded()
+
+        if animating != isAnimating {
+            isAnimating = animating
+            if animating {
+                startAnimations()
+            } else {
+                stopAnimations()
             }
         }
-        .onAppear {
-            startDate = Date()
-            if freeze {
-                pauseStartDate = startDate
+
+        isFrozen = frozen
+        // Freezing is only meaningful while animations are attached.
+        setPaused(animating && frozen, flowerLayer)
+        setPaused(animating && frozen, glowLayer)
+    }
+
+    // MARK: - Layer construction
+
+    private func buildIfNeeded() {
+        guard !didBuild, let root = layer else { return }
+        didBuild = true
+        root.masksToBounds = false
+
+        glowLayer.opacity = restGlowOpacity
+        glowLayer.shadowRadius = 12
+        glowLayer.shadowOffset = .zero
+        glowLayer.shadowOpacity = restShadowOpacity
+        glowLayer.transform = CATransform3DMakeScale(restGlowScale, restGlowScale, 1)
+        root.addSublayer(glowLayer)
+
+        root.addSublayer(flowerLayer)
+
+        // Center ring (alpha 0.7) + 6 petals (alpha 0.5).
+        for _ in 0..<7 {
+            let ring = CAShapeLayer()
+            ring.fillColor = NSColor.clear.cgColor
+            ring.lineWidth = 1.2
+            flowerLayer.addSublayer(ring)
+            ringLayers.append(ring)
+        }
+
+        applyColors()
+    }
+
+    /// Accent-tinted glow + rosette strokes. Resolved against the view's current
+    /// appearance and re-applied from `viewDidChangeEffectiveAppearance`, since
+    /// `CGColor` snapshots a dynamic `Color` at assignment time (a Light↔Dark
+    /// switch while the rosette is on screen would otherwise leave it stale).
+    private func applyColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance { [self] in
+            let accent = NSColor(DesignSystem.Colors.accent)
+            glowLayer.fillColor = accent.cgColor
+            glowLayer.shadowColor = accent.cgColor
+            let ringAlphas: [CGFloat] = [0.7] + Array(repeating: 0.5, count: 6)
+            for (ring, alpha) in zip(ringLayers, ringAlphas) {
+                ring.strokeColor = accent.withAlphaComponent(alpha).cgColor
             }
         }
     }
 
-    /// Triangle-wave eased between 0 and 1 over a full breathing cycle.
-    /// `0` collapses to the rest values (low opacity, 0.9 scale); `1` blooms
-    /// to the peak (higher opacity, 1.2 scale). Ease-in-out shape matches
-    /// the feel of SwiftUI's `easeInOut` curve.
-    private func breathFactor(for elapsed: TimeInterval) -> Double {
-        let cycle = breathingHalfPeriod * 2
-        let phase = elapsed.truncatingRemainder(dividingBy: cycle)
-        let t: Double
-        if phase < breathingHalfPeriod {
-            t = phase / breathingHalfPeriod
-        } else {
-            t = 1 - (phase - breathingHalfPeriod) / breathingHalfPeriod
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        guard didBuild else { return }
+        applyColors()
+    }
+
+    private func layoutLayers() {
+        guard didBuild else { return }
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let diameter = circleRadius * 2
+        let circleRect = CGRect(x: 0, y: 0, width: diameter, height: diameter)
+        let circlePath = CGPath(ellipseIn: circleRect, transform: nil)
+
+        // Glow — centered; symmetric, so it never needs to rotate.
+        glowLayer.bounds = circleRect
+        glowLayer.position = center
+        glowLayer.path = circlePath
+        glowLayer.shadowPath = circlePath
+
+        // Flower — centered; rotates about its own center (default anchor 0.5).
+        flowerLayer.bounds = CGRect(x: 0, y: 0, width: Self.designSize, height: Self.designSize)
+        flowerLayer.position = center
+        let flowerCenter = CGPoint(x: Self.designSize / 2, y: Self.designSize / 2)
+
+        for (index, ring) in ringLayers.enumerated() {
+            ring.bounds = circleRect
+            ring.path = circlePath
+            if index == 0 {
+                ring.position = flowerCenter
+            } else {
+                let angle = CGFloat(index - 1) * .pi / 3
+                ring.position = CGPoint(
+                    x: flowerCenter.x + circleRadius * cos(angle),
+                    y: flowerCenter.y + circleRadius * sin(angle)
+                )
+            }
         }
-        // Smoothstep: 3t² − 2t³ — ease-in-out.
-        return t * t * (3 - 2 * t)
+    }
+
+    // MARK: - Animation
+
+    private func startAnimations() {
+        if flowerLayer.animation(forKey: "rotation") == nil {
+            let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
+            rotation.fromValue = 0
+            rotation.toValue = CGFloat.pi * 2
+            rotation.duration = rotationPeriod
+            rotation.repeatCount = .infinity
+            rotation.timingFunction = CAMediaTimingFunction(name: .linear)
+            flowerLayer.add(rotation, forKey: "rotation")
+        }
+
+        addBreathing(keyPath: "opacity", from: restGlowOpacity, to: peakGlowOpacity, key: "breathOpacity")
+        addBreathing(keyPath: "shadowOpacity", from: restShadowOpacity, to: peakShadowOpacity, key: "breathShadow")
+        addBreathing(
+            keyPath: "transform.scale",
+            from: Float(restGlowScale),
+            to: Float(peakGlowScale),
+            key: "breathScale"
+        )
+    }
+
+    private func addBreathing(keyPath: String, from: Float, to: Float, key: String) {
+        guard glowLayer.animation(forKey: key) == nil else { return }
+        let anim = CABasicAnimation(keyPath: keyPath)
+        anim.fromValue = from
+        anim.toValue = to
+        anim.duration = breathingHalfPeriod
+        anim.autoreverses = true
+        anim.repeatCount = .infinity
+        anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        glowLayer.add(anim, forKey: key)
+    }
+
+    private func stopAnimations() {
+        flowerLayer.removeAnimation(forKey: "rotation")
+        glowLayer.removeAnimation(forKey: "breathOpacity")
+        glowLayer.removeAnimation(forKey: "breathShadow")
+        glowLayer.removeAnimation(forKey: "breathScale")
+        // Settle to the rest pose so a still rosette matches the trough frame.
+        glowLayer.opacity = restGlowOpacity
+        glowLayer.shadowOpacity = restShadowOpacity
+        glowLayer.transform = CATransform3DMakeScale(restGlowScale, restGlowScale, 1)
+    }
+
+    /// Canonical Core Animation pause/resume: stopping the layer clock freezes
+    /// every attached animation at its current frame; resuming rebases
+    /// `beginTime` so it continues from exactly where it stopped.
+    private func setPaused(_ paused: Bool, _ layer: CALayer) {
+        if paused {
+            guard layer.speed != 0 else { return }
+            // A view built already-frozen (panel opened while paused) is not in a
+            // window yet, so `convertTime` returns a large absolute time and would
+            // freeze at a random frame. Pin to 0 (the rest pose) until windowed.
+            let pausedTime = window == nil ? 0 : layer.convertTime(CACurrentMediaTime(), from: nil)
+            layer.speed = 0
+            layer.timeOffset = pausedTime
+        } else {
+            guard layer.speed == 0 else { return }
+            let pausedTime = layer.timeOffset
+            layer.speed = 1
+            layer.timeOffset = 0
+            layer.beginTime = 0
+            let timeSincePause = layer.convertTime(CACurrentMediaTime(), from: nil) - pausedTime
+            layer.beginTime = timeSincePause
+        }
     }
 }
 
@@ -544,9 +739,10 @@ private struct FooterButton: View {
                 .padding(.vertical, 5)
                 .background(
                     Capsule()
-                        .fill(isHovered
-                            ? DesignSystem.Colors.surfaceElevated
-                            : .clear
+                        .fill(
+                            isHovered
+                                ? DesignSystem.Colors.surfaceElevated
+                                : .clear
                         )
                 )
                 .scaleEffect(isHovered ? 1.03 : 1.0)
@@ -602,9 +798,10 @@ private struct FooterIconButton: View {
             .padding(.vertical, 5)
             .background(
                 Capsule()
-                    .fill(isHovered
-                        ? DesignSystem.Colors.surfaceElevated
-                        : .clear
+                    .fill(
+                        isHovered
+                            ? DesignSystem.Colors.surfaceElevated
+                            : .clear
                     )
             )
             // Hover expand/contract is the only layout change this button

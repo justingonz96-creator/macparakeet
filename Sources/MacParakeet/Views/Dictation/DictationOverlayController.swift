@@ -207,6 +207,11 @@ final class DictationOverlayViewModel {
     enum ProcessingLoadCaption: Equatable {
         case preparing
         case preparingExtended
+        /// Cohere's one-time, per-launch Core ML graph specialization (~2 min on
+        /// the GPU path). Shown when a dictation is triggered before the launch
+        /// warm-up has finished, so the wait reads as setup, not a hang.
+        case optimizing
+        case optimizingExtended
         case failed
     }
 
@@ -220,6 +225,8 @@ final class DictationOverlayViewModel {
     var processingMessage: String?
     var busyProcessingMessage: String?
     var processingLoadCaption: ProcessingLoadCaption?
+    var liveTranscript: String = ""
+    var previewTextSize: DictationPreviewTextSize = .medium
     var commandPromptText: String = "Speak your command..."
     var commandSelectedText: String = ""
 
@@ -230,6 +237,7 @@ final class DictationOverlayViewModel {
 
     /// Cancel countdown value (separate from state enum to avoid view reconstruction jank).
     var cancelTimeRemaining: Double = 5.0
+    var cancelCountdownDuration: Double = 5.0
 
     private var timerTask: Task<Void, Never>?
     private var busyMessageTask: Task<Void, Never>?

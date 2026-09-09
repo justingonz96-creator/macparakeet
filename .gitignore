@@ -7,8 +7,15 @@ journal/
 # Claude Code
 .claude/
 
+# Codex agent tooling / evidence artifacts
+.codex/
+
+# no-mistakes local evidence artifacts
+.no-mistakes/evidence/
+
 # Xcode
 .build/
+.build-swift6-no-whisper/
 DerivedData/
 /dist/
 *.xcodeproj/xcuserdata/
@@ -64,6 +71,7 @@ pnpm-debug.log*
 
 # Logs
 *.log
+diagnostics/
 logs/
 
 # Test artifacts
@@ -85,3 +93,6 @@ recup_dir*/
 .claire/
 .superpowers/
 benchmarks/asr/venv/
+
+# Phase-0 Cohere latency spike (throwaway)
+spike/

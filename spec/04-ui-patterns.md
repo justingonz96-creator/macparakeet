@@ -9,13 +9,14 @@ MacParakeet has these primary UI surfaces:
 2. **Idle Pill** -- Persistent floating indicator, always visible when not dictating or meeting-recording
 3. **Dictation Overlay** -- Compact pill for recording state
 4. **Meeting Recording Tile** -- Capture tile on the Transcribe tab; reflects live recording state
-5. **Meeting Recording Pill** -- Persistent floating pill during meeting recording (sacred geometry icon); shares state with the Transcribe tile
+5. **Meeting Recording Pill** -- Default-on, hideable floating pill during meeting recording (sacred geometry icon); shares state with the Transcribe tile
 6. **Meeting Recording Panel** -- Floating Notes / Transcript / Ask panel with audio levels and stop controls
-7. **Transforms Tab** -- Productized selected-text rewrite management for `Polish`, `Distill`, `Decide`, and custom Transforms
-8. **Transform Progress Pill** -- Floating progress/cancel surface while a Transform is running
-9. **Menu Bar** -- Quick access and status
-10. **Calendar Countdown Toasts** -- Implemented but hidden from v0.6 by `AppFeatures.calendarEnabled = false`
-11. **Settings** -- Preferences, permissions, local speech models, and update controls; calendar controls are hidden in v0.6
+7. **Meetings Workspace** -- Dedicated route for upcoming, live, and saved meeting work
+8. **Transforms Tab** -- Productized selected-text rewrite management for `Polish`, `Distill`, `Decide`, and custom Transforms
+9. **Transform Progress Pill** -- Floating progress/cancel surface while a Transform is running
+10. **Menu Bar** -- Quick access and status
+11. **Calendar Countdown Toasts** -- Implemented and enabled (`AppFeatures.calendarEnabled = true`); surface only when a user opts into calendar auto-start
+12. **Settings** -- Preferences, permissions, local speech models, and update controls; calendar controls appear once Calendar access is granted
 
 Design philosophy: **Simple, native, stays out of the way.** No chrome, no clutter. The app should feel like part of macOS, not a web app in a wrapper.
 
@@ -50,7 +51,7 @@ Design philosophy: **Simple, native, stays out of the way.** No chrome, no clutt
 │  🎤 Transcribe   │  [Depends on sidebar selection]           │
 │  🗂 Library      │                                           │
 │  🕒 Dictations   │  - Transcribe: 3-mode capture hub        │
-│  📖 Vocabulary   │  - Library: Grid (or list for Meetings)  │
+│  📖 Vocabulary   │  - Library: Grid or list                 │
 │  ✦ Transforms    │  - Dictations: History list               │
 │  💬 Feedback     │  - Vocabulary: Processing mode + manage   │
 │  ⚙ Settings      │  - Transforms: Rewrite selected text      │
@@ -67,14 +68,21 @@ Minimum window width: 800pt.
 The sidebar uses NavigationSplitView with flat items (icon + label):
 
 - **Transcribe** (`waveform`) -- Capture hub: YouTube card + file drop card + Meeting Recording tile
-- **Library** (`square.grid.2x2`) -- All transcriptions; filter chips switch between thumbnail grid (All/YouTube/Local/Favorites) and date-grouped list (Meetings)
+- **Library** (`square.grid.2x2`) -- All transcriptions; every filter offers the same persistent Grid/List switch
 - **Dictations** (`clock.arrow.circlepath`) -- Flat history list with bottom bar player
-- **Vocabulary** (`book.fill`) -- Processing mode, pipeline guide, custom words & snippets management
+- **Meetings** (`person.2.wave.2`) -- Workflow space for upcoming, live, and saved meeting work; visible when `AppFeatures.meetingRecordingEnabled` is true
+- **Prompts** (`text.quote`) -- First-class prompt manager for versioned result prompts and Transforms
 - **Transforms** (`sparkles`) -- Saved selected-text rewrites backed by `.transform` prompt rows; visible when `AppFeatures.transformsEnabled` is true
+- **Vocabulary** (`book.fill`) -- Processing mode, pipeline guide, custom words & snippets management
 - **Feedback** (`bubble.left.and.text.bubble.right`) -- Bug reports, feature requests, community link
 - **Settings** (`gearshape`) -- Dictation prefs, meeting recording prefs, storage, permissions
 
-There is no dedicated Meetings tab. Meeting **capture** lives on the Transcribe tile (plus hotkey + menu bar); meeting **browse** lives under Library's Meetings filter. Reason: a separate sidebar entry was a third entry point for an action already covered by hotkey + menu bar, and meetings have no thumbnail-worthy visual asset, so the date-grouped list (preview text + speaker count) belongs in the unified Library rather than a dedicated tab.
+Meetings now has a dedicated workspace while remaining visible in Library.
+Meeting **capture** still lives on the Transcribe tile, hotkey, menu bar, and
+Meetings workspace; meeting **browse** lives both in the Meetings workspace and
+under Library's Meetings filter. Reason: Library remains the universal archive,
+while Meetings is the workflow surface for upcoming calendar context, the active
+recording state, recent meetings, recovery states, and intelligence readiness.
 
 Column width: `min: 160, ideal: 180, max: 220`. Window minimum width: 800pt.
 
@@ -91,7 +99,7 @@ Content transitions between tabs use `DesignSystem.Animation.contentSwap` (0.2s 
 |  +----------------------+  +--------------------------+    |
 |  +------------------------------------------------------+  |
 |  |  o  Record Meeting                          * Start  |  |
-|  |     Capture system audio + mic, transcribed locally  |  |
+|  |     Selected audio sources, transcribed locally         |  |
 |  +------------------------------------------------------+  |
 +------------------------------------------------------------+
 ```
@@ -110,11 +118,210 @@ States, all bound to the long-lived `MeetingRecordingPillViewModel` shared with 
 - **Completed**: green checkmark + "Saved to Library"; auto-reverts to idle.
 - **Error**: amber triangle + recovery message; auto-dismisses through the recording flow coordinator.
 
-The tile body is informational. Only the visible Start and Stop capsules are real SwiftUI `Button`s, and both call the same `toggleRecording` path the menu bar uses. Completing, transcribing, completed, and error states render as inert status surfaces and must not expose button traits or no-op accessibility actions. The floating pill stays visible during recording so users who hide the main window keep an active control surface.
+The tile body is informational. Only the visible Start and Stop capsules are real SwiftUI `Button`s, and both call the same `toggleRecording` path the menu bar uses. Completing, transcribing, completed, and error states render as inert status surfaces and must not expose button traits or no-op accessibility actions. The floating pill stays visible by default during recording so users who hide the main window keep an active control surface; users can hide it in Settings and continue controlling the live recording from the status menu, hotkey, or Meetings surfaces.
 
-### Library Meetings Filter
+### Library Layouts and Meeting States
 
-When `Library.filter == .meeting`, the view renders a date-grouped list (`Today` / `Yesterday` / `Previous 7 Days` / `Previous 30 Days` / `{Month Year}`) using `MeetingDateGroupHeader` + `MeetingRowCard` instead of the thumbnail grid the other filters use.
+When list mode is selected, the view renders a date-grouped list (`Today` / `Yesterday` / `Previous 7 Days` / `Previous 30 Days` / `{Month Year}`) using `MeetingDateGroupHeader` + `MeetingRowCard`. Routine retained-audio state does not add repeated text pills: retained audio has no marker, while no retained path uses a quiet crossed-waveform icon with a tooltip and keyboard-accessible explanation that the transcript remains available. A no-retained-path state is not proof that a user deleted the audio. Unexpected missing audio remains an explicit amber warning so recovery expectations stay visible before the user opens a menu.
+
+A finalized meeting whose `meetingCaptureReport.quality` is `partial` shows the
+existing **Partial audio** badge in both its Library row and thumbnail card, and
+the existing **Partial meeting audio** banner in transcript detail. The shared
+presentation explains elapsed versus captured duration and each degraded source.
+Healthy silent system audio adds no warning; silence also adds no extra message
+when another source has a genuine capture failure. Missing, interrupted, failed,
+or short capture and playback fallback remain visible. This state is durable and
+appears after finalization; it does not add a live alert or automatically restart
+ScreenCaptureKit during a meeting.
+
+Every Library filter, including Meetings, exposes a compact Grid/List segmented
+control in the header. With no stored choice, Meetings uses the date-grouped list
+and other Library contexts use the grid. Browsing and switching filters do not
+save a preference. An explicit Grid or List choice is global across Library
+contexts and persists across launches; the separate Meetings workspace is unchanged.
+List mode reuses the date-grouped row presentation and adds the transcription
+source beside the title; thumbnail cards also show the source. Source
+attribution is drawn only where the active context leaves the source open,
+resolved from the same `(scope, filter)` pair as the library query. `All` and
+`Favorites` admit any source and show the icon with its text. `Podcasts`,
+`Local`, `Meetings`, and every filter inside the Meetings workspace admit
+exactly one source, so the label is omitted rather than repeating the filter.
+While a source-filter query reloads, existing cards retain the attribution
+resolved for their displayed result set; the destination context applies only
+when its rows publish.
+
+`Video` has narrowed the source to one family but not to one platform, so it
+shows the platform's own brand mark from `Resources/BrandGlyphs` without the
+word. The word is dropped only where such a mark replaces it: a source that
+maps to more than one platform (`Podcast` covers any feed, `Video` covers
+Twitch and unrecognized hosts) or whose asset fails to load keeps its text,
+because the SF Symbol fallback is shared by seven sources and separated only
+by tint, which names nothing to a reader who cannot distinguish those colors.
+The brand mark is hidden from accessibility, so the label supplies the source
+name that the logo carries visually. Search, filters,
+contextual actions, pagination, export, and bulk selection behave identically in
+either layout.
+
+Thumbnail cards show transcription failure, stopped transcription, and pending
+background transcription independently of routine retained-audio state. Queued and running
+finalization both use the persisted `processing` status and the existing
+**Transcribing** presentation, never a completed claim. A stale or partial snippet
+must not hide a card's non-completed status. Missing audio, recovery, and
+partial-capture warnings remain explicit rather than being compressed into a
+routine state icon.
+
+When a grid card has locally cached or successfully loaded remote artwork, that
+real artwork remains first. A remote image that is still loading keeps its loading
+surface. When no artwork exists or remote loading fails, the 16:9 area shows a
+static Branching Field cover derived only from the transcription UUID and fixed
+v1 recipe. Its legible focal mass grows into a bounded, fine recursive canopy;
+the selected curated palette is decorative and does not encode source,
+status, audio, transcript, confidence, title, duration, or time. The cover has no
+text or animation, so existing title, duration, source, and lifecycle chrome stay
+legible and authoritative outside the artwork.
+List rows retain their existing snippet-first preview behavior, including while
+a meeting with saved transcript text is being retranscribed.
+
+Favorited Library items show a small filled amber star beside their title in
+grid, list, and transcript detail. It is a passive status marker with a
+**Favorite** tooltip and accessibility label; the existing item menu keeps the
+Add/Remove Favorite action. Unfavorited items show no empty star. The marker
+applies consistently to meetings, imports, and URLs without changing favorite
+persistence or filtering.
+
+Opening an empty processing meeting row must preserve that same lifecycle
+truth. The transcript pane shows an indeterminate "Transcribing meeting"
+surface, states that the audio is saved and final transcription continues in
+the background, and tells the user they may leave and return later. It must not
+use the terminal "No transcript available" empty state. Edit and Retranscribe
+are unavailable while the row is processing. After the row reaches a terminal
+state, Text mode permits Edit even when transcription produced no text so the
+user can enter it manually; Retranscribe still requires retained audio. If the
+matching detail page is already open when background finalization finishes, it
+refreshes in place on either success or terminal failure, even while another
+meeting is recording. That in-place refresh must not navigate, activate a
+window, or replace an unrelated open detail page. Recorder-idle queued
+completion may still present the finished meeting, matching the existing
+queued-completion behavior.
+
+### Transcription Labels Popover
+
+Label editing uses a compact popover anchored to the action that opened it from
+Library, the Meetings workspace, or any saved-transcription detail. Labels are
+shared by meetings, podcasts, videos, and local files. The popover floats above
+the current context without masking or resizing it and is never presented as a
+blocking sheet. It has a **Labels** heading, a focused full-width **Search or
+create a label** field, and a content-sized results region capped to the space
+available for the popover. Clicking outside or pressing Escape dismisses it.
+
+The source tabs — Meetings, Podcasts, Video, and Local — are the transcription
+types. The product does not add a second, user-defined "meeting type" taxonomy.
+Legacy custom meeting types are migrated to labels without removing the legacy
+database value, preserving downgrade compatibility.
+
+Result prompts expose an **Available for** label cloud in the Prompt Manager.
+**All transcriptions** is the default. Selecting one or more colored labels
+makes the prompt available when any selected label is present, across meetings,
+podcasts, videos, and local files. The same availability gate applies before
+automatic generation; the prompt's existing per-source Auto-Run setting remains
+the source of truth for whether matching content runs automatically.
+
+The label editor keeps every assigned label in a separate wrapping token area
+below search, even when the query matches none of them. The region grows for
+small content and scrolls only after its height cap, so each assigned token and
+its remove action remains reachable. Available labels appear even with an empty
+query; every match is reachable by scrolling, and a valid unmatched query puts
+**Create “name”** next to the available-label results. Selected and available
+rows use a color dot, name, and state icon; tokens retain a reachable remove
+action. Pressing Return reuses an exact match or creates and immediately assigns a new value. Long
+labels truncate visually only after preserving their full tooltip and
+accessibility name.
+
+Every rendering of a label resolves its color from the same stored label ID:
+supported persisted tokens (`coral`/`orange`, `green`, `amber`/`yellow`, `red`,
+`purple`, and `blue`) take precedence; missing or unsupported tokens map
+deterministically from UUID bytes. Reordering, renaming, filtering, or restart
+does not change the color. This is display-only: no migration, stored-token
+rewrite, or color picker is implied.
+
+Library's compact **Labels** / **Labels · N** filter trigger opens a searchable
+vertical option list with color dots, names, and selected checks. It states
+**Match any selected label**, retains the existing OR query semantics, offers
+**Show selected**, and provides a scoped Clear action. Search or Show selected
+only changes visible options; neither removes a label assignment. No Any/All
+mode or persistent toolbar row of filter pills is added.
+
+### Saved Meeting Notes
+
+Every saved meeting detail exposes a dedicated `Notes` tab immediately after
+`Transcript`, including meetings with no notes and meetings whose transcription
+is still processing. Notes are an editorial layer and never appear inside the
+factual transcript pane. The tab always shows an editable plaintext
+`TextEditor`, including when notes are empty, with Copy, word count, and the
+existing 7,500-word soft-cap warning. The separate 8,000-word cap bounds notes
+sent to prompt assembly; it does not truncate stored notes.
+
+Changes auto-save to SQLite after a 500 ms idle debounce. The status is hidden
+on entry, including for empty notes. Editing shows a small spinner; a successful
+save briefly shows a muted green check before the status disappears. These
+routine states use icons with tooltips and accessibility labels, in a fixed-size
+slot. Save failures retain visible text and Retry. The word count remains
+separate and uses singular wording for one word. The editor stays writable
+during persistence.
+Leaving the tab, leaving the detail page, or starting an LLM action flushes the
+latest draft and refreshes the derived meeting files once. Ordinary quit also
+flushes pending file refreshes, including drafts already saved to SQLite.
+The debounce does not rebuild transcript or prompt-result files. Chat and result
+prompts never start after a failed database flush, so they
+cannot receive stale notes. Saving blank or whitespace-only text clears the
+canonical value. Database success remains authoritative even if the
+derived-artifact refresh reports a separate retryable warning. Successive
+saves use database last-writer-wins semantics. Notes, title and speaker rename
+refreshes are ordered per meeting and reread the committed row before writing.
+Other producers, including the CLI, retain their existing refresh behavior.
+
+A notes-save error banner belongs to the selected meeting. Selecting another
+recording dismisses that banner while retaining the failed draft and its retry
+state in the notes coordinator. Same-meeting metadata refreshes and background
+saves for other meetings preserve the banner; unrelated diagnostics remain intact.
+
+### Result Prompt Meeting-Notes Context
+
+The expanded configuration area of every result-prompt card includes an
+**Include meeting notes as context** checkbox and this help text:
+
+> When this prompt runs on a meeting with notes, use those notes as additional
+> context. The transcript remains the source of truth.
+
+The checkbox is present for built-in and custom result prompts, absent for
+Transforms, and off by default. Custom-prompt Create/Edit sheets expose the
+same choice; an enabled card may show a quiet `Meeting notes` context badge.
+The primary UI does not mention `{{userNotes}}`: that variable remains an
+advanced custom-template compatibility mechanism. Chat/Ask does not gain this
+checkbox and retains its existing automatic use of committed meeting notes.
+
+This UI was implemented and locally verified on 2026-09-05. Release
+availability follows the normal channel process.
+
+### Local Transcription Rename
+
+Local transcription rows expose `Rename...` with a `pencil` symbol in the same Library card/context menu as `Open`, placed before selection and destructive actions. The dialog is compact, prefilled with the effective display title, and rejects blank titles. Until the user explicitly renames it, a Local row's effective title is its original media filename rather than transcript-derived opening words. Rename is a display-metadata operation only: the original source filename/path remain unchanged, and copy-on-import/media-retention behavior is not implied.
+
+The transcript detail header uses the same effective title as the Library. The pencil affordance is available for supported title-editing sources: meetings through the existing meeting title path, and local file transcriptions through the persisted title override path.
+
+Meeting rename publishes the row returned by its database write; a missing
+record is an error, not a successful local rename. Library and Recent Meetings
+replace any in-flight meeting-capable query snapshot while preserving its
+requested page window. Idle date-sorted windows update in place; title sorting
+and search membership are re-evaluated. Non-meeting-only queries are unaffected.
+
+### Library Multi-Select Cleanup
+
+Library offers a `Select Many...` secondary action when there are visible rows. Selection mode keeps actions in a contextual bar above the content: `Cancel`, `Select All` (which targets the loaded rows only, so deletion never reaches unloaded records), `Clear`, `Remove Audio Only...` for selected meetings with stored audio, and `Delete Items...` / `Delete Meetings...` for full deletion.
+
+Selected cards and meeting rows use the app accent/coral selected state. Destructive red is reserved for confirmation actions and destructive menu items, not for the selected state itself. Meeting full deletion removes the meeting row, transcript, stored audio, notes, AI results, and chats when those optional artifacts exist. `Remove Audio Only...` removes only stored meeting audio and leaves the transcript plus optional notes, AI results, and chats. Confirmation copy must state that playback and retranscription become unavailable unless the user saved a copy of the audio.
+
+The dedicated Meetings workspace mirrors the Library meeting cleanup model for Recent Meetings, using the same top contextual action bar, keyboard handling, and confirmation copy.
 
 ---
 
@@ -162,13 +369,13 @@ Full-width flat chronological list with bottom bar audio player. No split pane �
 
 Components:
 - Timestamp column: 56pt wide, right-aligned — time (caption.monospacedDigit) + duration below (caption2.monospacedDigit, tertiary)
-- Transcript: cleanTranscript ?? rawTranscript, NO line limit, full text always visible
+- Transcript: cleanTranscript ?? rawTranscript; long entries collapse to 3 lines with an expand/collapse toggle, shorter entries show in full
 - Text selection enabled on transcript
 - Hover actions: Play (if audio) + Copy + three-dot Menu (Download Audio, Delete)
 - Currently-playing row: subtle accent tint background (accentColor 6%)
 - Hover background: subtle tint (primary 4%)
 - Context menu: Play/Pause, Copy, Download Audio, Delete (⌘⌫)
-- No selection state — no accent bar, no List(selection:)
+- Bulk-selection mode (mirrors Library): per-row selection circles plus a contextual action bar when active; no accent bar or List(selection:) in the default browsing state
 - Delete shows confirmation alert (shared at view level, not per-row)
 ```
 
@@ -422,6 +629,9 @@ Errors use a wider rounded-rectangle card instead of the compact pill — distin
   STT/CoreML/model   → "Speech Engine Not Ready"
   Microphone/audio  → "Microphone Unavailable"
   Permission/access → "Permission Required"
+  No speech/empty   → "No Speech Detected"
+  Clipboard paste   → "Copied to Clipboard"
+  Not recording     → "Not Recording"
   Timeout           → "Transcription Timed Out"
   Memory/OOM        → "Out of Memory"
   Fallback          → "Something Went Wrong"
@@ -467,7 +677,7 @@ panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
 ## Meeting Recording Pill (v0.6)
 
-Persistent floating pill that appears during meeting recording. Uses the sacred-geometry Merkaba icon as the anchor. Clicking the pill opens the meeting recording panel. Shares its state (`MeetingRecordingPillViewModel`) with the **Meeting Recording Tile** on the Transcribe tab — both surfaces stay in sync because they bind to the same long-lived view model owned by `AppDelegate`.
+Default-on floating pill that appears during meeting recording unless the user disables **Show floating meeting controls** in Settings. Uses the sacred-geometry Merkaba icon as the anchor. Clicking the pill opens the meeting recording panel. Shares its state (`MeetingRecordingPillViewModel`) with the **Meeting Recording Tile** on the Transcribe tab — both surfaces stay in sync because they bind to the same long-lived view model owned by `AppDelegate`.
 
 ### Layout
 
@@ -484,12 +694,13 @@ Persistent floating pill that appears during meeting recording. Uses the sacred-
 
 ### Behavior
 
-- **Appears** when meeting recording starts (after permissions granted)
-- **Persists** for the entire recording session — does not auto-dismiss
+- **Appears** when meeting recording starts (after permissions granted) if `showMeetingRecordingPill` is enabled
+- **Persists** for the entire recording session while enabled — does not auto-dismiss
 - **Click** anywhere on the pill opens the meeting recording panel
 - **Stays visible** during concurrent dictation — dictation overlay appears separately
 - **Hides** idle pill while visible (meeting pill replaces it)
 - **Disappears** when recording stops (transitions to transcription in library)
+- **Status menu fallback** exposes Stop Recording and Open Live Meeting Panel so hidden-pill recordings remain controllable
 
 ### Panel: `NSPanel` (non-activating)
 
@@ -523,8 +734,8 @@ Floating panel opened from the meeting recording pill. Shows live notes, live tr
 - **Elapsed timer** — updates every second
 - **Dual audio level meters** — mic and system audio levels (visual feedback that both streams are capturing)
 - **Tabs** — Notes / Transcript / Ask, with ⌘1 / ⌘2 / ⌘3 shortcuts; Notes and Transcript are plain labels, Ask adds a streaming dot while `chatViewModel.isStreaming` and collapses that dot into the tooltip at narrow width
-- **Notes pane** — plaintext editor with slash commands, debounced auto-save through `MeetingRecordingService.updateNotes(_:)`, soft-cap warning near 8,000 words, and lock-file crash recovery
-- **Transcript pane** — scrolling live preview with source labels ([Me] = mic, [Them] = system audio); lag notice appears when preview chunks fall behind or are dropped
+- **Notes pane** — plaintext editor with slash commands, debounced auto-save through `MeetingRecordingService.updateNotes(_:)`, soft-cap warning at 7,500 words, and lock-file crash recovery
+- **Transcript pane** — scrolling live preview grouped into reading paragraphs, with one source label and timestamp per paragraph ([Me] = mic, [Them] = system audio); lag notice appears when preview chunks fall behind or are dropped
 - **Ask pane** — live chat against the rolling transcript using the configured LLM provider; follow-up state is handed off after finalization
 - **Stop button** — stops recording, triggers batch transcription, navigates to result
 - **Meetings empty state copy** — one-line guidance: "For the cleanest separation between you and other participants, use headphones."
@@ -573,7 +784,9 @@ During concurrent dictation + meeting recording:
 ### Behavior
 
 - Left-click opens the menu
-- The menu bar icon is always visible when the app is running
+- The menu bar icon is visible by default and can be hidden under Settings → System → Startup while the Dock icon remains available
+- The two Startup toggles resolve their conflict symmetrically: enabling Menu bar only mode restores the menu icon, while hiding the menu icon turns Menu bar only mode off
+- Restoring a hidden icon immediately reflects the current idle, recording, or processing state
 - "Recent Transcriptions" submenu shows last 5 transcriptions with relative timestamps
 - Clicking a recent transcription opens the main window to that transcription's detail
 
@@ -609,7 +822,22 @@ Drop zone components:
 - "Browse Files" button: .borderedProminent style
 - Supported formats text: caption, tertiary
 - Drop zone height: 200pt (DesignSystem.Layout.dropZoneHeight)
+- Open-panel type filters should guard `UTType(filenameExtension:)` results;
+  supported extension strings can still produce `nil`.
 ```
+
+### Embedded Audio Track Picker
+
+After a local file/folder selection, FFmpeg reads container headers without
+adding a new control or preference. This preflight does not create a Library
+row or start STT. Exactly one audio track continues immediately with no new UI.
+Two or more tracks present a compact sheet whose rows are named `Track N`,
+enriched with language and default-state metadata when available.
+Choosing a row starts transcription immediately; Cancel leaves no partial
+transcription. For a batch, the sheet says that one choice applies to its
+multi-track files; single-track files continue automatically. The picker never
+appears for single-track files, URLs, podcasts,
+dictation, or meeting capture, and it is not duplicated in Settings.
 
 ### Processing State
 
@@ -620,8 +848,8 @@ Uses `SpinnerRingView` plus phase-aware progress feedback.
 │                                                          │
 │                    [merkaba spinner]                     │
 │                                                          │
-│               "Downloading audio... 42%"                │
-│                     [linear 42% bar]                     │
+│                "Preparing speech model..."              │
+│                  [indeterminate bar]                     │
 │                                                          │
 │                    [error if any]                        │
 │                                                          │
@@ -629,11 +857,13 @@ Uses `SpinnerRingView` plus phase-aware progress feedback.
 
 - SpinnerRingView(size: 48, tintColor: .accentColor)
 - Phase icon behind spinner:
-  - Download phase (`"download"` in phase text): `arrow.down.circle`
+  - Download phase: `arrow.down.circle`
+  - Speech-model preparation phase: `cpu`
   - Transcription phase: `waveform`
 - Progress text: body font, secondary color (`viewModel.progress`)
-- Determinate progress bar shown when phase text ends with `%` (parsed from phase string)
-- During download phases without parsable percent, show indeterminate linear bar + helper text
+- Determinate progress bar shown only when the structured phase carries a fraction
+- Speech-model preparation is indeterminate; Whisper explains that first-use
+  Core ML optimization can take several minutes
 - Error text: caption, red (if present)
 ```
 
@@ -672,6 +902,48 @@ Transcript:
 Export bar:
 - Export .txt + Copy buttons, bordered style
 ```
+
+### Transcript Body Layout Rules
+
+The Library "freeze at 100% CPU" bug (macOS 26) was a self-feeding SwiftUI
+update loop in the timed transcript: a `LazyVStack` view cache re-measuring
+and re-instantiating rows after a scroll, each row's `.textSelection(.enabled)`
+platform overlay requesting another update, and hover re-dispatch after every
+update keeping it alive. Rules that follow from it:
+
+- Small transcripts render in a plain `VStack`; transcripts above the 400-row
+  `TranscriptBodyLayout.nonLazyRowLimit` use `LazyVStack`. An unknown count
+  stays lazy while the detached cache builds, avoiding an eager long-transcript
+  first-open. Speaker turns are split into cards of at most 24 segments so a
+  long single-speaker turn cannot defeat laziness. DEBUG launches can flip
+  layout and row selection with `MACPARAKEET_DEBUG_TRANSCRIPT_LAZY` and
+  `MACPARAKEET_DEBUG_TRANSCRIPT_SELECTION` to bisect a recurrence.
+- Do not put more AppKit platform views (representables, selectable text
+  overlays) inside lazily measured rows than the row already has.
+- `Tests/MacParakeetTests/Views/TranscriptTimestampedLayoutSmokeTests.swift`
+  hosts the real view offscreen, scrolls it down and back, and fails if layout
+  keeps re-running; hover itself cannot be simulated offscreen and stays a
+  manual check.
+
+### Transcript AI Context Lifecycle
+
+The release-readiness candidate prepares rich AI context off the main actor
+from one immutable transcript revision and context mode. The view shares
+in-flight preparation and cached results for that revision; send, quick prompt,
+summary generation, and regeneration await valid context rather than sending
+an empty/loading placeholder. Before provider submission, the request must
+still match the active transcription ID, content revision, and mode.
+
+Edits, reverts, metadata/content refreshes, transcription switches, and mode
+changes invalidate stale prepared context; disappearing invalidates owned
+context work. Late completion cannot replace current chat context or submit
+the previous transcript. This is the context-loader contract, not a claim that
+every media task is cancelled or that long-transcript hardware/UI QA has passed.
+If the same transcript's revision or context mode changes while a prompt is
+being prepared, the still-current action shows a retry notice without submitting
+stale context. Navigation, disappearance, explicit cancellation, and replacement
+actions remain silent. The notice uses the existing result-header error surface;
+there is no automatic resubmission.
 
 ### Recent Transcriptions List
 
@@ -716,12 +988,12 @@ Row anatomy:
 
 Settings open in the content area when "Settings" is selected in the sidebar. The current information architecture is a four-tab shell with a persistent header, search field, and status-aware tab badges:
 
-- **Modes** — Audio Input, Dictation, Transcription, and Meeting Recording cards. Calendar controls are folded into Meeting Recording but hidden in v0.6 while `AppFeatures.calendarEnabled = false`.
-- **Engine** — Speech engine selector, Whisper language picker, and local model status/management.
+- **Modes** — Audio Input, Dictation, Transcription, and Meeting Recording cards. The Meeting Recording card groups start/stop automation under an "Automatic recording" subsection as two parallel on/off toggles: a calendar-driven "Start recording automatically" adaptive row (requests Calendar access in context, then becomes a plain on/off toggle that reveals an elevated sub-panel — matching the "Also save meetings to a folder" disclosure — holding the `.notify` vs `.autoStart` mode segmented control plus the reminder, event-filter, and per-calendar controls; `.off` is the toggle's unchecked state; `AppFeatures.calendarEnabled = true`) paired with an activity-driven "Stop recording automatically" toggle (`AppFeatures.meetingAutoStopEnabled = true`). Both halves use the same toggle idiom so the lifecycle pair reads as symmetric. Below the floating-controls toggle sits a meeting-end pair: **Open app when meeting ends** (default on; off preserves the user's focus and workspace while the meeting completes, including an in-place refresh of its already-open detail) and **Notify when transcript is ready** (default on; a quiet-completion chime plus a banner only while backgrounded, disabled while auto-open is on without changing its saved value — see F47 in `spec/02-features.md`). The meeting folder disclosure distinguishes complete managed meeting artifacts from the selected-format file saved to the chosen folder, shows the resolved managed-artifact path, and warns when the chosen folder is unavailable or not writable. TXT and Markdown additionally expose independent toggles for one timestamp per reading paragraph, speaker labels, and meeting details; those toggles affect only the folder copy.
+- **Engine** — One Speech Engine card with the primary engine tiles and an inline optional recordings/files override, followed by per-engine model/language controls and local model status/management.
 - **AI** — Optional provider setup for summaries, transcript chat, prompt actions, and live Ask.
-- **System** — Startup, permissions, storage, updates, privacy/telemetry, onboarding reset, about, and fenced Reset & Cleanup actions.
+- **System** — Appearance; a Startup card with Launch at login, Hide menu bar icon, and Menu bar only mode; permissions; storage; updates; privacy/telemetry; onboarding reset; about; and fenced Reset & Cleanup actions.
 
-`SettingsRootViewModel` owns active-tab persistence and search state. `SettingsSearchIndex` provides cross-tab search results and hides calendar entries while `AppFeatures.calendarEnabled` is `false`. The legacy card sketches below are retained only as historical content references; their grouping is not the current v0.6 IA.
+`SettingsRootViewModel` owns active-tab persistence and search state. `SettingsSearchIndex` provides cross-tab search results and includes calendar entries while `AppFeatures.calendarEnabled` is `true` (currently enabled; they surface once Calendar access is granted), and hides them when the flag is off. The legacy card sketches below are retained only as historical content references; their grouping is not the current v0.6 IA.
 
 ### General (v0.1)
 
@@ -771,7 +1043,7 @@ The Vocabulary sidebar item is a dedicated panel for managing the text processin
 │                                                           │
 │  HOW IT WORKS                                             │
 │  ─────────────────────────────────────────────────────    │
-│  1. Filler Removal — Strips um, uh, like, you know       │
+│  1. Filler Removal — Strips uh, umm, uhh                 │
 │  2. Custom Words — Fixes domain terms STT gets wrong      │
 │  3. Text Snippets — Expands trigger phrases to full text  │
 │  4. Whitespace Cleanup — Normalizes spacing/punctuation   │
@@ -810,7 +1082,7 @@ The Transforms sidebar item is visible when `AppFeatures.transformsEnabled` is t
 │  ┌─ Distill ───────────────────────────────  ⌥2  [Edit] │
 │  │ Compress to signal and remove noise.                  │
 │  └───────────────────────────────────────────────────────┘
-│  ┌─ Decide ────────────────────────────────  ⌥3  [Edit] │
+│  ┌─ Decide ───────────────────────────────  ⌃⌥3  [Edit] │
 │  │ Turn discussion into a decision-ready note.            │
 │  └───────────────────────────────────────────────────────┘
 │                                                           │
@@ -819,41 +1091,44 @@ The Transforms sidebar item is visible when `AppFeatures.transformsEnabled` is t
 └───────────────────────────────────────────────────────────┘
 ```
 
-- Built-ins are `Polish`, `Distill`, and `Decide` with default `Option-1/2/3` bindings.
+- Built-ins are `Polish`, `Distill`, and `Decide` with default `Control-Option-1`, `Control-Option-2`, and `Control-Option-3` bindings.
 - A Transform is active when it has a shortcut; there is no second user-facing global enable toggle.
 - The editor validates shortcuts against dictation, meeting, duplicate Transform bindings, bare keys, and hostile Option-letter dead-key combos.
 - The floating Transform progress pill owns running/cancel/error state. The target app remains focused; MacParakeet does not show an inline preview before replacement.
 - Local Transform history is user data. It may contain selected text and output; telemetry and `llm_runs` do not duplicate that content.
 
-### Custom Words Management (v0.2)
+### Custom Words Management
 
-```
-┌───────────────────────────────────────────────────────────┐
-│  ← Vocabulary    CUSTOM WORDS                            │
-│  ─────────────────────────────────────────────────────    │
-│                                                           │
-│  🔍 Search words...                          [+ Add]     │
-│                                                           │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │  Word              Replacement         Enabled      │  │
-│  │  ─────────────────────────────────────────────────  │  │
-│  │  para keet         Parakeet            [✓]          │  │
-│  │  mac o s           macOS               [✓]          │  │
-│  │  jay son           JSON                [✓]          │  │
-│  │  kubernetes        (anchor)            [✓]          │  │
-│  │  eye phone         iPhone              [ ]          │  │
-│  └─────────────────────────────────────────────────────┘  │
-│                                                           │
-│  Anchors (no replacement) tell the STT model to keep     │
-│  the word as-is. Corrections replace the STT output.     │
-│                                                           │
-└───────────────────────────────────────────────────────────┘
+Vocabulary > Fix words > Manage words opens a 640 × 560 sheet with a title,
+recognition-support detail, and Done button. Search matches both words and
+replacements. The grouped list shows the word, replacement or exact-spelling
+hint, an enable switch, and an individual delete action. The Add Rule form
+follows the list.
 
-- Table view with inline editing
-- "(anchor)" shown in italic for words with no replacement
-- Toggle enables/disables without deleting
-- Swipe-to-delete or select + Delete key
-```
+**Bulk deletion:** one quiet Select… action appears beside the rule count.
+It enters selection mode without adding persistent checkboxes to the normal
+view. Selection mode replaces enable switches with checkboxes, hides individual
+trash actions and the Add Rule form, and reuses the list header for Select all,
+the selection count, Delete…, and Cancel. Keep that header reachable while
+scrolling large lists. Select all indicates none, some, or all selected.
+
+- A row's checkbox and label form one selection target. Selecting a rule never
+  toggles its enabled state.
+- Select all operates on matching rules, including disabled entries. An empty
+  match set cannot initiate deletion. Changing search clears selection and any
+  unconfirmed request, preventing deletion of hidden rows.
+- Delete… opens a confirmation with the exact count. Cancelling the confirmation
+  preserves selection. Cancel leaves selection mode without deleting anything.
+- During deletion, prevent repeated actions, word mutations, and sheet dismissal.
+  Success returns to the normal list. Failure preserves the list and selection
+  and shows an error beside the list, where it remains visible in selection mode.
+- Exiting the sheet clears transient selection and unconfirmed requests.
+
+See the [selected-word deletion contract](contracts/custom-word-deletion.md)
+for transaction and confirmation-snapshot guarantees, and the
+[approved interaction study](../docs/plans/2026-09-07-issue-882-bulk-delete.md)
+for the current/proposed HTML comparison. This is development behavior until
+included in an app release.
 
 ### Text Snippets Management (v0.2)
 
@@ -915,34 +1190,36 @@ The Transforms sidebar item is visible when `AppFeatures.transformsEnabled` is t
 └───────────────────────────────────────────────────────────┘
 ```
 
-### Speech Recognition (v0.6)
+### Speech Engine and Recordings/Files Override (v0.6)
 
 ```text
 ┌───────────────────────────────────────────────────────────┐
-│  SPEECH RECOGNITION                                       │
+│  SPEECH ENGINE                                            │
 │  ─────────────────────────────────────────────────────    │
+│  Your selected engine handles dictation, meetings,        │
+│  recordings, and files.                                   │
 │                                                           │
-│  Engine                                                   │
-│  [ Parakeet ] [ Whisper ]                                 │
+│  [ Parakeet ] [ Nemotron Beta ] [ Whisper ] [ Cohere ]      │
 │                                                           │
-│  Whisper language                                         │
-│  [ Auto-detect                         ▾ ]                │
-│                                                           │
-│  Parakeet          ╭─✓ Ready─╮              [Repair]      │
-│  Loaded in memory and ready.                              │
-│                                                           │
-│  Whisper           ╭─↓ Not Downloaded─╮     [Download]    │
-│  Download before switching to Whisper.                    │
-│                                                           │
-│                                                           │
+│  ─────────────────────────────────────────────────────    │
+│  ▸ Advanced transcription                                 │
+│    Optionally use a different engine for recordings &     │
+│    files.                                                 │
 └───────────────────────────────────────────────────────────┘
 ```
 
-- Engine picker options: Parakeet (default) and Whisper.
+- The primary tiles control the live speech route. With the override off, this engine handles dictation, meeting preview, authoritative post-meeting transcription, and file/media/URL/retranscription jobs.
+- The recordings/files override is progressive disclosure at the bottom of the card. `Advanced transcription` is collapsed by default; its summary says whether recordings and files inherit the selected engine or use an override. This keeps the normal one-engine setup legible without hiding an active split.
+- Expanding the disclosure explains that one selected engine handles everything by default, then offers an inline `Recordings & files` menu. Its inherited option is named dynamically, for example `Same as Parakeet`. Choosing another eligible engine persists an override for the authoritative pass after meetings stop and for file/media/URL/retranscription jobs; it loads lazily and does not replace the live engine. Choosing the live engine from this menu collapses back to the inherited option.
+- When the two routes differ, the card subtitle names both engines, the live tile carries a filled `Live` chip, and the recordings/files tile carries an outlined `Recordings` chip. Relevant per-engine model cards add their route context.
+- Settings search results for the recordings/files engine expand the disclosure and scroll directly to it.
+- When meeting preview and final routes differ, the recording panel attributes both. If the live engine cannot preview, it says preview is off while confirming audio is still recording for final transcription.
+- Engine picker options: Parakeet (default), Nemotron Beta, Whisper, and Cohere.
 - Whisper language picker is shown for the Whisper path. `Auto-detect` stores no explicit language; specific languages are normalized before saving.
+- Cohere language picker is shown for the Cohere path. Cohere has no auto-detect; `nil` falls back to English and explicit choices store supported primary subtags such as `en`, `ja`, or `zh`.
 - Status pill states: `Unknown`, `Checking`, `Ready`, `Not Loaded`, `Not Downloaded`, `Downloading`, `Repairing`, `Failed`.
 - `Repair` retries Parakeet model download/initialization with bounded backoff.
-- `Download` explicitly downloads the configured Whisper model into `~/Library/Application Support/MacParakeet/models/stt/whisper/`.
+- `Download` explicitly downloads the configured Whisper model into `~/Library/Application Support/MacParakeet/models/stt/whisper/` or Cohere Transcribe into `~/Library/Application Support/MacParakeet/models/stt/cohere-transcribe/`.
 - Switching engines is disabled while STT work is queued/running or an active meeting recording holds a speech-engine lease.
 
 ### Permissions (v0.1)
@@ -974,13 +1251,60 @@ Button to re-run onboarding flow: "Run Onboarding Again..."
 
 ---
 
+## Prompts
+
+The sidebar **Prompts** destination and generation-popover management action
+share `PromptLibraryView`. A single searchable list has prompt-kind and optional
+collection filters. **New prompt** opens creation in a sheet; **Manage
+collections** opens collection creation, renaming, reordering and deletion in a
+separate sheet. Built-in provenance is shown on rows, without separate built-in
+and custom sections or an always-visible creation form. No search matches is a
+filter empty state, not a claim that the user has no custom prompts.
+
+The Meetings **After Each Meeting → Prompts** entry opens the same manager
+in a meeting presentation: active and deleted lists contain only transcript
+result prompts, creation is fixed to that kind, and the Transform kind picker
+is absent. It receives the same collection, version, editing and label-policy
+dependencies as the standalone manager. Collections remain shared prompt
+organization; they are distinct from recording labels and availability rules.
+Live Ask keeps its separate quick-question manager. Auto-Run help uses native
+help so it is not clipped by a row or sheet and does not intercept clicks.
+
+The editor retains Markdown source/preview, notes-context opt-in, collection
+assignment, model override, and collapsed generation settings. **Version history**
+retains version metadata, text/settings comparisons, and restore-as-new-version.
+Restoring requires explicit confirmation; cancelling ordinary edits does not
+silently discard or restore a version. Deleted prompts remain recoverable.
+
+Availability and automatic generation are separate controls. **All transcriptions**
+is the common default; selected labels permit any matching transcription,
+independent of its source. Source-aware auto-run only runs an available prompt.
+Explain both settings together in ordinary language so the user can understand
+why a prompt is offered and when it runs. Existing detailed CLI policy exceptions
+must survive edits that do not change availability. Rules that the simple picker
+cannot represent are shown as **Custom availability rules**; choosing All
+transcriptions or a label explicitly replaces those rules on Save. The prompt,
+its version and edited availability commit atomically. Visibility and source auto-run
+remain in the manager; Transform shortcuts remain in the Transforms editor.
+Collection ordering remains in Manage collections. Prompt ordering and running-label
+metadata are preserved by edits; this layout does not add prompt duplication,
+prompt-reordering controls, or a running-label editor.
+
 ## Discover (v0.4)
 
-A curated content feed displayed as a sidebar item with a full-page content view. Discover surfaces tips, quotes, affirmations, and sponsored items fetched from a remote JSON feed (`macparakeet.com/api/discover.json`) with local cache fallback and a bundled default.
+A curated content feed displayed as a sidebar item with a full-page content view. Discover surfaces tips, quotes, affirmations, and sponsored items fetched from a remote JSON feed (`macparakeet.com/api/discover.json`) with local cache fallback and a bundled default. Visibility and the launch fetch are gated by Settings → System → Appearance → **Show Discover in the sidebar** (`showDiscover`, default on). When launched with the preference off, the card is omitted and `DiscoverService` is not configured, so launch makes no request to the feed endpoint.
+
+While enabled, the feed refresh starts at app launch or on re-enable, not by
+selecting this page, and remains independent of the telemetry setting. Turning
+Discover off cancels cache-load, refresh, and rotation tasks and clears the
+displayed feed. Late completions cannot publish content or revive cancelled
+work, including across rapid disable/re-enable transitions. Bounded local cache
+I/O already queued may finish; disabling does not erase the on-disk cache.
+Neither this setting nor telemetry opt-out is a global network switch.
 
 ### Sidebar Card
 
-The Discover item is **not** part of the regular sidebar `List`. It renders as a pinned card below the sidebar list via `.safeAreaInset(edge: .bottom)`. This keeps it visually distinct and always visible regardless of scroll position.
+The Discover item is **not** part of the regular sidebar `List`. When `showDiscover` is on, it renders as a pinned card below the sidebar list via `.safeAreaInset(edge: .bottom)`. This keeps it visually distinct and always visible regardless of scroll position. Turning the preference off hides the card and, if Discover is the active detail pane, falls back to Transcribe.
 
 ```
 ┌──────────────────┐
@@ -1063,10 +1387,48 @@ Users can submit suggestions via a text form at the bottom of the feed. Submissi
 ### Data Flow
 
 ```
-App launch → DiscoverViewModel.loadCached() → DiscoverService reads disk cache (or bundled fallback)
-          → DiscoverViewModel.refreshInBackground() → DiscoverService fetches remote JSON, writes cache
-          → Sidebar card rotates through items every 30s
+App launch
+  showDiscover == false → DiscoverViewModel.cancelDiscover(); no service, no request
+  showDiscover == true  → DiscoverViewModel.loadCached() → DiscoverService reads disk cache (or bundled fallback)
+                        → DiscoverViewModel.refreshInBackground() → DiscoverService fetches remote JSON, writes cache
+                        → Sidebar card rotates through items every 30s
+Toggle off  → cancel in-flight load/refresh/rotation and drop the feed
+Toggle on   → setupDiscoverContent() again (no relaunch)
 ```
+
+---
+
+## LLM Markdown Content
+
+`MarkdownContentView` is the single presentation boundary for generated
+assistant content in Prompt Results, saved Chat, and live Ask. It renders the
+same CommonMark/GFM subset on every surface, including nested lists, static
+checked/unchecked task items, fenced code, and horizontally scrollable tables.
+The surrounding pane owns vertical scrolling; wide Markdown blocks must not
+expand the transcript detail or live-meeting panel.
+
+Static and streaming content share a serial snapshot renderer. Each appearance
+subscribes afresh and receives the latest content; only the newest pending
+snapshot is retained while parsing. Closing or hiding a pane cancels its
+consumer, and a cancelled parse cannot publish over a replacement renderer.
+Returning to the pane must continue rendering new snapshots.
+
+Generated Markdown remains read-only and selectable. Task boxes communicate
+their checked state but are not controls. Headings and table cells preserve the
+renderer accessibility structure. Fonts and colors map to `DesignSystem` and
+must remain appearance-aware.
+
+Treat rendered model output as untrusted presentation data:
+
+- image loading is disabled, including remote, local-file, bundled, and data URL
+  sources;
+- only `http` and `https` links may be handed to the system browser;
+- activation of `file:`, `javascript:`, custom schemes, and relative
+  destinations is discarded;
+- raw HTML does not create a web view or executable embedded content;
+- Copy Result and full-result exports continue using the original Markdown
+  source. Table-only Copy and Download use the renderer's normalized Markdown
+  for that table.
 
 ---
 
@@ -1312,4 +1674,4 @@ MacParakeet follows standard macOS patterns:
 
 ---
 
-*Last updated: 2026-03-14*
+*Last updated: 2026-06-21*

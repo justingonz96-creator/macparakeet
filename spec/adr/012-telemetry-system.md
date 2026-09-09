@@ -34,7 +34,7 @@ Without observability, we can't make informed product decisions or debug issues 
 2. **Full control over privacy guarantees** — We can make architectural promises (no persistent IDs, no IP storage) and verify them in our own code.
 3. **$0 at our scale** — D1 free tier supports ~3,300 DAU before needing the $5/mo paid tier.
 4. **Dashboard is no longer the bottleneck** — AI-assisted development makes building a simple dashboard trivial.
-5. **Simplicity** — The entire system is ~200 lines of code (Swift client + Cloudflare Worker). No vendor SDK, no third-party dependency in the app.
+5. **Simplicity** — A typed Swift client plus one Cloudflare Worker. No vendor SDK and no third-party analytics dependency in the app binary; we own the whole pipeline. (The typed event catalog has grown substantially since launch, but the architecture and dependency footprint are unchanged.)
 
 ### Privacy Model
 
@@ -46,14 +46,21 @@ The system is designed as **non-identifying, session-scoped telemetry**:
 - **Country only** — Derived from Cloudflare's `CF-IPCountry` header, not from IP geolocation we perform
 - **No content** — Transcription text, custom words, file names, URLs, LLM prompts are never sent
 - **Idempotent** — Client-generated event UUIDs prevent double-counting
-- **Error messages redacted** — Server-side regex strips file paths, URLs, API keys, and emails before storage. Descriptions truncated to 512 chars.
-- **Opt-out** — Users can disable in Settings; `send()` becomes a no-op
+- **Structured errors** — The typed client omits free-form `error_detail`, `error_occurred.description`, and crash `reason`. Keep error categories, safe domain/numeric codes, and crash symbolication fields. The paired website ingestion change discards these text fields from older clients too; public stats scrub historical snapshots before serving them. Regex cannot establish that arbitrary error text is content-free. See [the telemetry contract](../contracts/telemetry-v1.md).
+- **Opt-out** — Discard queued events and invalidate retries and waiting batches. A request already in flight may finish; only the explicit final opt-out event can bypass the disabled preference.
 
 This is not "anonymous" in the strict GDPR sense (session + chip + locale + country + timestamps could theoretically single out users). It is non-identifying: we have no mechanism to map any event to any person, and we don't try.
 
 ### What We Collect
 
-~40 event types across 9 categories: app lifecycle, dictation, transcription, feature adoption, settings, licensing (future), performance, permissions, and errors. Full catalog in `docs/telemetry.md`.
+The live source of truth for event types is the `TelemetryEventName`
+enum (`Sources/MacParakeetCore/Services/Telemetry/TelemetryEvent.swift`) and the
+catalog in `docs/telemetry.md`. They span app lifecycle, dictation,
+transcription, speaker diarization, meeting recording + crash recovery, calendar
+auto-start, feature adoption, settings, licensing (retained but mostly unfired in
+free builds), performance/model lifecycle, permissions, errors/crashes, and CLI
+usage. The catalog pairs lightweight breadcrumb events with wide per-operation
+outcome events (`*_operation`) for product-health analysis.
 
 ### What We Don't Collect
 
@@ -77,7 +84,7 @@ Transcription content, audio, file paths, YouTube URLs, LLM prompts/responses, c
 ### Risks
 
 - **Endpoint abuse** — Mitigated with event name allowlist, rate limiting, field validation
-- **Schema evolution** — Props are JSON, so new event types don't require migrations. New categories just need allowlist updates.
+- **Schema evolution** — Props are JSON, so new props and new event shapes on an existing event name do not require D1 migrations or website allowlist changes. Every new `TelemetryEventName` still must be added to the `ALLOWED_EVENTS` allowlist in the **separate** `macparakeet-website` repo: the Worker rejects an entire batch if it contains any unknown event, silently dropping co-batched events until the allowlist is redeployed. This has bitten us more than once; a CI guard that diffs the Swift enum against the website allowlist is planned (`plans/active/2026-06-12-telemetry-allowlist-ci-guard.md`).
 
 ## References
 

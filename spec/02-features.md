@@ -1,9 +1,12 @@
 # MacParakeet: Features Specification
 
 > Status: **ACTIVE** - Authoritative, current
-> What we're building, in what order, and why.
+> Current behavior and historical feature groupings. Version headings below
+> record the original plan structure, not a complete release manifest; use
+> [the canonical release/flag table](README.md#release-channels-and-feature-flags)
+> for availability.
 
-**North Star:** The fastest, most private transcription app for Mac.
+**North Star:** Fast, private, local-first voice for Mac.
 
 See [00-vision.md](./00-vision.md) for positioning and market context.
 
@@ -68,22 +71,23 @@ See [00-vision.md](./00-vision.md) for positioning and market context.
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  v0.6 - "Meeting Recording + Multilingual STT + Transforms"      │
-│  "Record meetings locally, add WhisperKit, rewrite selected text" │
+│  "Record meetings locally, add local engine options, rewrite selected text" │
 ├─────────────────────────────────────────────────────────────────┤
-│  • Meeting recording (system audio + mic with echo mitigation)    │
+│  • Meeting recording with selectable audio sources               │
 │  • Concurrent with dictation (ADR-015) — dictate during meetings │
 │  • Recording pill UI (floating timer + stop button)              │
 │  • Results in transcription library (sourceType: meeting)        │
 │  • Prompt library + multi-summary work automatically             │
-│  • Screen Recording permission flow                               │
+│  • Source-scoped permission flow                                  │
 │  • Headphones guidance copy for cleanest speaker separation       │
-│  • WhisperKit engine option for non-Parakeet languages           │
-│  • Settings engine picker + Whisper language picker              │
-│  • CLI --engine parakeet|whisper --language                      │
+│  • VAD-guided live-preview chunking with fixed fallback           │
+│  • Nemotron Beta + Cohere + WhisperKit engine options            │
+│  • Settings engine picker + Nemotron/Cohere/Whisper controls     │
+│  • CLI --engine parakeet|nemotron|whisper|cohere --language      │
 │  • Meeting engine/language pinning for live + recovery + final   │
 │  • Transforms: Polish / Distill / Decide selected text anywhere  │
 │  • CLI transforms + local Transform history                      │
-│  • Calendar auto-start implemented but hidden behind feature flag │
+│  • Calendar auto-start enabled (opt-in; default mode .off)        │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -109,16 +113,17 @@ See [00-vision.md](./00-vision.md) for positioning and market context.
 **Goals:**
 - Reduce first-run friction (no mysterious permission failures).
 - Teach the core interaction model in under 60 seconds.
-- Download and warm up the right local speech stack on first run: Parakeet STT plus default-on speaker-detection assets for the normal path, or local Whisper plus speaker-detection assets when the user's macOS language is Korean, Japanese, Chinese, or Cantonese.
+- Download and warm up the right local speech stack on first run: Parakeet STT plus default-on speaker-detection assets for the normal path, or local Whisper plus speaker-detection assets when the user's macOS language is Korean, Japanese, Chinese, or Cantonese. Nemotron and Cohere are explicit opt-in engines after onboarding.
 
-**Flow:**
+**Flow (6 steps, dictation-first):**
 1. Welcome
 2. Microphone permission
 3. Accessibility permission
-4. Meeting recording permission (optional Screen & System Audio Recording)
-5. Hotkey instructions (configurable trigger + Esc)
-6. Speech stack setup (Parakeet + speaker detection by default; locale-aware Whisper setup for CJK macOS languages)
-7. Ready
+4. Hotkey instructions (configurable trigger + Esc)
+5. Speech stack setup (Parakeet; speaker detection defaults on where supported and remains user-controllable in Settings; locale-aware Whisper setup for CJK macOS languages; Nemotron remains an explicit Beta choice after setup; Cohere remains an explicit batch-only choice after setup)
+6. Ready
+
+Meeting Recording and Calendar are opt-in and self-prompt on first use (see ADR-005 amendment, 2026-06-13).
 
 **Model failure recovery:**
 - Before warm-up, onboarding runs lightweight preflight checks (runtime support + first-setup disk/network readiness for both STT and any required default-on speaker-detection assets).
@@ -147,7 +152,23 @@ Dictation defaults to a built-in shared `Fn` gesture preset: hold `Fn` for push-
 Legacy default installs using `Fn+Space` hands-free plus `Fn` push-to-talk migrate to the shared `Fn` gesture preset. Legacy single-hotkey installs are migrated to the shared default gesture when the stored trigger is `Fn`. Otherwise the old trigger becomes push-to-talk, while hands-free moves to the default `Fn` preset or disables itself if that would conflict.
 
 **Implementation:**
-- `CGEvent` tap for system-wide key event interception
+- The built-in bare-`Fn` gesture uses a listen-only `CGEvent` tap: Fn and every
+  observed cancellation event pass through unchanged. Other configurable
+  hotkeys retain their established active-tap behavior.
+- Built-in Fn is admitted only when a combined-session snapshot shows no
+  pre-held non-Fn modifier or ordinary physical key. A latched Caps Lock state
+  alone is allowed because it does not prove the physical key remains held;
+  an observed Caps Lock transition still cancels. While Fn is held, every
+  non-Fn key-down/key-up (including Escape) or modifier transition cancels the
+  gesture. Those transitions also invalidate an outstanding second-tap window,
+  including a rejected contaminated Fn admission. Tap-disable recovery
+  detects non-Fn keys and modifiers that remain held, plus a Caps Lock latch
+  delta from the last delivered modifier snapshot. A stable pre-latched Caps
+  Lock state remains allowed. A non-latching ordinary key pressed and released
+  wholly while the event tap is disabled leaves no current state or latch delta
+  and is inherently unobservable; this remains a runtime proof limit. A
+  cancelled gesture's later Fn/key release cannot stop, transcribe, paste, or
+  submit.
 - `HotkeyTrigger` struct with `.modifier` / `.keyCode` / `.chord` / `.modifierChord` kind discriminator (see ADR-009)
 - Modifier triggers: `flagsChanged` events with `CGEventFlags` mask, bare-tap filtering
 - KeyCode triggers: `keyDown`/`keyUp` events with event swallowing, edge detection via `triggerKeyIsPressed` boolean
@@ -193,12 +214,13 @@ Legacy default installs using `Fn+Space` hands-free plus `Fn` push-to-talk migra
 │ 5. Processing                                                    │
 │    - Overlay transitions to processing state                     │
 │    - Audio buffer → temp WAV → selected local STT engine         │
-│    - Parakeet default returns transcript (~155x realtime)        │
+│    - Selected local engine returns the authoritative transcript  │
 │    - (v0.2) Raw → clean pipeline → polished text                 │
 ├─────────────────────────────────────────────────────────────────┤
 │ 6. Result                                                        │
 │    - Auto-paste into target app (NSPasteboard + simulated Cmd+V) │
-│    - Previous clipboard contents saved and restored after paste  │
+│    - Previous clipboard restored by default; opt-in retain mode  │
+│      leaves the exact pasted text available for manual Cmd+V      │
 │    - Save to dictation history (database)                        │
 │    - Save audio file (if storage enabled)                        │
 │    - Overlay shows success checkmark, auto-dismisses             │
@@ -218,9 +240,12 @@ NSPasteboard.general.setString(transcript, forType: .string)
 // 3. Simulate Cmd+V
 simulateCommandV()
 
-// 4. Restore clipboard after a short delay for slower paste targets.
-DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-    restore(savedContents)
+// 4. Restore clipboard after a short delay for slower paste targets,
+//    unless the user enabled "Keep dictation on clipboard".
+if restoresClipboard {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        restore(savedContents)
+    }
 }
 ```
 
@@ -270,6 +295,7 @@ Space is always reserved for the tooltip (opacity toggle, not conditional render
    - Waveform: 12 white bars, 3px wide, max 20px tall, center-peaking wave pattern, updates in real-time from audio level
    - Stop button: white square (10x10, cornerRadius 3) inside red circle, triggers stop
    - Recording timer displayed (e.g., "0:03") -- hover tooltips provide additional guidance
+   - **Live transcript preview (opt-in, `AppFeatures.liveDictationStreamingEnabled`, #517):** when enabled, a display-only stable rolling readout of in-progress text renders in a sibling panel *above* the pill (pill geometry unchanged): newest line pinned to the bottom, older lines rising and fading out at the top edge, with no mid-word truncation. The raw preview stream is stabilized into a monotonic append-only readout so shown words don't jump or disappear. It is decoupled from the paste — the final inserted text always comes from the stop-time transcription path. Per engine: Parakeet single-flight tail-window batch preview, both Nemotron builds native live partials, Whisper default-off, Cohere off because it is batch-only. Toggle and preview text size live in Settings → Capture → Dictation (`showLiveDictationPreview`, default on). See `spec/05-audio-pipeline.md` → "Dictation Live Preview".
 
 2. **Cancelled** -- `[countdown ring] [Undo button]` (~140px)
    - Countdown ring: circular progress indicator (accent color, depletes over 5 seconds) with remaining seconds number in center
@@ -314,6 +340,7 @@ Space is always reserved for the tooltip (opacity toggle, not conditional render
 - [x] Hold shortcut activates hold-mode, release auto-stops and pastes
 - [x] Hotkey trigger configurable to bare modifiers, standalone keys, modifier+key chords, and modifier-only chords via record-a-shortcut UI; Fn+Space is supported and Escape remains reserved
 - [x] Overlay appears at bottom-center with waveform animation
+- [x] Optional display-only live transcript preview renders above the pill while speaking, decoupled from the paste (`liveDictationStreamingEnabled`, `main`-only)
 - [x] Hover tooltips display correctly on non-activating panel
 - [ ] Parakeet transcribes with <500ms end-to-end latency for short dictations
 - [x] Text auto-pastes into active app, clipboard restored afterward
@@ -342,8 +369,14 @@ User drops file(s) onto window or menu bar icon
        │
        ▼
 ┌──────────────────┐
+│ Track discovery  │ ── Continue for one audio track; ask once for 2+
+│                  │    (no persistent setting; local files only)
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
 │  AudioProcessor  │ ── Detect format, convert to 16kHz mono WAV
-│                  │    (FFmpeg for video → audio extraction)
+│                  │    (explicit FFmpeg 0:a:N map when selected)
 └────────┬─────────┘
          │
          ▼
@@ -354,7 +387,7 @@ User drops file(s) onto window or menu bar icon
          ▼
 ┌──────────────────┐
 │  Local STT       │ ── Transcribe with word-level timestamps
-│                  │    Parakeet default, Whisper optional
+│                  │    Parakeet default, Nemotron/Cohere/Whisper optional
 └────────┬─────────┘
          │
          ▼
@@ -412,12 +445,94 @@ Display in scrollable result view
 └─────────────────────────────────────────────────────┘
 ```
 
+**Batch transcription (v0.6, local files only — REQ-TRANS-004):**
+
+A power user (e.g. a student with 40 one-hour lectures) can transcribe many
+files in one action. The file picker is multi-select and can choose folders;
+drag-drop accepts many files and folders at once. Selections are expanded
+recursively (hidden files and packages skipped), de-duplicated, name-sorted,
+and capped at 200 — overflow is surfaced, never silently dropped. Two or more
+resolved files start a **sequential** batch on the same shared STT path (no new
+execution slot, no parallelism — ADR-016): one file at a time, each result
+landing in the Library as it finishes. A failed file is counted and skipped,
+never aborting the run. The Transcribe tab and the global progress bar show
+"Transcribing N of M · K failed" with a **Cancel all** control. One file routes
+through the unchanged single-file path. YouTube stays single-URL (different
+ingestion model; the queue machinery is generic enough for a future
+playlist front-end). The CLI mirrors this — see F11 / `macparakeet-cli
+transcribe` and the CLI CHANGELOG (REQ-CLI-002).
+
+**Embedded audio tracks (issue #767):** Local file/folder ingestion probes the
+container's audio streams before creating a transcription row. A file with one
+audio stream continues without extra UI. A file with two or more audio streams
+shows a one-time picker with numbered tracks plus language/default metadata
+when the container provides it; this is an import decision, not a Settings
+preference. A batch is probed before it starts and reuses one selected
+audio-stream ordinal for its multi-track files; single-track files continue
+automatically. If that ordinal is absent from a later multi-track file, that
+file fails visibly and the sequential batch continues rather than silently
+falling back to another stream. A per-file discovery or no-audio failure is
+likewise counted for that file without aborting the remaining batch. The
+selected zero-based ordinal is stored on the transcription and reused by
+retranscription. CLI callers use the
+equivalent one-based `transcribe --audio-track N` flag for local files/folders,
+where it applies explicitly to every expanded file; URL and podcast lanes
+reject the flag.
+
+**Metadata during retranscription:** Saving notes, changing or clearing the
+meeting type, renaming a meeting, changing its favorite/title override, and
+updating legacy chat while STT is running must survive completion. The final
+transaction preserves the latest user metadata and returns the committed row
+for GUI publication and derived artifacts; it does not restore the metadata
+snapshot taken when the job started. Retranscription still replaces the speech
+output, engine attribution, and derived search content.
+
+**Apple Podcasts URL transcription:** Pasting an Apple Podcasts link
+(`podcasts.apple.com/.../id<show>?i=<episode>`) resolves the episode through
+the public iTunes lookup API to its audio enclosure URL plus episode title,
+show name, artwork, description, and duration — no HTML scraping. A native
+streaming downloader fetches the enclosure before it flows through the same
+local STT path as YouTube. An episode link transcribes that episode; a show
+link transcribes the latest episode. Saved transcripts use a dedicated
+`podcast` source type with its own Library filter and source chip, and the
+Transcribe-tab link field plus the Spotlight-style URL panel both accept
+YouTube and Apple Podcasts links. Implemented in `PodcastURLValidator`,
+`PodcastEpisodeResolver`, and the `TranscriptionService.transcribeURL` podcast
+branch.
+
+**Podcast search (freetext discovery):** Beyond pasting a URL, a freetext
+query — `"Lex Fridman episode 400"` — resolves to an episode by searching the
+iTunes podcast directory (`PodcastDirectoryService`), parsing the matched
+show's RSS feed (`PodcastFeedParser`), and selecting the episode by number /
+title hints or latest (`PodcastEpisodeMatcher`, ported from the
+`podcast-transcribe` tool). The chosen enclosure is fetched with a native
+streaming downloader (`PodcastAudioDownloader`, no `yt-dlp` needed for
+podcasts) and transcribed locally. Exposed today via the CLI
+(`macparakeet-cli transcribe --podcast "<query>"`,
+`TranscriptionService.transcribePodcastQuery`); the GUI surfaces URL paste.
+
+**Completion notification (v0.6 — REQ-UI-006):**
+
+When a file, YouTube, or batch transcription finishes, MacParakeet plays a
+chime and — only when it is in the background — posts a notification banner
+(a batch posts one summary banner on drain, not one per file). A single
+Settings toggle ("Notify when transcription finishes", default on) governs
+both. The chime is delivered via the in-app sound system so it plays while
+backgrounded and respects the macOS "Play sound effects" preference; the banner
+reuses the shared `.alert`-only notification authorization.
+
 **Technical notes:**
 - FFmpeg (bundled) for format conversion to 16kHz mono WAV
 - Local STT input is normalized to 16kHz mono WAV
 - Max file duration: configurable, default 4 hours
 - Large files show progress bar with estimated time remaining
+- Local speech-model preparation is shown as indeterminate; percentage progress
+  begins only when the engine reports measurable transcription work
 - Word-level timestamps preserved for subtitle export (v0.3)
+- Folder expansion + supported-extension filtering + the 200-file cap live in
+  `AudioFileEnumerator` (Core); the sequential drain is owned by
+  `TranscriptionViewModel`; completion-signal copy/gating is the pure
+  `TranscriptionCompletionNotifier`.
 
 **Acceptance criteria:**
 - [x] Drag-and-drop file onto app window triggers transcription
@@ -430,6 +545,9 @@ Display in scrollable result view
 - [x] All supported video formats extract audio and transcribe
 - [x] Word-level timestamps stored for later export use
 - [x] Handles corrupt/empty files gracefully (error message, not crash)
+- [x] Multi-select / folder picker and multi-file drop transcribe in a sequential batch (v0.6)
+- [x] A failed file does not abort the batch; "Cancel all" stops it (v0.6)
+- [x] Completion plays a chime + (backgrounded) banner, behind one opt-out toggle (v0.6)
 
 ---
 
@@ -439,7 +557,7 @@ Display in scrollable result view
 
 **Menu bar presence:**
 
-The app lives primarily in the menu bar. Click the icon for quick actions, or open the full window for history and settings.
+The app lives primarily in the menu bar by default. Click the icon for quick actions, or open the full window for history and settings. Users who keep the Dock icon can hide the menu bar icon from Startup settings.
 
 ```
 ┌────────────────────────────┐
@@ -455,11 +573,11 @@ The app lives primarily in the menu bar. Click the icon for quick actions, or op
 └────────────────────────────┘
 ```
 
-- Menu bar icon always visible, shows state: idle, recording (animated), processing
+- Menu bar icon visible by default and optionally hidden in Dock mode; hiding preserves its idle, recording, or processing state so restoring it immediately shows the current state
 - Click icon opens dropdown menu
 - "Start Dictation" activates recording (same as the hands-free shortcut)
 - "Recent Files" shows last 5 transcriptions with one-click copy
-- Dynamic dock behavior: dock icon appears when main window is open, hidden otherwise
+- Dynamic Dock behavior: the Dock icon remains available in Dock mode; in Menu bar only mode it appears while a primary window is open and hides after that window closes
 
 **Main window:**
 
@@ -484,9 +602,11 @@ The app lives primarily in the menu bar. Click the icon for quick actions, or op
 - **Settings** -- License, dictation prefs, storage, permissions
 
 **Acceptance criteria:**
-- [x] App launches to menu bar only (no dock icon initially)
-- [x] Dock icon appears when main window opens, hides when closed
+- [x] App launches with the menu bar icon visible by default and preserves a visible access surface
+- [x] Dock icon remains available in Dock mode; Menu bar only mode hides it after the primary window closes
 - [x] Menu bar icon reflects current state (idle, recording, processing)
+- [x] Menu bar icon can be hidden when the Dock icon remains available
+- [x] Startup settings prevent hiding both the Dock and menu bar icons
 - [x] Menu bar dropdown shows quick actions
 - [x] Main window opens on demand (menu bar click or Cmd+O)
 - [x] Sidebar navigation between Transcribe, Dictations, Vocabulary, Settings
@@ -495,7 +615,7 @@ The app lives primarily in the menu bar. Click the icon for quick actions, or op
 
 ### F4: Dictation History
 
-**What:** Searchable, date-grouped flat list of all dictations with hover actions, bottom bar audio player, and copy/delete support.
+**What:** Searchable, date-grouped flat list of all dictations with hover actions, bottom bar audio player, and copy/delete support, including multi-select cleanup.
 
 **History view (flat list + bottom bar player):**
 
@@ -528,13 +648,14 @@ The app lives primarily in the menu bar. Click the icon for quick actions, or op
 - Full-width flat chronological list (no split pane, no detail view)
 - Grouped by date (Today, Yesterday, specific dates)
 - Each entry shows: time, duration, full transcript text (no line limit)
-- Hover actions: Play/Pause, Copy (with checkmark confirmation), three-dot menu (Download Audio, Delete)
+- Hover actions: Play/Pause, Copy (with checkmark confirmation), three-dot menu (Download Audio, Select Many..., Delete)
 - Currently-playing row has subtle accent tint background
 - Bottom bar audio player (Spotify-style): play/pause, transcript snippet, progress bar, time, close
 - Search bar filters by transcript content (substring match, case-insensitive)
 - Context menu: Play/Pause, Copy, Download Audio, Delete
 - Keyboard shortcut: Cmd+Backspace to delete
 - Text selection enabled on transcript text
+- Multi-select cleanup is an explicit bulk-selection mode: hidden during ordinary browsing, entered via the row three-dot menu's `Select Many...` (which preselects that row), surfacing per-row selection circles and a bulk action bar (Cancel, Select All, Clear, Delete). `Select All` targets the loaded rows only, so deletion never silently reaches unloaded records. The mode exits on confirmed bulk delete, Cancel, switching to the Stats sub-tab, or leaving the Dictations section.
 - Delete confirmation dialog before permanent removal
 
 **Database schema:**
@@ -556,7 +677,7 @@ CREATE TABLE dictations (
     pastedToApp TEXT,                 -- "Slack", "Chrome", etc. (if detectable)
 
     -- Settings at time of dictation
-    processingMode TEXT NOT NULL DEFAULT 'raw',  -- 'raw' in v0.1, 'clean' default in v0.2
+    processingMode TEXT NOT NULL DEFAULT 'raw',  -- 'raw' or 'clean'; current default is 'raw'
 
     -- Status
     status TEXT NOT NULL DEFAULT 'completed',     -- recording | processing | completed | error
@@ -584,6 +705,7 @@ Audio path is computed from ID by default. Files stored as WAV (16kHz mono). Use
 - [x] Can play audio via bottom bar player (Spotify-style progress bar)
 - [x] Can copy transcript text to clipboard (with checkmark confirmation)
 - [x] Can delete individual dictations (with confirmation dialog)
+- [x] Can select and delete multiple visible dictations together (with confirmation dialog)
 - [x] Can download audio files via three-dot menu
 - [x] Hover actions appear without layout shift (overlay pattern)
 - [x] History persists across app restarts (SQLite via GRDB)
@@ -601,9 +723,11 @@ Audio path is computed from ID by default. Files stored as WAV (16kHz mono). Use
 │ Settings                                                         │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│ GENERAL                                                          │
+│ SYSTEM — STARTUP                                                 │
 │ ┌──────────────────────────────────────────────────────────────┐ │
 │ │ Launch at login                                    [toggle] │ │
+│ │ Hide menu bar icon                                 [toggle] │ │
+│ │ Menu bar only mode                                 [toggle] │ │
 │ └──────────────────────────────────────────────────────────────┘ │
 │                                                                  │
 │ DICTATION                                                        │
@@ -614,6 +738,8 @@ Audio path is computed from ID by default. Files stored as WAV (16kHz mono). Use
 │ │ Stop mode:                                                   │ │
 │ │   ( ) Auto-stop after silence     Delay: [2 sec ▾]          │ │
 │ │   (•) Manual stop (tap hands-free shortcut again)             │ │
+│ │                                                              │ │
+│ │ [ ] Keep dictation on clipboard                             │ │
 │ │                                                              │ │
 │ └──────────────────────────────────────────────────────────────┘ │
 │                                                                  │
@@ -627,9 +753,13 @@ Audio path is computed from ID by default. Files stored as WAV (16kHz mono). Use
 │                                                                  │
 │ SPEECH RECOGNITION                                               │
 │ ┌──────────────────────────────────────────────────────────────┐ │
-│ │ Engine: [ Parakeet ] [ Whisper ]                             │ │
+│ │ Engine: [ Parakeet ] [ Nemotron Beta ] [ Cohere ] [ Whisper ]│ │
+│ │ Nemotron model: [ Multilingual Beta ] [ English Beta ]       │ │
+│ │ Cohere language: [ English ▾ ]                               │ │
 │ │ Whisper language: [ Auto-detect ▾ ]                          │ │
 │ │ Parakeet        Ready                         [Repair]       │ │
+│ │ Nemotron        Not Downloaded                [Download]     │ │
+│ │ Cohere          Not Downloaded                [Download]     │ │
 │ │ Whisper         Not Downloaded                [Download]     │ │
 │ └──────────────────────────────────────────────────────────────┘ │
 │                                                                  │
@@ -647,25 +777,32 @@ Audio path is computed from ID by default. Files stored as WAV (16kHz mono). Use
 | Setting | Options | Default |
 |---------|---------|---------|
 | Launch at login | On / Off | Off |
+| Hide menu bar icon | On / Off; enabling it turns off Menu bar only mode and leaves the Dock available | Off |
+| Menu bar only mode | On / Off; enabling it turns off Hide menu bar icon and restores the menu bar icon; a persisted conflict is repaired on launch by restoring the icon | Off |
 | Push-to-talk hotkey | Bare modifiers, standalone keys, modifier+key chords, and modifier-only chords with overlap checks | Fn |
 | Hands-free hotkey | Default shared Fn gesture preset; custom bare modifiers, standalone keys, modifier+key chords, and modifier-only chords; may exactly match push-to-talk for shared gesture behavior | Fn |
 | Stop mode | Auto-stop after silence / Manual | Manual |
 | Silence delay | 1s, 1.5s, 2s, 3s, 5s | 2s |
 | Save audio recordings | On / Off | On |
 | Keep downloaded YouTube audio | On / Off | On |
-| Speech recognition engine | Parakeet / Whisper | Parakeet |
+| Meeting audio retention | Keep forever / Remove after N days / Remove audio after transcription | Keep forever |
+| Speech recognition engine | Parakeet / Nemotron Beta / Cohere / Whisper | Parakeet |
+| Nemotron model | Multilingual Beta (~1.5 GB) / English Beta (~600 MB, English-only) | Multilingual Beta |
+| Cohere language | Supported Cohere language code | English |
 | Whisper language | Auto-detect or language code | Auto-detect |
-| Speech model controls | Parakeet repair / Whisper download | Available |
+| Speech model controls | Parakeet repair, Nemotron download/delete, Cohere download/delete, Whisper download/delete | Available |
 
 **Acceptance criteria:**
 - [x] All settings persist across app restarts (UserDefaults or GRDB)
 - [x] Hotkey can be changed to bare modifiers, standalone keys, modifier+key chords, and modifier-only chords via record-a-shortcut UI; Command chords warn on common system conflicts
 - [x] Stop mode switch works correctly for both modes
-- [x] Storage toggle controls whether audio files are saved
+- [x] Storage controls whether dictation audio is saved
+- [x] Meeting audio retention keeps transcripts while allowing audio to be kept forever, deleted after N days, or deleted after transcription
 - [x] YouTube storage toggle controls whether downloaded URL audio is kept after transcription
 - [x] "Clear All" requires confirmation, deletes audio files and database entries
 - [x] Permission status shown with current grant state
-- [x] Speech Recognition panel shows Parakeet status/repair plus Whisper download/language controls
+- [x] Speech Recognition panel shows Parakeet status/repair plus Nemotron, Cohere, and Whisper download/language controls
+- [x] Nemotron Model card (Nemotron engine only) persists the selected build; Multilingual Beta is the default, English Beta is a smaller English-only download
 
 ---
 
@@ -717,7 +854,7 @@ Audio → local STT → raw transcript → clean pipeline → paste
 
 **Step 1: Filler removal**
 
-Conservative defaults: only pure hesitation sounds (`um`, `uh`, `umm`, `uhh`) are removed. False negatives are better than false positives, so words like `like`, `so`, `right`, and phrases like `you know` are not stripped by default.
+Conservative defaults: only hesitation spellings that do not conflict with supported languages (`uh`, `umm`, `uhh`) are removed. False negatives are better than false positives, so semantic words such as Portuguese and German `um`, along with words like `like`, `so`, `right`, and phrases like `you know`, are not stripped by default.
 
 **Step 2: Custom word replacements**
 
@@ -734,7 +871,7 @@ Each custom word is a `(word, replacement)` pair with an enabled/disabled toggle
 
 **Step 3: Trailing action extraction**
 
-Action snippets with a terminal trigger phrase are stripped from the transcript and returned as a post-paste action. This is how Voice Return can press Return after paste without leaving the trigger text in the output. Raw mode skips full cleanup but still performs terminal action extraction.
+Action snippets with a terminal trigger phrase are stripped from the transcript and returned as a post-paste action. This is how Voice Return can press Return after paste without leaving the trigger text in the output. Voice Return can expose multiple user-configured phrases that all map to the same Return action. Raw mode skips full cleanup but still performs terminal action extraction.
 
 **Step 4: Snippet expansion**
 
@@ -812,7 +949,7 @@ CREATE TABLE text_snippets (
 - [x] Whitespace normalized and punctuation fixed
 - [x] Processing completes in sub-millisecond
 - [x] Raw mode bypasses full cleanup but still supports terminal action extraction
-- [x] Clean mode is the default for new dictations
+- [x] Raw mode is the default when no processing preference is saved; Clean is opt-in
 
 ---
 
@@ -834,19 +971,33 @@ Important constraints:
 
 - formatter is a separate toggle, not a dictation mode
 - formatter uses the shared `LLMService`
-- formatter runs for dictation and file/YouTube transcription flows; meeting transcripts currently use deterministic cleanup only (see `TelemetryFormatterSource` — `.dictation` and `.transcription` are the only emitter sources wired today)
+- formatter runs for dictation, file/URL, and meeting transcription flows — every transcription finalization path shares `completeTranscription`, which invokes the formatter (`TelemetryFormatterSource` emits `.dictation` and `.transcription`; meetings report as `.transcription`)
+- formatter skips empty or whitespace-only input before prompt resolution or any provider call, so a model response can never become transcript content when STT produces no transcript text (#855)
+- formatter routing is per-surface: "Use for transcripts" (file/URL/meeting, default on) and "Use for dictation" (default off) toggles in AI settings, each ANDed with provider availability (#408, #493)
+- transcription formatter input is capped at `AIFormatter.maxTranscriptionInputChars` (20k chars); longer transcripts (hour-long meetings) skip straight to deterministic cleanup because a full-rewrite response can stall slow providers until timeout (#493)
+- dictation formatter prompts route through local exact-app profiles, local coarse-category profiles, built-in coarse-category smart defaults, and then the fallback formatter prompt
+- built-in smart defaults are user-controllable: a master switch plus per-category switches (UserDefaults-backed `AIFormatterSmartDefaultsPolicy`), and every built-in prompt is readable in Settings even when the master switch is off; with the tier off, zero-profile prompt selection is byte-for-byte the legacy fallback-prompt behavior
+- file/YouTube transcription formatter prompts continue to use the fallback formatter prompt in V1
+- browser hostname/domain matching is not attempted in V1; browser apps can match exact browser profiles or the coarse `browser` category only
 - formatter falls back to deterministic cleanup if the provider errors or times out
 - formatter prompt is user-editable in AI settings
+- formatter profiles are managed in AI settings with built-in smart defaults, app selection, manual bundle ID entry, and category selection
 - persisted formatter runs record metadata in `llm_runs` (source row, feature, status, provider/model, latency, token usage when available, character counts, and error type); transcript text, prompts, and formatter output are not duplicated into the ledger
+- saved dictation rows can record local formatter routing provenance (`aiFormatterProfileID`, `aiFormatterProfileName`, `aiFormatterProfileMatchKind`); this data is local history/debug metadata, not telemetry, and History rows surface it as a small provenance chip for profile/smart-default-routed dictations
 - private/no-history dictations and transient transcriptions do not create `llm_runs` rows
 
 **Acceptance criteria:**
 - [x] Formatter can be enabled or disabled independently of Raw/Clean mode
 - [x] Formatter runs only after deterministic cleanup
 - [x] Formatter supports dictation and file/YouTube transcription flows
-- [ ] Formatter supports meeting transcription (not yet wired — meeting path goes through `MeetingTranscriptFinalizer` without invoking `formatTranscript`)
+- [x] Formatter supports meeting transcription (meeting finalization shares `completeTranscription`)
+- [x] Transcripts and dictation have independent routing toggles in AI settings (#493)
+- [x] Transcription formatter skips inputs over the length cap instead of stalling finalization for the full provider timeout (#493)
 - [x] Formatter uses the configured provider or local CLI through shared LLM infrastructure
 - [x] Formatter prompt is editable and resettable from settings
+- [x] Dictation formatter profiles support exact-app and category prompt routing
+- [x] Dictation profile routing preserves smart defaults and fallback prompt routing
+- [x] Smart defaults are inspectable and toggleable (master + per-category); disabling them restores legacy fallback-prompt selection
 - [x] Graceful fallback to deterministic cleanup if formatting fails
 - [x] Persisted formatter runs write local metadata-only `llm_runs` records linked to the saved source row
 
@@ -1036,7 +1187,7 @@ Overlay shows selected text preview (truncated) so the user confirms the right t
 
 ### F10c: Transcript Chat (GUI MVP)
 
-> Status: **IMPLEMENTED ON CURRENT BRANCH** — Transcript chat is available from the transcript detail screen through the configured LLM provider or local CLI.
+> Status: **IMPLEMENTED** — Transcript chat is available from the transcript detail screen through the configured LLM provider or local CLI; it is not a new candidate-only capability.
 
 **What:** Ask questions about the currently selected transcript from the transcript detail screen using the shared provider-based LLM service.
 
@@ -1085,18 +1236,24 @@ Overlay shows selected text preview (truncated) so the user confirms the right t
 
 ---
 
-### F11: YouTube URL Transcription
+### F11: Video & Podcast URL Transcription
 
-**What:** Paste a YouTube URL to download and transcribe the video's audio locally.
+**What:** Paste any video or podcast URL — YouTube, X (Twitter), Vimeo, TikTok,
+Instagram, Facebook, Apple Podcasts, and any other site `yt-dlp` supports — to
+download and transcribe its audio locally. There is no platform allowlist: the
+button lights up for any plausible media URL and `yt-dlp` decides what actually
+downloads (failures surface in the error banner). The UI *recognizes* the platform
+from the URL host purely for display — the right brand glyph blooms to focus in the
+orbiting platform hero and the helper copy names the source.
 
 **Flow:**
 
 ```
-User pastes YouTube URL
+User pastes any media URL
        │
        ▼
 ┌──────────────────────┐
-│  URL validation      │ ── Verify URL format, extract video ID
+│  URL validation      │ ── Verify supported URL format
 └──────────┬───────────┘
            │
            ▼
@@ -1120,7 +1277,7 @@ User pastes YouTube URL
 Display result (same view as file transcription)
 ```
 
-**YouTube UI integration:**
+**Video URL UI integration:**
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -1132,18 +1289,19 @@ Display result (same view as file transcription)
 │                                                      │
 │  ────────────────── or ──────────────────            │
 │                                                      │
-│  YouTube: [https://youtube.com/watch?v=...] [Go]     │
+│  Video URL: [https://x.com/... or youtube.com/...] [Go] │
 │                                                      │
 └─────────────────────────────────────────────────────┘
 ```
 
 **Technical requirements:**
-- yt-dlp standalone managed binary for YouTube audio download (weekly non-blocking `--update`)
+- yt-dlp standalone managed binary for video audio download (weekly non-blocking `--update`)
 - Bundled FFmpeg binary for media demux/conversion (no system dependency)
-- Supports standard YouTube URL forms (`youtube.com/watch`, `youtu.be`, `youtube.com/shorts`, `youtube.com/embed`, `youtube.com/v`)
+- Accepts any plausible media URL — the front-end gate (`MediaPlatform.isTranscribable`) requires only an `http(s)` URL with a host (or a scheme-less recognized host); the downloader hands it to `yt-dlp`, which supports YouTube, X, Vimeo, TikTok, Instagram, Facebook, and hundreds of other sites
+- Host-based **recognition** (`MediaPlatform.recognize`) labels the source and selects the brand glyph for display only; it is not an allowlist and unrecognized URLs still transcribe (shown with a generic globe). YouTube keeps client-side videoID dedup (`YouTubeURLValidator`) and Apple Podcasts routes through the iTunes resolver (`PodcastURLValidator`)
 - Playlist pages are processed in single-video mode (`--no-playlist`); full playlist batch transcription is deferred
 - Audio-only download (no video, saves bandwidth and time)
-- Downloaded YouTube audio is retained by default and can be auto-deleted via Settings > Storage
+- Downloaded video audio is retained by default and can be auto-deleted via Settings > Storage
 
 **Limitations:**
 - Age-restricted videos may fail (requires auth cookies)
@@ -1152,13 +1310,14 @@ Display result (same view as file transcription)
 - Download for personal use only (noted in UI)
 
 **Acceptance criteria:**
-- [x] Paste YouTube URL into text field and click "Transcribe" to start
+- [x] Paste any media URL (YouTube, X, Vimeo, TikTok, Instagram, Facebook, Apple Podcasts, or other yt-dlp site) and click "Transcribe" to start
+- [x] The recognized platform's glyph blooms to focus in the orbit hero and the helper copy names the source ("Ready to transcribe this Vimeo video")
 - [x] Download phase emits determinate percent progress (`Downloading audio... X%`)
 - [x] Transcription phase emits chunk progress updates (`Transcribing... X%`)
 - [x] Result displayed same as file transcription
 - [x] Handles invalid URLs gracefully (error message)
 - [x] Handles private/restricted videos with clear error
-- [x] Downloaded YouTube audio is kept by default, with a Settings toggle to auto-delete after transcription
+- [x] Downloaded video audio is kept by default, with a Settings toggle to auto-delete after transcription
 - [ ] Playlist URLs supported (batch transcription) — deferred to v0.4
 
 ---
@@ -1171,9 +1330,11 @@ Display result (same view as file transcription)
 
 | Format | Extension | Use Case | Content |
 |--------|-----------|----------|---------|
-| Plain Text | `.txt` | General | Full transcript, no timestamps |
+| Plain Text | `.txt` | General | Reading paragraphs with optional timestamps, speaker labels, and file details |
+| Markdown | `.md` | Notes and documents | Reading paragraphs with optional timestamps, speaker labels, and file details |
 | Subtitles (SRT) | `.srt` | Video editing | Timed subtitle segments |
 | Subtitles (VTT) | `.vtt` | Web video | WebVTT format subtitles |
+| DAPT Transcript | `.dapt.xml` | Localization and structured interchange | DAPT 1.0 original transcript with timing and optional speaker characters |
 | Word Document | `.docx` | Documents | Formatted with headings |
 | PDF | `.pdf` | Sharing | Print-ready formatted |
 | JSON | `.json` | Development | Full data with word-level timestamps + confidence |
@@ -1208,8 +1369,9 @@ new scheduling architecture.
 ```
 
 **Acceptance criteria:**
-- [ ] All 6 formats generate correctly
+- [ ] All supported formats generate correctly
 - [ ] SRT/VTT contain properly timed segments from word-level timestamps
+- [x] DAPT preserves aligned timing and available speaker labels, with an untimed fallback when alignment is absent or stale
 - [ ] DOCX opens correctly in Word/Pages/Google Docs
 - [ ] PDF is well-formatted and print-ready
 - [ ] JSON includes all word-level data with confidence scores
@@ -1224,7 +1386,9 @@ new scheduling architecture.
 
 **What:** Automatically detect and label different speakers in file transcriptions.
 
-**Scope:** File transcription and YouTube transcription only. Dictation is single-speaker by design.
+**Scope:** File/media URL transcription and optional refinement of the isolated
+system track during meeting finalization. The selected ASR engine must provide
+word timings for alignment; Cohere does not. Dictation is single-speaker by design.
 
 **Features:**
 - Automatic speaker segmentation (detect speaker changes)
@@ -1232,7 +1396,7 @@ new scheduling architecture.
 - Manual renaming: click speaker label to assign real name
 - Speaker colors in transcript view (visual differentiation)
 - Per-speaker analytics: speaking time, word count
-- On by default for file transcription, with a Settings toggle and CLI `--no-diarize` escape hatch
+- On by default where supported for file/URL transcription and meeting finalization with a system-audio track; the Settings toggle remains available, and the CLI follows the saved preference — `--speaker-detection off` / `--no-diarize` forces it off, while speaker-count constraints keep forcing it on for that run
 
 **Transcript with speakers:**
 
@@ -1267,19 +1431,27 @@ new scheduling architecture.
 - TXT/Markdown: speaker label before each turn
 - DOCX/PDF: speaker name in bold before each turn
 - JSON: `speakerId` field per word in `wordTimestamps`
+- DAPT: character agents and event references only for aligned speaker-attributed words
+
+TXT and Markdown are reading surfaces rather than subtitle surfaces. When word
+timings are available, they group text into deterministic paragraphs and add at
+most one timestamp per paragraph. SRT and VTT keep their shorter timed subtitle
+cues. Meeting folder auto-save exposes the TXT/Markdown timestamp, speaker, and
+meeting-detail choices independently; the complete app-managed meeting artifacts
+are unaffected.
 
 **Technical notes:**
 - Uses FluidAudio's offline diarization pipeline (separate from ASR, see ADR-010)
 - Three-stage pipeline: pyannote community-1 (segmentation) + WeSpeaker v2 (embeddings) + VBx (clustering)
-- ~15% DER on VoxConverse (CoreML), ~11.2% PyTorch reference — competitive with commercial APIs
+- Current source pins FluidAudio 0.15.6 and uses `DiarizationService.highAccuracyConfig`. Older DER figures predate clustering fixes and are not a quality measurement of this build; see ADR-010's 2026-09-06 amendment.
 - ~130 MB additional model download (one-time, cached alongside ASR models)
 - Runs after ASR completes, merges speaker segments with word-level timestamps by time overlap
 - Diarization is non-fatal — if it fails, ASR result is still persisted without speaker data
-- Stable speaker IDs (`"S1"`, `"S2"`) stored on words; display labels in separate mapping (rename is O(1))
+- Automatic IDs (`"S1"`, `"S2"`) belong to one transcript version. User corrections are stored separately and resolved into effective attribution for display, search, exports, artifacts and AI; IDs are not cross-file or retranscription identity.
 - Overlapping speech regions are trimmed (exclusive output) — words in overlap zones may lack speaker assignment
 - No cross-file speaker identity (Speaker 1 in file A is not linked to Speaker 1 in file B)
-- Single-speaker files correctly return one speaker label with no overhead
-- Total file transcription time: ~53-79 seconds per hour of audio (ASR ~23s + diarization ~30-56s)
+- Single-speaker files can resolve to one label, but still incur diarization work.
+- End-to-end time depends on the selected ASR engine, high-accuracy diarizer preset, audio and hardware. Historical ASR-plus-diarization estimates are not current-release timing guarantees.
 
 **Acceptance criteria:**
 - [x] Speakers automatically detected and separated in transcript
@@ -1293,8 +1465,8 @@ new scheduling architecture.
 - [x] Single-speaker files handled gracefully (one speaker label)
 - [x] Diarization failure is non-fatal (ASR result preserved)
 - [x] Progress shows "Identifying speakers..." headline
-- [x] Settings toggle for speaker detection (on by default, replaces planned Option-key alternate)
-- [x] CLI: `macparakeet-cli transcribe` runs diarization by default, `--no-diarize` to skip
+- [x] Settings toggles for file/URL and meeting speaker detection (on by default where supported; explicit off is preserved)
+- [x] CLI: `macparakeet-cli transcribe` follows the saved file/URL speaker-detection preference; meeting retranscription follows the saved meeting speaker-detection preference when app-default; `--speaker-detection off` / `--no-diarize` force off per run, and speaker-count constraints force on
 
 ---
 
@@ -1366,7 +1538,7 @@ Internal data model improvements, reliability fixes, and open-source release. No
 
 > Status: **IMPLEMENTED**
 
-**What:** A `hidden` flag on dictations that excludes them from history and voice stats. Used for sensitive dictations the user doesn't want in their history.
+**What:** A `hidden` flag on dictations that excludes transcript/audio/app details from history while preserving aggregate duration and word-count metrics. Used for sensitive dictations the user doesn't want in their history.
 
 **Schema:** `dictations.hidden` (BOOLEAN, NOT NULL, DEFAULT 0)
 
@@ -1460,6 +1632,11 @@ Embedded video/audio playback, split-pane detail view, synced transcript highlig
 - [x] Filter bar: All / YouTube / Local / Favorites
 - [x] Search across transcription titles and content
 - [x] Sort by date (newest/oldest)
+- [x] Local transcription rows can be renamed from the Library and detail header; rename stores app metadata only and does not rename, move, or retain the original source file
+- [x] Multi-select cleanup with `Select Many...`, `Select All`, clear/cancel, and contextual destructive confirmations
+- [x] Meeting cleanup supports both full deletion and `Remove Audio Only...`; optional notes, AI results, and chats are removed only by full meeting deletion
+
+Visible transcription titles are source-aware. Meeting rows use their meeting `fileName`. Local file rows use a non-empty user `titleOverride` when explicitly renamed, then the original media `fileName`; transcript-derived opening words never replace that source identity. URL rows retain the non-empty `titleOverride`, `derivedTitle`, then `fileName` fallback. Library cards, detail headers, title sort, agent-facing title fields, and GUI export filename suggestions use that effective title. Search still matches the override, original filename, derived title, and transcript content. Public CLI exact-name lookup and export defaults remain tied to the existing CLI contract.
 
 ### F27: Home Page Redesign
 
@@ -1482,11 +1659,11 @@ Prompt library and multi-summary system. Users control how AI processes transcri
 
 > Status: **IMPLEMENTED ON CURRENT BRANCH**
 
-**What:** Reusable prompt templates stored in SQLite. Community prompts ship with the app and can be hidden but not edited or deleted. Users can create, edit, and delete custom prompts.
+**What:** Reusable prompt templates stored in SQLite. Built-in and custom prompts share editing, immutable versioning, and recoverable soft deletion.
 
 **Acceptance criteria:**
 - [x] Built-in/community prompts available on first launch from built-in seed
-- [x] Built-in/community prompts can be hidden but not edited or deleted
+- [x] Built-in/community prompts can be edited, versioned, hidden, and soft-deleted like custom prompts
 - [x] Prompt cards can be marked auto-run independently of sort order
 - [x] Zero auto-run prompt cards is a supported configuration
 - [x] Custom prompts can be created, edited, and deleted via management sheet
@@ -1517,9 +1694,22 @@ exposes a terminal provider/model/token metadata envelope.
 
 ## v0.6 — Meeting Recording + Multilingual STT
 
-The v0.6 scope includes system audio + mic capture (ADR-014, ADR-015), the centralized STT runtime (ADR-016), optional WhisperKit multilingual STT (ADR-021), the live Ask tab (ADR-018), crash-resilient recording (ADR-019), and the live notepad plus `{{userNotes}}` plumbing from ADR-020. Calendar-driven auto-start (ADR-017) is implemented in source but hidden by `AppFeatures.calendarEnabled = false`. The full v0.6 backlog lives in `spec/README.md`; the F-numbered entries below cover the ADR-020 feature surface.
+The v0.6 scope includes meeting capture with configurable source mode (microphone + system audio by default, microphone-only, or system-audio-only; ADR-014, ADR-015), the centralized STT runtime (ADR-016), optional Nemotron Beta (multilingual default plus a persisted English-only build option), Cohere Transcribe, and WhisperKit multilingual STT (ADR-001/ADR-021), VAD-guided live-preview chunking with fixed fallback, the live Ask tab (ADR-018), crash-resilient recording (ADR-019), and the live notepad plus `{{userNotes}}` plumbing from ADR-020. Calendar-driven auto-start (ADR-017) is implemented and enabled (`AppFeatures.calendarEnabled = true`), defaulting to opt-in mode `.off`. The full v0.6 backlog lives in `spec/README.md`; the F-numbered entries below cover the ADR-020 and meeting-hardening feature surface.
 
-Meeting transcription uses the current speech engine captured at recording start. Parakeet remains the default; WhisperKit can be selected before starting a meeting for languages outside Parakeet coverage.
+Speech routing has two roles over one local runtime. The **live speech** route
+serves dictation and best-effort meeting preview. The **recordings & files**
+route serves the authoritative post-meeting pass plus file, drag/drop, media
+URL, podcast, and retranscription jobs; it follows the live route unless the
+user chooses a different engine from the Speech Engine card. New meetings
+capture both roles at start. Preview uses the
+captured live route only when it provides word timings; finalization and crash
+recovery for new schema-v2 artifacts use the captured final route and durable
+recorded audio. Legacy schema-v1 locks and schema-v2 locks without a captured
+`speechEngine` use the current resolved recordings/files route because they
+do not contain authoritative independent-route provenance. There is no hidden
+fallback. A live Cohere route therefore shows no meeting preview, while Cohere
+as only the recordings/files override can coexist with another engine's preview; Cohere
+final transcripts remain plain text without word timestamps or speaker labels.
 
 ### F36: Live Meeting Notepad
 
@@ -1535,6 +1725,7 @@ Meeting transcription uses the current speech engine captured at recording start
 - [x] Notes round-trip through crash recovery via lock-file `notes` (additive, decoded with `decodeIfPresent`, decoded independently so a malformed notes value doesn't block audio recovery)
 - [x] Soft-cap warning footer at 7,500 words; notes themselves are never truncated (cap applies only at prompt-assembly time)
 - [x] `MeetingNotesViewModel.notesText` is `private(set)` and bound exclusively to the editor — code-level enforcement of the "notes are user-authored only" invariant (ADR-020 §11)
+- [x] Completed meeting detail uses **Copy Meeting** as its primary copy action, producing compact Markdown with title, non-empty personal notes, and the preferred transcript; its split menu retains **Copy Transcript**, while the live Transcript-tab Copy action remains transcript-only
 
 ### F37: Memo-Steered Summaries
 
@@ -1545,11 +1736,71 @@ Meeting transcription uses the current speech engine captured at recording start
 **What still ships:**
 - [x] `PromptTemplateRenderer` supports `{{userNotes}}` and `{{transcript}}` substitution; single-pass and simultaneous to prevent injection via user notes containing `{{transcript}}` literals
 - [x] Variable names are case-sensitive; canonical lowercase (typos fall through to empty-string fallback rather than silently producing empty output)
-- [x] `Summary` row (PromptResult) gains `userNotesSnapshot: String?` — the value of `userNotes` at the moment of summary generation, captured alongside the existing prompt snapshot per ADR-013
+- [x] `Summary` row (PromptResult) gains `userNotesSnapshot: String?`; the
+  original implementation captured the row value at generation time. The
+  in-progress replacement tightens it to the exact bounded notes value actually
+  supplied to assembly.
 
 **Reverted:**
 - [x] "Memo-Steered Notes" prompt removed from `Prompt.builtInPrompts()` and `community-prompts.json`; reconciler deletes the row on next launch for any DB that has it from a prior build
 - [x] Auto-run insertion guard from ADR-020 §5 is still tested via `Summary` (the remaining auto-run built-in) — the mechanism is intact and ready for the next prompt that needs it
+
+#### Replacement: saved notes + per-prompt opt-in context
+
+> Status: **IMPLEMENTED AND LOCALLY VERIFIED (2026-09-05)** — release
+> availability follows the normal channel process.
+
+The replacement does not restore a dedicated memo-steered built-in or enable
+notes automatically. Every saved meeting exposes a dedicated, always-editable
+`Notes` tab after `Transcript`. Changes auto-save after a 500 ms idle debounce,
+with Saving/Saved/Error feedback and Retry. This keeps the user-authored
+editorial layer separate from the factual transcript. Notes are backed by
+canonical `transcriptions.userNotes`; blank saves become `NULL`. Derived meeting
+artifacts refresh at navigation, prompt/chat and ordinary-quit flushes rather
+than every debounce tick. Non-meeting transcriptions do not expose the tab.
+Each meeting keeps its own editor. Unsaved drafts remain available after a
+selection change or window close; an unsuccessful save cannot bind the next
+meeting to the previous meeting's notes. Normal app termination waits for all
+pending saved-meeting notes before proceeding with any live-recording quit
+confirmation. A save failure cancels quit and offers Retry or Keep Open.
+If a successful database read confirms the meeting was deleted, including
+through the CLI, its pending draft no longer blocks quit. Database read errors
+keep the draft and continue to block quit. A still-open deleted meeting keeps
+the draft readable for copying and labels it as unsaved to the deleted meeting.
+Every result prompt, including read-only built-ins, exposes an
+**Include meeting notes as context** checkbox. It defaults off for all existing
+and new prompts and is not available for Transforms.
+
+When enabled, non-empty notes are added once as a delimited context block and
+the transcript remains the factual source of truth. Advanced custom prompts
+may continue to place notes explicitly with case-sensitive `{{userNotes}}`,
+even when the checkbox is off; enabling the checkbox cannot duplicate that
+content. Empty notes preserve the previous assembled prompt byte-for-byte.
+Chat/Ask remains unchanged and keeps using the latest committed notes at send
+time without a checkbox.
+
+The additive schema stores
+`prompts.includeMeetingNotes` and
+`summaries.includeMeetingNotesSnapshot`, both non-null and default false.
+`userNotesSnapshot` stores the exact bounded notes value supplied to prompt
+assembly. The public CLI mirrors the setting on `prompts set` with
+`--include-meeting-notes` / `--no-include-meeting-notes` and additive JSON
+fields.
+
+**Acceptance criteria:**
+
+- [x] Saved meetings expose an always-editable Notes tab with debounced
+  autosave, flush-before-LLM behavior, Retry, and separate artifact warnings.
+- [x] Rapid saves leave derived artifacts at the newest committed DB value.
+- [x] Prompt checkbox works independently for built-in and custom result prompts; existing prompts stay opted out.
+- [x] The shared GUI/CLI assembler follows the empty/off/token/no-duplication decision table from ADR-020.
+- [x] Queue, retry, regenerate, and saved-result snapshots remain reproducible.
+- [x] Focused tests pass.
+- [ ] Manual end-to-end app verification is still required before release.
+- [ ] Current integrated full-suite validation is not green: the 2026-09-06
+  audit recorded one long-transcript layout-settling failure. Its isolated
+  eight-test rerun and the subsequent focused correction suites passed; the
+  full suite was not repeated under the once-per-task rule.
 
 ### F38: Slash Commands in Notes
 
@@ -1607,6 +1858,33 @@ Meeting transcription uses the current speech engine captured at recording start
 - [x] Pill rosette dims and shows pause bars while paused; panel header swaps "Recording" for "Paused" and hides the dual-audio orb
 - [x] Capture-failure detection (USB mic unplug, etc.) fires when `pillViewModel.state` is `.recording` *or* `.paused`, so a failure during pause still routes to the existing stop+transcribe error path
 
+### F43: VAD-Guided Meeting Live Chunking
+
+> Status: **IMPLEMENTED; SHIPPING SINCE v0.6.24** — `AppFeatures.meetingVadLiveChunkingEnabled = true`.
+
+**What:** Meeting live-preview audio can be chunked at speech boundaries instead
+of rigid fixed windows. The final post-stop meeting transcript remains the
+authoritative transcript and is unchanged by this live-preview strategy.
+
+**Acceptance criteria:**
+- [x] `CaptureOrchestrator` depends on `MeetingLiveAudioChunking` strategies
+  rather than owning `AudioChunker` directly
+- [x] `FixedMeetingLiveAudioChunker` preserves the original 5s / 1s-overlap
+  cadence byte-for-byte for feature-off, non-Parakeet, uncached-model, and
+  fallback sessions
+- [x] `SpeechBoundaryMeetingLiveAudioChunker` cuts Parakeet live-preview chunks
+  on VAD speech-end events, drops silence-only windows, force-emits bounded
+  long speech at the 10s cap, and falls back to fixed after repeated VAD errors
+- [x] Meeting start never blocks on VAD model download; `MeetingVADService` loads
+  only when the Silero model is already cached
+- [x] Launch-time background prep (`MeetingVADLaunchPrep`) attempts to fetch the
+  Silero model for flag-on builds after speech warm-up, emits
+  `vad_model_prep` only for `prepared` / `failed`, and swallows failures so the
+  meeting path falls back to fixed
+- [x] The feature flag is on after the original offline corpus/performance
+  evaluation. That historical rollout does not establish hardware-capture
+  verification for a later release candidate.
+
 ### F41: Ask Quick Prompts
 
 > Status: **IMPLEMENTED**
@@ -1628,7 +1906,7 @@ Meeting transcription uses the current speech engine captured at recording start
 
 > Status: **IMPLEMENTED ON MAIN** — Productized ADR-022 surface enabled by `AppFeatures.transformsEnabled = true`.
 
-**What:** System-wide selected-text rewrites through the user's configured LLM provider. The user selects text in any app, presses a bound Transform hotkey, and MacParakeet captures the selection, runs the saved prompt, and pastes the result into the currently focused target. Editable selections are replaced by normal `Cmd+V` semantics; read-only selections still produce a pasteable result and a local history row. The default built-ins are `Polish` (`Option-1`), `Distill` (`Option-2`), and `Decide` (`Option-3`).
+**What:** System-wide selected-text rewrites through the user's configured LLM provider. The user selects text in any app, presses a bound Transform hotkey, and MacParakeet captures the selection, runs the saved prompt, and pastes the result into the currently focused target. Editable selections are replaced by normal `Cmd+V` semantics; read-only selections still produce a pasteable result and a local history row. The default built-ins are `Polish` (`Control-Option-1`), `Distill` (`Control-Option-2`), and `Decide` (`Control-Option-3`).
 
 **Implementation:**
 - Transforms are `Prompt` rows with `category == .transform`; they reuse Prompt Library persistence but have their own sidebar surface and never appear in summary prompt pickers.
@@ -1641,7 +1919,7 @@ Meeting transcription uses the current speech engine captured at recording start
 - `macparakeet-cli transforms` manages and runs saved Transforms headlessly; `macparakeet-cli transforms history` reads and manages local Transform history.
 
 **Acceptance criteria:**
-- [x] Built-ins seed as `Polish`, `Distill`, and `Decide` with default `Option-1/2/3` shortcuts and resettable prompt bodies
+- [x] Built-ins seed as `Polish`, `Distill`, and `Decide` with default `Control-Option-1`, `Control-Option-2`, and `Control-Option-3` shortcuts and resettable prompt bodies
 - [x] Users can create, edit, delete custom Transforms and clear/rebind shortcuts
 - [x] Shortcut validation blocks bare keys, duplicate Transform bindings, dictation/meeting hotkey collisions, and hostile Option-letter dead-key combos
 - [x] Transforms tab appears in the main sidebar when `AppFeatures.transformsEnabled` is true
@@ -1649,6 +1927,96 @@ Meeting transcription uses the current speech engine captured at recording start
 - [x] CLI `transforms` and `transforms history` surfaces mirror the saved-prompt and local-history data model for agent workflows
 
 ---
+
+## v0.7 Features (Meeting Reliability & Detection)
+
+> Status: **MIXED** — F44 / ADR-023 auto-stop Phases A+B are enabled in the v0.7 release train, with the per-user setting defaulting off. F45 / ADR-024 detection Phases A+B remain behind a default-off flag with no UI/coordinator wiring. F46 / ADR-025 implements direct source-lifecycle recovery, actionable warnings, and frame-derived capture reports; VAD transcript-gap repair remains proposed. See the canonical [release/flag status](README.md#release-channels-and-feature-flags) rather than inferring stable availability from implementation.
+
+### F44: Activity-Based Meeting Auto-Stop
+
+> Status: **IMPLEMENTED; ENABLED, PER-USER OPT-IN DEFAULT OFF** — ADR-023 Phases A+B. Phase C remains deferred until ADR-024 attribution exists.
+
+**What:** Stop an active meeting recording when the meeting *actually ends*, never on a scheduled clock (calendar-driven auto-stop was withdrawn in the ADR-017 §5 amendment). The primary signal is sustained dual-channel silence — engine-agnostic across the Zoom app, a browser Meet/Teams tab, and in-person recordings; a recognized-meeting-app quit is a fast path. A stop is always preceded by a veto-able countdown ("stopping in 15s · Keep recording") and runs the identical finalize/transcribe path as a manual stop, so audio and transcript are never lost or truncated by surprise. Opt-in, default off, gated by `AppFeatures.meetingAutoStopEnabled`. Reuses the existing meeting VAD/level signal and the auto-start countdown toast.
+
+### F45: Activity-Based Meeting Detection
+
+> Status: **PARTIAL IMPLEMENTATION** — ADR-024 Phases A+B implement the CoreAudio process attribution collector, CoreMediaIO camera activity collector, shared signal snapshot types, trust-tiered app registry, detection mode, and pure detector tests behind `AppFeatures.meetingActivityDetectionEnabled = false`. Coordinator/UI wiring, prompt/auto-start telemetry, and ADR-023 auto-stop attribution remain proposed.
+
+**What:** Recognize an *unscheduled* live meeting from metadata-only on-device signals — per-process CoreAudio audio attribution (which app holds the mic, never the audio itself), CoreMediaIO camera activity, and a recognized conferencing-app/URL registry — fused conservatively so camera alone (e.g. Photo Booth) never triggers, with the app's own capture excluded from the signals. Phases A+B ship the metadata-only collectors and pure policy foundation only; they do not start observers at runtime or show prompts while the flag remains off. Later phases offer to record ("Record this meeting?"), with opt-in auto-start as a separate mode. Extends ADR-017's calendar-only trigger to ad-hoc calls and someone-else's invites. Metadata-only / local-first, opt-in, default off, gated by `AppFeatures.meetingActivityDetectionEnabled`. The same signal layer feeds F44 auto-stop.
+
+### F46: Meeting Capture Reliability — Mic-Health Watchdog + Coverage Repair
+
+> Status: **PARTIAL IMPLEMENTATION** — Direct AVAudioEngine configuration-change and callback-stall recovery, typed system-source recovery, actionable source warnings, and finalized frame-derived capture reports are implemented. Amplitude-inferred mic restart and REQ-MEET-018 VAD transcript-gap repair remain proposed.
+
+**Implemented:** A stopped AVAudioEngine configuration-change episode rebuilds against the current route and format with bounded retries, and succeeds only after a replacement microphone buffer arrives. After the first input buffer, a five-second absence of further tap callbacks uses that same recovery even when AVAudioEngine still reports itself running; ordinary acoustic silence remains healthy because buffers continue. Typed ScreenCaptureKit first-buffer, heartbeat, and unexpected delegate failures similarly retry with fresh system streams while preserving the other source. Confirmed recovering, interrupted, stalled, or unavailable states surface non-blocking warnings. Finalization persists per-source written-frame coverage and partial-capture status in the meeting artifact; missing legacy reports mean unknown, not healthy.
+
+**Still proposed:** The metadata-only mic-health monitor emits privacy-safe `mic_stall_detected` telemetry, but signal amplitude alone does not restart the microphone. The separately proposed offline VAD pass would find transcript gaps and re-transcribe missed speech; the implemented frame report measures recorded media coverage, not transcript completeness.
+
+**Release-readiness candidate:** A finalized selected system source is `silent`
+only after at least 30 seconds of pause-adjusted capture with delivered system
+buffers, exact-zero successfully written system PCM, and nonzero microphone
+signal. The writer's converted/downmixed signal is authoritative, not a
+channel-0 UI meter. Short, wholly silent, or merely quiet recordings are not
+classified this way. `silent` is diagnostic, not a partial-quality verdict:
+self-notes and other fully captured silent sources are healthy, with no
+silence warning or note surfaced anywhere, including saved reports. Coverage
+shortfall outranks silence in source-status precedence, so silence never
+hides missing coverage; interruption, capture failure, and unavailable media
+still retain precedence over both. This does not add live silence alerts,
+amplitude-triggered restarts, or transcript repair. Writer-finalization
+timeouts preserve recoverable files and ownership rather than cancelling
+AVAssetWriter or reporting success.
+
+### Local knowledge retrieval and agent automation
+
+Current development exposes segment FTS search, bounded transcript context,
+current knowledge-card reads/backfill, and saved meeting artifacts through
+`macparakeet-cli`. Cards are derived routing hints: verify candidate actions and
+decisions against cited transcript segments. Dictations retain their separate
+history search; a unified corpus Ask endpoint, embeddings, workflow engine,
+and MCP service are not implied. The [integration guide](../integrations/README.md)
+and [CLI boundary contract](contracts/cli-json-v1.md) own command examples,
+JSON/errors, write boundaries, and safe isolation.
+
+### F47: Meeting-End Focus & Notification Controls
+
+> Status: **IMPLEMENTED**
+
+**What:** Make the end-of-meeting handoff optional instead of always stealing focus. Two toggles in the Meeting Recording settings card, both default on to preserve prior behavior:
+
+- **Open app when meeting ends** (`openAppAfterMeetingEnd`): when on, finishing a meeting transcription selects the transcript, navigates the main window to it, and activates the app (prior behavior). When off, completion preserves the user's current app and workspace instead of selecting a different meeting. An already-open detail for the completed meeting still refreshes in place, without resetting its selected subtab. The completed result persists, both Library surfaces refresh, and configured folder export, retention, and auto-prompts keep their existing policy regardless of these presentation settings.
+- **Notify when transcript is ready** (`notifyOnMeetingEnd`): governs the quiet path's completion signal — a chime plus, while the app is backgrounded, a notification banner ("*Meeting title* — Meeting transcript ready · N words"). Disabled in the UI while auto-open is on, since the banner only fires on the quiet path. Deliberately independent of the Transcription card's `notifyOnTranscriptionComplete` setting in Modes: meeting-end behavior is owned entirely by meetings settings.
+
+The transcription queue awaits `TranscriptionService`'s actor-isolated repository persistence and managed-artifact materialization, then artifact settlement, before invoking the main-actor completion handler. The handler's `autoSave` option controls optional folder export, not the durable database save. Presentation suppression never skips persistence, and no extra asynchronous handoff may invalidate the queue's recording-state check before presentation.
+
+Auto-prompts for an unselected completion stay in the existing single-worker prompt queue as background meeting work. They neither retarget the currently displayed prompt results nor clear its errors, and they survive subsequent transcript navigation. Manual generations retain their existing visit-scoped cancellation behavior. Background results and retryable failures remain attached to their own meeting.
+
+Generation progress, queued counts, and streaming content are scoped to the displayed transcript; unrelated background work does not claim that transcript is generating or prevent it from queuing a manual prompt. Model selection remains visibly disabled while any work is active because provider/model configuration is shared by the queue, and becomes available after the queue drains.
+
+Presentation additionally requires the queued completion's recording-flow generation to remain current. Starting a newer meeting permanently supersedes older queued success presentation, even after the newer meeting stops and the recording flow returns to idle; the older meeting still saves, refreshes, and runs background auto-prompts. An explicit retry captures the recording generation at retry admission, so a subsequent meeting start suppresses that retry's presentation too.
+
+The existing completion handler reads the auto-open preference before presenting the completed transcription. Auto-open takes precedence over notifications, so it adds no completion chime or banner. When the queue reports that the recording flow is not idle (including a newer meeting starting, recording, paused, or stopping), success completion does not select a different meeting, navigate, activate, chime, or notify, regardless of settings; the same-meeting detail and Library still refresh. Quiet completion chimes while foregrounded and adds a silent banner only while backgrounded, subject to system sound and notification permissions. Turning off both toggles silences successful completion, not finalization failures that need a retry. Both settings emit `setting_changed` telemetry and are registered in the settings search index.
+
+---
+
+## Development additions after 0.7.3
+
+These are implemented in source; release availability follows the
+[canonical status table](README.md#release-channels-and-feature-flags).
+
+| Surface | Current behavior | Governing reference |
+|---|---|---|
+| Saved meeting notes | Debounced editing, explicit save/flush boundaries and optional inclusion in result prompts; historical results retain the notes actually sent. | [ADR-020](adr/020-live-meeting-notepad-and-memo-summaries.md) |
+| Speaker corrections | Transcript-scoped add, rename, assign, split, merge, remove, reset and Undo/Redo; effective attribution flows into retrieval, AI and exported artifacts without rewriting recognized words. | [ADR-010](adr/010-speaker-diarization.md), [data model](01-data-model.md) |
+| Result generation settings | Per-prompt settings with validation, provider capability handling and effective-request snapshots. | [Spec 14](14-per-prompt-inference-settings.md) |
+| Rich AI output | Shared static/streaming Markdown rendering for results/chat while preserving source Markdown for copy and export. | [UI patterns](04-ui-patterns.md#llm-markdown-content) |
+| Local retrieval | Segment FTS search, bounded cited context and validated knowledge cards for file/URL/meeting transcripts; dictation history search remains separate. | [Integration guide](../integrations/README.md) |
+| Vocabulary cleanup | Confirmed deletion of selected rules, including all search matches, without rewriting existing transcripts. | [Deletion contract](contracts/custom-word-deletion.md) |
+| DAPT export | Timed speaker-attributed events when aligned; untimed fallback otherwise. | [DAPT contract](contracts/dapt-export-v1.md) |
+
+These do not enable activity-based meeting detection, app-aware AI Formatter
+profiles or public in-process MLX. Corpus-wide Ask and cross-file speaker
+identity remain future work.
 
 ## Future Features (Post-Launch)
 
@@ -1679,14 +2047,14 @@ Read surrounding text from the active app via macOS Accessibility APIs (AXUIElem
 
 | Metric | Target | Notes |
 |--------|--------|-------|
-| Transcription speed | 155x realtime | Parakeet TDT on Apple Silicon (ANE via FluidAudio CoreML); WhisperKit is for coverage, not this latency target |
+| Transcription speed | ≥80x steady realtime on the M4 Pro reference benchmark | Current Parakeet builds measure ~81–93x through FluidAudio CoreML; Nemotron is Beta, Cohere is batch accuracy-focused, and WhisperKit is for coverage rather than the default latency target |
 | Dictation latency | <500ms end-to-end | From Fn release to text appearing |
 | Clean pipeline | <1ms | Deterministic, pure string operations |
 | Memory usage (idle) | <200MB | Menu bar + default STT readiness path |
-| Memory usage (active) | Engine-dependent | Parakeet active slot is ~66 MB working RAM; Whisper depends on selected model |
-| App size | <100MB | Plus ~6 GB Parakeet model download and optional Whisper download |
+| Memory usage (active) | Engine-dependent | Current Parakeet builds measure 115–131 MB peak RSS on the M4 Pro reference benchmark; Nemotron, Cohere, and Whisper depend on selected model/runtime |
+| App size | <100MB | Plus ~465 MB per Parakeet build, ~1.5 GB or ~600 MB optional Nemotron download (per selected build), ~2.1 GB optional Cohere download, and optional Whisper download |
 | Startup time | <2s | Cold start to menu bar ready |
-| File transcription | 1 hour audio in <25s | On M1 or better (ANE via CoreML) |
+| File transcription | 1 hour audio in <45s | Reference target for current Parakeet builds on the M4 Pro benchmark machine; hardware, audio, and engine choice affect elapsed time |
 
 ---
 
@@ -1699,16 +2067,21 @@ MacParakeet's brand is privacy. These are non-negotiable.
 | Core offline operation | Dictation, file transcription, and meeting recording work fully offline after local model setup |
 | Opt-out telemetry | Self-hosted usage analytics and crash reporting can be disabled in Settings |
 | No accounts | No email, no login, no registration |
-| No cloud STT | All speech recognition runs locally on Apple Silicon; Parakeet is default and WhisperKit is optional |
-| User-controlled storage | File/YouTube/meeting audio is retained for playback/recovery unless deleted; dictation audio is opt-in |
-| Explicit network surfaces | Model download, update checks, optional LLM providers, optional telemetry/crash reporting, retained purchase activation endpoints if explicitly invoked, and YouTube download |
+| No cloud STT | All speech recognition runs locally on Apple Silicon; Parakeet is default and Nemotron/Cohere/WhisperKit are optional |
+| User-controlled storage | Saved audio follows the relevant dictation/file/media/meeting storage setting; meeting audio is retained by default, with explicit deletion/retention choices |
+| Network surfaces | Model/helper setup, media/podcast imports, configured LLM features, opt-out telemetry/crash reporting, updates, explicit submissions, retained-license validation, and the independent default-on Discover feed (Settings opt-out) |
 
-**What "supports a fully local setup" means:**
-- Parakeet STT runs on Apple Silicon Neural Engine (ANE) via FluidAudio CoreML; WhisperKit also runs locally when selected
-- Audio never leaves the device
-- Transcripts stay local unless the user explicitly enables external AI features
-- Users can remain fully local by sticking to offline/core features and local providers such as Ollama
-- Network access is limited to explicit product surfaces such as updates, telemetry/crash reporting, model downloads, optional LLM providers, retained purchase activation endpoints if explicitly invoked, and media download
+**What local-first means:**
+- Parakeet, Nemotron, and Cohere STT run locally via FluidAudio CoreML; WhisperKit also runs locally when selected
+- Captured audio is not sent to an STT or LLM service
+- Text stays local unless configured AI features or explicit user/agent delivery sends it elsewhere
+- Core workflows can run offline after model setup; local providers can keep LLM inference on-device
+- Discover requests its public feed at app launch by default, even with telemetry off
+  and without opening the page. It uses cached/bundled content offline. Settings →
+  System → Appearance → **Show Discover in the sidebar** independently controls
+  Discover: turning it off hides the card, cancels pending feed requests, clears
+  the displayed feed, and stops new loads until re-enabled. There is no global
+  no-network toggle.
 
 ---
 

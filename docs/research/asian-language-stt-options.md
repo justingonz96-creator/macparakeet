@@ -2,11 +2,11 @@
 
 > Status: **HISTORICAL** — Research findings from before the WhisperKit implementation
 > Last verified: 2026-04-02
-> Implementation update: ADR-021 added optional local WhisperKit support on main for broad multilingual coverage. Parakeet remains the default engine.
+> Implementation update: ADR-021 added optional local WhisperKit support on main for broad multilingual coverage. Parakeet remains the default engine family; v3 is the multilingual default and v2 is an English-only opt-in that does not change Asian-language coverage.
 
 ## Summary
 
-MacParakeet uses Parakeet TDT 0.6B-v3 via FluidAudio CoreML, which supports **25 European languages only**. This document evaluates options for adding Asian language support (Korean, Japanese, Chinese, and others).
+MacParakeet uses Parakeet TDT 0.6B via FluidAudio CoreML. The default v3 build supports **25 European languages only**; the opt-in v2 build is English-only. This document evaluates options for adding Asian language support (Korean, Japanese, Chinese, and others).
 
 **Bottom line:** No model matches Parakeet's speed (~155x realtime baseline, ~190x on M4 Pro) for Asian languages today. The best available option is **Qwen3-ASR-0.6B via FluidAudio CoreML** (~3–5x realtime), which is already shipped in FluidAudio v0.12.1+ and requires no new dependencies. Accuracy is strong — it beats Whisper large-v3 (a 2.5x larger model) on Chinese and is competitive on Korean/Japanese.
 
@@ -21,7 +21,7 @@ MacParakeet uses Parakeet TDT 0.6B-v3 via FluidAudio CoreML, which supports **25
 | English WER | ~1.93% (LibriSpeech test-clean) |
 | Speed | ~155x realtime baseline (M1); ~190x on M4 Pro |
 | Working memory | ~66 MB |
-| Model size on disk | ~6 GB CoreML bundle |
+| Model size on disk | ~465 MB fetched components per Parakeet build in current MacParakeet usage |
 | Asian languages | **None** |
 
 Source: [nvidia/parakeet-tdt-0.6b-v3 (HuggingFace)](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)

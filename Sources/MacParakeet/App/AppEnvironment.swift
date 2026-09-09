@@ -1,6 +1,11 @@
+import CoreAudio
 import Foundation
 import MacParakeetCore
+#if MACPARAKEET_HAS_MLX_LOCAL_LLM
+import MacParakeetLocalLLM
+#endif
 import MacParakeetViewModels
+import OSLog
 
 /// Service container: creates and wires up all dependencies.
 @MainActor
@@ -8,29 +13,54 @@ final class AppEnvironment {
     let databaseManager: DatabaseManager
     let dictationRepo: DictationRepository
     let transcriptionRepo: TranscriptionRepository
+    let meetingTypeRepo: MeetingTypeRepository
+    let meetingLabelRepo: MeetingLabelRepository
+    let transcriptionMeetingLabelRepo: TranscriptionMeetingLabelRepository
+    let meetingClassificationService: MeetingClassificationService
+    let segmentRepo: SegmentRepository
+    let cardRepo: CardRepository
+    let knowledgeLayerMutator: KnowledgeLayerMutationService
+    let speakerAttributionReader: SpeakerAttributionReadService
+    let speakerCorrectionService: SpeakerCorrectionService
     let customWordRepo: CustomWordRepository
     let snippetRepo: TextSnippetRepository
     let chatConversationRepo: ChatConversationRepository
     let promptRepo: PromptRepository
+    let promptMeetingPolicyRepo: PromptMeetingPolicyRepository
+    let promptLabelPolicyRepo: PromptLabelPolicyRepository
+    let promptVersionRepo: PromptVersionRepository
+    let promptCollectionRepo: PromptCollectionRepository
+    let promptEditingService: PromptEditingService
     let promptResultRepo: PromptResultRepository
+    let meetingArtifactStore: MeetingArtifactStore
     let llmRunRepo: LLMRunRepository
+    let aiFormatterProfileRepo: AIFormatterProfileRepository
     let transformHistoryRepo: TransformHistoryRepository
     let quickPromptRepo: QuickPromptRepository
     let sttRuntime: STTRuntime
     let sttScheduler: STTScheduler
     let sharedMicStream: SharedMicrophoneStream
     let audioProcessor: AudioProcessor
+    let meetingRecordingLockFileStore: MeetingRecordingLockFileStore
     let meetingRecordingService: MeetingRecordingService
+    let meetingRecordingSettlement: MeetingRecordingSettlement
     let meetingRecordingRecoveryService: MeetingRecordingRecoveryService
     let dictationService: DictationService
     let transcriptionService: TranscriptionService
     let youtubeDownloader: YouTubeDownloader
     let diarizationService: DiarizationService
+    /// Stateless; fetches the Silero VAD model for VAD-guided meeting live
+    /// chunking. Consumed by `AppDelegate.scheduleDeferredSpeechPreWarm` on every
+    /// launch (gated on `AppFeatures.meetingVadLiveChunkingEnabled`) so the
+    /// installed base — not just fresh installs — acquires the model. See
+    /// `MeetingVADLaunchPrep` and the VAD plan §6 (Phase 4.5).
+    let meetingVADModelPreparer: any MeetingVADModelPreparing = MeetingVADModelPreparer()
     let clipboardService: ClipboardService
     let systemMediaController: SystemMediaController
     let exportService: ExportService
     let permissionService: PermissionService
     let accessibilityService: AccessibilityService
+    let focusedAppContextService: FocusedAppContextService
     let entitlementsService: EntitlementsService
     let launchAtLoginService: LaunchAtLoginService
     let checkoutURL: URL?
@@ -38,25 +68,63 @@ final class AppEnvironment {
     let llmClient: RoutingLLMClient
     let llmConfigStore: LLMConfigStore
     let llmService: LLMService
+    let cardGenerationService: CardGenerationService
     let runtimePreferences: AppRuntimePreferencesProtocol
     let derivedFieldsBackfill: DerivedFieldsBackfillService
 
     init(databaseManager: DatabaseManager) throws {
+        SpeechEnginePreference.migrateMaterializedFinalTranscriptionOverrideIfNeeded()
         self.databaseManager = databaseManager
 
         // Repositories
         dictationRepo = DictationRepository(dbQueue: databaseManager.dbQueue)
         transcriptionRepo = TranscriptionRepository(dbQueue: databaseManager.dbQueue)
+        meetingTypeRepo = MeetingTypeRepository(dbQueue: databaseManager.dbQueue)
+        meetingLabelRepo = MeetingLabelRepository(dbQueue: databaseManager.dbQueue)
+        transcriptionMeetingLabelRepo = TranscriptionMeetingLabelRepository(dbQueue: databaseManager.dbQueue)
+        segmentRepo = SegmentRepository(dbQueue: databaseManager.dbQueue)
+        cardRepo = CardRepository(dbQueue: databaseManager.dbQueue)
+        knowledgeLayerMutator = KnowledgeLayerMutationService(dbQueue: databaseManager.dbQueue)
+        speakerAttributionReader = SpeakerAttributionReadService(dbQueue: databaseManager.dbQueue)
+        speakerCorrectionService = SpeakerCorrectionService(dbQueue: databaseManager.dbQueue)
         customWordRepo = CustomWordRepository(dbQueue: databaseManager.dbQueue)
         snippetRepo = TextSnippetRepository(dbQueue: databaseManager.dbQueue)
         chatConversationRepo = ChatConversationRepository(dbQueue: databaseManager.dbQueue)
         promptRepo = PromptRepository(dbQueue: databaseManager.dbQueue)
+        promptMeetingPolicyRepo = PromptMeetingPolicyRepository(dbQueue: databaseManager.dbQueue)
+        promptLabelPolicyRepo = PromptLabelPolicyRepository(dbQueue: databaseManager.dbQueue)
+        promptVersionRepo = PromptVersionRepository(dbQueue: databaseManager.dbQueue)
+        promptCollectionRepo = PromptCollectionRepository(dbQueue: databaseManager.dbQueue)
+        promptEditingService = PromptEditingService(dbQueue: databaseManager.dbQueue)
         promptResultRepo = PromptResultRepository(dbQueue: databaseManager.dbQueue)
+        meetingArtifactStore = MeetingArtifactStore(
+            speakerAttributionReader: speakerAttributionReader,
+            classificationProvider: { [databaseManager] transcriptionID in
+                let classification = try MeetingClassificationService(
+                    dbQueue: databaseManager.dbQueue
+                ).classification(for: transcriptionID)
+                return MeetingArtifactClassificationSnapshot(classification)
+            }
+        )
+        meetingClassificationService = MeetingClassificationService(
+            dbQueue: databaseManager.dbQueue,
+            artifactRefresher: MeetingArtifactClassificationRefresher(
+                promptResultRepository: promptResultRepo,
+                speakerAttributionReader: speakerAttributionReader,
+                artifactStore: meetingArtifactStore
+            )
+        )
         llmRunRepo = LLMRunRepository(dbQueue: databaseManager.dbQueue)
+        aiFormatterProfileRepo = AIFormatterProfileRepository(dbQueue: databaseManager.dbQueue)
         transformHistoryRepo = TransformHistoryRepository(dbQueue: databaseManager.dbQueue)
         quickPromptRepo = QuickPromptRepository(dbQueue: databaseManager.dbQueue)
 
         // Services
+        let llmConfigStore = LLMConfigStore()
+        Self.syncAIFormatterAvailabilityWithLLMConfiguration(
+            defaults: .standard,
+            configStore: llmConfigStore
+        )
         let runtimePreferences = UserDefaultsAppRuntimePreferences()
         self.runtimePreferences = runtimePreferences
         let selectedInputDeviceUIDProvider: @Sendable () -> String? = { [runtimePreferences] in
@@ -68,8 +136,14 @@ final class AppEnvironment {
 
         let vocabularyRepo = customWordRepo
         sttRuntime = STTRuntime(
+            parakeetModelVariant: SpeechEnginePreference.parakeetModelVariant(),
             speechEngine: SpeechEnginePreference.current(),
+            nemotronModelVariant: SpeechEnginePreference.nemotronModelVariant(),
             whisperModelVariant: SpeechEnginePreference.whisperModelVariant(),
+            customVocabularyProvider: RepositoryCustomVocabularyBoostingTermProvider(repository: customWordRepo),
+            customVocabularyRecognitionBoostingEnabled: { [runtimePreferences] in
+                runtimePreferences.customVocabularyRecognitionBoostingEnabled
+            },
             whisperVocabularyProvider: {
                 ((try? vocabularyRepo.fetchEnabled()) ?? []).map { $0.replacement ?? $0.word }
             }
@@ -81,7 +155,9 @@ final class AppEnvironment {
         let meetingMicProcessingMode: MeetingMicProcessingMode = .raw
         // Build the device-attempt chain lazily on each engine start so a
         // user changing their mic in Settings between meetings sees the new
-        // selection.
+        // selection. Output routing is intentionally unrelated: System Default
+        // remains an implicit Core Audio route, while a named mic is pinned by
+        // its resolved device ID.
         let attemptsBuilder: AVAudioEngineMicrophonePlatform.DeviceAttemptsBuilder = {
             let selectedUID = AudioDeviceManager.normalizedUID(selectedInputDeviceUIDProvider())
             let selectedID = selectedUID.flatMap { AudioDeviceManager.inputDeviceID(forUID: $0) }
@@ -95,9 +171,32 @@ final class AppEnvironment {
             )
         }
         sharedMicStream = SharedMicrophoneStream(
-            platform: AVAudioEngineMicrophonePlatform(deviceAttemptsBuilder: attemptsBuilder)
+            platform: AVAudioEngineMicrophonePlatform(deviceAttemptsBuilder: attemptsBuilder),
+            // Re-prepare the stopped dictation engine each time the stream goes
+            // idle, so a press only pays `engine.start()` — instant first words
+            // without holding the mic open (no indicator, no Bluetooth HFP pin).
+            autoPrewarmWhenIdle: true
         )
-        audioProcessor = AudioProcessor(sharedMicStream: sharedMicStream)
+        // The Instant Dictation warm lease asks this before holding the mic
+        // open while idle. First attempt in the chain = the device the engine
+        // will start on (selected if resolvable, else system default).
+        // Bluetooth inputs are suppressed: an idle open mic pins the headset
+        // in HFP/SCO and degrades playback the whole time (issue #481).
+        let warmCaptureInputIsBluetooth: @Sendable () -> Bool = {
+            Self.shouldSuppressWarmCapture(
+                deviceAttempts: attemptsBuilder(),
+                isBluetoothInput: { AudioDeviceManager.bluetoothInputState($0) }
+            )
+        }
+        audioProcessor = AudioProcessor(
+            sharedMicStream: sharedMicStream,
+            isBluetoothInputProvider: warmCaptureInputIsBluetooth,
+            // Default-input-change notifications arrive in bursts during
+            // Bluetooth profile transitions; one trailing window collapses a
+            // burst into a single warm-engine restart (issue #481).
+            warmCaptureRefreshDebounce: 0.5
+        )
+        meetingRecordingLockFileStore = MeetingRecordingLockFileStore()
         meetingRecordingService = MeetingRecordingService(
             micProcessingMode: meetingMicProcessingMode,
             audioCaptureService: MeetingAudioCaptureService(
@@ -105,13 +204,23 @@ final class AppEnvironment {
                 sourceModeProvider: meetingAudioSourceModeProvider,
                 sharedMicStream: sharedMicStream
             ),
-            sttTranscriber: sttScheduler
+            sttTranscriber: sttScheduler,
+            lockFileStore: meetingRecordingLockFileStore,
+            finalSpeechEngineSelection: { SpeechEngineSelection.finalTranscription() },
+            // Wire the real feature flag here (the service defaults to fixed
+            // chunking so tests stay deterministic regardless of the flag).
+            isVadLiveChunkingEnabled: { AppFeatures.meetingVadLiveChunkingEnabled }
+        )
+        meetingRecordingSettlement = MeetingRecordingSettlement(
+            lockFileStore: meetingRecordingLockFileStore,
+            transcriptionRepo: transcriptionRepo
         )
         clipboardService = ClipboardService()
         systemMediaController = SystemMediaController()
         exportService = ExportService()
         permissionService = PermissionService()
         accessibilityService = AccessibilityService()
+        focusedAppContextService = FocusedAppContextService()
         launchAtLoginService = LaunchAtLoginService()
 
         // Retained purchase activation / entitlements. Current free/GPL builds
@@ -123,7 +232,8 @@ final class AppEnvironment {
         let checkoutURLString =
             (Bundle.main.object(forInfoDictionaryKey: "MacParakeetCheckoutURL") as? String)
             ?? ProcessInfo.processInfo.environment["MACPARAKEET_CHECKOUT_URL"]
-        checkoutURL = checkoutURLString
+        checkoutURL =
+            checkoutURLString
             .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .flatMap { $0.isEmpty ? nil : $0 }
             .flatMap(URL.init(string:))
@@ -157,6 +267,10 @@ final class AppEnvironment {
             runtimePreferences.processingMode
         }
 
+        let dictationInsertionStyleClosure: @Sendable () -> DictationInsertionStyle = { [runtimePreferences] in
+            runtimePreferences.dictationInsertionStyle
+        }
+
         let binaryBootstrap = BinaryBootstrap()
         youtubeDownloader = YouTubeDownloader(
             binaryBootstrap: binaryBootstrap,
@@ -167,24 +281,68 @@ final class AppEnvironment {
         }
         diarizationService = DiarizationService()
 
-        let voiceReturnTriggerClosure: @Sendable () -> String? = { [runtimePreferences] in
-            runtimePreferences.voiceReturnTrigger
+        let voiceReturnTriggersClosure: @Sendable () -> [String] = { [runtimePreferences] in
+            runtimePreferences.voiceReturnTriggers
         }
 
-        let aiFormatterEnabledClosure: @Sendable () -> Bool = { [runtimePreferences] in
-            runtimePreferences.aiFormatterEnabled
+        // File/meeting transcripts gate the AI Formatter on BOTH the
+        // availability switch and the transcripts-specific switch, mirroring
+        // the dictation gate below. Before #493 transcripts followed provider
+        // availability alone, with no way to opt out.
+        let transcriptionAIFormatterEnabledClosure: @Sendable () -> Bool = { [runtimePreferences] in
+            runtimePreferences.aiFormatterEnabled && runtimePreferences.aiFormatterEnabledForTranscriptions
+        }
+
+        // Dictation gates the AI Formatter on BOTH the global switch and the
+        // dictation-specific switch, so users can keep AI formatting for
+        // file/meeting transcripts (which use
+        // `transcriptionAIFormatterEnabledClosure`) while keeping live
+        // dictation fast. See issue #408.
+        let dictationAIFormatterEnabledClosure: @Sendable () -> Bool = { [runtimePreferences] in
+            runtimePreferences.aiFormatterEnabled && runtimePreferences.aiFormatterEnabledForDictation
         }
 
         let aiFormatterPromptClosure: @Sendable () -> String = { [runtimePreferences] in
             runtimePreferences.aiFormatterPrompt
+        }
+        let meetingTitleGenerationEnabledClosure: @Sendable () -> Bool = { [runtimePreferences, llmConfigStore] in
+            guard runtimePreferences.shouldAutoGenerateMeetingTitles else { return false }
+            return (try? llmConfigStore.loadConfig()) != nil
+        }
+        let aiFormatterPromptResolver: any AIFormatterPromptResolving
+        if AppFeatures.aiFormatterProfilesEnabled {
+            aiFormatterPromptResolver = AIFormatterProfilePromptResolver(
+                profileRepository: aiFormatterProfileRepo,
+                globalPromptTemplate: aiFormatterPromptClosure,
+                smartDefaultsPolicy: { AIFormatterSmartDefaultsPolicy.current() },
+                onFetchError: { error in
+                    // A failed profile fetch degrades to the fallback prompt by
+                    // design; log it so a corrupted DB doesn't silently route
+                    // every dictation past the user's profiles.
+                    Logger(subsystem: "com.macparakeet.app", category: "AIFormatter")
+                        .error(
+                            "Formatter profile fetch failed; using fallback prompt error=\(error.localizedDescription, privacy: .public)"
+                        )
+                }
+            )
+        } else {
+            aiFormatterPromptResolver = AIFormatterGlobalPromptResolver(
+                promptTemplate: aiFormatterPromptClosure
+            )
         }
 
         let numberRefinementModeClosure: @Sendable () -> NumberRefinementMode = { [runtimePreferences] in
             runtimePreferences.numberRefinementMode
         }
 
+        #if MACPARAKEET_HAS_MLX_LOCAL_LLM
+        llmClient = RoutingLLMClient(
+            inProcessClient: InProcessLLMClient(runtime: MLXLocalLLMRuntime())
+        )
+        #else
         llmClient = RoutingLLMClient()
-        llmConfigStore = LLMConfigStore()
+        #endif
+        self.llmConfigStore = llmConfigStore
         llmService = LLMService(
             client: llmClient,
             contextResolver: StoredLLMExecutionContextResolver(
@@ -193,6 +351,14 @@ final class AppEnvironment {
             )
         )
         let numberLLMRefiner = NumberLLMRefiner(llmService: llmService)
+
+        cardGenerationService = CardGenerationService(
+            transcriptionRepository: transcriptionRepo,
+            segmentRepository: segmentRepo,
+            cardRepository: cardRepo,
+            speakerAttributionReader: speakerAttributionReader,
+            completionProvider: llmService
+        )
 
         dictationService = DictationService(
             audioProcessor: audioProcessor,
@@ -203,13 +369,23 @@ final class AppEnvironment {
             entitlements: entitlementsService,
             customWordRepo: customWordRepo,
             snippetRepo: snippetRepo,
-            voiceReturnTrigger: voiceReturnTriggerClosure,
+            voiceReturnTriggers: voiceReturnTriggersClosure,
             processingMode: processingModeClosure,
+            dictationInsertionStyle: dictationInsertionStyleClosure,
             llmService: llmService,
             llmRunRepo: llmRunRepo,
-            shouldUseAIFormatter: aiFormatterEnabledClosure,
-            aiFormatterPromptTemplate: aiFormatterPromptClosure,
+            shouldUseAIFormatter: dictationAIFormatterEnabledClosure,
             numberRefinementMode: numberRefinementModeClosure,
+            aiFormatterPromptResolver: aiFormatterPromptResolver,
+            shouldAttemptLiveDictationTranscription: {
+                Self.shouldAttemptLiveDictationTranscription()
+            },
+            shouldShowDictationPreview: { [runtimePreferences] in
+                runtimePreferences.showLiveDictationPreview
+            },
+            dictationPreviewSpeechEngine: {
+                Self.dictationPreviewSpeechEngine()
+            },
             markFirstDictationCompleted: { [runtimePreferences] in
                 // Fire the activation milestone exactly once, the first time a
                 // dictation ever completes on this install. `activation_window`
@@ -219,9 +395,10 @@ final class AppEnvironment {
                     .string(forKey: OnboardingViewModel.onboardingCompletedKey)
                     .flatMap { ISO8601DateFormatter().date(from: $0) }
                     .map { Date().timeIntervalSince($0) }
-                Telemetry.send(.firstDictationCompleted(
-                    activationWindow: TelemetryActivationWindow(secondsSinceOnboarding: secondsSinceOnboarding)
-                ))
+                Telemetry.send(
+                    .firstDictationCompleted(
+                        activationWindow: TelemetryActivationWindow(secondsSinceOnboarding: secondsSinceOnboarding)
+                    ))
             }
         )
 
@@ -237,28 +414,148 @@ final class AppEnvironment {
             audioProcessor: audioProcessor,
             sttTranscriber: sttScheduler,
             transcriptionRepo: transcriptionRepo,
+            segmentRepo: segmentRepo,
+            knowledgeLayerMutator: knowledgeLayerMutator,
+            promptResultRepo: promptResultRepo,
             entitlements: entitlementsService,
             customWordRepo: customWordRepo,
             snippetRepo: snippetRepo,
             processingMode: processingModeClosure,
             llmService: llmService,
             llmRunRepo: llmRunRepo,
-            shouldUseAIFormatter: aiFormatterEnabledClosure,
+            shouldUseAIFormatter: transcriptionAIFormatterEnabledClosure,
             aiFormatterPromptTemplate: aiFormatterPromptClosure,
             numberRefinementMode: numberRefinementModeClosure,
             numberLLMRefiner: numberLLMRefiner,
+            shouldAutoGenerateMeetingTitles: meetingTitleGenerationEnabledClosure,
             shouldKeepDownloadedAudio: { [runtimePreferences] in runtimePreferences.shouldSaveTranscriptionAudio },
             shouldDiarize: { [runtimePreferences] in runtimePreferences.shouldDiarize },
+            shouldDiarizeMeetings: { [runtimePreferences] in runtimePreferences.shouldDiarizeMeetings },
+            fileSpeechEngineSelection: { SpeechEngineSelection.finalTranscription() },
             youtubeDownloader: youtubeDownloader,
-            diarizationService: diarizationService
+            podcastResolver: PodcastEpisodeResolver(),
+            podcastSearchResolver: PodcastQueryResolver(),
+            podcastAudioFetcher: PodcastAudioDownloader(),
+            diarizationService: diarizationService,
+            meetingArtifactStore: meetingArtifactStore
         )
 
         meetingRecordingRecoveryService = MeetingRecordingRecoveryService(
+            lockFileStore: meetingRecordingLockFileStore,
             transcriptionService: transcriptionService,
             transcriptionRepo: transcriptionRepo
         )
 
         derivedFieldsBackfill = DerivedFieldsBackfillService(dbQueue: databaseManager.dbQueue)
         derivedFieldsBackfill.runInBackground()
+
+        let segmentMaintenanceRepository = segmentRepo
+        Task.detached(priority: .utility) {
+            do {
+                let result = try segmentMaintenanceRepository.rebuildOutdated()
+                if result.transcriptionsIndexed > 0 {
+                    Logger(subsystem: "com.macparakeet.app", category: "KnowledgeLayer")
+                        .notice(
+                            "Rebuilt outdated transcript segments recordings=\(result.transcriptionsIndexed, privacy: .public) segments=\(result.segmentsIndexed, privacy: .public)"
+                        )
+                }
+            } catch {
+                Logger(subsystem: "com.macparakeet.app", category: "KnowledgeLayer")
+                    .error(
+                        "Outdated segment maintenance failed error=\(error.localizedDescription, privacy: .public)"
+                    )
+            }
+        }
+    }
+
+    nonisolated static func shouldSuppressWarmCapture(
+        deviceAttempts: [MeetingInputDeviceAttempt],
+        isBluetoothInput: @Sendable (AudioDeviceID) -> Bool?
+    ) -> Bool {
+        // Fail closed: an unresolvable input (mid device transition — exactly
+        // when Bluetooth headsets are settling) skips the warm hold for this
+        // round. The hold is an opt-in optimization; the next refresh or
+        // post-dictation restart retries.
+        guard let deviceID = deviceAttempts.first?.deviceID else { return true }
+        return isBluetoothInput(deviceID) != false
+    }
+
+    nonisolated static func shouldAttemptLiveDictationTranscription(
+        speechEngine: SpeechEnginePreference = SpeechEnginePreference.current(),
+        parakeetModelVariant: ParakeetModelVariant = SpeechEnginePreference.parakeetModelVariant(),
+        nemotronModelVariant: NemotronModelVariant = SpeechEnginePreference.nemotronModelVariant(),
+        whisperModelVariant: String = SpeechEnginePreference.whisperModelVariant(),
+        liveDictationStreamingEnabled: Bool = AppFeatures.liveDictationStreamingEnabled
+    ) -> Bool {
+        guard liveDictationStreamingEnabled else { return false }
+        return SpeechEngineCapabilityRegistry.capabilities(
+            for: speechEngine,
+            parakeetModelVariant: parakeetModelVariant,
+            nemotronModelVariant: nemotronModelVariant,
+            whisperModelVariant: whisperModelVariant
+        )?.supportsNativeLiveDictation == true
+    }
+
+    nonisolated static func dictationPreviewSpeechEngine(
+        speechEngine: SpeechEnginePreference = SpeechEnginePreference.current(),
+        parakeetModelVariant: ParakeetModelVariant = SpeechEnginePreference.parakeetModelVariant(),
+        nemotronModelVariant: NemotronModelVariant = SpeechEnginePreference.nemotronModelVariant(),
+        whisperModelVariant: String = SpeechEnginePreference.whisperModelVariant(),
+        liveDictationStreamingEnabled: Bool = AppFeatures.liveDictationStreamingEnabled
+    ) -> SpeechEngineCapabilitySelection? {
+        guard liveDictationStreamingEnabled else { return nil }
+        // Product policy still limits the display-preview lane to Parakeet TDT
+        // while this feature rides the live-dictation flag; the registry answers
+        // whether the selected Parakeet variant actually has that tail-preview path.
+        guard speechEngine == .parakeet else { return nil }
+        guard
+            let capabilities = SpeechEngineCapabilityRegistry.capabilities(
+                for: speechEngine,
+                parakeetModelVariant: parakeetModelVariant,
+                nemotronModelVariant: nemotronModelVariant,
+                whisperModelVariant: whisperModelVariant
+            )
+        else {
+            return nil
+        }
+        guard capabilities.supportsTailPreview else { return nil }
+        return SpeechEngineCapabilitySelection(
+            selection: SpeechEngineSelection(engine: .parakeet),
+            capabilities: capabilities
+        )
+    }
+
+    nonisolated static func syncAIFormatterAvailabilityWithLLMConfiguration(
+        defaults: UserDefaults,
+        configStore: LLMConfigStoreProtocol
+    ) {
+        let config: LLMProviderConfig?
+        do {
+            config = try configStore.loadConfig()
+        } catch {
+            return
+        }
+        let hasDictationRoutingPreference =
+            defaults.object(
+                forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForDictationKey
+            ) != nil
+        if config != nil {
+            let legacyFormatterWasEnabled =
+                defaults.object(
+                    forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledKey
+                ) as? Bool == true
+            if !hasDictationRoutingPreference {
+                defaults.set(
+                    legacyFormatterWasEnabled,
+                    forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForDictationKey
+                )
+            }
+            defaults.set(true, forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledKey)
+        } else {
+            defaults.removeObject(forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledKey)
+            if !hasDictationRoutingPreference {
+                defaults.set(false, forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForDictationKey)
+            }
+        }
     }
 }

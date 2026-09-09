@@ -10,8 +10,8 @@ public enum YouTubeDownloadError: Error, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .invalidURL: return "Not a valid YouTube URL"
-        case .videoNotFound: return "Video not found or is private"
+        case .invalidURL: return "Not a valid media URL"
+        case .videoNotFound: return "Video not found, private, or unavailable"
         case .downloadFailed(let reason): return "Download failed: \(reason)"
         case .ytDlpNotFound: return "yt-dlp not found. Run the app once to install dependencies."
         case .timedOut: return "Download timed out — the connection may have stalled"
@@ -30,6 +30,8 @@ extension YouTubeDownloading {
 }
 
 public actor YouTubeDownloader {
+    // The packaged yt-dlp helper may need extra time for cold extraction and security scanning.
+    private static let metadataTimeout: TimeInterval = 2 * 60
     private static let downloadTimeout: TimeInterval = 60 * 60
     private static let audioFileExtensions: Set<String> = [
         "aac",
@@ -85,20 +87,21 @@ public actor YouTubeDownloader {
         self.audioQuality = audioQuality
     }
 
-    /// Download audio from a YouTube URL.
+    /// Download audio from any HTTP(S) media URL that yt-dlp supports.
     public func download(url: String, onProgress: (@Sendable (Int) -> Void)? = nil) async throws -> DownloadResult {
-        guard YouTubeURLValidator.isYouTubeURL(url) else {
+        let mediaURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Self.isSupportedMediaURL(mediaURL) else {
             throw YouTubeDownloadError.invalidURL
         }
 
         let ytDlpPath = try await resolveYtDlpPath()
         do {
-            return try await download(url: url, ytDlpPath: ytDlpPath, onProgress: onProgress)
+            return try await download(url: mediaURL, ytDlpPath: ytDlpPath, onProgress: onProgress)
         } catch {
             let originalError = error
             if Self.isPyInstallerLibraryValidationError(error) {
                 let repairedPath = try await binaryBootstrap.reinstallYtDlpFromBundledSeedOrDownload()
-                return try await download(url: url, ytDlpPath: repairedPath, onProgress: onProgress)
+                return try await download(url: mediaURL, ytDlpPath: repairedPath, onProgress: onProgress)
             }
 
             guard Self.shouldRetryWithFreshYtDlp(error) else {
@@ -111,8 +114,13 @@ public actor YouTubeDownloader {
             } catch {
                 throw originalError
             }
-            return try await download(url: url, ytDlpPath: freshPath, onProgress: onProgress)
+            return try await download(url: mediaURL, ytDlpPath: freshPath, onProgress: onProgress)
         }
+    }
+
+    nonisolated static func isSupportedMediaURL(_ url: String) -> Bool {
+        YouTubeURLValidator.isYouTubeURL(url)
+            || DownloadableMediaURLValidator.isDownloadableMediaURL(url)
     }
 
     // MARK: - Private
@@ -188,12 +196,7 @@ public actor YouTubeDownloader {
     private func fetchMetadata(ytDlpPath: String, url: String) async throws -> VideoMetadata {
         let result = try await runYtDlp(
             ytDlpPath: ytDlpPath,
-            arguments: [
-                "--skip-download",
-                "--dump-json",
-                "--no-playlist",
-                url,
-            ],
+            arguments: Self.fetchMetadataArguments(url: url),
             captureStdout: true
         )
 
@@ -387,6 +390,20 @@ public actor YouTubeDownloader {
         for file in files where file.lastPathComponent.hasPrefix(uuid) {
             try? fm.removeItem(at: file)
         }
+    }
+
+    /// Metadata-probe invocation. Like every yt-dlp call site, options are
+    /// terminated with `--` before the URL so a (hypothetical) leading-dash
+    /// input can never be parsed as a flag — upstream URL validators already
+    /// reject such strings, but argv discipline shouldn't depend on the
+    /// caller (AUDIT-074).
+    nonisolated static func fetchMetadataArguments(url: String) -> [String] {
+        [
+            "--skip-download",
+            "--dump-json",
+            "--no-playlist",
+            "--", url,
+        ]
     }
 
     nonisolated static func downloadAudioArguments(
@@ -707,7 +724,7 @@ public actor YouTubeDownloader {
 
         let normalized = trimmed.lowercased()
         if normalized.contains("no supported javascript runtime could be found") {
-            return "No supported JavaScript runtime found for YouTube extraction. Install Node.js (recommended) or Deno and retry."
+            return "No supported JavaScript runtime found for media extraction. Install Node.js (recommended) or Deno and retry."
         }
 
         if normalized.contains("ffmpeg") && normalized.contains("not found") {
@@ -801,7 +818,7 @@ public actor YouTubeDownloader {
         try process.run()
         try await ChildProcessWaiter.waitUntilExit(
             process,
-            timeout: 30,
+            timeout: Self.metadataTimeout,
             timeoutError: YouTubeDownloadError.timedOut
         )
 

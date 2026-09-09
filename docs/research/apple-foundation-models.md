@@ -243,7 +243,8 @@ managed by the OS and runs on the ANE rather than CPU/GPU.
 **The download is OS-level and shared.** We don't bundle weights, manage
 download progress, or version-pin the model. The OS pushes updates as part of
 macOS point releases. This is meaningfully better friction than our
-Parakeet-CoreML (~6 GB through FluidAudio) or WhisperKit model paths.
+Parakeet-CoreML (~465 MB fetched components per selected build in current
+MacParakeet usage) or WhisperKit model paths.
 
 ## Where it fits in MacParakeet
 

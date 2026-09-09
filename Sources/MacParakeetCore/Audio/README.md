@@ -8,10 +8,10 @@
 
 `SharedMicrophoneStream` — the process-wide microphone source. Every
 consumer (dictation, meeting mic) calls
-`subscribe(wantsVPIO:onEngineDeath:handler:)` and receives every
-buffer. The stream owns engine lifecycle, VPIO arbitration, and
-fan-out. There is exactly one instance per process, owned by
-`AppEnvironment`.
+`subscribe(wantsVPIO:blocksVPIOPromotion:onEngineDeath:handler:)`
+and receives every buffer. The stream owns engine lifecycle, VPIO
+arbitration, and fan-out. There is exactly one instance per process,
+owned by `AppEnvironment`.
 
 ## What's here
 
@@ -21,37 +21,127 @@ fan-out. There is exactly one instance per process, owned by
 - `MicrophoneEnginePlatform.swift` — `AVAudioEngine` wrapper. Device
   fallback chain, VPIO toggle, tap install, engine recreation on
   every teardown (so coreaudiod releases the VPAU aggregate
-  device), `AVAudioEngineConfigurationChangeNotification` observer.
+  device), `AVAudioEngineConfigurationChangeNotification` observer,
+  and source-liveness self-healing. Initial starts must produce a usable tap
+  buffer before the route is accepted. A stopped graph, a tap that stops
+  delivering callbacks, or a Bluetooth/unresolved route that continuously
+  emits exact-zero PCM converges on the same bounded fresh-engine recovery.
+  Notifications received while a replacement still awaits its first buffer
+  remain in the same recovery episode; they do not replenish the retry budget.
+  Removing route observers retires their generation, pending coalesced delivery,
+  and queued recovery; a replacement listener starts a fresh burst.
 
 **Mic consumers (each subscribes to the shared stream)**
 - `AudioRecorder.swift` — dictation capture.
   `subscribe(wantsVPIO: false)`. Writes 16 kHz mono Float32 WAVs to
-  `$TMPDIR/macparakeet/`. Owns the dictation diagnostic timers
-  (first-buffer watchdog + recording heartbeat).
+  `$TMPDIR/macparakeet/`. VPIO buffers use channel 0; raw multichannel
+  device buffers are downmixed to mono. Live sample-rate conversion uses
+  `AVAudioConverter`'s real-time priming mode and retains partial output when
+  the converter consumes an input chunk without filling the destination; this
+  preserves duration for AirPods' 24 kHz capture profile. Owns the dictation
+  diagnostic timers (first-buffer watchdog + recording heartbeat). Optional
+  Instant Dictation keeps a passive warm subscriber attached while idle,
+  stores a 1-second RAM-only 16 kHz mono ring buffer, and prepends up
+  to 0.45 seconds when the user starts dictation. It does not run STT
+  while idle. The warm hold is suppressed while the resolved input is
+  Bluetooth, and warm-capture refreshes are debounced (issue #481 —
+  see "What to know" below). When the Pause Media round-trip confirms media was
+  playing at press time, `discardPreRollForActiveRecording()` marks
+  the session and `stop()` trims the prepended pre-roll from the WAV —
+  pre-press media audio that no pause can silence (issue #474). Active
+  dictation start now waits for the first real input buffer; if the shared
+  engine starts but delivers none within the watchdog window, start aborts with
+  a microphone-input error instead of handing an empty WAV to STT.
 - `MicrophoneCapture.swift` — meeting microphone capture. Subscribes
   with `wantsVPIO: false` by default via `MeetingMicProcessingMode.raw`.
   VPIO modes remain available for explicit experiments, with raw fallback
   when `.vpioPreferred` cannot engage. Has its own silent-buffer watchdog
-  with a stall observer wired up to the meeting flow.
+  with a stall observer wired up to the meeting flow. Stop is an ordered async
+  boundary: it retires callbacks and awaits shared-stream unsubscription before
+  a replacement meeting may start.
 
 **Meeting-side audio (independent of the mic stream)**
 - `SystemAudioStream.swift` — meeting system audio via
   `ScreenCaptureKit` (`SCStream`). Independent of the
-  `AVAudioEngine`. Has its own first-buffer watchdog.
+  `AVAudioEngine`. The complete startup attempt and callback-style
+  start/stop boundaries have deadlines; late successful starts are stopped
+  again rather than allowed to revive capture. Has its own first-buffer
+  watchdog. Unexpected `SCStreamDelegate` termination is a typed recoverable
+  source loss; ScreenCaptureKit's explicit `userStopped` code remains terminal.
 - `MeetingAudioCaptureService.swift` — composes mic + system audio
-  for meeting recording.
+  for meeting recording. It owns partial startup explicitly, so Stop tears
+  down whichever sources have started even before startup reports success.
+  Each settled Stop creates a new event-stream session, and system-audio
+  callback generations retire before teardown is awaited or a terminal event
+  is published. A source failure racing the initial async start is retained
+  until the start-to-running handoff, so a dead stream cannot be promoted.
 - `MeetingAudioStorageWriter.swift` — fragmented MP4 writer for
-  meeting source files (ADR-019 crash recovery).
+  meeting source files (ADR-019 crash recovery). Finalization waits at most five
+  seconds for per-source AVFoundation callbacks and marks a timed-out source
+  failed only when it received real frames. Every timeout retains ownership,
+  including empty sources: Stop excludes pending files from inspection while
+  using healthy completed sources; cancel, empty Stop, and failed-start cleanup
+  preserve the pending folder and lock for later recovery/discard. A process-local
+  registry blocks recovery or discard until all late callbacks return; after
+  process exit, macOS has closed every writer handle. One locked coordinator
+  arbitrates callbacks and the deadline, releasing the registry before a
+  completed outcome. Retained mono normally averages all input channels before
+  sample-rate conversion. If the unscaled channel sum retains less than 25% of
+  the input-channel power, one greatest-energy channel supplies the whole buffer
+  (lowest-index tie), preserving destructive inverse stereo without per-sample
+  switching. The VPIO channel-zero path is unchanged.
 - `MeetingAudioError.swift`, `MeetingMicProcessingMode.swift` —
   value types.
+- Meeting mic conditioning lives outside this folder in
+  `../Services/Capture/MicConditioner.swift` and
+  `../Services/Capture/MeetingEchoSuppressionRuntime.swift`. Those files own
+  the passthrough default and optional LocalVQE-compatible echo suppressor used
+  after `CaptureOrchestrator` pairs `MeetingAudioCaptureService` mic/system events.
 
 **Helpers**
 - `AudioCaptureDiagnostics.swift` — public `append(_:)` to
-  `~/Library/Logs/MacParakeet/dictation-audio.log`. 5 MB cap;
-  delete-on-overflow (not rotated). Used by every file in this
-  folder and by `AppDelegate`'s boot marker.
+  `~/Library/Logs/MacParakeet/dictation-audio.log`. At the 5 MB cap it retains
+  the newest complete lines instead of deleting the whole history. Used by every
+  file in this folder, by `AppDelegate`'s boot marker, and by the dictation
+  media-pause path (`SystemMediaController` +
+  `DictationMediaPauseCoordinator` mirror their `media_pause_*` /
+  `media_resume_*` outcomes here so uploaded logs show the
+  press→pause window next to the capture timeline; issue #474).
+  Capture-callback first-buffer records use `appendAsync` so log compaction
+  cannot block buffer delivery. Both paths stamp the event at submission time,
+  with a process ID, per-launch random `process_session`, and monotonic
+  `uptime_ns` for correlating app/CLI runs and ordering delayed writes across
+  wall-clock corrections. The shared file's `errorFields` includes classified
+  error type and numeric code, never arbitrary localized error descriptions;
+  raw details belong only to separately privacy-marked OSLog fields. File sink
+  failures surface through OSLog without failing capture or replacing history
+  when an existing log cannot be opened for append.
+  Main-thread writes try both writer locks without waiting and defer rotation
+  before reading or rewriting the log history. On contention or rotation, the
+  existing utility queue retains and writes the same encoded record, preserving
+  its occurrence clocks; OSLog reports `audio_diagnostic_write_deferred` with
+  `reason=lock_contended` or `reason=rotation`.
+  Such records become visible after the queued write finishes, and remain
+  best effort if the process exits before the queue drains.
+- `DiagnosticLogScope.swift` — `AudioCaptureDiagnostics.scopedLogForUpload`
+  trims the log to a recent window (`.recent`, the feedback default:
+  last 7 days, 2 MB / 20k-line safety ceilings, min-tail fallback) or
+  the whole file (`.full`, advanced opt-in) before a feedback upload.
+  Scopes whole lines by recency; never edits line contents. An individual line
+  larger than the entire upload byte budget is omitted whole so retained
+  records keep their timestamp and event name.
+- `scripts/dev/query_audio_diagnostics.py` provides a bounded, read-only JSON
+  query for local agents, including event/time/process filters and explicit
+  missing/partial evidence counters. See the
+  [local diagnostic query runbook](../../../docs/local-audio-diagnostics-query.md).
 - `AudioChunker.swift` — actor that buffers resampled audio for
   incremental STT (live meeting transcription).
+- `MeetingLiveAudioChunking.swift`,
+  `SpeechBoundaryMeetingLiveAudioChunker.swift`,
+  `MeetingVADChunkingSimulator.swift` — meeting live-preview chunking
+  strategies. The fixed adapter preserves the original 5s / 1s-overlap
+  cadence; the VAD strategy cuts cached-model Parakeet sessions at
+  speech boundaries and falls back to fixed on VAD errors.
 - `AudioFileConverter.swift` — file-side converter (FFmpeg /
   AVFoundation) for file/YouTube/meeting transcription inputs.
 - `AudioProcessor.swift` + `AudioProcessorProtocol.swift` — thin
@@ -60,7 +150,7 @@ fan-out. There is exactly one instance per process, owned by
   and file-conversion entry points behind one injection seam.
 - `AudioDeviceManager.swift` — Core Audio HAL helpers (default
   device, set input on engine, list devices).
-- `extractChannelZero` (in `AudioRecorder.swift`),
+- `extractChannelZero`, `microphoneCaptureMonoBuffer` (in `AudioRecorder.swift`),
   `CMSampleBufferToPCMBuffer.swift`, `PCMBufferToSampleBuffer.swift`,
   `UncheckedSendableAudioPCMBuffer.swift`,
   `ObjCExceptionBridge.swift` — pure utilities.
@@ -93,6 +183,17 @@ machine in `SharedMicrophoneStream.decideSubscribeAction` enforces
 this. Don't try to disengage VPIO mid-session — coreaudiod attaches
 the VPAU aggregate device to the **process**, and toggling VPIO mid-
 flight changes the input format under live subscribers.
+Teardown removes the tap, stops the engine, and only then disables VPIO before
+replacing the engine; `setVoiceProcessingEnabled` is valid only while stopped.
+
+**Passive warm subscribers do not block VPIO promotion.** User-visible
+raw capture sessions (`AudioRecorder` active dictation and
+`MicrophoneCapture` raw meeting mic) keep `blocksVPIOPromotion=true`
+so an explicit VPIO request is deferred until they leave. The Instant
+Dictation warm/pre-roll lease passes `blocksVPIOPromotion=false`: it
+may keep the shared engine running while idle, but it is not a
+recording session and must not prevent a meeting experiment from
+promoting the process-wide engine to VPIO.
 
 **Channel 0 mono extraction is mandatory when VPIO is engaged.** VPIO
 exposes a duplex layout (typically `ch=9`) where only ch[0] is the
@@ -101,12 +202,29 @@ post-AEC processed mono and the rest are reference channels. Use
 channel reduction average across them. This was the bug PR #189
 fixed; do not regress it.
 
+**Raw multichannel device input is different from VPIO.** Interfaces such as
+USB audio boxes may expose several unrelated input channels, and the user's
+active microphone can live on channel 2+. Raw capture paths should use
+`microphoneCaptureMonoBuffer(from:extractVPIOChannelZero:)`, which downmixes
+raw multichannel buffers but still preserves the VPIO channel-0 rule.
+
 **The `AVAudioEngine` is recreated on every teardown.** `tearDownLocked`
 in `MicrophoneEnginePlatform` does `audioEngine = AVAudioEngine()`
 deliberately. Releasing the old instance triggers coreaudiod to drop
 the VPAU aggregate device. Long-lived engines inherit duplex layout
 into sibling engines in the same process — exactly the bug PR #189
 fixed. Do not optimize this away by caching the engine.
+
+**A `DictationAudioSampleSink` is finished on success but cancelled on
+abort.** `AudioRecorder.stop()` calls `onFinish()` only when the capture
+yields a usable WAV (>= the FluidAudio sample floor). The abort paths — an
+unclaimed sink, no output file, or a too-short capture — call `onCancel()`
+instead. The live-transcription wiring (`DictationService`, Nemotron streaming
+path) treats `onCancel` as "tear down": cancel the inference task and finish
+both the sample and partial continuations, rather than draining a partial
+result the recorded audio can no longer back. Keep the success path on
+`onFinish` and every early-out on `onCancel`; collapsing them leaks the
+live-transcription continuations on cancelled dictations.
 
 **Tap closures run on the audio render thread.** No allocation, no
 actor hops, no `await`. State touched from the tap path uses
@@ -115,13 +233,149 @@ passed in is valid only for the synchronous duration of the call —
 copy via `copyPCMBufferForAsyncUse` before retaining or dispatching
 async.
 
-**Diagnostic logging is observability-only.** The first-buffer
-watchdog and recording heartbeat in `AudioRecorder` log to
-`dictation-audio.log` but **never** abort the recording. PR #210
-shipped this deliberately; converting any of those signals into a
-user-facing error would mask a regression as a fact of life.
-Telemetry counters can be added separately, but the log path stays
-non-disruptive.
+**Warm pre-roll is in-memory only.** Instant Dictation's idle audio is
+bounded to the private ring in `AudioRecorder`, cleared when recording
+starts/stops, when the setting is disabled, and when the warm engine
+dies. The only persisted audio remains the normal dictation WAV after
+the user starts dictation.
+
+**Idle prepare keeps cold starts cheap without opening the mic.**
+Independent of the Instant Dictation warm hold, the shared stream can
+re-*prepare* the raw dictation engine whenever it goes idle
+(`SharedMicrophoneStream(autoPrewarmWhenIdle:)`, plus a one-shot
+`prewarmDictation()` at launch). Prepare pays the expensive cold-path
+work up front — apply an explicit named-device selection when requested,
+negotiate the output format, install the tap, and call
+`AVAudioEngine.prepare()` — but leaves the engine **stopped**,
+so there is no capture and no mic indicator while idle. The next
+dictation press matches the prepared engine
+(`AVAudioEngineMicrophonePlatform.prepare`/`goPreparedLocked`) and pays
+only `audioEngine.start()` (~tens of ms) instead of the full
+device-acquisition + format negotiation. Raw meetings use the same
+non-VPIO stream configuration and can consume the prepared engine too;
+an explicit VPIO request or different buffer size discards it and does
+a full configure. Idle microphone-route changes trailing-debounce a
+fresh preparation before the next capture. Like the warm hold, prepare
+is **suppressed on Bluetooth or unresolved inputs**: pre-acquiring a
+Bluetooth mic would pin HFP/SCO even while stopped, so the platform
+declines and that press pays the full cold
+path. This is the no-warm-window path: instant first words after
+key-down without holding the mic open.
+
+Idle preparation preserves the active routing contract below: a named
+microphone stays explicitly pinned, while System Default stays implicit.
+Preparation validates the resolved leading input for Bluetooth safety but
+does not convert System Default into a `CurrentDevice` write. A default-input
+change invalidates and trailing-debounces a new preparation.
+
+**The warm hold must never pin a Bluetooth input (issue #481).** An
+idle open Bluetooth microphone forces the headset into HFP/SCO, which
+degrades playback the entire time and can flap the default input.
+`AudioRecorder` consults `isBluetoothInputProvider` (wired in
+`AppEnvironment` to the first device-attempt in the engine's chain)
+before every warm start, and `refreshInstantDictationWarmCapture`
+*drops* the warm subscriber outright — rather than deferring — when
+the input is Bluetooth, so the shared stream's deferred passive
+restart cannot revive a warm engine on the Bluetooth device after an
+active session ends. Active dictation and meeting capture on a
+Bluetooth mic are unaffected; only the idle hold is suppressed. Transport and
+aggregate-topology lookup is tri-state here: an unresolved route is treated as
+unsafe until Core Audio settles instead of being mistaken for non-Bluetooth.
+
+**Warm-capture refreshes are debounced (issue #481).** Default-input
+changes arrive in bursts (Core Audio fires duplicate notifications,
+and Bluetooth profile transitions flap the default input), and each
+refresh restarts the warm engine — which itself can trigger the next
+notification. `refreshInstantDictationWarmCapture` applies a trailing
+debounce (0.5 s in `AppEnvironment`, 0 = disabled for direct
+constructions) keyed by a supersession generation; superseded or
+cancelled sleepers exit before touching any engine or pre-roll state.
+
+**Input routing follows the microphone selection (issue #796).** A named mic
+is attempted by its resolved Core Audio device ID. System Default is always
+attempted implicitly, so AVAudioEngine can follow macOS routing without
+pinning the same endpoint through a different setup path. The built-in mic is
+kept as a final explicit fallback when it is distinct from the resolved
+default. Audio output never rewrites this ordering. If a Bluetooth headset is
+the macOS default input and the user wants to keep its output in high-quality
+A2DP, they can explicitly select the Mac's built-in mic in Settings. The idle
+warm-capture suppression above remains separate and still prevents Instant
+Dictation from holding a Bluetooth input open between active sessions.
+Each active attempt is accepted only after a usable tap buffer arrives. A route
+that starts but produces no callback is torn down after one second and the
+existing chain advances. On Bluetooth or unresolved input topology, exact-zero
+PCM does not satisfy readiness; the next route can therefore recover issue #541
+without imposing an acoustic threshold on positively identified USB, built-in,
+or virtual inputs. For VPIO buffers, readiness inspects only microphone channel
+0 so render/reference audio cannot hide a failed mic; raw multichannel input
+checks every input channel. System Default generation is captured before route
+resolution, and engine-configuration observation begins before `start()`.
+Each usable buffer is stamped with the configuration generation that produced
+it: a Bluetooth profile-change notification before that buffer is accepted,
+while a change after the last usable buffer still invalidates the stale
+attempt. Default-input changes continue to invalidate System Default attempts
+and do not invalidate an explicitly pinned named device.
+
+**Diagnostics stay narrow.** The recording heartbeat in `AudioRecorder`
+remains observability-only. The first-buffer watchdog is now also a
+startup readiness signal: `start()` does not report a healthy recording until
+at least one microphone buffer arrives, and a no-buffer start aborts with a
+microphone-input error. Sustained silent input is classified at `stop()` using
+the capture-health snapshot before STT runs. Keep that signal-level heartbeat
+non-disruptive: actual callback liveness belongs to the shared source owner
+below, so dictation and meeting capture do not invent competing recovery paths.
+
+**The shared mic source self-heals (gated, bounded recovery).** There are three
+source-owned triggers. First, when `AVAudioEngine` stops itself after an
+`AVAudioEngineConfigurationChange` notification (default-input, format, or
+sample-rate change), the observer follows Apple's restart contract. It requires
+the current engine instance, an active capture request, and
+`AVAudioEngine.isRunning == false`; benign notifications around a healthy graph
+are no-ops. Second, once a tap has delivered its first buffer, a five-second gap
+with no further tap callbacks is treated as a stalled source even if
+`AVAudioEngine.isRunning` remains true. Third, a Bluetooth or unresolved route
+that continuously emits exact-zero PCM for two seconds is treated as unusable
+and recovered through the same path. This is exact-zero detection, not a
+voice-activity or loudness threshold: any non-zero sample is valid, and digital
+silence remains valid on every positively identified non-Bluetooth input. VPIO
+liveness uses microphone channel 0; raw multichannel liveness scans all input
+channels.
+Callback stalls are route-agnostic because USB, aggregate, and virtual devices
+can fail at the same source-lifecycle seam.
+
+All three triggers converge on one recovery implementation. The immediate restart
+and every retry rebuild the engine, resolve the current input route, and query
+its live format. Failures use a bounded 31.5-second backoff; default-input
+changes trailing-debounce a pending attempt so a USB/Bluetooth handoff can
+settle without causing a restart storm. An engine start is only a candidate
+recovery: the same source-owned readiness gate used by initial startup requires
+the replacement's first usable buffer before accepting the attempt. That first
+buffer begins a liveness probation window; only a replacement that remains
+healthy for the full window resets the episode's retry budget. A replacement
+with no usable first buffer is torn down and retried, while one that becomes
+silent during probation consumes the same bounded episode. Explicit Stop
+cancels that wait as well as the episode, and no queued retry may resurrect
+capture. If every retry fails, the platform reports terminal engine death to
+`SharedMicrophoneStream`, which
+invalidates subscriptions and fires their existing `onEngineDeath` handlers.
+Meeting capture maps that terminal death to a microphone-source interruption
+when system audio is also selected, so the healthy sibling source continues;
+microphone-only capture keeps the existing whole-capture failure semantics.
+The watchdog and heartbeat in `AudioRecorder` remain log-only; platform callback
+liveness is the single mid-session recovery owner. Recovery log events include
+`shared_mic_engine_callback_stalled`, `shared_mic_engine_zero_filled`,
+`shared_mic_engine_config_change_recovery_attempt`,
+`shared_mic_engine_config_change_recovery_succeeded`, and
+`shared_mic_engine_config_change_recovery_failed`, plus scheduling and terminal
+exhaustion records. The
+`shared_mic_engine_configuration_changed` line now includes an
+`engine_is_running=` field (actual `AVAudioEngine.isRunning`) alongside the
+existing `isRunning=` (platform `running` flag).
+
+`MicrophoneEnginePlatform` also logs per-phase engine-start timings
+(`shared_mic_engine_start_timing`) so a slow first-buffer report can be split
+between device setting, VPIO toggling, input format lookup, tap install, and
+`AVAudioEngine.start()`.
 
 **First-buffer can arrive before timers are armed.** When subscribing
 from an actor, the AVAudioEngine tap can fire its first buffer
@@ -142,13 +396,41 @@ state that assumes a single consumer at a time.
 VPIO state, or the fan-out path with the mic stream. Meeting
 recording composes both via `MeetingAudioCaptureService`.
 
-**The diagnostic log file is shared across processes.** Both the dev
-app and `swift test` write to
-`~/Library/Logs/MacParakeet/dictation-audio.log`. The
-`dictation_diagnostics_session_start` line emitted by `AppDelegate`
-on launch is the only reliable per-process separator. The 5 MB cap
-deletes the file when crossed (no rotation); a heavy user retains
-tens of days of context.
+**ScreenCaptureKit callbacks are bounded but still awaited.** Ordered
+start/stop matters, so `SystemAudioStream` awaits `SCStream` completion rather
+than launching fire-and-forget teardown. The await has a deadline because the
+framework callback is not trusted to arrive. Startup ownership is checked
+after every suspension, including `SCShareableContent.current`; timeout, Stop,
+or cancellation invalidates that attempt. A callback that reports a late
+successful start triggers another non-blocking best-effort stop request. Keep
+the stream in `stopping` until output removal and bounded teardown finish so a
+replacement start cannot route an old callback into its new handler. Keep
+`MeetingAudioCaptureService`'s `starting` ownership in sync with this rule:
+Stop during partial startup must stop all sources already created and a late
+start result must never restore the service to running.
+
+**System-audio stalls use source-owned replacement, not in-place restart.**
+`SystemAudioStream` reports first-buffer timeouts and heartbeat gaps as the
+typed `MeetingSystemAudioStall` error. `MeetingAudioCaptureService`, which owns
+the stream factory and meeting lifecycle, responds by retiring that capture
+generation, awaiting its bounded Stop, and creating a fresh `SystemAudioStream`
+for each bounded retry. Six attempts use 23 seconds of cumulative scheduled
+backoff (`0, 1, 2, 4, 8, 8` seconds); bounded stream lifecycle and first-buffer
+readiness waits are additional. This extends beyond the observed route-change
+settlement window. A replacement is healthy only after its first valid buffer;
+until then the service emits `sourceRecoveryStarted`, keeps the microphone
+untouched, and retries start/no-buffer failures. The first replacement buffer
+is delivered before `sourceRecovered`. Only exhausted retries produce the
+terminal `sourceInterrupted`/`error` event. Duplicate stall callbacks are
+coalesced, stale generations cannot publish buffers, and explicit Stop cancels
+and awaits recovery so no delayed attempt can revive capture.
+
+**App processes share the diagnostic log file** at
+`~/Library/Logs/MacParakeet/dictation-audio.log`; tests use per-process
+temporary logs unless an explicit log-path override is set. The
+`dictation_diagnostics_session_start` launch marker separates app sessions.
+At the 5 MB cap, the log is compacted to the newest complete-line tail
+(about 2.5 MB) before appending new data; it is not deleted wholesale.
 
 ## How to verify a change
 
@@ -157,8 +439,8 @@ tens of days of context.
   helpers under deterministic mocks.
 - `swift test --filter SharedMicrophoneStream` — the VPIO state
   machine specifically.
-- `swift test` — full suite (~100 s). Audio changes ripple into
-  dictation, meeting, and STT scheduler tests.
+- For code changes, run the full suite at most once as the final gate,
+  after focused checks; follow the repository verification scope.
 - Dev-app smoke (the canonical happy-path check):
   1. `scripts/dev/run_app.sh`.
   2. Dictate three times in sequence.

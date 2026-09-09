@@ -16,9 +16,13 @@ public struct MeetingEchoSuppressionConfiguration: Sendable, Equatable {
     public static let modelSHA256EnvironmentKey = "MACPARAKEET_MEETING_ECHO_MODEL_SHA256"
     public static let frameSizeEnvironmentKey = "MACPARAKEET_MEETING_ECHO_FRAME_SIZE"
     public static let sampleRateEnvironmentKey = "MACPARAKEET_MEETING_ECHO_SAMPLE_RATE"
+    public static let referenceDelayMsEnvironmentKey = "MACPARAKEET_MEETING_ECHO_REFERENCE_DELAY_MS"
+    public static let adaptiveReferenceDelayEnvironmentKey = "MACPARAKEET_MEETING_ECHO_ADAPTIVE_DELAY"
 
     public static let defaultSampleRate = 16_000
     public static let defaultFrameSize = 256
+    public static let defaultReferenceDelayMs = 0
+    public static let defaultAdaptiveReferenceDelay = true
 
     public var mode: MeetingEchoSuppressionMode
     public var libraryURL: URL?
@@ -26,6 +30,16 @@ public struct MeetingEchoSuppressionConfiguration: Sendable, Equatable {
     public var modelSHA256: String?
     public var sampleRate: Int
     public var frameSize: Int
+    /// How far behind the microphone the system-audio reference is read, in
+    /// milliseconds, approximating the output + acoustic + input echo-path
+    /// latency. 0 reads the reference at the microphone's own position. When
+    /// `adaptiveReferenceDelay` is on this is the seed/override used until the
+    /// first confident estimate; otherwise it is the fixed alignment.
+    public var referenceDelayMs: Int
+    /// Recover the reference delay from the audio at runtime instead of relying
+    /// only on the static `referenceDelayMs`. On by default; the static value
+    /// still seeds the estimate and overrides when this is off.
+    public var adaptiveReferenceDelay: Bool
 
     public init(
         mode: MeetingEchoSuppressionMode = .automatic,
@@ -33,7 +47,9 @@ public struct MeetingEchoSuppressionConfiguration: Sendable, Equatable {
         modelURL: URL? = nil,
         modelSHA256: String? = nil,
         sampleRate: Int = Self.defaultSampleRate,
-        frameSize: Int = Self.defaultFrameSize
+        frameSize: Int = Self.defaultFrameSize,
+        referenceDelayMs: Int = Self.defaultReferenceDelayMs,
+        adaptiveReferenceDelay: Bool = Self.defaultAdaptiveReferenceDelay
     ) {
         self.mode = mode
         self.libraryURL = libraryURL
@@ -41,6 +57,8 @@ public struct MeetingEchoSuppressionConfiguration: Sendable, Equatable {
         self.modelSHA256 = modelSHA256
         self.sampleRate = max(1, sampleRate)
         self.frameSize = max(1, frameSize)
+        self.referenceDelayMs = max(0, referenceDelayMs)
+        self.adaptiveReferenceDelay = adaptiveReferenceDelay
     }
 
     public static func fromEnvironment(
@@ -61,6 +79,10 @@ public struct MeetingEchoSuppressionConfiguration: Sendable, Equatable {
             .flatMap(Self.integerValue(from:)) ?? defaultSampleRate
         let frameSize = environment[frameSizeEnvironmentKey]
             .flatMap(Self.integerValue(from:)) ?? defaultFrameSize
+        let referenceDelayMs = environment[referenceDelayMsEnvironmentKey]
+            .flatMap(Self.integerValue(from:)) ?? defaultReferenceDelayMs
+        let adaptiveReferenceDelay = environment[adaptiveReferenceDelayEnvironmentKey]
+            .flatMap(Self.boolValue(from:)) ?? defaultAdaptiveReferenceDelay
 
         return MeetingEchoSuppressionConfiguration(
             mode: mode,
@@ -68,7 +90,9 @@ public struct MeetingEchoSuppressionConfiguration: Sendable, Equatable {
             modelURL: modelURL,
             modelSHA256: modelSHA256,
             sampleRate: sampleRate,
-            frameSize: frameSize
+            frameSize: frameSize,
+            referenceDelayMs: referenceDelayMs,
+            adaptiveReferenceDelay: adaptiveReferenceDelay
         )
     }
 
@@ -86,6 +110,17 @@ public struct MeetingEchoSuppressionConfiguration: Sendable, Equatable {
 
     private static func integerValue(from value: String) -> Int? {
         Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private static func boolValue(from value: String) -> Bool? {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "1", "true", "yes", "on", "enabled":
+            return true
+        case "0", "false", "no", "off", "disabled":
+            return false
+        default:
+            return nil
+        }
     }
 }
 
@@ -108,7 +143,15 @@ enum MeetingEchoSuppressionFactory {
     static let processorName = "localvqe"
     static let defaultLibraryName = "liblocalvqe.dylib"
     static let defaultModelDirectoryName = "MeetingEchoSuppression"
-    static let defaultModelName = "localvqe-v1.2-1.3M-f32.gguf"
+    static let defaultModelName = "localvqe-v1.4-aec-200K-f32.gguf"
+    static let legacyJointModelName = "localvqe-v1.2-1.3M-f32.gguf"
+    static let bundledModelNames = [
+        defaultModelName,
+        legacyJointModelName,
+        "localvqe-v1.3-4.8M-f32.gguf",
+        "localvqe-v1.4-aec-200K-bf16.gguf",
+        "localvqe-v1.4-aec-2.7K-f32.gguf",
+    ]
     private static let logger = Logger(
         subsystem: "com.macparakeet.core",
         category: "MeetingEchoSuppression"
@@ -183,17 +226,56 @@ enum MeetingEchoSuppressionFactory {
             fileManager: fileManager
         )
         let modelURL = existingFile(
-            candidates: [
-                configuration.modelURL,
-                bundle.resourceURL?
-                    .appendingPathComponent(defaultModelDirectoryName)
-                    .appendingPathComponent(defaultModelName),
-            ],
+            candidates: bundledModelCandidates(
+                configuration: configuration,
+                bundle: bundle,
+                fileManager: fileManager
+            ),
             fileManager: fileManager
         )
 
         guard let libraryURL, let modelURL else { return nil }
         return DynamicAssets(libraryURL: libraryURL, modelURL: modelURL)
+    }
+
+    static func bundledModelCandidates(
+        configuration: MeetingEchoSuppressionConfiguration,
+        bundle: Bundle,
+        fileManager: FileManager
+    ) -> [URL?] {
+        var candidates: [URL?] = [configuration.modelURL]
+        guard let modelDirectory = bundle.resourceURL?
+            .appendingPathComponent(defaultModelDirectoryName)
+        else {
+            return candidates
+        }
+
+        let knownNames = Set(bundledModelNames.map { $0.lowercased() })
+        candidates += bundledModelNames.map { modelDirectory.appendingPathComponent($0) }
+
+        let discovered = (try? fileManager.contentsOfDirectory(
+            at: modelDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ))?
+            .filter { url in
+                guard url.pathExtension.lowercased() == "gguf",
+                      !knownNames.contains(url.lastPathComponent.lowercased())
+                else {
+                    return false
+                }
+                return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+        if discovered.count == 1 {
+            candidates += discovered
+        } else if discovered.count > 1 {
+            let names = discovered.map(\.lastPathComponent).joined(separator: ",")
+            logger.warning(
+                "meeting_echo_unknown_models_ambiguous count=\(discovered.count, privacy: .public) names=\(names, privacy: .public)"
+            )
+        }
+        return candidates
     }
 
     private static func existingFile(
@@ -232,10 +314,62 @@ enum MeetingEchoSuppressionFactory {
                 sampleRate: configuration.sampleRate,
                 frameSize: configuration.frameSize
             )
-            return StreamingMeetingEchoSuppressor(processor: processor)
+            // The processor may report its own sample rate, so the ms→samples
+            // conversion happens here rather than in the configuration.
+            // Search up to ~100 ms of echo-path latency (the practical ceiling
+            // for laptop speaker→mic bleed), extended to cover the configured
+            // seed but capped at ~200 ms so a large manual reference delay
+            // cannot make the off-lock correlation, analysis buffer, or fixed
+            // reference-retention buffer unbounded.
+            let referenceDelaySamples = boundedReferenceDelaySamples(
+                referenceDelayMs: configuration.referenceDelayMs,
+                sampleRate: processor.sampleRate
+            )
+            let searchCeiling = adaptiveReferenceDelaySearchCeiling(sampleRate: processor.sampleRate)
+            let referenceDelayWasCapped = referenceDelayExceedsSearchCeiling(
+                referenceDelayMs: configuration.referenceDelayMs,
+                sampleRate: processor.sampleRate
+            )
+            if referenceDelayWasCapped {
+                logger.warning(
+                    "meeting_echo_reference_delay_clamped requested_ms=\(configuration.referenceDelayMs, privacy: .public) capped_samples=\(referenceDelaySamples, privacy: .public)"
+                )
+            }
+            let estimator: MeetingEchoDelayEstimator?
+            if configuration.adaptiveReferenceDelay, !referenceDelayWasCapped {
+                let maxLag = min(max(processor.sampleRate / 10, referenceDelaySamples), searchCeiling)
+                estimator = MeetingEchoDelayEstimator(maxLagSamples: max(1, maxLag))
+            } else {
+                estimator = nil
+            }
+            return StreamingMeetingEchoSuppressor(
+                processor: processor,
+                referenceDelaySamples: referenceDelaySamples,
+                estimator: estimator,
+                reestimateIntervalSamples: max(1, processor.sampleRate / 2)
+            )
         } catch {
             return unavailableDynamicConditioner(reason: "load_failed", error: error)
         }
+    }
+
+    static func adaptiveReferenceDelaySearchCeiling(sampleRate: Int) -> Int {
+        max(1, max(1, sampleRate) / 5)
+    }
+
+    static func boundedReferenceDelaySamples(referenceDelayMs: Int, sampleRate: Int) -> Int {
+        let sampleRate = max(1, sampleRate)
+        let ceiling = adaptiveReferenceDelaySearchCeiling(sampleRate: sampleRate)
+        let requested = Double(max(0, referenceDelayMs)) * Double(sampleRate) / 1_000
+        guard requested.isFinite, requested < Double(ceiling) else { return ceiling }
+        return max(0, Int(requested))
+    }
+
+    static func referenceDelayExceedsSearchCeiling(referenceDelayMs: Int, sampleRate: Int) -> Bool {
+        let sampleRate = max(1, sampleRate)
+        let ceiling = adaptiveReferenceDelaySearchCeiling(sampleRate: sampleRate)
+        let requested = Double(max(0, referenceDelayMs)) * Double(sampleRate) / 1_000
+        return !requested.isFinite || requested > Double(ceiling)
     }
 
     private static func unavailableDynamicConditioner(
@@ -259,7 +393,7 @@ private enum DynamicLibraryMeetingEchoProcessorError: Error, CustomStringConvert
     case libraryLoadFailed(String)
     case missingSymbol(String)
     case createFailed(String)
-    case invalidFrameSize(expected: Int, microphone: Int, reference: Int)
+    case invalidFrameSize(expected: Int, microphone: Int, reference: Int, output: Int)
     case processingFailed(code: Int32, message: String)
 
     var description: String {
@@ -270,15 +404,15 @@ private enum DynamicLibraryMeetingEchoProcessorError: Error, CustomStringConvert
             return "missing symbol: \(symbol)"
         case .createFailed(let message):
             return "create failed: \(message)"
-        case let .invalidFrameSize(expected, microphone, reference):
-            return "invalid frame size: expected=\(expected) microphone=\(microphone) reference=\(reference)"
+        case let .invalidFrameSize(expected, microphone, reference, output):
+            return "invalid frame size: expected=\(expected) microphone=\(microphone) reference=\(reference) output=\(output)"
         case let .processingFailed(code, message):
             return "processing failed: code=\(code) message=\(message)"
         }
     }
 }
 
-final class DynamicLibraryMeetingEchoProcessor: MeetingEchoSuppressing, @unchecked Sendable {
+final class DynamicLibraryMeetingEchoProcessor: MeetingEchoSuppressing, MeetingEchoModelVersionProviding, @unchecked Sendable {
     private typealias ContextHandle = UInt
     private typealias NewFunction = @convention(c) (UnsafePointer<CChar>) -> ContextHandle
     private typealias ProcessFunction = @convention(c) (
@@ -294,6 +428,7 @@ final class DynamicLibraryMeetingEchoProcessor: MeetingEchoSuppressing, @uncheck
     private typealias LastErrorFunction = @convention(c) (ContextHandle) -> UnsafePointer<CChar>?
 
     let name = MeetingEchoSuppressionFactory.processorName
+    let modelVersion: String
     let sampleRate: Int
     let frameSize: Int
 
@@ -347,6 +482,7 @@ final class DynamicLibraryMeetingEchoProcessor: MeetingEchoSuppressing, @uncheck
             self.resetFunction = reset
             self.freeFunction = free
             self.lastErrorFunction = lastError
+            self.modelVersion = modelURL.lastPathComponent
             self.sampleRate = Self.validPositiveInt(sampleRateGetter?(context)) ?? sampleRate
             self.frameSize = Self.validPositiveInt(hopLengthGetter?(context)) ?? frameSize
         } catch {
@@ -374,7 +510,8 @@ final class DynamicLibraryMeetingEchoProcessor: MeetingEchoSuppressing, @uncheck
             throw DynamicLibraryMeetingEchoProcessorError.invalidFrameSize(
                 expected: frameSize,
                 microphone: microphone.count,
-                reference: reference.count
+                reference: reference.count,
+                output: output.count
             )
         }
 

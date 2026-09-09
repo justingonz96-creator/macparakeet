@@ -4,6 +4,10 @@
 > Date: 2026-05-12
 > Implementation: Phase 2 merged to `main` on 2026-05-13; `AppFeatures.transformsEnabled` is now `true`.
 > Related: ADR-002 (local-first processing, BYO-key amendment), ADR-009 (custom hotkey support), ADR-011 (LLM via cloud + optional local providers), ADR-012 (telemetry), ADR-013 (Prompt Library + multi-summary)
+> Prompt Versioning Amendment (2026-09-05): Transforms share ADR-013's immutable
+> prompt-version lifecycle and uniform built-in rights. Their prompt body,
+> inference settings, and optional model override are versioned; shortcut and
+> running label remain mutable prompt metadata.
 
 ## Context
 
@@ -36,6 +40,15 @@ Two nullable columns are added to `prompts` via a forward-only migration:
 | `runningLabel` | TEXT, nullable | Optional gerund-form label for the floating progress pill (e.g., *"Polishing…"*). NULL means "derive via the `{Name}ing…` heuristic; fall back to *Transforming…* for awkward names." |
 
 Migration is additive. `.result` prompts ignore both columns (they will always read NULL, and they have no UI to set them). No data migration needed for existing rows.
+
+The 2026-09-05 prompt-versioning amendment moves Transform prompt content and
+generation settings into the same immutable `prompt_versions` records as result
+prompts. `keyboardShortcut` and `runningLabel` remain on `prompts` and changing
+only either field creates no version. Built-in Transforms have the same edit,
+delete, soft-restore, history, diff, and restore-as-new-version semantics as
+every other prompt. Transform execution resolves and snapshots the active
+version, including typed settings and optional model override, before the LLM
+request starts.
 
 ### 3. AX-first capture with clipboard-hijack fallback (locked by spike)
 
@@ -72,7 +85,7 @@ Collision rules (rejected at bind time in `TransformEditorViewModel`):
 - **No collision with the meeting-toggle hotkey.**
 - **No duplicate Transform binding.**
 - **macOS Opt+letter dead-key combos blocked** (`Opt+e`, `Opt+u`, `Opt+i`, `Opt+n`, ``Opt+` `` — these produce alt-characters and stealing them is hostile).
-- **Reserved space:** `Opt+digit` (1–9) is the recommended default range. The Phase 2 built-ins use `⌥+1` (Polish), `⌥+2` (Distill), `⌥+3` (Decide). The lineup was synthesized from independent creative-director and staff-PM reviews (2026-05-12); the *Improve → Re-shape → Re-direct* pedagogy is intentional, and the shipped set avoids AI-insider naming in favor of verbs that generalize across the user's full surface (Slack, Linear, email, design docs, tickets).
+- **Reserved space:** `Ctrl+Opt+digit` (1–9) is the recommended customization range. Bare `Opt+digit` is avoided as a default because it steals the Option-only symbols some Mac layouts type (⌥1 = ¡, ⌥2 = ™, ⌥3 = # / £, …). The Phase 2 built-ins use `⌃⌥+1` (Polish), `⌃⌥+2` (Distill), and `⌃⌥+3` (Decide) — originally `⌥+1`/`⌥+2`/`⌥+3`, migrated to the Control-Option prefix (Decide first in #465, then Polish and Distill) with a launch-time reconciler that preserves custom or cleared bindings. The lineup was synthesized from independent creative-director and staff-PM reviews (2026-05-12); the *Improve → Re-shape → Re-direct* pedagogy is intentional, and the shipped set avoids AI-insider naming in favor of verbs that generalize across the user's full surface (Slack, Linear, email, design docs, tickets).
 
 ### 5. No global "Opt in" toggle
 
@@ -92,7 +105,7 @@ Transforms use the user's configured LLM provider (cloud API key, OpenAI-compati
 
 ### 7. CLI parity via `macparakeet-cli transforms` subcommand tree
 
-The CLI is a public, semver-tracked contract (`Sources/CLI/CHANGELOG.md`). Coding agents (OpenClaw / Hermes path per `plans/active/cli-as-canonical-parakeet-surface.md`) need to drive Transforms headlessly for testing and provisioning.
+The CLI is a public, semver-tracked contract (`Sources/CLI/CHANGELOG.md`). Coding agents (OpenClaw / Hermes path per `plans/completed/cli-as-canonical-parakeet-surface.md`) need to drive Transforms headlessly for testing and provisioning.
 
 ```text
 transforms list [--json]
@@ -115,7 +128,7 @@ Two events:
 
 Custom-Transform names are never transmitted (every non-built-in maps to `custom` in telemetry). This protects users who name a Transform after the company they're using it for, etc.
 
-Both events must be added to `ALLOWED_EVENTS` in `macparakeet-website/functions/api/telemetry.ts` before they fire in production (per `memory/feedback_telemetry_allowlist.md` — the Worker drops the entire batch on any unknown event). This is a two-repo coordination point baked into the rollout plan.
+Both events must be added to `ALLOWED_EVENTS` in `macparakeet-website/functions/api/telemetry.ts` before they fire in production; the Worker drops the entire batch on any unknown event. This is a two-repo coordination point baked into the rollout plan.
 
 ### 9. Feature-flag rollout (`AppFeatures.transformsEnabled`)
 

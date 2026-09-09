@@ -1,22 +1,47 @@
+import AppKit
 import SwiftUI
 import MacParakeetCore
 import MacParakeetViewModels
+
+private struct AIFormatterInstalledApp: Identifiable, Sendable {
+    let bundleIdentifier: String
+    let displayName: String
+    let path: String
+
+    var id: String { bundleIdentifier }
+}
 
 struct LLMSettingsView: View {
     @Bindable var viewModel: LLMSettingsViewModel
 
     @State private var showAdvanced = false
+    @State private var showAIFormatterPrompt = false
+    @State private var showAIFormatterCustomProfiles = false
+    @State private var showAIFormatterAppPicker = false
+    @State private var showAIFormatterBundleFields = false
+    @State private var aiFormatterAppSearch = ""
+    @State private var aiFormatterInstalledApps: [AIFormatterInstalledApp] = []
+    @State private var isLoadingAIFormatterInstalledApps = false
+    @State private var selectedSmartDefaultCategory: TelemetryAppCategory?
+    @State private var aiFormatterAppIcons: [String: NSImage] = [:]
+    @State private var aiFormatterAppIconLoadingIDs: Set<String> = []
+    @State private var pendingLocalAIModelRemoval: LocalAIModelRemoval?
 
-    private static let providerOrder: [LLMProviderID] = [
-        .lmstudio,
-        .ollama,
-        .anthropic,
-        .openai,
-        .gemini,
-        .openrouter,
-        .openaiCompatible,
-        .localCLI,
+    private static let smartDefaultGridColumns = [
+        GridItem(.adaptive(minimum: 168), spacing: DesignSystem.Spacing.sm)
     ]
+
+    private enum LocalAIModelRemoval: Identifiable, Equatable {
+        case downloaded
+        case partial
+
+        var id: String {
+            switch self {
+            case .downloaded: "downloaded"
+            case .partial: "partial"
+            }
+        }
+    }
 
     var body: some View {
         VStack(spacing: DesignSystem.Spacing.md) {
@@ -25,6 +50,16 @@ struct LLMSettingsView: View {
             Divider()
 
             selectedAIOptionSection
+
+            if viewModel.shouldShowInProcessLocalSetup {
+                Divider()
+
+                localAISetupSection
+            } else if viewModel.shouldShowInProcessLocalUnavailableExplanation {
+                Divider()
+
+                localAIUnavailableSection
+            }
 
             if viewModel.selectedProviderID != nil {
                 Divider()
@@ -40,8 +75,8 @@ struct LLMSettingsView: View {
                                     ? "Your key is stored securely in the macOS Keychain."
                                     : "Optional. Leave blank for servers that do not require authentication."
                             )
-                                .font(DesignSystem.Typography.caption)
-                                .foregroundStyle(.secondary)
+                            .font(DesignSystem.Typography.caption)
+                            .foregroundStyle(.secondary)
                         }
                         Spacer(minLength: DesignSystem.Spacing.md)
                         SecureField(viewModel.apiKeyPlaceholder, text: $viewModel.apiKeyInput)
@@ -68,6 +103,12 @@ struct LLMSettingsView: View {
                             TextField(viewModel.baseURLPlaceholder, text: $viewModel.baseURLOverride)
                                 .textFieldStyle(.roundedBorder)
                                 .frame(width: 220)
+                        }
+
+                        if viewModel.selectedProviderID == .openaiCompatible {
+                            Divider()
+
+                            localNetworkHTTPSection
                         }
 
                         Divider()
@@ -152,29 +193,41 @@ struct LLMSettingsView: View {
 
             Divider()
 
-            aiFormatterSection
+            configurationActionsRow
 
             Divider()
 
-            // Save / Clear
-            HStack(spacing: DesignSystem.Spacing.sm) {
-                Button("Save") {
-                    viewModel.saveConfiguration()
-                }
-                .parakeetAction(.primaryProminent)
-                .disabled(!viewModel.canSave)
+            transcriptAIContextSection
 
-                if viewModel.isConfigured {
-                    Button("Clear", role: .destructive) {
-                        viewModel.clearConfiguration()
-                    }
-                    .parakeetAction(.destructive)
-                }
+            Divider()
 
-                saveStateIndicator
+            meetingTitlesSection
 
-                Spacer()
+            Divider()
+
+            aiFormatterSection
+        }
+        .task {
+            if viewModel.shouldShowInProcessLocalSetup {
+                await viewModel.inProcessModelManager.refresh()
             }
+        }
+        .alert(
+            localAIModelRemovalAlertTitle,
+            isPresented: Binding(
+                get: { pendingLocalAIModelRemoval != nil },
+                set: { if !$0 { pendingLocalAIModelRemoval = nil } }
+            ),
+            presenting: pendingLocalAIModelRemoval
+        ) { _ in
+            Button("Cancel", role: .cancel) { pendingLocalAIModelRemoval = nil }
+            Button("Remove", role: .destructive) {
+                let manager = viewModel.inProcessModelManager
+                pendingLocalAIModelRemoval = nil
+                Task { await manager.deleteModel() }
+            }
+        } message: { removal in
+            Text(localAIModelRemovalMessage(for: removal))
         }
     }
 
@@ -227,7 +280,7 @@ struct LLMSettingsView: View {
                 Spacer(minLength: DesignSystem.Spacing.md)
                 Picker("AI option", selection: $viewModel.selectedProviderID) {
                     Text("None").tag(LLMProviderID?.none)
-                    ForEach(Self.providerOrder, id: \.self) { provider in
+                    ForEach(providerOrder, id: \.self) { provider in
                         Text(provider.displayName).tag(Optional(provider))
                     }
                 }
@@ -244,6 +297,279 @@ struct LLMSettingsView: View {
                     Text("Dictation, transcription, and meeting recording work without AI setup.")
                         .font(DesignSystem.Typography.caption)
                         .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var providerOrder: [LLMProviderID] {
+        viewModel.selectableProviderIDs
+    }
+
+    private var localAIUnavailableSection: some View {
+        HStack(alignment: .top, spacing: DesignSystem.Spacing.md) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Text("Local AI")
+                        .font(DesignSystem.Typography.body.weight(.semibold))
+                    Text("Unavailable in this build")
+                        .font(DesignSystem.Typography.micro.weight(.semibold))
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(DesignSystem.Colors.surfaceElevated))
+                }
+                Text(viewModel.inProcessLocalUnavailableMessage ?? "")
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: DesignSystem.Spacing.md)
+        }
+        .id("ai.localAIUnavailable")
+    }
+
+    @ViewBuilder
+    private var localAISetupSection: some View {
+        let manager = viewModel.inProcessModelManager
+
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            HStack(alignment: .top, spacing: DesignSystem.Spacing.md) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 7) {
+                        Text("Local AI")
+                            .font(DesignSystem.Typography.body.weight(.semibold))
+                        Text("Experimental")
+                            .font(DesignSystem.Typography.micro.weight(.semibold))
+                            .foregroundStyle(DesignSystem.Colors.textSecondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(DesignSystem.Colors.surfaceElevated))
+                    }
+                    Text("Optional on-device setup. Cloud providers remain recommended for best AI answer quality.")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("\(manager.modelDisplayName), \(manager.modelSizeDescription) download.")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: DesignSystem.Spacing.md)
+
+                localAIActionButtons
+            }
+
+            localAIStateContent
+        }
+        .id("ai.localAI")
+    }
+
+    @ViewBuilder
+    private var localAIActionButtons: some View {
+        let manager = viewModel.inProcessModelManager
+        HStack(spacing: DesignSystem.Spacing.xs) {
+            if manager.isModelDownloaded {
+                Button {
+                    pendingLocalAIModelRemoval = .downloaded
+                } label: {
+                    Label(
+                        "Remove downloaded model (\(manager.modelCacheSizeDescription))",
+                        systemImage: "trash"
+                    )
+                }
+                .parakeetAction(.secondary)
+                .disabled(manager.isWorking)
+            } else if manager.hasModelArtifacts {
+                Button {
+                    pendingLocalAIModelRemoval = .partial
+                } label: {
+                    Label("Delete partial download", systemImage: "trash")
+                }
+                .parakeetAction(.secondary)
+                .disabled(manager.isWorking)
+            }
+
+            if manager.isDownloading {
+                Button {
+                    manager.cancelSetup()
+                } label: {
+                    Label("Cancel", systemImage: "xmark.circle")
+                }
+                .parakeetAction(.secondary)
+            }
+
+            Button {
+                manager.startEnableLocalAI()
+            } label: {
+                Label(
+                    localAIPrimaryButtonTitle,
+                    systemImage: localAIPrimaryButtonIcon)
+            }
+            .parakeetAction(.secondary)
+            .disabled(!manager.meetsMemoryRequirement || manager.isWorking)
+        }
+        .fixedSize()
+    }
+
+    private var localAIPrimaryButtonTitle: String {
+        let manager = viewModel.inProcessModelManager
+        if case .failed(_, let recoverable) = manager.state, recoverable {
+            return "Retry setup"
+        }
+        if manager.isModelDownloaded {
+            return manager.isLocalAISelected ? "Test local AI" : "Use local AI"
+        }
+        return "Enable local AI"
+    }
+
+    private var localAIPrimaryButtonIcon: String {
+        let manager = viewModel.inProcessModelManager
+        if case .failed(_, let recoverable) = manager.state, recoverable {
+            return "arrow.clockwise"
+        }
+        return manager.isModelDownloaded ? "checkmark.circle" : "arrow.down.circle"
+    }
+
+    @ViewBuilder
+    private var localAIStateContent: some View {
+        let manager = viewModel.inProcessModelManager
+        if !manager.meetsMemoryRequirement {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "info.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    .accessibilityHidden(true)
+                Text(
+                    "Local AI needs \(manager.minimumMemoryDescription). Use a cloud provider above or a local server such as LM Studio/Ollama."
+                )
+                .font(DesignSystem.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            switch manager.state {
+            case .setUpNeeded:
+                Text(
+                    "Downloads are never automatic. Enable local AI only on a dev-enabled build when you want to test the on-device option."
+                )
+                .font(DesignSystem.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            case .downloading(let progress):
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: progress)
+                        .frame(maxWidth: 320)
+                    Text(localAIProgressCopy)
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(.secondary)
+                }
+            case .verifying:
+                HStack(spacing: 8) {
+                    ParakeetSpinner(.inline)
+                    Text("Verifying files and testing the local runtime.")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(.secondary)
+                }
+            case .ready:
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(DesignSystem.Colors.successGreen)
+                        .accessibilityHidden(true)
+                    Text(
+                        manager.isLocalAISelected
+                            ? "Local AI is downloaded and selected."
+                            : "Local AI is downloaded. The current AI choice can still stay on a cloud or BYO provider."
+                    )
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            case .failed(let reason, let recoverable):
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: recoverable ? "exclamationmark.triangle.fill" : "info.circle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(
+                            recoverable ? DesignSystem.Colors.warningAmber : DesignSystem.Colors.textSecondary
+                        )
+                        .accessibilityHidden(true)
+                    Text(reason)
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(recoverable ? DesignSystem.Colors.warningAmber : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private var localAIProgressCopy: String {
+        guard let progress = viewModel.inProcessModelManager.progress else {
+            return "Preparing download..."
+        }
+        let completed = ByteCountFormatter.string(fromByteCount: Int64(progress.completedBytes), countStyle: .file)
+        let total = ByteCountFormatter.string(fromByteCount: Int64(progress.totalBytes), countStyle: .file)
+        if let currentFile = progress.currentFile {
+            return "\(completed) of \(total) - \(currentFile)"
+        }
+        return "\(completed) of \(total)"
+    }
+
+    private var localAIModelRemovalAlertTitle: String {
+        switch pendingLocalAIModelRemoval {
+        case .downloaded:
+            return "Remove downloaded local AI model?"
+        case .partial:
+            return "Delete partial local AI download?"
+        case nil:
+            return "Remove local AI files?"
+        }
+    }
+
+    private func localAIModelRemovalMessage(for removal: LocalAIModelRemoval) -> String {
+        let manager = viewModel.inProcessModelManager
+        switch removal {
+        case .downloaded:
+            return
+                "This frees \(manager.modelCacheSizeDescription). You can download \(manager.modelDisplayName) again at any time."
+        case .partial:
+            return "This removes incomplete local AI model files from this Mac. You can restart setup at any time."
+        }
+    }
+
+    private var localNetworkHTTPSection: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            HStack(alignment: .top, spacing: DesignSystem.Spacing.md) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Local-network HTTP")
+                        .font(DesignSystem.Typography.body)
+                    Text("Allow http:// endpoints for self-hosted OpenAI-compatible servers on a trusted LAN or VPN.")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: DesignSystem.Spacing.md)
+
+                Toggle("Allow HTTP", isOn: $viewModel.allowInsecureLocalNetworkHTTP)
+                    .toggleStyle(.switch)
+                    .font(DesignSystem.Typography.caption.weight(.medium))
+                    .fixedSize()
+            }
+
+            if viewModel.allowInsecureLocalNetworkHTTP {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(DesignSystem.Colors.warningAmber)
+                        .accessibilityHidden(true)
+                    Text("Prompt text, transcript context, and API keys may be visible on the network.")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.warningAmber)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -275,7 +601,8 @@ struct LLMSettingsView: View {
     private func setupStatusCopy(for status: LLMSettingsViewModel.AISetupStatus) -> String {
         switch status {
         case .setUpNeeded:
-            return "Choose how Echo should run AI features. Transcription, dictation, and meeting recording still work without this."
+            return
+                "Choose how Echo should run AI features. Transcription, dictation, and meeting recording still work without this."
         case .ready(let displayName):
             return "Ready: using \(displayName)."
         case .cannotConnect(let displayName, let message):
@@ -345,11 +672,85 @@ struct LLMSettingsView: View {
         }
     }
 
+    private var transcriptAIContextSection: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            HStack(alignment: .top, spacing: DesignSystem.Spacing.md) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Transcript context for AI")
+                        .font(DesignSystem.Typography.body.weight(.semibold))
+                    Text("Controls what summaries, transcript chat, and Meeting Ask send to your AI provider.")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: DesignSystem.Spacing.md)
+
+                Picker("Transcript context for AI", selection: $viewModel.transcriptAIContextMode) {
+                    ForEach(TranscriptAIContextMode.allCases) { mode in
+                        Text(mode.displayTitle).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 300)
+            }
+
+            Text(viewModel.transcriptAIContextMode.detail)
+                .font(DesignSystem.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "info.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+                Text(
+                    "When included, speaker labels are a rough reference from audio-source separation and diarization, not a high-accuracy identification of who said each line."
+                )
+                .font(DesignSystem.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .id("ai.transcriptContext")
+    }
+
+    private var meetingTitlesSection: some View {
+        HStack(alignment: .top, spacing: DesignSystem.Spacing.md) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Meeting titles")
+                    .font(DesignSystem.Typography.body.weight(.semibold))
+                Text(
+                    "Use the saved AI provider to replace timestamp-only meeting names with short topic titles after transcription."
+                )
+                .font(DesignSystem.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: DesignSystem.Spacing.md)
+
+            Toggle("Auto-title meetings", isOn: $viewModel.autoGenerateMeetingTitles)
+                .toggleStyle(.switch)
+                .font(DesignSystem.Typography.caption.weight(.medium))
+                .fixedSize()
+                .disabled(!viewModel.isConfigured)
+                .help(
+                    viewModel.isConfigured
+                        ? "Generate a meeting title from the completed transcript."
+                        : "Set up an AI provider to generate meeting titles."
+                )
+        }
+        .id("ai.meetingTitles")
+    }
+
     @ViewBuilder
     private var aiFormatterSection: some View {
         VStack(spacing: DesignSystem.Spacing.md) {
             VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-                HStack(alignment: .center, spacing: DesignSystem.Spacing.md) {
+                HStack(alignment: .top, spacing: DesignSystem.Spacing.md) {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 7) {
                             Text("AI Formatter")
@@ -364,20 +765,30 @@ struct LLMSettingsView: View {
                                         .fill(DesignSystem.Colors.accent.opacity(0.12))
                                 )
                         }
-                        Text("Optionally run the final transcript through your selected AI option after the usual cleanup step.")
-                            .font(DesignSystem.Typography.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        Text(
+                            "Uses the saved LLM provider after cleanup for file and meeting transcripts. Dictation use can add latency."
+                        )
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     }
+
                     Spacer(minLength: DesignSystem.Spacing.md)
-                    AIFormatterActivationToggle(
-                        isOn: $viewModel.aiFormatterEnabled,
-                        isAvailable: viewModel.canToggleAIFormatter,
-                        disabledReason: viewModel.aiFormatterDisabledReason
-                    )
+
+                    if viewModel.isAIFormatterAvailable {
+                        VStack(alignment: .trailing, spacing: DesignSystem.Spacing.xs) {
+                            Toggle("Use for transcripts", isOn: $viewModel.aiFormatterEnabledForTranscriptions)
+                                .toggleStyle(.switch)
+                                .font(DesignSystem.Typography.caption.weight(.medium))
+                            Toggle("Use for dictation", isOn: $viewModel.aiFormatterEnabledForDictation)
+                                .toggleStyle(.switch)
+                                .font(DesignSystem.Typography.caption.weight(.medium))
+                        }
+                        .fixedSize()
+                    }
                 }
 
-                if let disabledReason = viewModel.aiFormatterDisabledReason {
+                if let disabledReason = viewModel.aiFormatterUnavailableReason {
                     HStack(spacing: 6) {
                         Image(systemName: "info.circle.fill")
                             .font(.system(size: 11, weight: .semibold))
@@ -390,6 +801,212 @@ struct LLMSettingsView: View {
                 }
             }
 
+            if AppFeatures.aiFormatterProfilesEnabled {
+                aiFormatterSmartDefaultsSection
+            }
+
+            aiFormatterPromptDisclosure
+
+            if AppFeatures.aiFormatterProfilesEnabled {
+                Divider()
+
+                // Stable structure: the profiles area always lives in this
+                // disclosure so opening an editor or saving the first profile
+                // never restructures the section mid-interaction.
+                DisclosureGroup("Custom profiles", isExpanded: $showAIFormatterCustomProfiles) {
+                    aiFormatterProfilesSection
+                        .padding(.top, DesignSystem.Spacing.sm)
+                }
+                .font(DesignSystem.Typography.caption)
+                .onAppear {
+                    if !viewModel.aiFormatterProfiles.isEmpty || viewModel.aiFormatterProfileDraft != nil {
+                        showAIFormatterCustomProfiles = true
+                    }
+                }
+            }
+        }
+        .id("ai.formatter")
+    }
+
+    private var aiFormatterSmartDefaultsSection: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            HStack(alignment: .top, spacing: DesignSystem.Spacing.md) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Smart defaults")
+                        .font(DesignSystem.Typography.body)
+                    Text(
+                        viewModel.aiFormatterSmartDefaultsEnabled
+                            ? "Dictation picks a tuned prompt for the kind of app you're in. Click a type to read its prompt."
+                            : "Off — dictation uses your fallback prompt wherever no custom profile matches."
+                    )
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: DesignSystem.Spacing.md)
+
+                Toggle("", isOn: $viewModel.aiFormatterSmartDefaultsEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .accessibilityLabel("Enable smart defaults")
+                    .accessibilityValue(viewModel.aiFormatterSmartDefaultsEnabled ? "Enabled" : "Disabled")
+            }
+
+            LazyVGrid(columns: Self.smartDefaultGridColumns, alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                ForEach(AIFormatterSmartDefaults.categoryDefaults) { categoryDefault in
+                    smartDefaultCard(categoryDefault)
+                }
+            }
+            .opacity(viewModel.aiFormatterSmartDefaultsEnabled ? 1 : 0.55)
+
+            // The preview stays readable even when smart defaults or an
+            // individual category are off, so a prompt can be inspected before
+            // deciding to let it run.
+            if let selected = selectedSmartDefaultCategory,
+                let categoryDefault = AIFormatterSmartDefaults.categoryDefault(for: selected)
+            {
+                smartDefaultPromptPreview(
+                    categoryDefault,
+                    isMasterEnabled: viewModel.aiFormatterSmartDefaultsEnabled,
+                    isCategoryEnabled: viewModel.isAIFormatterSmartDefaultCategoryEnabled(selected)
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func smartDefaultCard(_ categoryDefault: AIFormatterSmartDefaults.CategoryDefault) -> some View {
+        let isMasterEnabled = viewModel.aiFormatterSmartDefaultsEnabled
+        let isCategoryEnabled = viewModel.isAIFormatterSmartDefaultCategoryEnabled(categoryDefault.category)
+        let isEffectivelyEnabled = isMasterEnabled && isCategoryEnabled
+        let accessibilityValue =
+            isEffectivelyEnabled
+            ? "Enabled"
+            : isCategoryEnabled
+                ? "Enabled, inactive while Smart defaults are off"
+                : "Disabled"
+        let isSelected = selectedSmartDefaultCategory == categoryDefault.category
+
+        return HStack(spacing: 6) {
+            Button {
+                selectedSmartDefaultCategory = isSelected ? nil : categoryDefault.category
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: smartDefaultIcon(for: categoryDefault.category))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(isCategoryEnabled ? DesignSystem.Colors.accent : Color.secondary)
+                        .frame(width: 16, height: 16)
+                    Text(categoryDefault.name)
+                        .font(DesignSystem.Typography.caption.weight(.medium))
+                        .foregroundStyle(
+                            isCategoryEnabled ? DesignSystem.Colors.textPrimary : DesignSystem.Colors.textSecondary
+                        )
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Read the \(categoryDefault.name) prompt")
+            .accessibilityLabel("Read the \(categoryDefault.name) prompt")
+
+            Toggle(
+                "",
+                isOn: Binding(
+                    get: { viewModel.isAIFormatterSmartDefaultCategoryEnabled(categoryDefault.category) },
+                    set: { viewModel.setAIFormatterSmartDefault(categoryDefault.category, enabled: $0) }
+                )
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .disabled(!isMasterEnabled)
+            .accessibilityLabel("Enable the \(categoryDefault.name) smart default")
+            .accessibilityValue(accessibilityValue)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
+                .fill(DesignSystem.Colors.surfaceElevated)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
+                .strokeBorder(
+                    isSelected ? DesignSystem.Colors.accent.opacity(0.45) : Color.clear,
+                    lineWidth: 1
+                )
+        )
+    }
+
+    private func smartDefaultPromptPreview(
+        _ categoryDefault: AIFormatterSmartDefaults.CategoryDefault,
+        isMasterEnabled: Bool,
+        isCategoryEnabled: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            HStack {
+                Text("\(categoryDefault.name) prompt")
+                    .font(DesignSystem.Typography.caption.weight(.medium))
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+                if !isCategoryEnabled {
+                    Text("Off")
+                        .font(DesignSystem.Typography.micro.weight(.semibold))
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(DesignSystem.Colors.background))
+                }
+                Spacer()
+                Button {
+                    selectedSmartDefaultCategory = nil
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Close prompt preview")
+                .accessibilityLabel("Close prompt preview")
+            }
+
+            ScrollView {
+                Text(categoryDefault.promptTemplate)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(DesignSystem.Spacing.sm)
+            }
+            .frame(maxHeight: 170)
+            .background(DesignSystem.Colors.background)
+            .clipShape(RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius))
+
+            Text(
+                !isMasterEnabled
+                    ? "Smart defaults are off — this prompt will not run unless you turn Smart defaults on."
+                    : isCategoryEnabled
+                        ? "To format \(categoryDefault.name) apps differently, turn this type off or add a custom profile below — custom profiles always win."
+                        : "This type is off — dictation into \(categoryDefault.name) apps uses your fallback prompt unless a custom profile matches."
+            )
+            .font(DesignSystem.Typography.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(DesignSystem.Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
+                .fill(DesignSystem.Colors.surfaceElevated)
+        )
+    }
+
+    @ViewBuilder
+    private var aiFormatterPromptDisclosure: some View {
+        DisclosureGroup("Customize fallback prompt", isExpanded: $showAIFormatterPrompt) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 7) {
@@ -416,7 +1033,7 @@ struct LLMSettingsView: View {
                             .font(.system(.body, design: .monospaced))
                             .scrollContentBackground(.hidden)
                             .padding(6)
-                            .disabled(!viewModel.canToggleAIFormatter)
+                            .disabled(!viewModel.isAIFormatterAvailable)
                     }
                     .frame(width: 380)
                     .frame(minHeight: 220)
@@ -436,6 +1053,742 @@ struct LLMSettingsView: View {
                     .disabled(!viewModel.canResetAIFormatterPrompt)
                 }
             }
+            .padding(.top, DesignSystem.Spacing.sm)
+        }
+        .font(DesignSystem.Typography.caption)
+    }
+
+    @ViewBuilder
+    private var aiFormatterProfilesSection: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+            HStack(alignment: .center, spacing: DesignSystem.Spacing.md) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 7) {
+                        Text("Profiles")
+                            .font(DesignSystem.Typography.body.weight(.semibold))
+                        if !viewModel.aiFormatterProfiles.isEmpty {
+                            Text(profileCountText)
+                                .font(DesignSystem.Typography.micro.weight(.semibold))
+                                .foregroundStyle(DesignSystem.Colors.textSecondary)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(
+                                    Capsule()
+                                        .fill(DesignSystem.Colors.surfaceElevated)
+                                )
+                        }
+                    }
+                    Text(
+                        "Set your own prompt for a specific app or an app type. When you finish dictating, the first match wins: app profile, category profile, smart default, then your fallback prompt."
+                    )
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: DesignSystem.Spacing.md)
+
+                HStack(spacing: DesignSystem.Spacing.sm) {
+                    Button {
+                        viewModel.startCreatingAIFormatterProfile(targetKind: .bundle)
+                    } label: {
+                        Label("Add App", systemImage: "app.badge")
+                    }
+                    .parakeetAction(.secondary)
+                    .disabled(!viewModel.canManageAIFormatterProfiles)
+
+                    Button {
+                        viewModel.startCreatingAIFormatterProfile(targetKind: .category)
+                    } label: {
+                        Label("Add Category", systemImage: "square.grid.2x2")
+                    }
+                    .parakeetAction(.secondary)
+                    .disabled(!viewModel.canManageAIFormatterProfiles)
+                }
+            }
+
+            // Save errors render inside the editor (next to the Save button);
+            // this section-level slot only carries errors with no editor open,
+            // e.g. a failed delete or load.
+            if let error = viewModel.aiFormatterProfileError, viewModel.aiFormatterProfileDraft == nil {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(DesignSystem.Colors.warningAmber)
+                    Text(error)
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.warningAmber)
+                }
+            }
+
+            if let draft = viewModel.aiFormatterProfileDraft {
+                aiFormatterProfileEditor(draft)
+            }
+
+            if viewModel.aiFormatterProfiles.isEmpty {
+                Text("No custom profiles yet.")
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, DesignSystem.Spacing.xs)
+            } else {
+                VStack(spacing: DesignSystem.Spacing.sm) {
+                    ForEach(viewModel.aiFormatterProfiles) { profile in
+                        aiFormatterProfileRow(profile)
+                    }
+                }
+                Text(
+                    "Disabling a profile falls back to the smart default for its app type, then to your fallback prompt."
+                )
+                .font(DesignSystem.Typography.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var profileCountText: String {
+        let count = viewModel.aiFormatterProfiles.count
+        return count == 1 ? "1 profile" : "\(count) profiles"
+    }
+
+    private func aiFormatterProfileRow(_ profile: AIFormatterProfile) -> some View {
+        HStack(alignment: .center, spacing: DesignSystem.Spacing.sm) {
+            Image(systemName: profile.targetKind == .bundle ? "app" : "square.grid.2x2")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(DesignSystem.Colors.accent)
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(DesignSystem.Colors.accent.opacity(0.10)))
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Text(profile.name)
+                        .font(DesignSystem.Typography.body.weight(.medium))
+                        .foregroundStyle(DesignSystem.Colors.textPrimary)
+                    Text(viewModel.aiFormatterProfileBadgeText(profile))
+                        .font(DesignSystem.Typography.micro.weight(.semibold))
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(DesignSystem.Colors.background)
+                        )
+                }
+                Text(profileTargetText(profile))
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: DesignSystem.Spacing.md)
+
+            Toggle(
+                "",
+                isOn: Binding(
+                    get: { profile.isEnabled },
+                    set: { viewModel.setAIFormatterProfile(profile, enabled: $0) }
+                )
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .accessibilityLabel("Enable \(profile.name)")
+            .accessibilityValue(profile.isEnabled ? "Enabled" : "Disabled")
+
+            Button {
+                viewModel.editAIFormatterProfile(profile)
+            } label: {
+                Image(systemName: "pencil")
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .help("Edit profile")
+            .accessibilityLabel("Edit \(profile.name)")
+
+            Button(role: .destructive) {
+                viewModel.deleteAIFormatterProfile(profile)
+            } label: {
+                Image(systemName: "trash")
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(DesignSystem.Colors.errorRed)
+            .help("Delete profile")
+            .accessibilityLabel("Delete \(profile.name)")
+        }
+        .padding(.horizontal, DesignSystem.Spacing.sm)
+        .padding(.vertical, DesignSystem.Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
+                .fill(DesignSystem.Colors.surfaceElevated)
+        )
+    }
+
+    private func aiFormatterProfileEditor(_ draft: LLMSettingsViewModel.AIFormatterProfileDraft) -> some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+            HStack(alignment: .center) {
+                Text(draft.profileID == nil ? "New profile" : "Edit profile")
+                    .font(DesignSystem.Typography.body.weight(.semibold))
+                Spacer()
+                Toggle(
+                    "Enabled",
+                    isOn: profileDraftBinding(\.isEnabled, fallback: true)
+                )
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            }
+
+            HStack(alignment: .top, spacing: DesignSystem.Spacing.md) {
+                VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                    Text("Type")
+                        .font(DesignSystem.Typography.caption.weight(.medium))
+                    Picker("Profile type", selection: profileDraftTargetKindBinding) {
+                        Text("App").tag(AIFormatterProfileTargetKind.bundle)
+                        Text("Category").tag(AIFormatterProfileTargetKind.category)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 180)
+                }
+
+                VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                    Text("Name")
+                        .font(DesignSystem.Typography.caption.weight(.medium))
+                    TextField(
+                        "Profile name",
+                        text: profileDraftBinding(\.name, fallback: "")
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+                }
+            }
+
+            if draft.targetKind == .bundle {
+                aiFormatterAppProfileTargetEditor(draft)
+            } else {
+                aiFormatterCategoryProfileTargetEditor(draft)
+            }
+
+            VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                HStack {
+                    Text("Prompt")
+                        .font(DesignSystem.Typography.caption.weight(.medium))
+                    Spacer()
+                    Button("Use Fallback Prompt") {
+                        viewModel.updateAIFormatterProfileDraft(
+                            \.promptTemplate,
+                            to: viewModel.aiFormatterPrompt
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(.secondary)
+                }
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: profileDraftBinding(\.promptTemplate, fallback: AIFormatter.defaultPromptTemplate))
+                        .font(.system(.body, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .padding(6)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 150)
+                .background(DesignSystem.Colors.background)
+                .clipShape(RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
+                        .strokeBorder(DesignSystem.Colors.border, lineWidth: 1)
+                )
+            }
+
+            if let validationMessage = draft.validationMessage {
+                Text(validationMessage)
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.errorRed)
+            }
+
+            // Save failures (duplicate profile, repository errors) belong next
+            // to the Save button the user just clicked, not at the section top.
+            if let error = viewModel.aiFormatterProfileError {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(DesignSystem.Colors.warningAmber)
+                    Text(error)
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.warningAmber)
+                }
+            }
+
+            HStack(spacing: DesignSystem.Spacing.sm) {
+                Button("Save Profile") {
+                    _ = viewModel.saveAIFormatterProfileDraft()
+                }
+                .parakeetAction(.primaryProminent)
+                .disabled(!draft.canSave)
+
+                Button("Cancel") {
+                    viewModel.cancelAIFormatterProfileEdit()
+                }
+                .parakeetAction(.secondary)
+
+                Spacer()
+            }
+        }
+        .padding(.top, DesignSystem.Spacing.xs)
+    }
+
+    private func aiFormatterAppProfileTargetEditor(
+        _ draft: LLMSettingsViewModel.AIFormatterProfileDraft
+    ) -> some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            Text("App")
+                .font(DesignSystem.Typography.caption.weight(.medium))
+
+            HStack(spacing: DesignSystem.Spacing.sm) {
+                Button {
+                    showAIFormatterAppPicker = true
+                    loadAIFormatterInstalledAppsIfNeeded()
+                } label: {
+                    Label("Choose App", systemImage: "app.badge")
+                }
+                .parakeetAction(.secondary)
+                .popover(isPresented: $showAIFormatterAppPicker, arrowEdge: .bottom) {
+                    aiFormatterAppPicker
+                }
+            }
+
+            aiFormatterProfileMatchPreview(draft)
+
+            DisclosureGroup("Manual bundle details", isExpanded: $showAIFormatterBundleFields) {
+                HStack(alignment: .top, spacing: DesignSystem.Spacing.md) {
+                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                        Text("Bundle ID")
+                            .font(DesignSystem.Typography.caption.weight(.medium))
+                        TextField(
+                            "com.example.app",
+                            text: Binding(
+                                get: { viewModel.aiFormatterProfileDraft?.bundleIdentifier ?? "" },
+                                set: { viewModel.applyAIFormatterProfileDraftManualBundleIdentifier($0) }
+                            )
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 260)
+                    }
+
+                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                        Text("Display name")
+                            .font(DesignSystem.Typography.caption.weight(.medium))
+                        TextField(
+                            "Optional",
+                            text: profileDraftBinding(\.appDisplayName, fallback: "")
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 180)
+                    }
+                }
+                .padding(.top, DesignSystem.Spacing.sm)
+            }
+            .font(DesignSystem.Typography.caption)
+        }
+    }
+
+    private func aiFormatterCategoryProfileTargetEditor(
+        _ draft: LLMSettingsViewModel.AIFormatterProfileDraft
+    ) -> some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            Text("Category")
+                .font(DesignSystem.Typography.caption.weight(.medium))
+            Picker("Category", selection: profileDraftCategoryBinding) {
+                ForEach(TelemetryAppCategory.allCases, id: \.self) { category in
+                    Text(categoryTitle(category)).tag(category)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 220)
+
+            aiFormatterProfileMatchPreview(draft)
+        }
+    }
+
+    private var aiFormatterAppPicker: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            TextField("Search apps", text: $aiFormatterAppSearch)
+                .textFieldStyle(.roundedBorder)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    if isLoadingAIFormatterInstalledApps, aiFormatterInstalledApps.isEmpty {
+                        HStack(spacing: DesignSystem.Spacing.sm) {
+                            ParakeetSpinner(.inline)
+                            Text("Loading apps...")
+                                .font(DesignSystem.Typography.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, DesignSystem.Spacing.md)
+                    } else if filteredAIFormatterInstalledApps.isEmpty {
+                        Text("No apps found.")
+                            .font(DesignSystem.Typography.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, DesignSystem.Spacing.md)
+                    } else {
+                        ForEach(filteredAIFormatterInstalledApps) { app in
+                            Button {
+                                selectAIFormatterInstalledApp(app)
+                            } label: {
+                                HStack(spacing: DesignSystem.Spacing.sm) {
+                                    Group {
+                                        if let icon = aiFormatterAppIcons[app.bundleIdentifier] {
+                                            Image(nsImage: icon)
+                                                .resizable()
+                                        } else {
+                                            RoundedRectangle(cornerRadius: 5)
+                                                .fill(DesignSystem.Colors.surfaceElevated)
+                                        }
+                                    }
+                                    .frame(width: 22, height: 22)
+                                    .onAppear {
+                                        loadAIFormatterAppIconIfNeeded(for: app)
+                                    }
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(app.displayName)
+                                            .font(DesignSystem.Typography.caption.weight(.medium))
+                                            .foregroundStyle(DesignSystem.Colors.textPrimary)
+                                        Text(app.bundleIdentifier)
+                                            .font(.system(size: 11, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer(minLength: DesignSystem.Spacing.sm)
+                                    if viewModel.aiFormatterProfileDraft?.bundleIdentifier == app.bundleIdentifier {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(DesignSystem.Colors.accent)
+                                    }
+                                }
+                                .padding(.horizontal, DesignSystem.Spacing.sm)
+                                .padding(.vertical, 6)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .frame(height: 280)
+        }
+        .padding(DesignSystem.Spacing.md)
+        .frame(width: 380)
+        .onAppear {
+            loadAIFormatterInstalledAppsIfNeeded()
+        }
+    }
+
+    private func aiFormatterProfileMatchPreview(
+        _ draft: LLMSettingsViewModel.AIFormatterProfileDraft
+    ) -> some View {
+        let context = aiFormatterDraftContext(draft)
+        let resolution = viewModel.aiFormatterPromptPreview(for: context, including: draft)
+
+        return HStack(alignment: .center, spacing: DesignSystem.Spacing.sm) {
+            Image(systemName: draft.targetKind == .bundle ? "app" : smartDefaultIcon(for: draft.appCategory))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(DesignSystem.Colors.accent)
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(DesignSystem.Colors.accent.opacity(0.10)))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(aiFormatterDraftTargetText(draft))
+                    .font(DesignSystem.Typography.caption.weight(.medium))
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+                    .lineLimit(1)
+                Text(aiFormatterResolutionSourceText(resolution))
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: DesignSystem.Spacing.sm)
+        }
+        .padding(.horizontal, DesignSystem.Spacing.sm)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
+                .fill(DesignSystem.Colors.surfaceElevated)
+        )
+    }
+
+    private func profileDraftBinding<Value>(
+        _ keyPath: WritableKeyPath<LLMSettingsViewModel.AIFormatterProfileDraft, Value>,
+        fallback: Value
+    ) -> Binding<Value> {
+        Binding(
+            get: { viewModel.aiFormatterProfileDraft?[keyPath: keyPath] ?? fallback },
+            set: { viewModel.updateAIFormatterProfileDraft(keyPath, to: $0) }
+        )
+    }
+
+    private var profileDraftCategoryBinding: Binding<TelemetryAppCategory> {
+        Binding(
+            get: { viewModel.aiFormatterProfileDraft?.appCategory ?? .messaging },
+            set: { viewModel.applyAIFormatterProfileDraftCategory($0) }
+        )
+    }
+
+    private var profileDraftTargetKindBinding: Binding<AIFormatterProfileTargetKind> {
+        Binding(
+            get: { viewModel.aiFormatterProfileDraft?.targetKind ?? .bundle },
+            set: { viewModel.applyAIFormatterProfileDraftTargetKind($0) }
+        )
+    }
+
+    private var filteredAIFormatterInstalledApps: [AIFormatterInstalledApp] {
+        let query = aiFormatterAppSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return aiFormatterInstalledApps }
+        return aiFormatterInstalledApps.filter { app in
+            app.displayName.localizedCaseInsensitiveContains(query)
+                || app.bundleIdentifier.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private func selectAIFormatterInstalledApp(_ app: AIFormatterInstalledApp) {
+        viewModel.applyAIFormatterProfileDraftApp(
+            bundleIdentifier: app.bundleIdentifier,
+            displayName: app.displayName
+        )
+        showAIFormatterAppPicker = false
+    }
+
+    private func loadAIFormatterInstalledAppsIfNeeded() {
+        guard aiFormatterInstalledApps.isEmpty, !isLoadingAIFormatterInstalledApps else { return }
+        isLoadingAIFormatterInstalledApps = true
+        // Running apps are the most likely profile targets and may live outside
+        // the scanned directories. Snapshot them on the main actor (NSWorkspace
+        // KVO state), then merge with the disk scan off-main.
+        let selfBundleIdentifier = AppPromptContext.normalizedBundleIdentifier(Bundle.main.bundleIdentifier)
+        let runningApps: [AIFormatterInstalledApp] = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app in
+                guard
+                    let bundleIdentifier = AppPromptContext.normalizedBundleIdentifier(app.bundleIdentifier),
+                    bundleIdentifier != selfBundleIdentifier,
+                    let path = app.bundleURL?.path
+                else { return nil }
+                return AIFormatterInstalledApp(
+                    bundleIdentifier: bundleIdentifier,
+                    displayName: AppPromptContext.normalizedDisplayName(app.localizedName) ?? bundleIdentifier,
+                    path: path
+                )
+            }
+        Task { @MainActor in
+            let apps = await Task.detached(priority: .userInitiated) {
+                Self.discoverInstalledApps(merging: runningApps)
+            }.value
+            aiFormatterInstalledApps = apps
+            isLoadingAIFormatterInstalledApps = false
+        }
+    }
+
+    private func loadAIFormatterAppIconIfNeeded(for app: AIFormatterInstalledApp) {
+        let bundleIdentifier = app.bundleIdentifier
+        guard aiFormatterAppIcons[bundleIdentifier] == nil,
+            !aiFormatterAppIconLoadingIDs.contains(bundleIdentifier)
+        else { return }
+
+        aiFormatterAppIconLoadingIDs.insert(bundleIdentifier)
+        let path = app.path
+        Task { @MainActor in
+            let iconData = await Task.detached(priority: .utility) {
+                NSWorkspace.shared.icon(forFile: path).tiffRepresentation
+            }.value
+            if let iconData, let icon = NSImage(data: iconData) {
+                aiFormatterAppIcons[bundleIdentifier] = icon
+            }
+            aiFormatterAppIconLoadingIDs.remove(bundleIdentifier)
+        }
+    }
+
+    private func aiFormatterDraftContext(
+        _ draft: LLMSettingsViewModel.AIFormatterProfileDraft
+    ) -> AppPromptContext? {
+        switch draft.targetKind {
+        case .bundle:
+            guard AppPromptContext.normalizedBundleIdentifier(draft.bundleIdentifier) != nil else {
+                return nil
+            }
+            return AppPromptContext(
+                bundleIdentifier: draft.bundleIdentifier,
+                displayName: draft.appDisplayName,
+                category: draft.appCategory
+            )
+        case .category:
+            return AppPromptContext(
+                bundleIdentifier: nil,
+                displayName: categoryTitle(draft.appCategory),
+                category: draft.appCategory
+            )
+        }
+    }
+
+    private func aiFormatterDraftTargetText(
+        _ draft: LLMSettingsViewModel.AIFormatterProfileDraft
+    ) -> String {
+        switch draft.targetKind {
+        case .bundle:
+            let bundleIdentifier = draft.bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayName = draft.appDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !displayName.isEmpty, !bundleIdentifier.isEmpty {
+                return "\(displayName) · \(categoryTitle(draft.appCategory))"
+            }
+            if !bundleIdentifier.isEmpty {
+                return "\(bundleIdentifier) · \(categoryTitle(draft.appCategory))"
+            }
+            return "No app selected"
+        case .category:
+            return categoryTitle(draft.appCategory)
+        }
+    }
+
+    private func aiFormatterResolutionSourceText(_ resolution: AIFormatterPromptResolution) -> String {
+        // An in-progress draft can resolve with an empty name; show the role
+        // placeholder rather than a dangling colon.
+        let profileName = resolution.profileName.flatMap {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
+        }
+        switch (resolution.matchKind, resolution.profileOrigin) {
+        case (.exactApp, .some(.custom)):
+            return "Custom app profile: \(profileName ?? "this app")"
+        case (.category, .some(.custom)):
+            return "Custom category profile: \(profileName ?? "this category")"
+        case (.category, .some(.template)):
+            return "Smart default: \(profileName ?? "this category")"
+        case (.global, _):
+            return "Fallback prompt"
+        default:
+            return profileName ?? "Custom profile"
+        }
+    }
+
+    nonisolated private static func discoverInstalledApps(
+        merging runningApps: [AIFormatterInstalledApp]
+    ) -> [AIFormatterInstalledApp] {
+        let fileManager = FileManager.default
+        let userApplications = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications", isDirectory: true)
+        // Shallow scans of the standard locations plus the JetBrains Toolbox
+        // install dir (code-category apps this feature explicitly targets).
+        // Direct Info.plist reads, never Bundle(url:) — loading every bundle
+        // recursively froze the picker in an earlier revision.
+        let directories = [
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            URL(fileURLWithPath: "/Applications/Utilities", isDirectory: true),
+            userApplications,
+            userApplications.appendingPathComponent("Utilities", isDirectory: true),
+            userApplications.appendingPathComponent("JetBrains Toolbox", isDirectory: true),
+            URL(fileURLWithPath: "/System/Applications", isDirectory: true),
+            URL(fileURLWithPath: "/System/Applications/Utilities", isDirectory: true),
+        ]
+        let selfBundleIdentifier = AppPromptContext.normalizedBundleIdentifier(Bundle.main.bundleIdentifier)
+        var appsByBundleIdentifier: [String: AIFormatterInstalledApp] = [:]
+        // Seed with running apps so the frontmost candidates always appear,
+        // with their live localized names winning over plist values.
+        for app in runningApps where appsByBundleIdentifier[app.bundleIdentifier] == nil {
+            appsByBundleIdentifier[app.bundleIdentifier] = app
+        }
+
+        for directory in directories {
+            guard
+                let urls = try? fileManager.contentsOfDirectory(
+                    at: directory,
+                    includingPropertiesForKeys: [.isDirectoryKey],
+                    options: [.skipsHiddenFiles]
+                )
+            else { continue }
+
+            for url in urls where url.pathExtension == "app" {
+                let plistURL =
+                    url
+                    .appendingPathComponent("Contents", isDirectory: true)
+                    .appendingPathComponent("Info.plist")
+                guard let plistData = try? Data(contentsOf: plistURL),
+                    let plistObject = try? PropertyListSerialization.propertyList(
+                        from: plistData,
+                        options: [],
+                        format: nil
+                    ),
+                    let plist = plistObject as? [String: Any],
+                    let rawBundleIdentifier = plist["CFBundleIdentifier"] as? String,
+                    let bundleIdentifier = AppPromptContext.normalizedBundleIdentifier(rawBundleIdentifier),
+                    bundleIdentifier != selfBundleIdentifier,
+                    appsByBundleIdentifier[bundleIdentifier] == nil
+                else { continue }
+
+                let displayName =
+                    AppPromptContext.normalizedDisplayName(
+                        Self.localizedAppName(at: url)
+                            ?? plist["CFBundleDisplayName"] as? String
+                            ?? plist["CFBundleName"] as? String
+                            ?? url.deletingPathExtension().lastPathComponent
+                    ) ?? bundleIdentifier
+                appsByBundleIdentifier[bundleIdentifier] = AIFormatterInstalledApp(
+                    bundleIdentifier: bundleIdentifier,
+                    displayName: displayName,
+                    path: url.path
+                )
+            }
+        }
+
+        return appsByBundleIdentifier.values.sorted {
+            let nameOrder = $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
+            if nameOrder != .orderedSame {
+                return nameOrder == .orderedAscending
+            }
+            return $0.bundleIdentifier < $1.bundleIdentifier
+        }
+    }
+
+    /// Localized Finder-style name for an app bundle, without loading the
+    /// bundle. Returns nil when the result is just the raw folder name so the
+    /// plist fallbacks can take over.
+    nonisolated private static func localizedAppName(at url: URL) -> String? {
+        var name = FileManager.default.displayName(atPath: url.path)
+        if name.hasSuffix(".app") {
+            name = String(name.dropLast(4))
+        }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func profileTargetText(_ profile: AIFormatterProfile) -> String {
+        switch profile.targetKind {
+        case .bundle:
+            let bundle = profile.bundleIdentifier ?? "Unknown bundle"
+            if let displayName = profile.appDisplayName, !displayName.isEmpty {
+                return "\(displayName) · \(bundle)"
+            }
+            return bundle
+        case .category:
+            return categoryTitle(profile.appCategory ?? .other)
+        }
+    }
+
+    private func categoryTitle(_ category: TelemetryAppCategory) -> String {
+        category.formatterDisplayName
+    }
+
+    private func smartDefaultIcon(for category: TelemetryAppCategory) -> String {
+        switch category {
+        case .messaging: return "bubble.left.and.bubble.right"
+        case .email: return "envelope"
+        case .browser: return "safari"
+        case .notes: return "note.text"
+        case .docs: return "doc.text"
+        case .code: return "chevron.left.forwardslash.chevron.right"
+        case .terminal: return "terminal"
+        case .other: return "sparkles"
         }
     }
 
@@ -469,9 +1822,11 @@ struct LLMSettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Command")
                     .font(DesignSystem.Typography.body)
-                Text("Prompt is passed via stdin and environment variables. Presets run from an app-owned working directory.")
-                    .font(DesignSystem.Typography.caption)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Prompt is passed via stdin and environment variables. Presets run from an app-owned working directory."
+                )
+                .font(DesignSystem.Typography.caption)
+                .foregroundStyle(.secondary)
             }
             Spacer(minLength: DesignSystem.Spacing.md)
             TextField("claude -p", text: $viewModel.commandTemplate)
@@ -501,31 +1856,83 @@ struct LLMSettingsView: View {
         }
     }
 
-    @ViewBuilder
     private var privacyInfo: some View {
         let isLocal = viewModel.isLocalConfiguration
         let isCLI = viewModel.selectedProviderID == .localCLI
-        HStack(spacing: DesignSystem.Spacing.sm) {
-            Image(systemName: isLocal ? "lock.fill" : "arrow.up.right.circle")
-                .font(.system(size: 12))
-                .foregroundStyle(isLocal ? DesignSystem.Colors.successGreen : DesignSystem.Colors.warningAmber)
+        let usesInsecureHTTP = viewModel.usesInsecureLocalNetworkHTTP
+        let usesTrustedLocal = isLocal && !usesInsecureHTTP
+        let tint: Color
+        let iconName: String
+        if usesTrustedLocal {
+            tint = DesignSystem.Colors.successGreen
+            iconName = "lock.fill"
+        } else if usesInsecureHTTP {
+            tint = DesignSystem.Colors.warningAmber
+            iconName = "exclamationmark.triangle.fill"
+        } else {
+            tint = DesignSystem.Colors.warningAmber
+            iconName = "arrow.up.right.circle"
+        }
 
-            Text(isLocal
-                 ? "Transcript text is sent only to your local AI endpoint."
-                 : isCLI
-                    ? "Runs a command on this Mac. The command may contact its own service."
-                    : "Transcription stays local. Transcript text is sent only when you run an AI action.")
-                .font(DesignSystem.Typography.caption)
-                .foregroundStyle(.secondary)
+        return HStack(spacing: DesignSystem.Spacing.sm) {
+            Image(systemName: iconName)
+                .font(.system(size: 12))
+                .foregroundStyle(tint)
+
+            Text(
+                privacyInfoMessage(
+                    isLocal: isLocal,
+                    isCLI: isCLI,
+                    usesInsecureHTTP: usesInsecureHTTP
+                )
+            )
+            .font(DesignSystem.Typography.caption)
+            .foregroundStyle(.secondary)
         }
         .padding(DesignSystem.Spacing.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
-                .fill(isLocal
-                      ? DesignSystem.Colors.successGreen.opacity(0.06)
-                      : DesignSystem.Colors.warningAmber.opacity(0.06))
+                .fill(tint.opacity(0.06))
         )
+    }
+
+    private func privacyInfoMessage(
+        isLocal: Bool,
+        isCLI: Bool,
+        usesInsecureHTTP: Bool
+    ) -> String {
+        if usesInsecureHTTP {
+            return "Transcript text is sent to your local AI endpoint over HTTP. Use a trusted network."
+        }
+        if isLocal {
+            return "Transcript text is sent only to your local AI endpoint."
+        }
+        if isCLI {
+            return "Runs a command on this Mac. The command may contact its own service."
+        }
+        return "Transcription stays local. Transcript text is sent only when you run an AI action."
+    }
+
+    private var configurationActionsRow: some View {
+        HStack(spacing: DesignSystem.Spacing.sm) {
+            Button("Save") {
+                viewModel.saveConfiguration()
+            }
+            .parakeetAction(.primaryProminent)
+            .disabled(!viewModel.canSave)
+
+            if viewModel.isConfigured {
+                Button("Clear", role: .destructive) {
+                    viewModel.clearConfiguration()
+                }
+                .parakeetAction(.destructive)
+            }
+
+            saveStateIndicator
+
+            Spacer()
+        }
     }
 
     @ViewBuilder
@@ -571,8 +1978,7 @@ struct LLMSettingsView: View {
             EmptyView()
         case .testing:
             HStack(spacing: 4) {
-                ProgressView()
-                    .controlSize(.small)
+                ParakeetSpinner(.inline)
                 Text("Testing...")
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(.secondary)
@@ -598,133 +2004,5 @@ struct LLMSettingsView: View {
                     .lineLimit(2)
             }
         }
-    }
-}
-
-private struct AIFormatterActivationToggle: View {
-    @Binding var isOn: Bool
-    let isAvailable: Bool
-    let disabledReason: String?
-
-    var body: some View {
-        Toggle("AI Formatter", isOn: $isOn)
-            .labelsHidden()
-            .toggleStyle(AIFormatterActivationToggleStyle())
-            .disabled(!isAvailable)
-            .help(disabledReason ?? "Run AI formatting after the standard cleanup step.")
-            .accessibilityLabel("AI Formatter")
-            .accessibilityValue(isOn ? "Enabled" : "Disabled")
-            .accessibilityHint(disabledReason ?? "Runs after local transcription cleanup as the final output step.")
-    }
-}
-
-private struct AIFormatterActivationToggleStyle: ToggleStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        Button {
-            withAnimation(.spring(response: 0.22, dampingFraction: 0.82)) {
-                configuration.isOn.toggle()
-            }
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: configuration.isOn ? "sparkles" : "wand.and.stars")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(iconTint(isOn: configuration.isOn))
-                    .frame(width: 24, height: 24)
-                    .background(
-                        Circle()
-                            .fill(iconBackground(isOn: configuration.isOn))
-                    )
-                    .accessibilityHidden(true)
-
-                Text(labelText(isOn: configuration.isOn))
-                    .font(DesignSystem.Typography.caption.weight(.semibold))
-                    .foregroundStyle(labelTint(isOn: configuration.isOn))
-                    .lineLimit(1)
-
-                Spacer(minLength: 4)
-
-                switchTrack(isOn: configuration.isOn)
-            }
-            .padding(.leading, 8)
-            .padding(.trailing, 10)
-            .padding(.vertical, 6)
-            .frame(width: 164, height: 38)
-            .background(
-                RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
-                    .fill(controlBackground(isOn: configuration.isOn))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
-                    .strokeBorder(controlBorder(isOn: configuration.isOn), lineWidth: 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func switchTrack(isOn: Bool) -> some View {
-        ZStack(alignment: isOn ? .trailing : .leading) {
-            Capsule()
-                .fill(trackBackground(isOn: isOn))
-                .overlay(
-                    Capsule()
-                        .strokeBorder(trackBorder(isOn: isOn), lineWidth: 1)
-                )
-
-            Circle()
-                .fill(knobFill(isOn: isOn))
-                .frame(width: 14, height: 14)
-                .padding(2)
-                .shadow(color: .black.opacity(isOn && isEnabled ? 0.18 : 0), radius: 2, y: 1)
-        }
-        .frame(width: 34, height: 18)
-        .accessibilityHidden(true)
-    }
-
-    private func labelText(isOn: Bool) -> String {
-        guard isEnabled else { return "Unavailable" }
-        return isOn ? "Enabled" : "Enable"
-    }
-
-    private func iconTint(isOn: Bool) -> Color {
-        if !isEnabled { return DesignSystem.Colors.textTertiary }
-        return isOn ? DesignSystem.Colors.onAccent : DesignSystem.Colors.accent
-    }
-
-    private func iconBackground(isOn: Bool) -> Color {
-        if !isEnabled { return DesignSystem.Colors.surfaceElevated.opacity(0.75) }
-        return isOn ? DesignSystem.Colors.accent : DesignSystem.Colors.accent.opacity(0.12)
-    }
-
-    private func labelTint(isOn: Bool) -> Color {
-        if !isEnabled { return DesignSystem.Colors.textTertiary }
-        return isOn ? DesignSystem.Colors.accentDark : DesignSystem.Colors.textSecondary
-    }
-
-    private func controlBackground(isOn: Bool) -> Color {
-        if !isEnabled { return DesignSystem.Colors.surfaceElevated.opacity(0.45) }
-        return isOn ? DesignSystem.Colors.accentLight : DesignSystem.Colors.surfaceElevated
-    }
-
-    private func controlBorder(isOn: Bool) -> Color {
-        if !isEnabled { return DesignSystem.Colors.border.opacity(0.45) }
-        return isOn ? DesignSystem.Colors.accent.opacity(0.45) : DesignSystem.Colors.border.opacity(0.75)
-    }
-
-    private func trackBackground(isOn: Bool) -> Color {
-        if !isEnabled { return DesignSystem.Colors.border.opacity(0.35) }
-        return isOn ? DesignSystem.Colors.accent : DesignSystem.Colors.border.opacity(0.35)
-    }
-
-    private func trackBorder(isOn: Bool) -> Color {
-        if !isEnabled { return Color.clear }
-        return isOn ? DesignSystem.Colors.accent.opacity(0.35) : DesignSystem.Colors.border.opacity(0.75)
-    }
-
-    private func knobFill(isOn: Bool) -> Color {
-        if !isEnabled { return DesignSystem.Colors.textTertiary.opacity(0.55) }
-        return isOn ? DesignSystem.Colors.onAccent : DesignSystem.Colors.textSecondary
     }
 }

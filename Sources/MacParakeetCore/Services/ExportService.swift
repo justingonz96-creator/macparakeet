@@ -1,8 +1,7 @@
-import Foundation
 import AppKit
+import Foundation
 import NaturalLanguage
 
-@MainActor
 public protocol ExportServiceProtocol: Sendable {
     func exportToTxt(transcription: Transcription, url: URL) throws
     func exportToSRT(
@@ -17,7 +16,18 @@ public protocol ExportServiceProtocol: Sendable {
         config: SubtitleExportConfig,
         includeSpeakerLabels: Bool
     ) throws
+    func exportToTxt(
+        transcription: Transcription,
+        url: URL,
+        options: TranscriptExportOptions
+    ) throws
+    func exportToDAPT(transcription: Transcription, url: URL) throws
     func exportToMarkdown(transcription: Transcription, url: URL) throws
+    func exportToMarkdown(
+        transcription: Transcription,
+        url: URL,
+        options: TranscriptExportOptions
+    ) throws
     func exportToJSON(transcription: Transcription, url: URL) throws
     @MainActor func exportToPDF(transcription: Transcription, url: URL) throws
     @MainActor func exportToDocx(transcription: Transcription, url: URL) throws
@@ -47,6 +57,7 @@ public protocol ExportServiceProtocol: Sendable {
         cleanedTranscript: String?,
         engineSegments: [STTSegment]?
     ) -> String
+    func formatDAPT(transcription: Transcription) -> String
     func formatMarkdown(transcription: Transcription) -> String
     func formatForClipboard(transcription: Transcription) -> String
 }
@@ -214,6 +225,77 @@ extension SubtitleExportConfig {
     }
 }
 
+public extension TranscriptExportOptions {
+    /// Options for speaker-attributed renders — the projection-based
+    /// convenience formatters, DAPT, and the CLI. Same as `.default` but with
+    /// speaker labels ON, which is what those surfaces produced upstream.
+    /// The fork's `.default` deliberately keeps speaker labels OFF for GUI
+    /// exports (see `SubtitleExportConfigTests`), so the two are kept apart
+    /// rather than flipping the shared default.
+    static let speakerAttributed = TranscriptExportOptions(includeSpeakerLabels: true)
+}
+
+public extension ExportServiceProtocol {
+    func formatSRT(projection: SpeakerAttributionProjection) -> String {
+        formatSRT(
+            transcription: projection.effectiveTranscription,
+            config: .default,
+            includeSpeakerLabels: true
+        )
+    }
+
+    func formatVTT(projection: SpeakerAttributionProjection) -> String {
+        formatVTT(
+            transcription: projection.effectiveTranscription,
+            config: .default,
+            includeSpeakerLabels: true
+        )
+    }
+
+    func formatDAPT(projection: SpeakerAttributionProjection) -> String {
+        formatDAPT(transcription: projection.effectiveTranscription)
+    }
+
+    func formatMarkdown(projection: SpeakerAttributionProjection) -> String {
+        formatMarkdown(transcription: projection.effectiveTranscription)
+    }
+
+    func formatForClipboard(projection: SpeakerAttributionProjection) -> String {
+        formatForClipboard(transcription: projection.effectiveTranscription)
+    }
+
+    /// Compatibility fallback so existing protocol conformers automatically
+    /// gain the additive DAPT export surface.
+    func formatDAPT(transcription: Transcription) -> String {
+        DAPTDocumentRenderer.render(transcription: transcription)
+    }
+
+    /// Compatibility fallback so existing protocol conformers automatically
+    /// gain the additive DAPT export surface.
+    func exportToDAPT(transcription: Transcription, url: URL) throws {
+        try formatDAPT(transcription: transcription)
+            .write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Compatibility fallback for conformers that only support the original export surface.
+    func exportToTxt(
+        transcription: Transcription,
+        url: URL,
+        options: TranscriptExportOptions
+    ) throws {
+        try exportToTxt(transcription: transcription, url: url)
+    }
+
+    /// Compatibility fallback for conformers that only support the original export surface.
+    func exportToMarkdown(
+        transcription: Transcription,
+        url: URL,
+        options: TranscriptExportOptions
+    ) throws {
+        try exportToMarkdown(transcription: transcription, url: url)
+    }
+}
+
 public struct TranscriptExportOptions: Sendable, Equatable {
     public var includeTimestamps: Bool
     public var includeSpeakerLabels: Bool
@@ -233,6 +315,21 @@ public struct TranscriptExportOptions: Sendable, Equatable {
     }
 
     public static let `default` = TranscriptExportOptions()
+
+    /// Returns a copy with unavailable options forced off, so an export can never
+    /// claim to include timing or speaker labels that the transcript lacks. The
+    /// export UI and the export itself resolve through this single helper, so the
+    /// checkbox state and the written file can never disagree. `includeMetadata`
+    /// has no data dependency and is never forced off here.
+    public func resolved(
+        canIncludeTimestamps: Bool,
+        canIncludeSpeakerLabels: Bool
+    ) -> TranscriptExportOptions {
+        var resolved = self
+        if !canIncludeTimestamps { resolved.includeTimestamps = false }
+        if !canIncludeSpeakerLabels { resolved.includeSpeakerLabels = false }
+        return resolved
+    }
 }
 
 // MARK: - Codable (explicit to prevent RawRepresentable infinite recursion)
@@ -301,10 +398,30 @@ extension TranscriptExportOptions {
 }
 
 /// Handles exporting transcriptions to files and clipboard.
-/// @MainActor because PDF/DOCX paths use NSTextStorage/NSLayoutManager (AppKit, not thread-safe).
-@MainActor
+/// PDF/DOCX paths stay on MainActor because they use NSTextStorage/NSLayoutManager
+/// (AppKit, not thread-safe). Text, subtitle, and JSON exports are safe off-main.
 public final class ExportService: ExportServiceProtocol, Sendable {
     public init() {}
+
+    public func formatMarkdown(
+        projection: SpeakerAttributionProjection,
+        options: TranscriptExportOptions
+    ) -> String {
+        formatMarkdown(
+            transcription: projection.effectiveTranscription,
+            options: options
+        )
+    }
+
+    public func formatPlainText(
+        projection: SpeakerAttributionProjection,
+        options: TranscriptExportOptions = .speakerAttributed
+    ) -> String {
+        formatPlainText(
+            transcription: projection.effectiveTranscription,
+            options: options
+        )
+    }
 
     private func preferredText(transcription: Transcription) -> String {
         transcription.cleanTranscript ?? transcription.rawTranscript ?? ""
@@ -399,7 +516,7 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             onRefinementProgress: onRefinementProgress,
             onExportProgress: onExportProgress,
             cleanedTranscript: transcription.cleanTranscript ?? transcription.rawTranscript,
-            engineSegments: transcription.transcriptSegments
+            engineSegments: transcription.engineSegments
         )
         try text.write(to: url, atomically: true, encoding: .utf8)
     }
@@ -436,16 +553,30 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             onRefinementProgress: onRefinementProgress,
             onExportProgress: onExportProgress,
             cleanedTranscript: transcription.cleanTranscript ?? transcription.rawTranscript,
-            engineSegments: transcription.transcriptSegments
+            engineSegments: transcription.engineSegments
         )
         try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Export a W3C DAPT original-transcript document.
+    public func exportToDAPT(transcription: Transcription, url: URL) throws {
+        try formatDAPT(transcription: transcription).write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Format a transcription as a W3C DAPT original-transcript document.
+    public func formatDAPT(transcription: Transcription) -> String {
+        DAPTDocumentRenderer.render(transcription: transcription)
     }
 
     /// Format a transcription as SRT, falling back to one full-transcript cue.
     public func formatSRT(
         transcription: Transcription,
         config: SubtitleExportConfig = .default,
-        includeSpeakerLabels: Bool = false
+        // Upstream's no-argument convenience renders speaker labels; the fork's
+        // GUI always passes this explicitly from `TranscriptExportOptions`
+        // (whose own default keeps labels OFF), so only the bare convenience
+        // callers — CLI, projection parity — see this default.
+        includeSpeakerLabels: Bool = true
     ) -> String {
         if let text = editedTranscriptText(transcription: transcription) {
             let duration = transcription.durationMs ?? 0
@@ -463,7 +594,7 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             config: config,
             includeSpeakerLabels: includeSpeakerLabels,
             cleanedTranscript: transcription.cleanTranscript ?? transcription.rawTranscript,
-            engineSegments: transcription.transcriptSegments
+            engineSegments: transcription.engineSegments
         )
     }
 
@@ -471,7 +602,11 @@ public final class ExportService: ExportServiceProtocol, Sendable {
     public func formatVTT(
         transcription: Transcription,
         config: SubtitleExportConfig = .default,
-        includeSpeakerLabels: Bool = false
+        // Upstream's no-argument convenience renders speaker labels; the fork's
+        // GUI always passes this explicitly from `TranscriptExportOptions`
+        // (whose own default keeps labels OFF), so only the bare convenience
+        // callers — CLI, projection parity — see this default.
+        includeSpeakerLabels: Bool = true
     ) -> String {
         if let text = editedTranscriptText(transcription: transcription) {
             let duration = transcription.durationMs ?? 0
@@ -489,7 +624,7 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             config: config,
             includeSpeakerLabels: includeSpeakerLabels,
             cleanedTranscript: transcription.cleanTranscript ?? transcription.rawTranscript,
-            engineSegments: transcription.transcriptSegments
+            engineSegments: transcription.engineSegments
         )
     }
 
@@ -499,7 +634,7 @@ public final class ExportService: ExportServiceProtocol, Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(transcription)
-        try data.write(to: url)
+        try data.write(to: url, options: .atomic)
     }
 
     /// Export transcription as PDF file using Core Graphics PDF context.
@@ -555,6 +690,7 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             // Save graphics state, set up coordinate system for this page.
             // We flip the CGContext so y goes top-down (needed for pagination math)
             // and tell NSGraphicsContext it's flipped so AppKit draws glyphs upright.
+            context.saveGState()
             let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = nsContext
@@ -568,6 +704,7 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             layoutManager.drawGlyphs(forGlyphRange: glyphRange, at: drawOrigin)
 
             NSGraphicsContext.restoreGraphicsState()
+            context.restoreGState()
             context.endPage()
 
             yOffset += textHeight
@@ -583,7 +720,7 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             from: range,
             documentAttributes: [.documentType: NSAttributedString.DocumentType.officeOpenXML]
         )
-        try data.write(to: url)
+        try data.write(to: url, options: .atomic)
     }
 
     /// Format word timestamps as SRT subtitle string
@@ -1340,7 +1477,7 @@ public final class ExportService: ExportServiceProtocol, Sendable {
 
     /// Format transcription as Markdown string
     public func formatMarkdown(transcription: Transcription) -> String {
-        formatMarkdown(transcription: transcription, options: .default)
+        formatMarkdown(transcription: transcription, options: .speakerAttributed)
     }
 
     public func formatMarkdown(transcription: Transcription, options: TranscriptExportOptions) -> String {
@@ -1378,41 +1515,35 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             lines.append(text)
             lines.append("")
         } else if let timestamps = transcription.wordTimestamps, !timestamps.isEmpty {
-            let cues = buildSubtitleCues(
-                from: timestamps,
-                cleanedTranscript: transcription.cleanTranscript ?? transcription.rawTranscript,
-                engineSegments: transcription.transcriptSegments
-            )
+            let paragraphs = TranscriptParagraphBuilder.build(from: timestamps)
             if options.includeTimestamps || options.includeSpeakerLabels {
-                if options.includeTimestamps {
-                    var lastSpeakerId: String? = nil
-                    for cue in cues {
-                        if options.includeSpeakerLabels,
-                           let label = speakerLabel(for: cue.speakerId, in: transcription.speakers),
-                           cue.speakerId != lastSpeakerId {
-                            lines.append("**\(label)**")
-                            lines.append("")
-                        }
-                        lastSpeakerId = cue.speakerId
+                var lastSpeakerId: String? = nil
+                for (index, paragraph) in paragraphs.enumerated() {
+                    if options.includeSpeakerLabels,
+                       let label = paragraphSpeakerLabel(for: paragraph.speakerId, in: transcription.speakers),
+                       index == 0 || paragraph.speakerId != lastSpeakerId {
+                        lines.append("**\(label)**")
+                        lines.append("")
+                    }
+                    lastSpeakerId = paragraph.speakerId
 
-                        let ts = formatReadableTimestamp(ms: cue.startMs)
-                        lines.append("**[\(ts)]** \(cue.text)")
-                        lines.append("")
-                    }
-                } else {
-                    for paragraph in speakerParagraphs(from: cues, speakers: transcription.speakers) {
-                        if let label = paragraph.label {
-                            lines.append("**\(label)**")
-                            lines.append("")
-                        }
+                    if options.includeTimestamps {
+                        let timestamp = formatReadableTimestamp(ms: paragraph.startMs)
+                        lines.append("**[\(timestamp)]** \(paragraph.text)")
+                    } else {
                         lines.append(paragraph.text)
-                        lines.append("")
                     }
+                    lines.append("")
                 }
-            } else {
-                let text = preferredText(transcription: transcription)
-                lines.append(text.isEmpty ? cues.map(\.text).joined(separator: " ") : text)
+            } else if let cleanTranscript = transcription.cleanTranscript,
+                      !cleanTranscript.isEmpty {
+                lines.append(cleanTranscript)
                 lines.append("")
+            } else {
+                for paragraph in paragraphs {
+                    lines.append(paragraph.text)
+                    lines.append("")
+                }
             }
         } else {
             let text = preferredText(transcription: transcription)
@@ -1432,12 +1563,7 @@ public final class ExportService: ExportServiceProtocol, Sendable {
 
     // MARK: - Subtitle Cue Building
 
-    public struct SubtitleCue: Sendable {
-        public let startMs: Int
-        public let endMs: Int
-        public let text: String
-        public let speakerId: String?
-    }
+    public typealias SubtitleCue = TranscriptCue
 
     /// Internal mutable cue used during cue building.
     private struct MutableCue {
@@ -1904,6 +2030,16 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             cues = mergeOrphanedCues(cues, maxChars: config.maxCharsPerLine, maxLines: config.maxLinesPerCue, gapThresholdMs: config.gapThresholdMs)
         }
 
+        // When the caller asked to break cues on speaker change, no finished cue
+        // may span two speakers. The merge passes above optimise for reading
+        // comfort and are speaker-blind, so they can glue two speakers back into
+        // one cue, which then renders under a single — wrong — name. Split any
+        // mixed cue apart again on the speaker boundary. Only runs when speaker
+        // labels were requested, so the default (label-free) output is untouched.
+        if breakOnSpeakerChange {
+            cues = splitCuesOnSpeakerChange(cues)
+        }
+
         // Post-process: extend cue endMs by endTimeBufferMs to cover acoustic decay.
         // Runs before gap enforcement so any overlaps get cleaned up.
         if config.endTimeBufferMs > 0 {
@@ -1930,6 +2066,53 @@ public final class ExportService: ExportServiceProtocol, Sendable {
                 speakerId: cue.speakerId
             )
         }
+    }
+
+    /// Splits any cue whose words belong to more than one speaker into one cue
+    /// per consecutive same-speaker run. Cues whose text was forced from the
+    /// cleaned transcript are left alone — their text no longer maps 1:1 onto
+    /// the word list, so a split could not reproduce it faithfully.
+    private func splitCuesOnSpeakerChange(_ cues: [MutableCue]) -> [MutableCue] {
+        var result: [MutableCue] = []
+        for cue in cues {
+            guard cue.forcedText == nil,
+                  cue.wordTimestamps.count == cue.words.count,
+                  cue.wordTimestamps.count > 1
+            else {
+                result.append(cue)
+                continue
+            }
+
+            func makeCue(_ range: Range<Int>) -> MutableCue? {
+                let stamps = Array(cue.wordTimestamps[range])
+                guard let first = stamps.first, let last = stamps.last else { return nil }
+                return MutableCue(
+                    startMs: first.startMs,
+                    endMs: last.endMs,
+                    words: Array(cue.words[range]),
+                    wordTimestamps: stamps,
+                    speakerId: first.speakerId
+                )
+            }
+
+            var runs: [MutableCue] = []
+            var runStart = 0
+            for index in 1..<cue.wordTimestamps.count
+            where cue.wordTimestamps[index].speakerId != cue.wordTimestamps[runStart].speakerId {
+                if let piece = makeCue(runStart..<index) { runs.append(piece) }
+                runStart = index
+            }
+
+            if runStart == 0 {
+                // Single speaker: keep the cue exactly as the pipeline built it,
+                // including any timings the earlier passes adjusted.
+                result.append(cue)
+            } else {
+                if let piece = makeCue(runStart..<cue.wordTimestamps.count) { runs.append(piece) }
+                result.append(contentsOf: runs)
+            }
+        }
+        return result
     }
 
     /// Detect if a word starts a new sentence (capitalized, or short pronouns).
@@ -3541,6 +3724,11 @@ public final class ExportService: ExportServiceProtocol, Sendable {
         return speakers.first(where: { $0.id == speakerId })?.label ?? speakerId
     }
 
+    private func paragraphSpeakerLabel(for speakerId: String?, in speakers: [SpeakerInfo]?) -> String? {
+        guard let speakers, !speakers.isEmpty else { return nil }
+        return speakerId == nil ? "Unassigned" : speakerLabel(for: speakerId, in: speakers)
+    }
+
     // MARK: - Timestamp Formatting
 
     /// SRT format: 00:01:23,456
@@ -3591,41 +3779,37 @@ public final class ExportService: ExportServiceProtocol, Sendable {
         if let text = editedTranscriptText(transcription: transcription) {
             lines.append(text)
         } else if let timestamps = transcription.wordTimestamps, !timestamps.isEmpty {
-            let cues = buildSubtitleCues(
-                from: timestamps,
-                cleanedTranscript: transcription.cleanTranscript ?? transcription.rawTranscript,
-                engineSegments: transcription.transcriptSegments
-            )
+            let paragraphs = TranscriptParagraphBuilder.build(from: timestamps)
             if options.includeTimestamps || options.includeSpeakerLabels {
-                if options.includeTimestamps {
-                    var lastSpeakerId: String? = nil
-                    for cue in cues {
-                        if options.includeSpeakerLabels,
-                           let label = speakerLabel(for: cue.speakerId, in: transcription.speakers),
-                           cue.speakerId != lastSpeakerId {
-                            if !lines.isEmpty, lines.last != "" {
-                                lines.append("")
-                            }
-                            lines.append("\(label):")
-                        }
-                        lastSpeakerId = cue.speakerId
-
-                        lines.append("[\(formatReadableTimestamp(ms: cue.startMs))] \(cue.text)")
+                var lastSpeakerId: String? = nil
+                for (index, paragraph) in paragraphs.enumerated() {
+                    if !lines.isEmpty, lines.last != "" {
+                        lines.append("")
                     }
-                } else {
-                    for paragraph in speakerParagraphs(from: cues, speakers: transcription.speakers) {
-                        if let label = paragraph.label {
-                            if !lines.isEmpty, lines.last != "" {
-                                lines.append("")
-                            }
-                            lines.append("\(label):")
-                        }
+
+                    if options.includeSpeakerLabels,
+                       let label = paragraphSpeakerLabel(for: paragraph.speakerId, in: transcription.speakers),
+                       index == 0 || paragraph.speakerId != lastSpeakerId {
+                        lines.append("\(label):")
+                    }
+                    lastSpeakerId = paragraph.speakerId
+
+                    if options.includeTimestamps {
+                        lines.append("[\(formatReadableTimestamp(ms: paragraph.startMs))] \(paragraph.text)")
+                    } else {
                         lines.append(paragraph.text)
                     }
                 }
+            } else if let cleanTranscript = transcription.cleanTranscript,
+                      !cleanTranscript.isEmpty {
+                lines.append(cleanTranscript)
             } else {
-                let text = preferredText(transcription: transcription)
-                lines.append(text.isEmpty ? cues.map(\.text).joined(separator: " ") : text)
+                for paragraph in paragraphs {
+                    if !lines.isEmpty, lines.last != "" {
+                        lines.append("")
+                    }
+                    lines.append(paragraph.text)
+                }
             }
         } else {
             let text = preferredText(transcription: transcription)
@@ -3637,33 +3821,38 @@ public final class ExportService: ExportServiceProtocol, Sendable {
         return lines.joined(separator: "\n")
     }
 
-    private struct SpeakerParagraph {
-        var speakerId: String?
-        var label: String?
-        var text: String
-    }
-
-    private func speakerParagraphs(from cues: [SubtitleCue], speakers: [SpeakerInfo]?) -> [SpeakerParagraph] {
-        var paragraphs: [SpeakerParagraph] = []
-        for cue in cues {
-            let label = speakerLabel(for: cue.speakerId, in: speakers)
-            if let last = paragraphs.indices.last,
-               paragraphs[last].speakerId == cue.speakerId {
-                paragraphs[last].text += " \(cue.text)"
-            } else {
-                paragraphs.append(SpeakerParagraph(
-                    speakerId: cue.speakerId,
-                    label: label,
-                    text: cue.text
-                ))
-            }
-        }
-        return paragraphs
-    }
-
     // MARK: - Rich Text (AppKit)
 
-    @MainActor private func buildRichTranscript(transcription: Transcription) throws -> NSAttributedString {
+    /// Concrete text colors for exported PDF/DOCX documents.
+    ///
+    /// Exported files are standalone artifacts rendered on a white page, so they
+    /// must not follow the app's live appearance. Dynamic label colors
+    /// (`NSColor.labelColor` and friends) resolve to near-white in Dark Mode,
+    /// which bakes invisible text into the exported document. Resolve the
+    /// semantic colors against a fixed light (aqua) appearance once so exports
+    /// stay legible regardless of the running app's theme.
+    private enum ExportTextColor {
+        @MainActor static let primary = resolveAgainstLightAppearance(.labelColor)
+        @MainActor static let secondary = resolveAgainstLightAppearance(.secondaryLabelColor)
+        @MainActor static let tertiary = resolveAgainstLightAppearance(.tertiaryLabelColor)
+
+        @MainActor private static func resolveAgainstLightAppearance(_ color: NSColor) -> NSColor {
+            // `.aqua` is effectively always available. If it somehow isn't, fall
+            // back to a fixed dark color rather than resolving the dynamic color
+            // against a possibly-dark ambient appearance (which would defeat the
+            // whole point and could bake near-white text into the export).
+            guard let light = NSAppearance(named: .aqua) else {
+                return .black
+            }
+            var resolved = NSColor.black
+            light.performAsCurrentDrawingAppearance {
+                resolved = color.usingColorSpace(.sRGB) ?? .black
+            }
+            return resolved
+        }
+    }
+
+    @MainActor func buildRichTranscript(transcription: Transcription) throws -> NSAttributedString {
         let result = NSMutableAttributedString()
 
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
@@ -3671,8 +3860,18 @@ public final class ExportService: ExportServiceProtocol, Sendable {
         let bodyFont = NSFont.systemFont(ofSize: 12)
         let timestampFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
 
+        // Every run gets an explicit, appearance-independent color: an unset
+        // foreground color would fall back to the dynamic default text color and
+        // render near-white (invisible) on the white page in Dark Mode.
+        let primaryColor = ExportTextColor.primary
+        let secondaryColor = ExportTextColor.secondary
+        let tertiaryColor = ExportTextColor.tertiary
+
         // Title
-        result.append(NSAttributedString(string: transcription.fileName + "\n\n", attributes: [.font: titleFont]))
+        result.append(
+            NSAttributedString(
+                string: transcription.fileName + "\n\n",
+                attributes: [.font: titleFont, .foregroundColor: primaryColor]))
 
         // Metadata
         var metaLines: [String] = []
@@ -3689,40 +3888,58 @@ public final class ExportService: ExportServiceProtocol, Sendable {
         
         if !metaLines.isEmpty {
             let metaText = metaLines.joined(separator: "\n") + "\n\n"
-            result.append(NSAttributedString(string: metaText, attributes: [.font: headerFont, .foregroundColor: NSColor.secondaryLabelColor]))
+            result.append(
+                NSAttributedString(
+                    string: metaText,
+                    attributes: [.font: headerFont, .foregroundColor: secondaryColor]))
         }
 
         // Horizontal line equivalent
-        result.append(NSAttributedString(string: "----------------------------------------------------------\n\n", attributes: [.foregroundColor: NSColor.tertiaryLabelColor]))
+        result.append(
+            NSAttributedString(
+                string: "----------------------------------------------------------\n\n",
+                attributes: [.foregroundColor: tertiaryColor]))
 
         // Content
         if let text = editedTranscriptText(transcription: transcription) {
-            result.append(NSAttributedString(string: text, attributes: [.font: bodyFont]))
+            result.append(
+                NSAttributedString(
+                    string: text,
+                    attributes: [.font: bodyFont, .foregroundColor: primaryColor]))
         } else if let timestamps = transcription.wordTimestamps, !timestamps.isEmpty {
             let cues = buildSubtitleCues(
                 from: timestamps,
                 cleanedTranscript: transcription.cleanTranscript ?? transcription.rawTranscript,
-                engineSegments: transcription.transcriptSegments
+                engineSegments: transcription.engineSegments
             )
             var lastSpeakerId: String? = nil
             for cue in cues {
                 if let label = speakerLabel(for: cue.speakerId, in: transcription.speakers),
                    cue.speakerId != lastSpeakerId {
-                    let speakerAttr = NSAttributedString(string: "\(label)\n", attributes: [.font: headerFont, .foregroundColor: NSColor.labelColor])
+                    let speakerAttr = NSAttributedString(
+                        string: "\(label)\n",
+                        attributes: [.font: headerFont, .foregroundColor: primaryColor])
                     result.append(speakerAttr)
                 }
                 lastSpeakerId = cue.speakerId
 
                 let ts = "[" + formatReadableTimestamp(ms: cue.startMs) + "] "
-                let attrTs = NSAttributedString(string: ts, attributes: [.font: timestampFont, .foregroundColor: NSColor.secondaryLabelColor])
+                let attrTs = NSAttributedString(
+                    string: ts,
+                    attributes: [.font: timestampFont, .foregroundColor: secondaryColor])
                 result.append(attrTs)
 
-                let attrText = NSAttributedString(string: cue.text + "\n\n", attributes: [.font: bodyFont])
+                let attrText = NSAttributedString(
+                    string: cue.text + "\n\n",
+                    attributes: [.font: bodyFont, .foregroundColor: primaryColor])
                 result.append(attrText)
             }
         } else {
             let text = preferredText(transcription: transcription)
-            result.append(NSAttributedString(string: text, attributes: [.font: bodyFont]))
+            result.append(
+                NSAttributedString(
+                    string: text,
+                    attributes: [.font: bodyFont, .foregroundColor: primaryColor]))
         }
 
         return result

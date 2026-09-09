@@ -1,8 +1,8 @@
 import ArgumentParser
+import Darwin
 import Foundation
 import MacParakeetCore
 
-let macParakeetAppDefaultsSuiteName = "com.macparakeet.MacParakeet"
 let cliValidationMisuseExitCode = ExitCode(2)
 
 struct CLIJSONEnvelopeExit: Error {
@@ -10,8 +10,29 @@ struct CLIJSONEnvelopeExit: Error {
     let originalError: Error
 }
 
-func macParakeetAppDefaults() -> UserDefaults {
-    UserDefaults(suiteName: macParakeetAppDefaultsSuiteName) ?? .standard
+/// CLI-local alias for `AppPaths.appDefaults(bundleIdentifier:)`, kept so the
+/// existing call sites across `Sources/CLI/Commands/` don't need to name
+/// the `AppPaths` type at every use.
+func macParakeetAppDefaults(
+    bundleIdentifier: String? = Bundle.main.bundleIdentifier
+) -> UserDefaults {
+    AppPaths.appDefaults(bundleIdentifier: bundleIdentifier)
+}
+
+func validateCLISpeechEngineMemoryRequirement(
+    for engine: SpeechEnginePreference,
+    physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+) throws {
+    guard let status = SpeechEngineCapabilityRegistry.memoryRequirementStatus(
+        for: engine,
+        physicalMemoryBytes: physicalMemoryBytes
+    ), !status.isSatisfied else {
+        return
+    }
+    throw ValidationError(
+        status.insufficientMemoryMessage
+            ?? "\(status.modelName) cannot run on this Mac because it does not meet the memory requirement."
+    )
 }
 
 func expandTilde(_ path: String) -> String {
@@ -29,6 +50,17 @@ func resolvedDatabasePath(_ database: String?) -> String {
         return resolved
     }
     return AppPaths.databasePath
+}
+
+func makeDatabaseManager(database: String?) throws -> DatabaseManager {
+    try AppPaths.ensureDirectories()
+    return try DatabaseManager(path: resolvedDatabasePath(database))
+}
+
+func validateJSONEnvelopeFlags(json: Bool, envelope: Bool) throws {
+    if json && envelope {
+        throw ValidationError("--json and --envelope are mutually exclusive.")
+    }
 }
 
 // MARK: - Lookup Errors
@@ -70,7 +102,7 @@ private func isUUIDPrefixCandidate(_ value: String) -> Bool {
     }
 }
 
-private func uuidPrefixSearchKey(_ value: String) -> String? {
+func uuidPrefixSearchKey(_ value: String) -> String? {
     let lowered = value.lowercased()
     guard lowered.count >= minimumUUIDPrefixLength,
           isUUIDPrefixCandidate(lowered)
@@ -80,7 +112,7 @@ private func uuidPrefixSearchKey(_ value: String) -> String? {
     return lowered
 }
 
-private func shortUUIDPrefixErrorIfApplicable(_ value: String) -> CLILookupError? {
+func shortUUIDPrefixErrorIfApplicable(_ value: String) -> CLILookupError? {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty,
           trimmed.count < minimumUUIDPrefixLength,
@@ -185,17 +217,24 @@ func findDictation(id: String, repo: DictationRepository) throws -> Dictation {
 /// Resolves a prompt by exact UUID, UUID prefix, or case-insensitive name.
 /// Names are checked only when no UUID-prefix match was found, so an ambiguous
 /// prefix surfaces as such instead of silently falling through to a name match.
-func findPrompt(idOrName: String, repo: PromptRepository) throws -> Prompt {
+func findPrompt(
+    idOrName: String,
+    repo: PromptRepository,
+    category: Prompt.Category? = .result,
+    categories: [Prompt.Category]? = nil
+) throws -> Prompt {
     let trimmed = idOrName.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { throw CLILookupError.emptyID }
 
     if let uuid = UUID(uuidString: trimmed),
        let prompt = try repo.fetch(id: uuid),
-       prompt.category == .result {
+       categories?.contains(prompt.category) ?? (category == nil || prompt.category == category) {
         return prompt
     }
 
-    let all = try repo.fetchAll().filter { $0.category == .result }
+    let all = try repo.fetchAll().filter {
+        categories?.contains($0.category) ?? (category == nil || $0.category == category)
+    }
     let lowered = trimmed.lowercased()
 
     if let prefix = uuidPrefixSearchKey(trimmed) {
@@ -241,6 +280,63 @@ func printErr(_ s: String) {
     try? FileHandle.standardError.write(contentsOf: Data((s + "\n").utf8))
 }
 
+/// Some native model runtimes write diagnostics directly to the process stdout
+/// file descriptor, bypassing Swift logging. Keep those diagnostics off the
+/// CLI payload channel while long-running model work executes.
+///
+/// - Important: This helper redirects process-wide `STDOUT_FILENO` and is not
+///   thread-safe. Only wrap work that does not intentionally write stdout
+///   payloads; emit machine-readable CLI output after this helper returns.
+func withStandardOutputRedirectedToStandardError<T>(
+    _ operation: () async throws -> T
+) async throws -> T {
+    fflush(stdout)
+    let originalStdout = dup(STDOUT_FILENO)
+    guard originalStdout >= 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    let fdFlags = fcntl(originalStdout, F_GETFD)
+    guard fdFlags >= 0, fcntl(originalStdout, F_SETFD, fdFlags | FD_CLOEXEC) >= 0 else {
+        let cloexecErrno = errno
+        close(originalStdout)
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(cloexecErrno))
+    }
+
+    var restored = false
+    func restoreStdout() throws {
+        guard !restored else { return }
+        restored = true
+        fflush(stdout)
+        defer { close(originalStdout) }
+        guard dup2(originalStdout, STDOUT_FILENO) >= 0 else {
+            let restoreErrno = errno
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(restoreErrno))
+        }
+    }
+
+    guard dup2(STDERR_FILENO, STDOUT_FILENO) >= 0 else {
+        let redirectErrno = errno
+        close(originalStdout)
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(redirectErrno))
+    }
+
+    do {
+        let result = try await operation()
+        try restoreStdout()
+        return result
+    } catch {
+        // Prefer the operation error if restoration also fails; callers need
+        // the underlying command failure.
+        do {
+            try restoreStdout()
+        } catch let restoreError {
+            let message = "Warning: stdout restoration failed: \(restoreError.localizedDescription)"
+            printErr(message)
+        }
+        throw error
+    }
+}
+
 // MARK: - Failure envelope (--json contract)
 
 /// Public failure envelope emitted to stdout when a `--json` command fails.
@@ -254,6 +350,56 @@ public struct CLIErrorEnvelope: Encodable {
     public let ok: Bool   // always false
     public let error: String
     public let errorType: String
+    public let fix: String?
+    public let meta: CLIEnvelopeMeta?
+
+    public init(
+        ok: Bool,
+        error: String,
+        errorType: String,
+        fix: String? = nil,
+        meta: CLIEnvelopeMeta? = nil
+    ) {
+        self.ok = ok
+        self.error = error
+        self.errorType = errorType
+        self.fix = fix
+        self.meta = meta
+    }
+}
+
+public struct CLIEnvelopeMeta: Encodable {
+    public let schemaVersion: Int
+    public let generatedAt: Date
+    public let warnings: [String]
+
+    public init(
+        schemaVersion: Int = 1,
+        generatedAt: Date = Date(),
+        warnings: [String] = []
+    ) {
+        self.schemaVersion = schemaVersion
+        self.generatedAt = generatedAt
+        self.warnings = warnings
+    }
+}
+
+public struct CLISuccessEnvelope<T: Encodable>: Encodable {
+    public let ok: Bool
+    public let command: String
+    public let data: T
+    public let meta: CLIEnvelopeMeta
+
+    public init(
+        command: String,
+        data: T,
+        meta: CLIEnvelopeMeta = CLIEnvelopeMeta()
+    ) {
+        self.ok = true
+        self.command = command
+        self.data = data
+        self.meta = meta
+    }
 }
 
 /// Stable, low-cardinality string keys for the `errorType` field. Picking
@@ -284,13 +430,22 @@ enum CLIErrorType {
             case .connectionFailed: return connection
             case .authenticationFailed: return auth
             case .rateLimited: return rateLimit
-            case .modelNotFound: return model
+            case .modelNotFound, .invalidModelOverride: return model
             case .contextTooLong: return context
             case .formatterTruncated, .formatterEmptyResponse: return truncated
             case .providerError: return provider
             case .streamingError: return streaming
             case .invalidResponse: return invalidResponse
             case .cliError: return runtime
+            }
+        }
+        if error is MeetingClassificationRepositoryError { return validation }
+        if let collection = error as? PromptCollectionRepositoryError {
+            switch collection {
+            case .collectionNotFound:
+                return lookup
+            case .emptyName, .duplicateName, .invalidOrder:
+                return validation
             }
         }
         if error is CLILookupError { return lookup }
@@ -329,6 +484,16 @@ enum CLIErrorType {
                 return validation
             }
         }
+        if let retranscribe = error as? CLIRetranscribeError {
+            switch retranscribe {
+            case .noRetainedAudio, .missingAudio:
+                return inputMissing
+            case .ambiguousRecord, .noMatch:
+                return lookup
+            case .kindMismatch, .dictationDoesNotSupportSpeakerOptions:
+                return validation
+            }
+        }
         // ArgumentParser surfaces `validate()` failures as `ValidationError`.
         // The taxonomy has carried the `validation` value since 1.2.0; map
         // ValidationError to it so downstream agents can branch on user
@@ -346,8 +511,58 @@ extension CLIErrorEnvelope {
         } else {
             message = String(describing: error)
         }
-        self.init(ok: false, error: message, errorType: CLIErrorType.key(for: error))
+        self.init(
+            ok: false,
+            error: message,
+            errorType: CLIErrorType.key(for: error),
+            fix: CLIErrorFix.message(for: error),
+            meta: CLIEnvelopeMeta()
+        )
     }
+}
+
+enum CLIErrorFix {
+    static func message(for error: Error) -> String? {
+        if error is CLILookupError {
+            return "List nearby records with the matching command, then retry with a full UUID or longer UUID prefix."
+        }
+        if let retranscribe = error as? CLIRetranscribeError {
+            switch retranscribe {
+            case .noRetainedAudio, .missingAudio:
+                return "Retained source audio is required. Recreate or re-import the audio, then retry."
+            case .ambiguousRecord, .noMatch:
+                return "List history records and retry with --kind plus a full UUID or longer UUID prefix."
+            case .kindMismatch:
+                return "Retry with the record kind shown in the error message."
+            case .dictationDoesNotSupportSpeakerOptions:
+                return "Remove speaker-detection flags or choose a saved transcription/meeting."
+            }
+        }
+        if let input = error as? CLIInputError {
+            switch input {
+            case .empty:
+                return "Pass non-empty text through the documented flag or stdin path."
+            case .invalidEncoding:
+                return "Send UTF-8 input."
+            }
+        }
+        if error is ValidationError {
+            return "Run the command with --help and retry with a supported flag combination."
+        }
+        return nil
+    }
+}
+
+func printEnvelope<T: Encodable>(
+    command: String,
+    data: T,
+    warnings: [String] = []
+) throws {
+    try printJSON(CLISuccessEnvelope(
+        command: command,
+        data: data,
+        meta: CLIEnvelopeMeta(warnings: warnings)
+    ))
 }
 
 /// Wrap a `--json`-aware CLI body. On error: when `json` is true, emit a
@@ -397,14 +612,35 @@ private func rethrowWithOptionalJSONEnvelope(_ error: Error, json: Bool) throws 
     guard json else { throw error }
     let envelope = CLIErrorEnvelope(error: error)
     try? printJSON(envelope)
-    if error is ValidationError || error is CLIInputError {
-        throw CLIJSONEnvelopeExit(exitCode: cliValidationMisuseExitCode, originalError: error)
-    }
-    if let transforms = error as? CLITransformsError, transforms.isValidationMisuse {
-        throw CLIJSONEnvelopeExit(exitCode: cliValidationMisuseExitCode, originalError: error)
-    }
-    if let history = error as? CLITransformHistoryError, case .invalidPrefix = history {
+    if isCLIValidationMisuse(error) {
         throw CLIJSONEnvelopeExit(exitCode: cliValidationMisuseExitCode, originalError: error)
     }
     throw CLIJSONEnvelopeExit(exitCode: .failure, originalError: error)
+}
+
+func isCLIValidationMisuse(_ error: Error) -> Bool {
+    if error is ValidationError || error is CLIInputError {
+        return true
+    }
+    if error is MeetingClassificationRepositoryError {
+        return true
+    }
+    if let collection = error as? PromptCollectionRepositoryError {
+        switch collection {
+        case .emptyName, .duplicateName, .invalidOrder:
+            return true
+        case .collectionNotFound:
+            return false
+        }
+    }
+    if let transforms = error as? CLITransformsError, transforms.isValidationMisuse {
+        return true
+    }
+    if let history = error as? CLITransformHistoryError, case .invalidPrefix = history {
+        return true
+    }
+    if let retranscribe = error as? CLIRetranscribeError, retranscribe.isValidationMisuse {
+        return true
+    }
+    return false
 }

@@ -179,7 +179,7 @@ Add diarization model download step after ASR model download:
 
 ```
 Step 1: Permissions (mic, accessibility)
-Step 2: Download ASR models (~6 GB)      ← existing
+Step 2: Download ASR models (~465 MB per selected Parakeet build) ← existing
 Step 3: Download diarization models (~130 MB)  ← new
 Step 4: Verify / warm-up
 ```

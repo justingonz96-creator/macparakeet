@@ -10,7 +10,15 @@ struct FeedbackView: View {
     @State private var hoveredCategory: FeedbackCategory?
     @State private var isDraggingScreenshot = false
     @State private var isCommunityHovered = false
+    @State private var showsDiagnosticLogSample = false
+    @State private var isLogRowHovered = false
     @FocusState private var messageFocused: Bool
+
+    /// Outer inset shared by the editor and the placeholder's vertical axis.
+    private let messageContentInset = DesignSystem.Spacing.sm
+
+    /// NSTextView adds this horizontal line-fragment inset inside TextEditor.
+    private let textEditorLineFragmentPadding: CGFloat = 5
 
     var body: some View {
         ScrollView {
@@ -25,6 +33,7 @@ struct FeedbackView: View {
         .background(DesignSystem.Colors.background)
         .onAppear {
             viewModel.configure(feedbackService: FeedbackService())
+            viewModel.refreshDiagnosticLogStatus()
         }
     }
 
@@ -181,7 +190,7 @@ struct FeedbackView: View {
                         .scrollContentBackground(.hidden)
                         .tint(DesignSystem.Colors.accent)
                         .focused($messageFocused)
-                        .padding(DesignSystem.Spacing.sm)
+                        .padding(messageContentInset)
                         .frame(minHeight: 120)
                         .background(
                             RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
@@ -202,13 +211,14 @@ struct FeedbackView: View {
                         Text(placeholderText)
                             .font(DesignSystem.Typography.body)
                             .foregroundStyle(.tertiary)
-                            .padding(DesignSystem.Spacing.sm + 5)
+                            .padding(.horizontal, messageContentInset + textEditorLineFragmentPadding)
+                            .padding(.vertical, messageContentInset)
                             .allowsHitTesting(false)
                     }
                 }
             }
 
-            // Email + Screenshot — both optional, visually secondary, sharing
+            // Email + screenshots — both optional, visually secondary, sharing
             // the same input material so they read as a pair.
             HStack(alignment: .top, spacing: DesignSystem.Spacing.md) {
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
@@ -223,38 +233,56 @@ struct FeedbackView: View {
                 .frame(maxWidth: .infinity)
 
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                    Text("Screenshot (optional)")
+                    Text("Screenshots (optional)")
                         .font(DesignSystem.Typography.body)
                         .fontWeight(.medium)
 
-                    if let filename = viewModel.screenshotFilename {
-                        screenshotAttachedPill(filename)
-                    } else {
+                    if viewModel.screenshotAttachments.isEmpty {
                         screenshotAttachButton
+                    } else {
+                        VStack(spacing: DesignSystem.Spacing.xs) {
+                            ForEach(viewModel.screenshotAttachments) { attachment in
+                                screenshotAttachedPill(attachment)
+                            }
+                            if viewModel.canAttachMoreScreenshots {
+                                screenshotAttachButton
+                            }
+                        }
                     }
 
-                    Text(viewModel.screenshotFilename != nil
-                         ? "PNG, JPEG, TIFF, or HEIC"
-                         : "or drop an image here")
+                    Text(viewModel.screenshotAttachments.isEmpty
+                         ? "or drop images here"
+                         : "PNG, JPEG, TIFF, or HEIC. Up to 5.")
                         .font(DesignSystem.Typography.caption)
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity)
                 .onDrop(of: [.image], isTargeted: $isDraggingScreenshot) { providers in
-                    guard let provider = providers.first else { return false }
-                    _ = provider.loadFileRepresentation(for: .image) { url, _, error in
-                        guard let url, error == nil else { return }
-                        let tmp = FileManager.default.temporaryDirectory
-                            .appendingPathComponent(url.lastPathComponent)
-                        try? FileManager.default.removeItem(at: tmp)
-                        try? FileManager.default.copyItem(at: url, to: tmp)
-                        Task { @MainActor in
-                            viewModel.handleScreenshotDrop(url: tmp)
+                    guard !providers.isEmpty else { return false }
+                    for provider in providers {
+                        _ = provider.loadFileRepresentation(for: .image) { url, _, error in
+                            guard let url, error == nil else { return }
+                            let tmpDirectory = FileManager.default.temporaryDirectory
+                                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                            let tmp = tmpDirectory.appendingPathComponent(url.lastPathComponent)
+                            do {
+                                try FileManager.default.createDirectory(at: tmpDirectory, withIntermediateDirectories: true)
+                                try FileManager.default.copyItem(at: url, to: tmp)
+                            } catch {
+                                try? FileManager.default.removeItem(at: tmpDirectory)
+                                return
+                            }
+                            Task { @MainActor in
+                                defer { try? FileManager.default.removeItem(at: tmpDirectory) }
+                                viewModel.handleScreenshotDrop(url: tmp)
+                            }
                         }
                     }
                     return true
                 }
             }
+
+            diagnosticLogOption
 
             // System info disclosure
             DisclosureGroup("System Info", isExpanded: $viewModel.showSystemInfo) {
@@ -293,6 +321,216 @@ struct FeedbackView: View {
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.top, DesignSystem.Spacing.xs)
+        }
+    }
+
+    private var diagnosticLogOption: some View {
+        let isAvailable = viewModel.diagnosticLogIsAvailable
+
+        return VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            HStack(alignment: .top, spacing: DesignSystem.Spacing.sm) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(viewModel.includeDiagnosticLog ? DesignSystem.Colors.accent : .secondary)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(
+                                viewModel.includeDiagnosticLog
+                                    ? DesignSystem.Colors.accent.opacity(0.12)
+                                    : DesignSystem.Colors.surfaceElevated
+                            )
+                    )
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Attach capture diagnostics")
+                        .font(DesignSystem.Typography.body.weight(.semibold))
+
+                    Text(diagnosticLogDisplayPath)
+                        .font(DesignSystem.Typography.micro.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule()
+                                .fill(DesignSystem.Colors.surfaceElevated)
+                        )
+                        .help(viewModel.diagnosticLogURL.path)
+
+                    Text(diagnosticLogScopeDescription)
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("It contains no audio or transcript text. You can also give this log to Claude Code, Codex, or another coding agent for debugging.")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Button {
+                        guard isAvailable else { return }
+                        NSWorkspace.shared.activateFileViewerSelecting([viewModel.diagnosticLogURL])
+                    } label: {
+                        HStack(spacing: DesignSystem.Spacing.xs) {
+                            Image(systemName: isAvailable ? "checkmark.circle.fill" : "exclamationmark.circle")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(isAvailable ? DesignSystem.Colors.successGreen : DesignSystem.Colors.warningAmber)
+                            Text(viewModel.diagnosticLogAvailabilityDescription)
+                                .font(DesignSystem.Typography.micro)
+                                .foregroundStyle(isAvailable && isLogRowHovered ? DesignSystem.Colors.accent : .secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            if isAvailable {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(DesignSystem.Colors.accent)
+                                    .opacity(isLogRowHovered ? 1 : 0)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!isAvailable)
+                    .help(isAvailable ? "Reveal \(viewModel.diagnosticLogFilename) in Finder" : "")
+                    .accessibilityLabel(isAvailable ? "Reveal \(viewModel.diagnosticLogFilename) in Finder" : viewModel.diagnosticLogAvailabilityDescription)
+                    .onHover { hovering in
+                        guard isAvailable else { return }
+                        withAnimation(DesignSystem.Animation.hoverTransition) {
+                            isLogRowHovered = hovering
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+
+                Spacer(minLength: DesignSystem.Spacing.sm)
+
+                Toggle("", isOn: $viewModel.includeDiagnosticLog)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .tint(DesignSystem.Colors.accent)
+                    .disabled(!isAvailable)
+                    .accessibilityLabel("Attach capture diagnostics")
+                    .accessibilityHint("Includes the dictation audio diagnostics log with this feedback report")
+            }
+
+            if isAvailable {
+                if viewModel.includeDiagnosticLog {
+                    diagnosticLogScopeToggle
+                }
+                diagnosticLogSample
+            }
+        }
+        .padding(DesignSystem.Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
+                .fill(DesignSystem.Colors.surfaceElevated.opacity(viewModel.includeDiagnosticLog ? 0.95 : 0.65))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
+                .strokeBorder(
+                    viewModel.includeDiagnosticLog
+                        ? DesignSystem.Colors.accent.opacity(0.45)
+                        : DesignSystem.Colors.border.opacity(0.7),
+                    lineWidth: viewModel.includeDiagnosticLog ? 1 : 0.5
+                )
+        )
+    }
+
+    /// The full local path of the diagnostics log, home-folder-abbreviated so
+    /// it stays readable (and screenshot-safe) while still being the real
+    /// `~/Library/Logs/MacParakeet/dictation-audio.log` location on disk.
+    private var diagnosticLogDisplayPath: String {
+        (viewModel.diagnosticLogURL.path as NSString).abbreviatingWithTildeInPath
+    }
+
+    /// Lead copy for the attach control — accurately reflects how far back the
+    /// upload reaches so users know what they are sharing.
+    private var diagnosticLogScopeDescription: String {
+        let attached = viewModel.includeFullDiagnosticHistory
+            ? "It attaches your full local history"
+            : "It attaches the last 7 days"
+        return "Use this for dictation or meeting recording issues. \(attached) to the public report so we can inspect capture timing, buffers, silence, and device errors."
+    }
+
+    /// Advanced opt-in to send the entire local log instead of only the recent
+    /// window. Shown as a subordinate checkbox under the main switch, so it
+    /// reads as a refinement of "attach diagnostics" rather than a peer toggle.
+    private var diagnosticLogScopeToggle: some View {
+        Toggle(isOn: $viewModel.includeFullDiagnosticHistory) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Include full history")
+                    .font(DesignSystem.Typography.caption.weight(.medium))
+                Text("Off attaches only the last 7 days. Turn on to include older entries — useful for issues that are hard to reproduce.")
+                    .font(DesignSystem.Typography.micro)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .toggleStyle(.checkbox)
+        .tint(DesignSystem.Colors.accent)
+        // Indent to align with the main toggle's text column (icon width +
+        // the row's HStack spacing) so it reads as a sub-option.
+        .padding(.leading, 28 + DesignSystem.Spacing.sm)
+        .padding(.top, 2)
+        .accessibilityHint("Attaches your entire local diagnostics history instead of only the last seven days")
+    }
+
+    // A real, representative slice of `dictation-audio.log` — a full capture
+    // session from launch through dictation, a meeting, and a device error.
+    // Kept verbatim (just illustrative values) so the Feedback form can show
+    // users exactly what they share: counts and device state, never audio or
+    // transcript text.
+    private static let diagnosticLogExampleLines = [
+        "2026-06-06T09:14:02.118Z dictation_diagnostics_session_start pid=42317 version=0.6.21 build=20260607023821 source=stable-dmg commit=3c7f3d8f82ce",
+        "2026-06-06T09:14:48.512Z dictation_capture_start permission_status=3",
+        "2026-06-06T09:14:48.560Z dictation_capture_first_buffer sr=16000.0 ch=1 common_format=1 interleaved=false frames=4800 has_float_data=true",
+        "2026-06-06T09:14:53.121Z dictation_capture_heartbeat input_buffers=50 input_frames=240000 isRunning=true default_input=present default_input_transport=built-in",
+        "2026-06-06T09:14:54.004Z dictation_capture_stop sample_count=78000 duration_s=4.875 input_buffers=98 output_buffers=98 max_rms=0.071234 non_silent_buffers=95",
+        "2026-06-06T09:14:54.330Z dictation_transcribe_complete chars=49 words=9 engine=parakeet variant=none",
+        "2026-06-06T10:02:11.806Z dictation_capture_insufficient sample_count=3200 required=4800",
+        "2026-06-06T11:25:27.341Z meeting_recording_started session=40B8536B-… requested_mic_mode=vpioPreferred effective_mic_mode=vpio",
+        "2026-06-06T11:25:27.574Z meeting_mic_capture_started effective_mode=vpio sr=16000.0 ch=1 default_input=present default_input_transport=built-in",
+        "2026-06-06T11:25:27.902Z system_audio_stream_first_buffer sr=48000.0 ch=2 frames=1024",
+        "2026-06-06T11:48:03.190Z meeting_mic_capture_start_failed mode=raw reason=\"permission_denied\"",
+    ]
+
+    private var diagnosticLogSample: some View {
+        DisclosureGroup(isExpanded: $showsDiagnosticLogSample) {
+            VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                // One selectable Text inside a horizontal scroller: lines never
+                // wrap (so they read like the real log), and a single click-drag
+                // highlights the whole excerpt.
+                ScrollView(.horizontal, showsIndicators: true) {
+                    Text(Self.diagnosticLogExampleLines.joined(separator: "\n"))
+                        .font(DesignSystem.Typography.micro.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .textSelection(.enabled)
+                }
+
+                Text("Every entry is a count or a device state. `words=9` means you spoke nine words — never which words. No audio and no transcript text is ever written to this file.")
+                    .font(DesignSystem.Typography.micro)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(DesignSystem.Spacing.sm)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(DesignSystem.Colors.background.opacity(0.6))
+            )
+            .padding(.top, 6)
+        } label: {
+            Text("See exactly what's in the log")
+                .font(DesignSystem.Typography.caption.weight(.medium))
+                .foregroundStyle(DesignSystem.Colors.accent)
         }
     }
 
@@ -353,18 +591,18 @@ struct FeedbackView: View {
         .buttonStyle(.plain)
     }
 
-    private func screenshotAttachedPill(_ filename: String) -> some View {
+    private func screenshotAttachedPill(_ attachment: FeedbackScreenshotAttachment) -> some View {
         HStack(spacing: DesignSystem.Spacing.xs) {
             Image(systemName: "photo")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text(filename)
+            Text(attachment.filename)
                 .font(DesignSystem.Typography.caption)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
             Button {
-                viewModel.removeScreenshot()
+                viewModel.removeScreenshot(id: attachment.id)
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 13))

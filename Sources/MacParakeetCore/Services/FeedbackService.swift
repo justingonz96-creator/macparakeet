@@ -22,6 +22,8 @@ public struct FeedbackPayload: Sendable, Encodable {
     public let email: String?
     public let screenshotBase64: String?
     public let screenshotFilename: String?
+    public let screenshots: [FeedbackScreenshot]
+    public let diagnosticLog: FeedbackDiagnosticLog?
     public let systemInfo: SystemInfo
 
     public init(
@@ -30,14 +32,49 @@ public struct FeedbackPayload: Sendable, Encodable {
         email: String?,
         screenshotBase64: String?,
         screenshotFilename: String?,
+        screenshots: [FeedbackScreenshot] = [],
+        diagnosticLog: FeedbackDiagnosticLog? = nil,
         systemInfo: SystemInfo
     ) {
+        let normalizedScreenshots: [FeedbackScreenshot]
+        if screenshots.isEmpty,
+           let screenshotBase64,
+           let screenshotFilename {
+            normalizedScreenshots = [
+                FeedbackScreenshot(filename: screenshotFilename, base64: screenshotBase64),
+            ]
+        } else {
+            normalizedScreenshots = screenshots
+        }
+
         self.category = category
         self.message = message
         self.email = email
-        self.screenshotBase64 = screenshotBase64
-        self.screenshotFilename = screenshotFilename
+        self.screenshotBase64 = normalizedScreenshots.first?.base64 ?? screenshotBase64
+        self.screenshotFilename = normalizedScreenshots.first?.filename ?? screenshotFilename
+        self.screenshots = normalizedScreenshots
+        self.diagnosticLog = diagnosticLog
         self.systemInfo = systemInfo
+    }
+}
+
+public struct FeedbackScreenshot: Sendable, Encodable, Equatable {
+    public let filename: String
+    public let base64: String
+
+    public init(filename: String, base64: String) {
+        self.filename = filename
+        self.base64 = base64
+    }
+}
+
+public struct FeedbackDiagnosticLog: Sendable, Encodable, Equatable {
+    public let filename: String
+    public let base64: String
+
+    public init(filename: String, base64: String) {
+        self.filename = filename
+        self.base64 = base64
     }
 }
 
@@ -102,6 +139,8 @@ public final class FeedbackService: FeedbackServiceProtocol {
             email: feedback.email,
             screenshotBase64: feedback.screenshotBase64,
             screenshotFilename: feedback.screenshotFilename,
+            screenshots: feedback.screenshots,
+            diagnosticLog: feedback.diagnosticLog,
             systemInfo: feedback.systemInfo
         )
 

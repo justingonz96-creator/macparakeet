@@ -145,7 +145,12 @@ final class DictationFlowCoordinator {
     private let sttRuntime: any DictationSTTReadinessChecking
     private let runtimePreferences: AppRuntimePreferencesProtocol
     private let permissionService: PermissionServiceProtocol
+    private let focusedAppContextService: any FocusedAppContextProviding
     private let captionTiming: DictationProcessingLoadCaptionTiming
+    /// The engine the next dictation will use. Drives the Cohere-specific
+    /// "Optimizing…" warm-up caption. Defaults to the persisted selection, the
+    /// same source the menu bar reads.
+    private let activeSpeechEngine: @MainActor () -> SpeechEnginePreference
     private let mediaPauseCoordinator: any DictationMediaPauseCoordinating
     private let overlayControllerFactory: @MainActor (DictationOverlayViewModel) -> any DictationOverlayControlling
     private let shouldSuppressIdlePill: () -> Bool
@@ -177,6 +182,7 @@ final class DictationFlowCoordinator {
     private var captionFailureDismissTask: Task<Void, Never>?
     private var captionShownAt: Date?
     private var captionGeneration = 0
+    var testHook_onProcessingLoadCaptionChange: ((DictationOverlayViewModel.ProcessingLoadCaption?) -> Void)?
 
     // MARK: - Flow Context (not state machine concerns)
 
@@ -184,6 +190,8 @@ final class DictationFlowCoordinator {
     private var currentTrigger: TelemetryDictationTrigger = .hotkey
     /// The Dictation object from the most recent transcription, used for paste + DB save.
     private var currentDictation: Dictation?
+    /// Insertion style used to shape the most recent dictation result, used for paste spacing.
+    private var currentDictationInsertionStyle: DictationInsertionStyle = .sentence
     /// Ephemeral post-paste action from the text processing pipeline (e.g., simulate Return key).
     private var pendingPostPasteAction: KeyAction?
     /// Error from the most recent entitlements check failure, consumed by presentEntitlementsAlert effect.
@@ -205,7 +213,9 @@ final class DictationFlowCoordinator {
         sttRuntime: any DictationSTTReadinessChecking,
         runtimePreferences: AppRuntimePreferencesProtocol,
         permissionService: PermissionServiceProtocol = PermissionService(),
+        focusedAppContextService: any FocusedAppContextProviding = FocusedAppContextService(),
         captionTiming: DictationProcessingLoadCaptionTiming = .production,
+        activeSpeechEngine: @escaping @MainActor () -> SpeechEnginePreference = { SpeechEnginePreference.current() },
         mediaPauseCoordinator: (any DictationMediaPauseCoordinating)? = nil,
         overlayControllerFactory: @escaping @MainActor (DictationOverlayViewModel) -> any DictationOverlayControlling = {
             DictationOverlayController(viewModel: $0)
@@ -224,7 +234,9 @@ final class DictationFlowCoordinator {
         self.sttRuntime = sttRuntime
         self.runtimePreferences = runtimePreferences
         self.permissionService = permissionService
+        self.focusedAppContextService = focusedAppContextService
         self.captionTiming = captionTiming
+        self.activeSpeechEngine = activeSpeechEngine
         self.mediaPauseCoordinator = mediaPauseCoordinator ?? NoOpDictationMediaPauseCoordinator()
         self.overlayControllerFactory = overlayControllerFactory
         self.shouldSuppressIdlePill = shouldSuppressIdlePill
@@ -233,6 +245,7 @@ final class DictationFlowCoordinator {
         self.onHistoryReload = onHistoryReload
         self.onPresentEntitlementsAlert = onPresentEntitlementsAlert
         observeFormatterNotifications()
+        observePreviewTextSizeNotifications()
     }
 
     // MARK: - AI Formatter pill transitions
@@ -278,11 +291,30 @@ final class DictationFlowCoordinator {
         }
     }
 
-    // NOTE: no `deinit` cleanup for `formatterDidStartObserver`. This
-    // coordinator is effectively a singleton for the app's lifetime, the
-    // observer block captures `[weak self]`, and Swift 6 forbids touching
-    // `@MainActor`-isolated stored properties from a nonisolated deinit.
-    // NotificationCenter cleans up automatically when the token drops.
+    /// Observer token for `.macParakeetDictationPreviewTextSizeDidChange` —
+    /// lets a size change in Settings resize the live preview mid-dictation
+    /// instead of only taking effect on the next recording.
+    private var previewTextSizeObserver: NSObjectProtocol?
+
+    private func observePreviewTextSizeNotifications() {
+        previewTextSizeObserver = NotificationCenter.default.addObserver(
+            forName: .macParakeetDictationPreviewTextSizeDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.overlayViewModel?.previewTextSize = self.runtimePreferences.dictationPreviewTextSize
+            }
+        }
+    }
+
+    // NOTE: no `deinit` cleanup for `formatterDidStartObserver` or
+    // `previewTextSizeObserver`. This coordinator is effectively a singleton
+    // for the app's lifetime, both observer blocks capture `[weak self]`, and
+    // Swift 6 forbids touching `@MainActor`-isolated stored properties from a
+    // nonisolated deinit. NotificationCenter cleans up automatically when the
+    // tokens drop.
 
     // MARK: - Public Methods (translate to state machine events)
 
@@ -327,6 +359,7 @@ final class DictationFlowCoordinator {
     func cancelDictation(reason: TelemetryDictationCancelReason = .ui) {
         // Map telemetry reason to state machine cancel reason
         let flowReason: DictationFlowCancelReason = reason == .ui ? .ui : .escape
+        stateMachine.undoCountdownSeconds = runtimePreferences.dictationUndoCountdown.seconds
         sendEvent(.cancelRequested(reason: flowReason))
     }
 
@@ -436,7 +469,9 @@ final class DictationFlowCoordinator {
             vm.recordingMode = mode
             vm.processingMessage = nil
             vm.busyProcessingMessage = nil
-            vm.processingLoadCaption = nil
+            setProcessingLoadCaption(nil)
+            vm.liveTranscript = ""
+            vm.previewTextSize = runtimePreferences.dictationPreviewTextSize
             vm.state = .recording
             vm.startTimer()
 
@@ -444,7 +479,8 @@ final class DictationFlowCoordinator {
             overlayViewModel?.stopTimer()
             overlayViewModel?.processingMessage = nil
             overlayViewModel?.busyProcessingMessage = nil
-            overlayViewModel?.processingLoadCaption = nil
+            setProcessingLoadCaption(nil)
+            overlayViewModel?.liveTranscript = ""
             overlayViewModel?.state = .processing
             armProcessingLoadCaption()
 
@@ -453,11 +489,13 @@ final class DictationFlowCoordinator {
 
         case .showCancelCountdown:
             overlayViewModel?.stopTimer()
-            overlayViewModel?.cancelTimeRemaining = 5.0
-            overlayViewModel?.state = .cancelled(timeRemaining: 5.0)
+            let seconds = stateMachine.undoCountdownSeconds ?? 5.0
+            overlayViewModel?.cancelCountdownDuration = seconds
+            overlayViewModel?.cancelTimeRemaining = seconds
+            overlayViewModel?.state = .cancelled(timeRemaining: seconds)
 
         case .showSuccess:
-            dismissCaption(outcome: .success)
+            clearCaptionVisualWhileAwaitingPasteOutcome()
             overlayViewModel?.state = .success
 
         case .showNoSpeech:
@@ -507,9 +545,9 @@ final class DictationFlowCoordinator {
             let sessionID = serviceSession.reserveNextSessionID()
             startRecordingTask(mode: mode, generation: stateMachine.generation, sessionID: sessionID)
 
-        case .stopRecordingAndTranscribe:
+        case .stopRecordingAndTranscribe(let mode):
             let sessionID = serviceSession.currentSessionID
-            stopRecordingTask(generation: stateMachine.generation, sessionID: sessionID)
+            stopRecordingTask(generation: stateMachine.generation, sessionID: sessionID, mode: mode)
 
         case .cancelRecording(let reason):
             let sessionID = serviceSession.currentSessionID
@@ -520,9 +558,15 @@ final class DictationFlowCoordinator {
                 )
             }
 
-        case .confirmCancel:
+        case .confirmCancel(let reason):
             let sessionID = serviceSession.currentSessionID
             Task { @MainActor in
+                if let reason {
+                    await self.serviceSession.cancelRecording(
+                        reason: self.telemetryCancelReason(for: reason),
+                        sessionID: sessionID
+                    )
+                }
                 await self.serviceSession.confirmCancel(sessionID: sessionID)
             }
 
@@ -543,63 +587,85 @@ final class DictationFlowCoordinator {
         case .pasteTranscript:
             let gen = stateMachine.generation
             guard let dictation = currentDictation else {
+                dismissCaption(outcome: .failure)
                 sendEvent(.pasteFailed(generation: gen, message: "No transcription available."))
                 return
             }
             let transcript = dictation.cleanTranscript ?? dictation.rawTranscript
-            actionTask = Task { @MainActor in
-                // Brief pause so user sees the checkmark before paste
-                try? await Task.sleep(for: .milliseconds(200))
-                guard !Task.isCancelled else { return }
-
+            let insertionStyle = currentDictationInsertionStyle
+            Task { @MainActor in
+                var completedDictation = dictation
                 let action = self.pendingPostPasteAction
                 self.pendingPostPasteAction = nil
                 let pastedToAppAtDispatch = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                let keepDictationOnClipboard = self.runtimePreferences.shouldKeepDictationOnClipboard
+                let transcriptHasText = !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let appendsTrailingSpace = !(
+                    dictation.processingMode.usesDeterministicPipeline
+                    && insertionStyle == .inline
+                )
+                let normalPasteText = appendsTrailingSpace ? transcript + " " : transcript
 
                 do {
+                    if action == nil && !transcriptHasText {
+                        self.dictationLog.notice("dictation_paste_skipped gen=\(gen) reason=empty_transcript")
+                        guard self.stateMachine.generation == gen else { return }
+                        self.dismissCaption(outcome: .success)
+                        self.sendEvent(.pasteSucceeded(generation: gen))
+                        return
+                    }
+
                     if let action {
                         // Action mode: no trailing space, action replaces the space role
                         let keystrokeFired = try await self.clipboardService.pasteTextWithAction(
                             transcript,
-                            postPasteAction: action
+                            postPasteAction: action,
+                            restoresClipboard: !keepDictationOnClipboard
                         )
                         if keystrokeFired {
                             Telemetry.send(.keystrokeSnippetFired(action: action.rawValue))
                         }
                     } else {
-                        // Normal mode: trailing space as before
-                        try await self.clipboardService.pasteText(transcript + " ")
+                        // Normal paste path: spacing follows the style used to shape this dictation.
+                        try await self.clipboardService.pasteText(
+                            normalPasteText,
+                            restoresClipboard: !keepDictationOnClipboard
+                        )
                     }
-                    guard !Task.isCancelled else { return }
 
                     // Save pastedToApp metadata
                     if let pastedToApp = pastedToAppAtDispatch {
-                        self.currentDictation?.pastedToApp = pastedToApp
-                        self.currentDictation?.updatedAt = Date()
-                        if let d = self.currentDictation {
-                            do {
-                                try self.dictationRepo.save(d)
-                            } catch {
-                                self.dictationLog.error("Failed to save pastedToApp metadata error=\(error.localizedDescription, privacy: .public)")
+                        completedDictation.pastedToApp = pastedToApp
+                        completedDictation.updatedAt = Date()
+                        do {
+                            try self.dictationRepo.save(completedDictation)
+                            if self.currentDictation?.id == completedDictation.id {
+                                self.currentDictation = completedDictation
                             }
+                        } catch {
+                            self.dictationLog.error("Failed to save pastedToApp metadata error=\(error.localizedDescription, privacy: .public)")
                         }
                     }
 
                     let rawChars = dictation.rawTranscript.count
                     let cleanChars = dictation.cleanTranscript?.count ?? 0
-                    let app = self.currentDictation?.pastedToApp ?? "none"
+                    let app = completedDictation.pastedToApp ?? "none"
                     self.dictationLog.notice("dictation_completed gen=\(gen) outcome=success rawChars=\(rawChars) cleanChars=\(cleanChars) autoPasted=true pastedToApp=\(app, privacy: .public)")
 
+                    guard self.stateMachine.generation == gen else { return }
+                    self.dismissCaption(outcome: .success)
                     self.sendEvent(.pasteSucceeded(generation: gen))
                 } catch {
-                    guard !Task.isCancelled else { return }
                     let bucket = Self.commandFailureBucket(for: error)
                     self.dictationLog.error("dictation_paste_failed gen=\(gen) bucket=\(bucket, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                    if transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    guard self.stateMachine.generation == gen else { return }
+                    self.dismissCaption(outcome: .failure)
+                    if !transcriptHasText {
                         // Pure action-only dictation (e.g., "press return") — nothing to paste
                         self.sendEvent(.pasteFailed(generation: gen, message: "Keystroke failed. Check Accessibility permissions."))
                     } else {
-                        let copied = await self.clipboardService.copyToClipboard(transcript)
+                        let fallbackText = keepDictationOnClipboard && action == nil ? normalPasteText : transcript
+                        let copied = await self.clipboardService.copyToClipboard(fallbackText)
                         let message = Self.pasteFailureMessage(for: error, copiedToClipboard: copied)
 
                         self.sendEvent(
@@ -617,6 +683,7 @@ final class DictationFlowCoordinator {
         case .reloadHistory:
             onHistoryReload()
             currentDictation = nil
+            currentDictationInsertionStyle = .sentence
             pendingPostPasteAction = nil
 
         // MARK: App integration
@@ -628,6 +695,9 @@ final class DictationFlowCoordinator {
             case .processing: .processing
             }
             onMenuBarIconUpdate(iconState)
+
+        case .syncHotkeyRecordingMode(let mode):
+            hotkeyManagers.forEach { $0.syncRecordingMode(mode) }
 
         case .resetHotkeyStateMachine:
             hotkeyManagers.forEach { $0.resetToIdle() }
@@ -658,11 +728,11 @@ final class DictationFlowCoordinator {
             readyDismissTimer?.cancel()
             readyDismissTimer = nil
 
-        case .startCancelCountdown:
+        case .startCancelCountdown(let seconds):
             let gen = stateMachine.generation
             cancelCountdownTask = Task { @MainActor in
-                // 5-second countdown, updating UI each second
-                for i in stride(from: 4.0, through: 0, by: -1) {
+                // Countdown, updating UI each second
+                for i in stride(from: seconds - 1, through: 0, by: -1) {
                     try? await Task.sleep(for: .seconds(1))
                     if Task.isCancelled { return }
                     self.overlayViewModel?.cancelTimeRemaining = i
@@ -716,6 +786,15 @@ final class DictationFlowCoordinator {
         overlayViewModel?.state
     }
 
+    var flowStateForTesting: DictationFlowState {
+        stateMachine.state
+    }
+
+    private func setProcessingLoadCaption(_ caption: DictationOverlayViewModel.ProcessingLoadCaption?) {
+        overlayViewModel?.processingLoadCaption = caption
+        testHook_onProcessingLoadCaptionChange?(caption)
+    }
+
     private func armProcessingLoadCaption() {
         captionGeneration += 1
         let generation = captionGeneration
@@ -756,16 +835,25 @@ final class DictationFlowCoordinator {
         guard let state = overlayViewModel?.state, case .processing = state else { return }
 
         let firstInstall = !runtimePreferences.hasCompletedFirstDictation
-        overlayViewModel?.processingLoadCaption = .preparing
+        // Cohere has its own model download / Core ML preparation path, and a
+        // user may switch to it after already completing dictation with another
+        // engine. Keep its load caption specific even when this is not the
+        // app's first completed dictation.
+        let isCohere = activeSpeechEngine() == .cohere
+        let baseCaption: DictationOverlayViewModel.ProcessingLoadCaption = isCohere ? .optimizing : .preparing
+        let extendedCaption: DictationOverlayViewModel.ProcessingLoadCaption =
+            isCohere ? .optimizingExtended : .preparingExtended
+
+        setProcessingLoadCaption(baseCaption)
         captionShownAt = Date()
         Telemetry.send(.dictationFirstLoadCaptionShown(firstInstall: firstInstall))
 
-        guard firstInstall else { return }
+        guard isCohere || firstInstall else { return }
         let escalation = DispatchWorkItem { [weak self] in
             Task { @MainActor in
                 guard self?.captionGeneration == generation else { return }
-                guard self?.overlayViewModel?.processingLoadCaption == .preparing else { return }
-                self?.overlayViewModel?.processingLoadCaption = .preparingExtended
+                guard self?.overlayViewModel?.processingLoadCaption == baseCaption else { return }
+                self?.setProcessingLoadCaption(extendedCaption)
             }
         }
         captionEscalationTimer = escalation
@@ -776,13 +864,7 @@ final class DictationFlowCoordinator {
     }
 
     private func dismissCaption(outcome: ProcessingLoadCaptionOutcome) {
-        captionGeneration += 1
-        captionGraceTimer?.cancel()
-        captionEscalationTimer?.cancel()
-        captionFailureDismissTask?.cancel()
-        captionGraceTimer = nil
-        captionEscalationTimer = nil
-        captionFailureDismissTask = nil
+        resetCaptionTimers()
 
         if let shownAt = captionShownAt {
             let durationMs = max(0, Int(Date().timeIntervalSince(shownAt) * 1000))
@@ -792,7 +874,22 @@ final class DictationFlowCoordinator {
             ))
             captionShownAt = nil
         }
-        overlayViewModel?.processingLoadCaption = nil
+        setProcessingLoadCaption(nil)
+    }
+
+    private func clearCaptionVisualWhileAwaitingPasteOutcome() {
+        resetCaptionTimers()
+        setProcessingLoadCaption(nil)
+    }
+
+    private func resetCaptionTimers() {
+        captionGeneration += 1
+        captionGraceTimer?.cancel()
+        captionEscalationTimer?.cancel()
+        captionFailureDismissTask?.cancel()
+        captionGraceTimer = nil
+        captionEscalationTimer = nil
+        captionFailureDismissTask = nil
     }
 
     private func showErrorAfterCaptionFailureIfNeeded(message: String) {
@@ -802,8 +899,8 @@ final class DictationFlowCoordinator {
         captionEscalationTimer = nil
 
         switch overlayViewModel?.processingLoadCaption {
-        case .preparing, .preparingExtended:
-            overlayViewModel?.processingLoadCaption = .failed
+        case .preparing, .preparingExtended, .optimizing, .optimizingExtended:
+            setProcessingLoadCaption(.failed)
             captionFailureDismissTask?.cancel()
             captionFailureDismissTask = Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -839,6 +936,14 @@ final class DictationFlowCoordinator {
         }
     }
 
+    private func formatterContext(from context: AppPromptContext?) -> AppPromptContext? {
+        guard let context else { return nil }
+        if context.isSelfApp(bundleIdentifier: Bundle.main.bundleIdentifier) {
+            return nil
+        }
+        return context
+    }
+
     private func startRecordingTask(
         mode: FnKeyStateMachine.RecordingMode,
         generation: Int,
@@ -848,7 +953,26 @@ final class DictationFlowCoordinator {
         recordingTask = Task { @MainActor in
             do {
                 try Task.checkCancellation()
-                await self.mediaPauseCoordinator.pauseBeforeDictationCapture()
+                let startContext = self.formatterContext(from: self.focusedAppContextService.currentContext())
+                // Fire-and-forget: the media-pause round-trip must not gate
+                // capture start, or its out-of-process now-playing lookup
+                // clips the first words of the dictation. The coordinator's
+                // generation guard keeps resume correct if capture ends before
+                // the pause settles. When the round-trip confirms media was
+                // playing, the instant-dictation pre-roll is pre-press media
+                // audio that no pause can silence — discard it (issue #474).
+                // Best-effort by design: if the round-trip settles after the
+                // capture stopped, the session guard drops the request.
+                self.mediaPauseCoordinator.requestPauseBeforeDictationCapture(
+                    onMediaPaused: { [weak self] in
+                        guard let self else { return }
+                        Task {
+                            await self.serviceSession.discardPreRollForActiveCapture(
+                                sessionID: sessionID
+                            )
+                        }
+                    }
+                )
                 try Task.checkCancellation()
                 try await self.serviceSession.startRecording(
                     sessionID: sessionID,
@@ -856,6 +980,11 @@ final class DictationFlowCoordinator {
                         trigger: trigger,
                         mode: self.telemetryMode(for: mode)
                     )
+                )
+                await self.serviceSession.updateAIFormatterAppContext(
+                    startContext,
+                    phase: .start,
+                    sessionID: sessionID
                 )
                 let serviceState = await self.serviceSession.state
                 guard case .recording = serviceState else {
@@ -959,17 +1088,28 @@ final class DictationFlowCoordinator {
         return alert.runModal()
     }
 
-    private func stopRecordingTask(generation: Int, sessionID: Int) {
+    private func stopRecordingTask(
+        generation: Int,
+        sessionID: Int,
+        mode: FnKeyStateMachine.RecordingMode
+    ) {
         actionTask = Task { @MainActor in
             do {
                 let serviceState = await self.serviceSession.state
                 self.dictationLog.notice(
-                    "stop_recording_requested gen=\(generation) session=\(sessionID) flowState=\(self.describeState(self.stateMachine.state), privacy: .public) serviceState=\(self.describeServiceState(serviceState), privacy: .public)"
+                    "stop_recording_requested gen=\(generation) session=\(sessionID) mode=\(self.describeRecordingMode(mode), privacy: .public) flowState=\(self.describeState(self.stateMachine.state), privacy: .public) serviceState=\(self.describeServiceState(serviceState), privacy: .public)"
                 )
+                AudioCaptureDiagnostics.append(
+                    "dictation_stop_requested mode=\(self.diagnosticRecordingMode(mode)) session=\(sessionID)"
+                )
+                let finishContext = self.focusedAppContextService.currentContext()
                 await self.serviceSession.updateTelemetryAppCategory(
-                    TelemetryAppCategory(
-                        bundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-                    ),
+                    finishContext?.category,
+                    sessionID: sessionID
+                )
+                await self.serviceSession.updateAIFormatterAppContext(
+                    self.formatterContext(from: finishContext),
+                    phase: .finish,
                     sessionID: sessionID
                 )
                 let result = try await self.serviceSession.stopRecording(sessionID: sessionID)
@@ -986,10 +1126,14 @@ final class DictationFlowCoordinator {
         actionTask = Task { @MainActor in
             do {
                 let sessionID = self.serviceSession.currentSessionID
+                let finishContext = self.focusedAppContextService.currentContext()
                 await self.serviceSession.updateTelemetryAppCategory(
-                    TelemetryAppCategory(
-                        bundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-                    ),
+                    finishContext?.category,
+                    sessionID: sessionID
+                )
+                await self.serviceSession.updateAIFormatterAppContext(
+                    self.formatterContext(from: finishContext),
+                    phase: .finish,
                     sessionID: sessionID
                 )
                 let result = try await self.serviceSession.undoCancel()
@@ -1005,6 +1149,7 @@ final class DictationFlowCoordinator {
 
     private func consumeDictationResult(_ result: DictationResult) {
         currentDictation = result.dictation
+        currentDictationInsertionStyle = result.insertionStyle
         pendingPostPasteAction = result.postPasteAction
     }
 
@@ -1030,6 +1175,13 @@ final class DictationFlowCoordinator {
 
             let level = snapshot.audioLevel
             overlayViewModel?.audioLevel = level
+            // Only write when the stabilized text actually changes: this loop
+            // polls at 20 Hz for the waveform, but the transcript changes ~1×/s,
+            // and an equal write to the @Observable VM would still rebuild the
+            // overlay's live-readout view tree every frame.
+            if let overlayViewModel, overlayViewModel.liveTranscript != snapshot.liveTranscript {
+                overlayViewModel.liveTranscript = snapshot.liveTranscript
+            }
 
             if autoStopEnabled {
                 let now = Date()
@@ -1095,6 +1247,24 @@ final class DictationFlowCoordinator {
         case .cancelled: return "cancelled"
         case .success: return "success"
         case .error: return "error"
+        }
+    }
+
+    private func describeRecordingMode(_ mode: FnKeyStateMachine.RecordingMode) -> String {
+        switch mode {
+        case .holdToTalk:
+            return "holdToTalk"
+        case .persistent:
+            return "persistent"
+        }
+    }
+
+    private func diagnosticRecordingMode(_ mode: FnKeyStateMachine.RecordingMode) -> String {
+        switch mode {
+        case .holdToTalk:
+            return "hold_to_talk"
+        case .persistent:
+            return "persistent"
         }
     }
 }

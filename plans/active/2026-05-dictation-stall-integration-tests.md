@@ -5,7 +5,29 @@
 > Branch: `test/dictation-stall-integration`
 > Related: `journal/2026-05-03-dictation-silent-stall.md`, ADR-015, PR #189 (shared-mic-engine), PR #210 (diagnostic package)
 
-## Status (2026-05-04)
+## Status (2026-06-12): root cause confirmed, recovery implemented
+
+Issue #499 (field report with an opt-in diagnostic log: 87 zero-sample
+captures, 380 `shared_mic_engine_configuration_changed` events across 480
+starts) confirmed hypothesis 1 from the list below: **HAL configuration
+change mid-session**. `AVAudioEngine` stops itself when the input chain
+reconfigures and posts `AVAudioEngineConfigurationChange`; the PR #210
+observer was log-only, so nothing restarted the engine and the platform's
+`running` flag stayed `true` over a dead graph.
+
+The fix (branch `fix/mic-config-change-recovery`) makes
+`AVAudioEngineMicrophonePlatform` self-heal: it replays the last successful
+start request when a configuration-change notification arrives for the
+current engine instance and the engine has actually stopped. The
+`shared_mic_engine_configuration_changed` log line now carries
+`engine_is_running=` (actual `AVAudioEngine.isRunning`) alongside the
+platform-flag `isRunning=`, closing the instrumentation gap called out
+below. Regression tests:
+`Tests/MacParakeetTests/Audio/MicrophoneEnginePlatformConfigChangeRecoveryTests.swift`.
+The Tier-4 HAL-mutation test is now expected to pass *because of* recovery
+on machines where the default-input mutation is observable.
+
+## Status (2026-05-04, amended 2026-05-27)
 
 - **Tier 1 shipped + expanded** — 9 tests in `Tests/MacParakeetTests/Audio/MicrophoneEngineRealPlatformTests.swift`. Run the normal hardware subset with `MACPARAKEET_HARDWARE_TESTS=1`.
 - **Normal hardware subset** — 6 tests: cold start, post-cycle, post-VPIO, active-VPIO + late non-VPIO subscriber, deferred-VPIO promotion, and 10-cycle raw stress.
@@ -39,6 +61,38 @@
 - **Tier 4 scaffolded**: `testDefaultInputSwitchWhileSharedStreamRunningKeepsDeliveringBuffers` programmatically toggles the default input device via `AudioObjectSetPropertyData(kAudioHardwarePropertyDefaultInputDevice)` mid-session and asserts the shared stream continues delivering buffers. It is gated by `MACPARAKEET_HAL_MUTATION_TESTS=1` because it mutates system audio state.
 - **Instrumentation gap closed in this branch**: `AVAudioEngineMicrophonePlatform` now installs a log-only Core Audio listener for `kAudioHardwarePropertyDefaultInputDevice` while the shared mic engine is running and emits `audio_default_input_changed ...` to `dictation-audio.log`. This completes the decision rule that separates HAL route churn from a fresh-engine attach failure on the next field stall.
 - **Tier 1 earns its keep** as permanent regression coverage for the healthy paths even though it didn't reproduce the bug. Any future change that breaks the contract on these paths fails immediately.
+
+### 2026-05-27 release-audit note: VPIO tests are not the shipped-path gate
+
+`MACPARAKEET_HARDWARE_TESTS=1 swift test --filter MicrophoneEngineRealPlatformTests`
+failed on macOS 26.5 with CoreAudio `-10868` in the VPIO teardown path,
+especially `testPostVPIODeliversBuffers` (start VPIO -> stop -> start raw).
+Raw cold start and the active-VPIO + late non-VPIO subscriber path still passed.
+
+Treat this as a retained/experimental VPIO-path signal, **not** as a release
+blocker for the default shipped meeting-recording path. The app-level meeting
+mic default was changed to `.raw` in `AppEnvironment` after the Zoom live-mic
+degradation report; VPIO remains in the codebase only as explicit plumbing for
+future experiments and regression forensics. A failed VPIO hardware test is
+therefore a false positive for raw meeting/dictation release readiness unless a
+release deliberately re-enables VPIO.
+
+The initial follow-up proposal was to split VPIO teardown/promotion tests behind
+a stricter opt-in. The teardown-order result below fixed their shared lifecycle
+failure instead, so they remain useful in the normal hardware subset.
+
+### 2026-07-22 teardown-order result
+
+A Bluetooth/input-readiness audit reproduced the same VPIO → stop → raw
+`-10868` failure on both the working branch and its prior committed revision.
+The platform teardown was disabling VPIO before stopping the engine, although
+Core Audio only permits `setVoiceProcessingEnabled` while stopped. Reordering
+teardown to remove the tap → stop → disable VPIO → replace the engine fixed the
+immediate transition without a delay: the focused hardware case passed five
+consecutive runs, followed by the complete normal hardware subset (10 passed,
+3 opt-in tests skipped). Keep the VPIO tests in the normal hardware subset as
+lifecycle regression coverage; VPIO remains outside the shipped raw meeting
+path.
 
 ## Context
 

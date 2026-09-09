@@ -19,8 +19,19 @@ struct CaptureOrchestratorOutput: Sendable {
 
 actor CaptureOrchestrator {
     private var pairJoiner = MeetingAudioPairJoiner()
-    private var microphoneChunker = AudioChunker()
-    private var systemChunker = AudioChunker()
+    private var microphoneChunker: any MeetingLiveAudioChunking = FixedMeetingLiveAudioChunker()
+    private var systemChunker: any MeetingLiveAudioChunking = FixedMeetingLiveAudioChunker()
+
+    /// Swap in the per-source chunkers for the next recording. Sources are
+    /// independent so one can use VAD while the other falls back to fixed.
+    /// Call before `reset()` at session start; defaults to fixed chunkers.
+    func configureChunkers(
+        microphone: any MeetingLiveAudioChunking,
+        system: any MeetingLiveAudioChunking
+    ) {
+        microphoneChunker = microphone
+        systemChunker = system
+    }
 
     func reset() async {
         pairJoiner.reset()
@@ -45,7 +56,14 @@ actor CaptureOrchestrator {
         micConditioner: any MicConditioning
     ) async -> CaptureOrchestratorOutput {
         let pairs = pairJoiner.flushRemainingPairs()
-        return await processPairs(pairs, micConditioner: micConditioner)
+        var output = await processPairs(pairs, micConditioner: micConditioner)
+        let heldSamples = micConditioner.flush()
+        if !heldSamples.isEmpty {
+            for micChunk in await microphoneChunker.addSamples(heldSamples) {
+                output.chunks.append(CaptureOrchestratorChunk(source: .microphone, chunk: micChunk))
+            }
+        }
+        return output
     }
 
     func flushChunkers() async -> [CaptureOrchestratorChunk] {
@@ -83,14 +101,20 @@ actor CaptureOrchestrator {
                 processedMicrophoneRms = chunkRms(for: processedMic)
                 micSamples = processedMic
             } else {
-                micSamples = pair.microphoneSamples
+                // Synthetic silence bypasses the conditioner; drain any
+                // samples it is holding first so they cannot land behind
+                // this pair's zeros out of order.
+                let heldSamples = micConditioner.flush()
+                micSamples = heldSamples.isEmpty
+                    ? pair.microphoneSamples
+                    : heldSamples + pair.microphoneSamples
             }
 
-            if let micChunk = await microphoneChunker.addSamples(micSamples) {
+            for micChunk in await microphoneChunker.addSamples(micSamples) {
                 output.chunks.append(CaptureOrchestratorChunk(source: .microphone, chunk: micChunk))
             }
 
-            if let systemChunk = await systemChunker.addSamples(pair.systemSamples) {
+            for systemChunk in await systemChunker.addSamples(pair.systemSamples) {
                 output.chunks.append(CaptureOrchestratorChunk(source: .system, chunk: systemChunk))
             }
 

@@ -1,3 +1,4 @@
+import ArgumentParser
 import XCTest
 @testable import CLI
 @testable import MacParakeetCore
@@ -42,6 +43,30 @@ final class HistoryCommandTests: XCTestCase {
 
         XCTAssertNil(try repo.fetch(id: dictation.id))
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path))
+    }
+
+    func testDeleteDictationCommandJSONReportsDeletedID() throws {
+        let dbURL = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+        let db = try DatabaseManager(path: dbURL.path)
+        let repo = DictationRepository(dbQueue: db.dbQueue)
+        let dictation = Dictation(durationMs: 2000, rawTranscript: "Delete me")
+        try repo.save(dictation)
+
+        let command = try DeleteDictationSubcommand.parse([
+            dictation.id.uuidString,
+            "--database", dbURL.path,
+            "--json",
+        ])
+        let output = try captureStandardOutput {
+            try command.run()
+        }
+
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any])
+        XCTAssertEqual(decoded["ok"] as? Bool, true)
+        XCTAssertEqual(decoded["kind"] as? String, "dictation")
+        XCTAssertEqual(decoded["id"] as? String, dictation.id.uuidString)
+        XCTAssertNil(try repo.fetch(id: dictation.id))
     }
 
     func testDeleteDictationCommandLeavesExternalAudioFile() throws {
@@ -115,7 +140,40 @@ final class HistoryCommandTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path))
     }
 
+    func testDeleteTranscriptionCommandJSONReportsDeletedID() throws {
+        let dbURL = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+        let db = try DatabaseManager(path: dbURL.path)
+        let repo = TranscriptionRepository(dbQueue: db.dbQueue)
+
+        let transcription = Transcription(
+            fileName: "delete-me.m4a",
+            rawTranscript: "Goodbye",
+            status: .completed,
+            sourceType: .file
+        )
+        try repo.save(transcription)
+
+        let command = try DeleteTranscriptionSubcommand.parse([
+            transcription.id.uuidString,
+            "--database", dbURL.path,
+            "--json",
+        ])
+        let output = try captureStandardOutput {
+            try command.run()
+        }
+
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any])
+        XCTAssertEqual(decoded["ok"] as? Bool, true)
+        XCTAssertEqual(decoded["kind"] as? String, "transcription")
+        XCTAssertEqual(decoded["id"] as? String, transcription.id.uuidString)
+        XCTAssertNil(try repo.fetch(id: transcription.id))
+    }
+
     func testDeleteTranscriptionCommandKeepsRecordWhenOwnedAudioCleanupFails() throws {
+        let appState = try useTemporaryAppState()
+        defer { resetTemporaryAppState(appState) }
+
         let dbURL = temporaryDatabaseURL()
         defer { try? FileManager.default.removeItem(at: dbURL) }
         let db = try DatabaseManager(path: dbURL.path)
@@ -146,12 +204,298 @@ final class HistoryCommandTests: XCTestCase {
             transcription.id.uuidString,
             "--database", dbURL.path,
         ])
-        XCTAssertThrowsError(try captureStandardOutput {
-            try command.run()
-        })
+        XCTAssertThrowsError(
+            try captureStandardOutput {
+                try command.run()
+            })
 
         XCTAssertNotNil(try repo.fetch(id: transcription.id))
         XCTAssertTrue(FileManager.default.fileExists(atPath: audioURL.path))
+    }
+
+    func testDeleteMeetingAudioCommandKeepsTranscriptAndClearsFilePath() throws {
+        let appState = try useTemporaryAppState()
+        defer { resetTemporaryAppState(appState) }
+
+        let dbURL = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+        let db = try DatabaseManager(path: dbURL.path)
+        let repo = TranscriptionRepository(dbQueue: db.dbQueue)
+
+        try AppPaths.ensureDirectories()
+        let folder = URL(fileURLWithPath: AppPaths.meetingRecordingsDir, isDirectory: true)
+            .appendingPathComponent("macparakeet-cli-meeting-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let audioURL = folder.appendingPathComponent("meeting-playback.m4a")
+        let systemAudioURL = folder.appendingPathComponent("system-raw.m4a")
+        let notesURL = folder.appendingPathComponent("notes.md")
+        XCTAssertTrue(FileManager.default.createFile(atPath: audioURL.path, contents: Data("audio".utf8)))
+        XCTAssertTrue(FileManager.default.createFile(atPath: systemAudioURL.path, contents: Data("system".utf8)))
+        try "notes".write(to: notesURL, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let transcription = Transcription(
+            fileName: "meeting-playback.m4a",
+            filePath: audioURL.path,
+            rawTranscript: "Discuss retention",
+            status: .completed,
+            sourceType: .meeting
+        )
+        try repo.save(transcription)
+
+        let command = try DeleteMeetingAudioSubcommand.parse([
+            transcription.id.uuidString,
+            "--database", dbURL.path,
+        ])
+        let output = try captureStandardOutput {
+            try command.run()
+        }
+
+        let fetched = try XCTUnwrap(repo.fetch(id: transcription.id))
+        XCTAssertNil(fetched.filePath)
+        XCTAssertEqual(fetched.meetingArtifactFolderPath, folder.standardizedFileURL.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: systemAudioURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: notesURL.path))
+        XCTAssertTrue(output.contains("Detached managed meeting audio"))
+        XCTAssertTrue(output.contains("re-transcription and speaker detection/backfill are no longer possible"))
+    }
+
+    func testDeleteMeetingAudioCommandJSONReportsDetachResult() throws {
+        let appState = try useTemporaryAppState()
+        defer { resetTemporaryAppState(appState) }
+
+        let dbURL = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+        let db = try DatabaseManager(path: dbURL.path)
+        let repo = TranscriptionRepository(dbQueue: db.dbQueue)
+
+        try AppPaths.ensureDirectories()
+        let folder = URL(fileURLWithPath: AppPaths.meetingRecordingsDir, isDirectory: true)
+            .appendingPathComponent("macparakeet-cli-meeting-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let audioURL = folder.appendingPathComponent("meeting-playback.m4a")
+        XCTAssertTrue(FileManager.default.createFile(atPath: audioURL.path, contents: Data("audio".utf8)))
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let transcription = Transcription(
+            fileName: "meeting-playback.m4a",
+            filePath: audioURL.path,
+            rawTranscript: "Discuss retention",
+            status: .completed,
+            sourceType: .meeting
+        )
+        try repo.save(transcription)
+
+        let command = try DeleteMeetingAudioSubcommand.parse([
+            transcription.id.uuidString,
+            "--database", dbURL.path,
+            "--json",
+        ])
+        let output = try captureStandardOutput {
+            try command.run()
+        }
+
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any])
+        XCTAssertEqual(decoded["ok"] as? Bool, true)
+        XCTAssertEqual(decoded["id"] as? String, transcription.id.uuidString)
+        XCTAssertEqual(decoded["removedOwnedAudio"] as? Bool, true)
+        XCTAssertEqual(decoded["hadAudioPath"] as? Bool, true)
+        XCTAssertNil(try repo.fetch(id: transcription.id)?.filePath)
+    }
+
+    func testClearMeetingAudioCommandRemovesAudioAndPreservesArtifactFolders() throws {
+        let dbURL = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+        let db = try DatabaseManager(path: dbURL.path)
+        let repo = TranscriptionRepository(dbQueue: db.dbQueue)
+        let meetingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macparakeet-cli-meetings-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: meetingRoot) }
+        let folder = meetingRoot.appendingPathComponent("session", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let audioURL = folder.appendingPathComponent("meeting-playback.m4a")
+        let sourceAudioURL = folder.appendingPathComponent("source-capture.wav")
+        let notesURL = folder.appendingPathComponent("notes.md")
+        XCTAssertTrue(FileManager.default.createFile(atPath: audioURL.path, contents: Data("audio".utf8)))
+        XCTAssertTrue(FileManager.default.createFile(atPath: sourceAudioURL.path, contents: Data("source".utf8)))
+        try Data("notes".utf8).write(to: notesURL)
+
+        let meeting = Transcription(
+            fileName: "meeting-playback.m4a",
+            filePath: audioURL.path,
+            rawTranscript: "Discuss retention",
+            status: .completed,
+            sourceType: .meeting
+        )
+        let local = Transcription(
+            fileName: "local.m4a",
+            filePath: "/tmp/local.m4a",
+            rawTranscript: "Local",
+            status: .completed,
+            sourceType: .file
+        )
+        let externalMeeting = Transcription(
+            fileName: "external-meeting-playback.m4a",
+            filePath: "/tmp/external-meeting-\(UUID().uuidString).m4a",
+            rawTranscript: "External",
+            status: .completed,
+            sourceType: .meeting
+        )
+        try repo.save(meeting)
+        try repo.save(local)
+        try repo.save(externalMeeting)
+
+        let command = try ClearMeetingAudioSubcommand.parse([
+            "--database", dbURL.path,
+            "--meeting-recordings-directory", meetingRoot.path,
+        ])
+        let output = try captureStandardOutput {
+            try command.run()
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: meetingRoot.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sourceAudioURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: notesURL.path))
+        let fetchedMeeting = try XCTUnwrap(repo.fetch(id: meeting.id))
+        XCTAssertNil(fetchedMeeting.filePath)
+        XCTAssertEqual(fetchedMeeting.meetingArtifactFolderPath, folder.standardizedFileURL.path)
+        XCTAssertEqual(try repo.fetch(id: local.id)?.filePath, local.filePath)
+        XCTAssertEqual(try repo.fetch(id: externalMeeting.id)?.filePath, externalMeeting.filePath)
+        XCTAssertTrue(output.contains("Deleted all stored meeting audio"))
+    }
+
+    func testClearMeetingAudioCommandJSONReportsAffectedIDs() throws {
+        let dbURL = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+        let db = try DatabaseManager(path: dbURL.path)
+        let repo = TranscriptionRepository(dbQueue: db.dbQueue)
+        let meetingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macparakeet-cli-meetings-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: meetingRoot) }
+        let folder = meetingRoot.appendingPathComponent("session", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let audioURL = folder.appendingPathComponent("meeting-playback.m4a")
+        XCTAssertTrue(FileManager.default.createFile(atPath: audioURL.path, contents: Data("audio".utf8)))
+
+        let meeting = Transcription(
+            fileName: "meeting-playback.m4a",
+            filePath: audioURL.path,
+            rawTranscript: "Discuss retention",
+            status: .completed,
+            sourceType: .meeting
+        )
+        try repo.save(meeting)
+
+        let command = try ClearMeetingAudioSubcommand.parse([
+            "--database", dbURL.path,
+            "--meeting-recordings-directory", meetingRoot.path,
+            "--json",
+        ])
+        let output = try captureStandardOutput {
+            try command.run()
+        }
+
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any])
+        XCTAssertEqual(decoded["ok"] as? Bool, true)
+        XCTAssertEqual(decoded["deletedCount"] as? Int, 1)
+        XCTAssertEqual(decoded["ids"] as? [String], [meeting.id.uuidString])
+        XCTAssertNil(try repo.fetch(id: meeting.id)?.filePath)
+    }
+
+    func testClearMeetingAudioCommandRefusesWhileARecordingIsLive() throws {
+        let dbURL = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+        let db = try DatabaseManager(path: dbURL.path)
+        let repo = TranscriptionRepository(dbQueue: db.dbQueue)
+        let meetingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macparakeet-cli-meetings-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: meetingRoot) }
+        let folder = meetingRoot.appendingPathComponent("session", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let audioURL = folder.appendingPathComponent("meeting-playback.m4a")
+        XCTAssertTrue(FileManager.default.createFile(atPath: audioURL.path, contents: Data("audio".utf8)))
+
+        // A lock file owned by this (alive) test process stands in for a live
+        // recording. The CLI must refuse rather than wipe the active folder.
+        try MeetingRecordingLockFileStore().write(
+            MeetingRecordingLockFile(
+                sessionId: UUID(),
+                startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                pid: ProcessInfo.processInfo.processIdentifier,
+                displayName: "Live Meeting"
+            ),
+            folderURL: folder
+        )
+
+        let meeting = Transcription(
+            fileName: "meeting-playback.m4a",
+            filePath: audioURL.path,
+            rawTranscript: "In progress",
+            status: .completed,
+            sourceType: .meeting
+        )
+        try repo.save(meeting)
+
+        let command = try ClearMeetingAudioSubcommand.parse([
+            "--database", dbURL.path,
+            "--meeting-recordings-directory", meetingRoot.path,
+        ])
+        XCTAssertThrowsError(try command.run()) { error in
+            XCTAssertTrue(error is ValidationError, "Expected a ValidationError, got \(error)")
+        }
+
+        // Nothing was deleted and no path was detached.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioURL.path))
+        XCTAssertEqual(try repo.fetch(id: meeting.id)?.filePath, audioURL.path)
+    }
+
+    func testClearMeetingAudioCommandRefusesAwaitingTranscriptionLockEvenWhenOwnerIsDead() throws {
+        let dbURL = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+        let db = try DatabaseManager(path: dbURL.path)
+        let repo = TranscriptionRepository(dbQueue: db.dbQueue)
+        let meetingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macparakeet-cli-meetings-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: meetingRoot) }
+        let folder = meetingRoot.appendingPathComponent("session", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let audioURL = folder.appendingPathComponent("meeting-playback.m4a")
+        XCTAssertTrue(FileManager.default.createFile(atPath: audioURL.path, contents: Data("audio".utf8)))
+
+        try MeetingRecordingLockFileStore().write(
+            MeetingRecordingLockFile(
+                sessionId: UUID(),
+                startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                pid: 0,
+                displayName: "Awaiting Meeting",
+                state: .awaitingTranscription
+            ),
+            folderURL: folder
+        )
+
+        let meeting = Transcription(
+            fileName: "meeting-playback.m4a",
+            filePath: audioURL.path,
+            rawTranscript: nil,
+            status: .processing,
+            sourceType: .meeting
+        )
+        try repo.save(meeting)
+
+        let command = try ClearMeetingAudioSubcommand.parse([
+            "--database", dbURL.path,
+            "--meeting-recordings-directory", meetingRoot.path,
+        ])
+        XCTAssertThrowsError(try command.run()) { error in
+            XCTAssertTrue(error is ValidationError, "Expected a ValidationError, got \(error)")
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioURL.path))
+        XCTAssertEqual(try repo.fetch(id: meeting.id)?.filePath, audioURL.path)
     }
 
     // MARK: - Favorites
@@ -219,7 +563,9 @@ final class HistoryCommandTests: XCTestCase {
         let db = try DatabaseManager()
         let repo = TranscriptionRepository(dbQueue: db.dbQueue)
 
-        let t1 = Transcription(fileName: "file-a.mp3", rawTranscript: "um the uh budget", cleanTranscript: "The budget proposal", status: .completed)
+        let t1 = Transcription(
+            fileName: "file-a.mp3", rawTranscript: "um the uh budget", cleanTranscript: "The budget proposal",
+            status: .completed)
         let t2 = Transcription(fileName: "file-b.mp3", rawTranscript: "Unrelated content", status: .completed)
         try repo.save(t1)
         try repo.save(t2)
@@ -322,6 +668,24 @@ final class HistoryCommandTests: XCTestCase {
     private func temporaryAssetURL(pathExtension: String) -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("macparakeet-cli-asset-\(UUID().uuidString).\(pathExtension)")
+    }
+
+    private func useTemporaryAppState() throws -> (url: URL, previous: String?) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macparakeet-cli-app-state-\(UUID().uuidString)", isDirectory: true)
+        let previous = ProcessInfo.processInfo.environment[AppPaths.debugAppStateDirEnvironmentKey]
+        setenv(AppPaths.debugAppStateDirEnvironmentKey, url.path, 1)
+        try AppPaths.ensureDirectories()
+        return (url, previous)
+    }
+
+    private func resetTemporaryAppState(_ state: (url: URL, previous: String?)) {
+        if let previous = state.previous {
+            setenv(AppPaths.debugAppStateDirEnvironmentKey, previous, 1)
+        } else {
+            unsetenv(AppPaths.debugAppStateDirEnvironmentKey)
+        }
+        try? FileManager.default.removeItem(at: state.url)
     }
 
 }

@@ -36,7 +36,7 @@ public actor CalendarService {
 
     // MARK: - Permission
 
-    public enum PermissionStatus: Sendable {
+    public enum PermissionStatus: Sendable, Equatable {
         case notDetermined
         case granted
         case denied
@@ -173,8 +173,14 @@ public actor CalendarService {
     // MARK: - EKEvent → CalendarEvent
 
     private func convertEvent(_ ekEvent: EKEvent) -> CalendarEvent? {
+        // `eventIdentifier` is declared `String!` by EventKit but is nil for
+        // some events (unsaved/ephemeral, certain birthday/holiday/subscription
+        // calendars, detached recurrences). Force-unwrapping it into the
+        // non-optional `CalendarEvent.id` crashed (SIGTRAP); drop the event
+        // instead — without a stable identifier we can't track it anyway.
         guard let startDate = ekEvent.startDate,
-              let endDate = ekEvent.endDate else {
+              let endDate = ekEvent.endDate,
+              let id = ekEvent.eventIdentifier else {
             return nil
         }
 
@@ -194,20 +200,9 @@ public actor CalendarService {
         let participants = (ekEvent.attendees ?? []).compactMap { attendee -> EventParticipant? in
             if attendee.isCurrentUser { return nil }
 
-            let email: String? = {
-                let urlString = attendee.url.absoluteString
-                if urlString.hasPrefix("mailto:") {
-                    return urlString.replacingOccurrences(of: "mailto:", with: "")
-                }
-                return nil
-            }()
-
-            return EventParticipant(
-                email: email,
-                name: attendee.name,
-                status: mapStatus(attendee.participantStatus)
-            )
+            return convertParticipant(attendee)
         }
+        let organizer = ekEvent.organizer.map(convertParticipant)
 
         let meetUrl = linkParser.extractMeetingUrl(
             location: ekEvent.location,
@@ -216,13 +211,14 @@ public actor CalendarService {
         )
 
         return CalendarEvent(
-            id: ekEvent.eventIdentifier,
+            id: id,
             title: ekEvent.title ?? "Untitled",
             startTime: startDate,
             endTime: endDate,
             location: ekEvent.location,
             meetUrl: meetUrl,
             participants: participants,
+            organizer: organizer,
             isAllDay: ekEvent.isAllDay,
             calendarName: ekEvent.calendar?.title,
             calendarIdentifier: ekEvent.calendar?.calendarIdentifier,
@@ -230,6 +226,35 @@ public actor CalendarService {
             externalId: ekEvent.calendarItemExternalIdentifier,
             syncedAt: Date()
         )
+    }
+
+    private func convertParticipant(_ participant: EKParticipant) -> EventParticipant {
+        let email: String? = {
+            guard let urlString = (participant.value(forKey: "URL") as? URL)?.absoluteString else {
+                return nil
+            }
+            if urlString.hasPrefix("mailto:") {
+                return urlString.replacingOccurrences(of: "mailto:", with: "")
+            }
+            return nil
+        }()
+
+        return EventParticipant(
+            email: email,
+            name: participant.name,
+            status: mapStatus(participant.participantStatus),
+            kind: mapKind(participant.participantType)
+        )
+    }
+
+    private func mapKind(_ type: EKParticipantType) -> EventParticipant.ParticipantKind {
+        switch type {
+        case .person: return .person
+        case .room: return .room
+        case .resource: return .resource
+        case .group: return .group
+        default: return .unknown
+        }
     }
 
     private func mapStatus(_ status: EKParticipantStatus) -> EventParticipant.ParticipantStatus {

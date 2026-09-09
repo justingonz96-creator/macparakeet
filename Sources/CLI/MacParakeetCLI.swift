@@ -8,14 +8,20 @@ struct CLI: AsyncParsableCommand {
     /// distinguishable from synthesized Bundle.main values (the bare executable
     /// has no Info.plist and macOS otherwise reports an SDK marker like "16.0").
     /// Bump in lockstep with `Sources/CLI/CHANGELOG.md`.
-    static let cliVersion = "2.3.1"
+    static let cliVersion = "4.0.0"
 
     static let configuration = CommandConfiguration(
         commandName: "macparakeet-cli",
-        abstract: "Local STT, transcription, and prompt automation for Apple Silicon. Powered by Parakeet TDT, with optional Whisper multilingual recognition.",
+        abstract:
+            "Local STT, transcription, and prompt automation for Apple Silicon. Powered by Parakeet TDT, with optional Nemotron Beta, Cohere, and Whisper recognition.",
         version: cliVersion,
         subcommands: [
             TranscribeCommand.self,
+            RetranscribeCommand.self,
+            SearchCommand.self,
+            SearchReindexCommand.self,
+            TranscriptCommand.self,
+            CardsCommand.self,
             HistoryCommand.self,
             ExportCommand.self,
             StatsCommand.self,
@@ -30,6 +36,7 @@ struct CLI: AsyncParsableCommand {
             TransformsCommand.self,
             MeetingsCommand.self,
             CalendarCommand.self,
+            MeetingVADSimCommand.self,
             FeedbackCommand.self,
         ],
         defaultSubcommand: nil
@@ -54,6 +61,9 @@ struct CLI: AsyncParsableCommand {
         }
         if let exitCode = error as? ExitCode {
             return normalizedExitCode(for: exitCode)
+        }
+        if isCLIValidationMisuse(error) {
+            return cliValidationMisuseExitCode
         }
         return normalizedExitCode(for: exitCode(for: error))
     }

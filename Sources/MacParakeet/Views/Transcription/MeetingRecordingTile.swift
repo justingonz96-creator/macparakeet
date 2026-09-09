@@ -11,7 +11,7 @@ import SwiftUI
 /// Stop symmetric tap targets so users learn one rule.
 struct MeetingRecordingTile: View {
     enum PermissionState: Equatable {
-        case ready(capturesMicrophone: Bool)
+        case ready(sourceMode: MeetingAudioSourceMode)
         case missing(microphone: Bool, screenRecording: Bool)
 
         init(
@@ -20,11 +20,11 @@ struct MeetingRecordingTile: View {
             sourceMode: MeetingAudioSourceMode
         ) {
             let needsMicrophone = sourceMode.capturesMicrophone && !microphoneGranted
-            let needsScreenRecording = !screenRecordingGranted
+            let needsScreenRecording = sourceMode.capturesSystemAudio && !screenRecordingGranted
             if needsMicrophone || needsScreenRecording {
                 self = .missing(microphone: needsMicrophone, screenRecording: needsScreenRecording)
             } else {
-                self = .ready(capturesMicrophone: sourceMode.capturesMicrophone)
+                self = .ready(sourceMode: sourceMode)
             }
         }
 
@@ -46,10 +46,15 @@ struct MeetingRecordingTile: View {
 
         var detail: String {
             switch self {
-            case .ready(let capturesMicrophone):
-                return capturesMicrophone
-                    ? "Transcribes the whole conversation, privately on your Mac."
-                    : "Transcribes the call audio, privately on your Mac."
+            case .ready(let sourceMode):
+                switch sourceMode {
+                case .microphoneAndSystem:
+                    return "Transcribes your voice and call audio, privately on your Mac."
+                case .microphoneOnly:
+                    return "Transcribes microphone audio only, privately on your Mac."
+                case .systemOnly:
+                    return "Transcribes system audio only, privately on your Mac."
+                }
             case .missing(let microphone, let screenRecording):
                 switch (microphone, screenRecording) {
                 case (true, true):
@@ -66,12 +71,11 @@ struct MeetingRecordingTile: View {
     }
 
     @Bindable var viewModel: MeetingRecordingPillViewModel
-    var permissionState: PermissionState = .ready(capturesMicrophone: true)
+    var permissionState: PermissionState = .ready(sourceMode: .microphoneAndSystem)
     var onTap: () -> Void
     /// Optional pause/resume handler. When `nil` the tile renders no pause
     /// control — keeps existing call sites unchanged.
     var onPauseToggle: (() -> Void)?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         tileSurface
@@ -123,6 +127,8 @@ struct MeetingRecordingTile: View {
         switch viewModel.state {
         case .idle:
             idleContent
+        case .starting:
+            startingContent
         case .recording, .paused:
             recordingContent
         case .completing, .transcribing:
@@ -134,10 +140,27 @@ struct MeetingRecordingTile: View {
         }
     }
 
+    private var startingContent: some View {
+        HStack(spacing: DesignSystem.Spacing.md) {
+            ParakeetSpinner(.inline, tint: DesignSystem.Colors.textTertiary)
+                .frame(width: 64)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Starting…")
+                    .font(DesignSystem.Typography.sectionTitle)
+                    .foregroundStyle(DesignSystem.Colors.textPrimary)
+                Text("Preparing audio capture.")
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+            }
+            Spacer()
+            stopButton
+        }
+    }
+
     private var idleContent: some View {
         HStack(spacing: DesignSystem.Spacing.md) {
             if permissionState.isReady {
-                SacredFlowerTile(isAnimating: false, audioLevel: 0)
+                SacredFlowerTile(audioLevel: 0)
             } else {
                 permissionIcon
                     .frame(width: 64)
@@ -151,6 +174,8 @@ struct MeetingRecordingTile: View {
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(DesignSystem.Colors.textSecondary)
                     .lineLimit(2)
+                audioSavedConfirmationBadge
+                backgroundTranscriptionBadge
             }
 
             Spacer()
@@ -164,10 +189,12 @@ struct MeetingRecordingTile: View {
         return HStack(spacing: DesignSystem.Spacing.md) {
             ZStack {
                 SacredFlowerTile(
-                    isAnimating: !isPaused && !reduceMotion,
                     audioLevel: isPaused ? 0 : max(viewModel.micLevel, viewModel.systemLevel)
                 )
                 .opacity(isPaused ? 0.45 : 1.0)
+                // Transient (value-keyed on a pause flip) — fires only on
+                // pause/resume, not continuously, so it costs nothing at rest
+                // and keeps the dim/undim a fade rather than a snap.
                 .animation(.easeInOut(duration: 0.25), value: isPaused)
 
                 if isPaused {
@@ -198,11 +225,17 @@ struct MeetingRecordingTile: View {
                         .font(DesignSystem.Typography.sectionTitle)
                         .foregroundStyle(DesignSystem.Colors.textPrimary)
                 }
-                Text(viewModel.formattedElapsed)
-                    .font(.system(size: 15, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(DesignSystem.Colors.textSecondary)
-                    .contentTransition(.numericText())
-                    .animation(.easeInOut(duration: 0.2), value: viewModel.elapsedSeconds)
+                HStack(spacing: 8) {
+                    Text(viewModel.formattedElapsed)
+                        .font(.system(size: 15, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+
+                    if let warning = visibleSourceHealthWarning {
+                        MeetingSourceHealthInlineBadge(chip: warning)
+                    }
+                }
+                audioSavedConfirmationBadge
+                backgroundTranscriptionBadge
             }
 
             Spacer()
@@ -214,6 +247,40 @@ struct MeetingRecordingTile: View {
                 stopButton
             }
         }
+    }
+
+    @ViewBuilder
+    private var audioSavedConfirmationBadge: some View {
+        if viewModel.showsAudioSavedConfirmation {
+            Label("Audio saved", systemImage: "checkmark.circle.fill")
+                .font(DesignSystem.Typography.micro.weight(.medium))
+                .foregroundStyle(DesignSystem.Colors.successGreen)
+                .lineLimit(1)
+                .transition(.opacity)
+                .accessibilityLabel("Audio saved")
+        }
+    }
+
+    @ViewBuilder
+    private var backgroundTranscriptionBadge: some View {
+        if viewModel.backgroundTranscriptionCount > 0 {
+            HStack(spacing: 5) {
+                ParakeetSpinner(.inline)
+                    .scaleEffect(0.55)
+                    .frame(width: 12, height: 12)
+                Text(backgroundTranscriptionText)
+                    .font(DesignSystem.Typography.micro)
+                    .foregroundStyle(DesignSystem.Colors.textTertiary)
+                    .lineLimit(1)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityLabel(backgroundTranscriptionText)
+        }
+    }
+
+    private var backgroundTranscriptionText: String {
+        let count = viewModel.backgroundTranscriptionCount
+        return count == 1 ? "Finishing 1 meeting" : "Finishing \(count) meetings"
     }
 
     private var transcribingContent: some View {
@@ -256,7 +323,7 @@ struct MeetingRecordingTile: View {
                 Text("Saved to Library")
                     .font(DesignSystem.Typography.sectionTitle)
                     .foregroundStyle(DesignSystem.Colors.textPrimary)
-                Text("Your meeting is ready.")
+                Text("Audio saved")
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(DesignSystem.Colors.textSecondary)
                     .lineLimit(1)
@@ -321,10 +388,12 @@ struct MeetingRecordingTile: View {
         switch viewModel.state {
         case .idle:
             return permissionState.isReady ? "Record meeting" : "\(permissionState.title): \(permissionState.detail)"
+        case .starting:
+            return "Starting meeting audio capture"
         case .recording:
-            return "Recording meeting, \(viewModel.formattedElapsed) elapsed"
+            return "Recording meeting, \(viewModel.formattedElapsed) elapsed\(sourceHealthAccessibilitySuffix)"
         case .paused:
-            return "Meeting recording paused, \(viewModel.formattedElapsed) elapsed"
+            return "Meeting recording paused, \(viewModel.formattedElapsed) elapsed\(sourceHealthAccessibilitySuffix)"
         case .completing, .transcribing:
             return "Transcribing meeting"
         case .completed:
@@ -338,6 +407,14 @@ struct MeetingRecordingTile: View {
         // Tile body is informational; Start / Stop buttons carry the
         // action hints themselves.
         ""
+    }
+
+    private var sourceHealthAccessibilitySuffix: String {
+        visibleSourceHealthWarning.map { ", \($0.label)" } ?? ""
+    }
+
+    var visibleSourceHealthWarning: MeetingSourceHealthChip? {
+        viewModel.mirroredVisibleSourceHealthWarning
     }
 }
 
@@ -391,9 +468,10 @@ private struct StartRecordingButton: View {
             if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
         .accessibilityLabel(permissionState.isReady ? "Start recording" : "Enable meeting recording")
-        .accessibilityHint(permissionState.isReady
-            ? "Captures system audio and microphone, then transcribes locally."
-            : "Opens the required macOS permission flow before recording.")
+        .accessibilityHint(
+            permissionState.isReady
+                ? "Captures system audio and microphone, then transcribes locally."
+                : "Opens the required macOS permission flow before recording.")
     }
 }
 
@@ -440,9 +518,11 @@ private struct TilePauseResumeButton: View {
             .padding(.vertical, 7)
             .background(
                 Capsule()
-                    .fill(isHovered
-                        ? DesignSystem.Colors.warningAmber.opacity(0.12)
-                        : DesignSystem.Colors.surfaceElevated.opacity(0.7))
+                    .fill(
+                        isHovered
+                            ? DesignSystem.Colors.warningAmber.opacity(0.12)
+                            : DesignSystem.Colors.surfaceElevated.opacity(0.7)
+                    )
                     .overlay(
                         Capsule()
                             .stroke(
@@ -572,21 +652,23 @@ private struct StopConfirmCapsule: View {
 /// Larger, light-surface variant of the flower-of-life rosette + stem + leaves
 /// motif used by the floating recording pill. Sized for the Transcribe tile
 /// (50pt head + short stem). Greens-on-light replaces the pill's white-on-black.
+///
+/// Rendered statically. The tile lives in the always-resident main window, and
+/// an animated SwiftUI rosette here (a `repeatForever` rotation/sway) drove
+/// continuous `NSHostingView` re-layout — a measured contributor to the
+/// v0.6.14 meeting-recording CPU regression. The audio-reactive glow is the
+/// only live element, and it changes at most once per second (the pill poll is
+/// quantized upstream). See `plans/active/2026-05-meeting-recording-cpu-debug.md`.
 private struct SacredFlowerTile: View {
-    var isAnimating: Bool
+    /// Drives only the glow intensity; the rosette geometry is static.
     var audioLevel: Float
-
-    @State private var rotation: Double = 0
-    @State private var sway: Double = -1
-    @State private var idleBreath: Double = 0
 
     private let headSize: CGFloat = 50
     private let stemHeight: CGFloat = 18
 
     private var glowOpacity: Double {
-        let base: Double = isAnimating ? 0.55 : (0.22 + idleBreath * 0.10)
         let audioBoost = Double(audioLevel) * 0.45
-        return min(0.85, base + audioBoost)
+        return min(0.85, 0.22 + audioBoost)
     }
 
     var body: some View {
@@ -598,16 +680,6 @@ private struct SacredFlowerTile: View {
                 .padding(.top, -2)
         }
         .frame(width: 64)
-        .onChange(of: isAnimating) { _, animating in
-            if animating { startActive() } else { stopActive() }
-        }
-        .onAppear {
-            if isAnimating {
-                startActive()
-            } else {
-                startIdleBreath()
-            }
-        }
     }
 
     private var flowerHead: some View {
@@ -626,7 +698,6 @@ private struct SacredFlowerTile: View {
                     )
                 )
                 .frame(width: headSize * 0.86, height: headSize * 0.86)
-                .animation(.easeOut(duration: 0.12), value: audioLevel)
 
             ZStack {
                 Circle()
@@ -647,13 +718,12 @@ private struct SacredFlowerTile: View {
                         )
                 }
             }
-            .rotationEffect(.degrees(rotation))
         }
     }
 
     private var stemAndLeaves: some View {
         let stemColor = DesignSystem.Colors.sacredStem
-        let swayOffset = CGFloat(sway) * 1.8
+        let swayOffset: CGFloat = 0
 
         return ZStack {
             TileStemShape(swayOffset: swayOffset)
@@ -690,49 +760,15 @@ private struct SacredFlowerTile: View {
             .stroke(stemColor.opacity(0.62), lineWidth: 0.6)
         }
     }
-
-    private func startActive() {
-        // Match the pill's 12s rotation for visual continuity.
-        withAnimation(.linear(duration: 12).repeatForever(autoreverses: false)) {
-            rotation = 360
-        }
-        withAnimation(.easeInOut(duration: 3).repeatForever(autoreverses: true)) {
-            sway = 1
-        }
-    }
-
-    private func stopActive() {
-        withAnimation(.easeOut(duration: 0.5)) {
-            rotation = 0
-            sway = 0
-        }
-        startIdleBreath()
-    }
-
-    private func startIdleBreath() {
-        // Subtle 4s breathing on the glow when idle — present, not nagging.
-        withAnimation(.easeInOut(duration: 4).repeatForever(autoreverses: true)) {
-            idleBreath = 1
-        }
-    }
 }
 
 // MARK: - Recording dot (gentle breathing)
 
 private struct BreathingDot: View {
-    @State private var pulse: Bool = false
-
     var body: some View {
         Circle()
             .fill(DesignSystem.Colors.recordingRed)
             .frame(width: 8, height: 8)
-            .opacity(pulse ? 0.55 : 1.0)
-            .scaleEffect(pulse ? 0.92 : 1.0)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.95).repeatForever(autoreverses: true)) {
-                    pulse = true
-                }
-            }
     }
 }
 

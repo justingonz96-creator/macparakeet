@@ -15,11 +15,12 @@ public struct Dictation: Codable, Identifiable, Sendable {
     public var updatedAt: Date
     public var hidden: Bool
     public var wordCount: Int
-    /// STT engine that produced this dictation (`"parakeet"` / `"whisper"`).
+    /// STT engine that produced this dictation (`"parakeet"` / `"nemotron"` /
+    /// `"whisper"`).
     /// `nil` for rows created before the v0.8 engine-attribution migration.
     public var engine: String?
-    /// Engine-specific model variant id (e.g. the Whisper model id).
-    /// `nil` for engines without variants and for legacy rows.
+    /// Engine-specific model variant id (e.g. `v3`, `multilingual-1120ms`,
+    /// or the Whisper model id). `nil` for legacy rows.
     public var engineVariant: String?
     /// Normalized detected STT language code (for example `"en"`, `"ko"`,
     /// `"ja"`, or `"zh"`). `nil` when unknown or for legacy rows.
@@ -31,6 +32,13 @@ public struct Dictation: Codable, Identifiable, Sendable {
     /// `false` for new rows and for legacy rows backfilled by the
     /// `v0.12-dictation-display-raw` migration.
     public var displayRawTranscript: Bool
+    /// Local-only provenance for the AI Formatter routing decision used on
+    /// this dictation. Global formatter runs store `.global` with no profile
+    /// id/name; nil means the row predates routing metadata or AI Formatter
+    /// was off.
+    public var aiFormatterProfileID: UUID?
+    public var aiFormatterProfileName: String?
+    public var aiFormatterProfileMatchKind: AIFormatterProfileMatchKind?
 
     public enum ProcessingMode: String, Codable, Sendable {
         case raw
@@ -77,7 +85,10 @@ public struct Dictation: Codable, Identifiable, Sendable {
         engine: String? = nil,
         engineVariant: String? = nil,
         language: String? = nil,
-        displayRawTranscript: Bool = false
+        displayRawTranscript: Bool = false,
+        aiFormatterProfileID: UUID? = nil,
+        aiFormatterProfileName: String? = nil,
+        aiFormatterProfileMatchKind: AIFormatterProfileMatchKind? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -96,6 +107,9 @@ public struct Dictation: Codable, Identifiable, Sendable {
         self.engineVariant = engineVariant
         self.language = language
         self.displayRawTranscript = displayRawTranscript
+        self.aiFormatterProfileID = aiFormatterProfileID
+        self.aiFormatterProfileName = aiFormatterProfileName
+        self.aiFormatterProfileMatchKind = aiFormatterProfileMatchKind
     }
 
     // MARK: - Codable
@@ -105,6 +119,7 @@ public struct Dictation: Codable, Identifiable, Sendable {
         case audioPath, pastedToApp, processingMode, status, errorMessage
         case updatedAt, hidden, wordCount, engine, engineVariant, language
         case displayRawTranscript
+        case aiFormatterProfileID, aiFormatterProfileName, aiFormatterProfileMatchKind
     }
 
     public init(from decoder: Decoder) throws {
@@ -128,6 +143,13 @@ public struct Dictation: Codable, Identifiable, Sendable {
         // Decode-if-present so legacy serialized snapshots (in-flight Codable
         // payloads, tests) round-trip without explicitly setting the field.
         displayRawTranscript = try container.decodeIfPresent(Bool.self, forKey: .displayRawTranscript) ?? false
+        aiFormatterProfileID = try container.decodeIfPresent(UUID.self, forKey: .aiFormatterProfileID)
+        aiFormatterProfileName = try container.decodeIfPresent(String.self, forKey: .aiFormatterProfileName)
+        if let rawMatchKind = try container.decodeIfPresent(String.self, forKey: .aiFormatterProfileMatchKind) {
+            aiFormatterProfileMatchKind = AIFormatterProfileMatchKind(rawValue: rawMatchKind)
+        } else {
+            aiFormatterProfileMatchKind = nil
+        }
     }
 }
 
@@ -185,5 +207,6 @@ extension Dictation: FetchableRecord, PersistableRecord {
         case audioPath, pastedToApp, processingMode, status, errorMessage, updatedAt
         case hidden, wordCount, engine, engineVariant, language
         case displayRawTranscript
+        case aiFormatterProfileID, aiFormatterProfileName, aiFormatterProfileMatchKind
     }
 }

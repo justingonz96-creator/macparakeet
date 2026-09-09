@@ -25,27 +25,68 @@ struct YouTubeInputPanelView: View {
     }
 
     private var isValidDraft: Bool {
-        YouTubeURLValidator.isYouTubeURL(draft)
+        MediaPlatform.isTranscribable(draft)
+    }
+
+    /// The platform recognized from the current draft, if any — drives the
+    /// live matched-glyph reaction in the header.
+    private var draftPlatform: MediaPlatform? {
+        MediaPlatform.recognize(draft)
+    }
+
+    /// Mirrors the brand glyph beside it: once a link is recognized the header
+    /// names the platform ("Transcribe Vimeo"), so logo and title move together.
+    /// Falls back to the general invitation while idle or on an unrecognized link.
+    private var headerTitle: LocalizedStringKey {
+        if let platform = draftPlatform {
+            return "Transcribe \(platform.displayName)"
+        }
+        return "Transcribe YouTube & more"
+    }
+
+    /// Reactive footer copy: confirms a recognized link, acknowledges any other
+    /// link, or invites a paste while idle.
+    private var footerCaption: String {
+        if let platform = draftPlatform {
+            let kind = platform.isAudioFirst ? "audio" : "video"
+            return "Ready to transcribe this \(platform.displayName) \(kind), on your Mac."
+        }
+        if isValidDraft {
+            return "Ready to transcribe this link, entirely on your Mac."
+        }
+        return "Works with YouTube, X, Vimeo, TikTok, Instagram, Facebook, podcasts, and more — on your Mac."
     }
 
     var body: some View {
         VStack(spacing: DesignSystem.Spacing.md) {
-            // Header
+            // Header — a single badge that morphs from a neutral globe to the
+            // matched platform's brand glyph as a link is recognized.
             HStack(spacing: DesignSystem.Spacing.sm) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(DesignSystem.Colors.youtubeRed.opacity(0.1))
-                        .frame(width: 36, height: 36)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill((draftPlatform?.brandTint ?? DesignSystem.Colors.accent).opacity(0.12))
+                        .frame(width: 38, height: 38)
 
-                    Image(systemName: "play.rectangle.fill")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(DesignSystem.Colors.youtubeRed.opacity(0.7))
+                    // No `.id` here: PlatformGlyph re-renders its Canvas when the
+                    // platform changes, so the mark updates in place (the tint
+                    // springs via the ZStack animation) instead of hard-cutting.
+                    PlatformGlyph(
+                        platform: draftPlatform,
+                        color: draftPlatform?.brandTint ?? DesignSystem.Colors.textSecondary
+                    )
+                    .frame(width: 21, height: 21)
                 }
+                .animation(.spring(response: 0.35, dampingFraction: 0.8), value: draftPlatform)
                 .accessibilityHidden(true)
 
-                Text("Transcribe a YouTube video")
+                Text(headerTitle)
                     .font(DesignSystem.Typography.sectionTitle)
                     .accessibilityAddTraits(.isHeader)
+                    .contentTransition(.opacity)
+                    // Key on the platform enum, not the LocalizedStringKey title:
+                    // a reliable Equatable change-signal, and it stays in sync with
+                    // the glyph (which keys on the same value).
+                    .animation(.spring(response: 0.35, dampingFraction: 0.8), value: draftPlatform)
 
                 Spacer()
             }
@@ -58,12 +99,12 @@ struct YouTubeInputPanelView: View {
                     .contentTransition(.symbolEffect(.replace))
                     .accessibilityHidden(true)
 
-                TextField("Paste a YouTube link", text: $draft)
+                TextField("Paste any video or podcast link", text: $draft)
                     .textFieldStyle(.plain)
                     .font(DesignSystem.Typography.body)
                     .focused($isTextFieldFocused)
-                    .accessibilityLabel("YouTube URL")
-                    .accessibilityValue(isValidDraft ? "Valid YouTube URL" : "")
+                    .accessibilityLabel("Media URL")
+                    .accessibilityValue(isValidDraft ? "Valid media URL" : "")
                     .onSubmit {
                         if isValidDraft && !viewModel.isTranscribing {
                             onTranscribe(draft)
@@ -129,7 +170,7 @@ struct YouTubeInputPanelView: View {
             .buttonStyle(.plain)
             .disabled(!isValidDraft || viewModel.isTranscribing)
             .accessibilityLabel("Start transcription")
-            .accessibilityHint("Starts transcribing the YouTube link")
+            .accessibilityHint("Starts transcribing the media link")
 
             // Footer text
             if viewModel.isTranscribing {
@@ -142,9 +183,10 @@ struct YouTubeInputPanelView: View {
                 .font(DesignSystem.Typography.caption)
                 .foregroundStyle(DesignSystem.Colors.warningAmber)
             } else {
-                Text("Downloads from YouTube, then transcribes entirely on your Mac.")
+                Text(footerCaption)
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(.tertiary)
+                    .animation(.easeInOut(duration: 0.2), value: footerCaption)
             }
         }
         .padding(DesignSystem.Spacing.lg)

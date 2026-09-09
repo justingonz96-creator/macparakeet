@@ -178,6 +178,60 @@ final class LLMClientTests: XCTestCase {
         XCTAssertEqual(capturedBody?["max_tokens"] as? Int, 1000)
     }
 
+    func testAnthropicOmitsTemperature() async throws {
+        var capturedBody: [String: Any]?
+
+        MockURLProtocol.handler = { request in
+            if let body = self.extractBody(from: request) {
+                capturedBody = body
+            }
+            return (self.okResponse(for: request), self.validAnthropicResponseData())
+        }
+
+        let config = LLMProviderConfig.anthropic(apiKey: "sk-ant-test-key")
+        _ = try await llmClient.chatCompletion(
+            messages: [ChatMessage(role: .user, content: "Hi")],
+            config: config,
+            options: ChatCompletionOptions(temperature: 0.25, maxTokens: 1000)
+        )
+
+        XCTAssertNil(capturedBody?["temperature"])
+    }
+
+    func testAnthropicSendsTemperatureToLegacyModels() async throws {
+        var capturedBody: [String: Any]?
+
+        MockURLProtocol.handler = { request in
+            if let body = self.extractBody(from: request) {
+                capturedBody = body
+            }
+            return (self.okResponse(for: request), self.validAnthropicResponseData())
+        }
+
+        let config = LLMProviderConfig.anthropic(apiKey: "sk-ant-test-key", model: "claude-sonnet-4-6")
+        _ = try await llmClient.chatCompletion(
+            messages: [ChatMessage(role: .user, content: "Hi")],
+            config: config,
+            options: ChatCompletionOptions(temperature: 0.25, maxTokens: 1000)
+        )
+
+        XCTAssertEqual(capturedBody?["temperature"] as? Double, 0.25)
+    }
+
+    func testAnthropicTemperatureModelAllowList() {
+        XCTAssertTrue(AnthropicLLMHTTPAdapter.modelAcceptsTemperature("claude-sonnet-4-6"))
+        XCTAssertTrue(AnthropicLLMHTTPAdapter.modelAcceptsTemperature("claude-haiku-4-5"))
+        XCTAssertTrue(AnthropicLLMHTTPAdapter.modelAcceptsTemperature("claude-sonnet-4-20250514"))
+        XCTAssertTrue(AnthropicLLMHTTPAdapter.modelAcceptsTemperature("claude-3-5-haiku-20241022"))
+        XCTAssertFalse(AnthropicLLMHTTPAdapter.modelAcceptsTemperature("claude-sonnet-5"))
+        XCTAssertFalse(AnthropicLLMHTTPAdapter.modelAcceptsTemperature("claude-opus-4-7"))
+        XCTAssertFalse(AnthropicLLMHTTPAdapter.modelAcceptsTemperature("claude-opus-4-8"))
+        XCTAssertFalse(AnthropicLLMHTTPAdapter.modelAcceptsTemperature("claude-fable-5"))
+        XCTAssertFalse(AnthropicLLMHTTPAdapter.modelAcceptsTemperature("claude-sonnet-6"))
+        XCTAssertFalse(AnthropicLLMHTTPAdapter.modelAcceptsTemperature("claude-sonnet-4-01"))
+        XCTAssertFalse(AnthropicLLMHTTPAdapter.modelAcceptsTemperature("claude-opus-4-07"))
+    }
+
     func testOllamaUsesNativeAPI() async throws {
         var capturedRequest: URLRequest?
 
@@ -534,7 +588,7 @@ final class LLMClientTests: XCTestCase {
             return (self.okResponse(for: request), self.validResponseData())
         }
 
-        let config = LLMProviderConfig.openai(apiKey: "sk-test")
+        let config = LLMProviderConfig.openai(apiKey: "sk-test", model: "gpt-4.1")
         try await llmClient.testConnection(config: config)
 
         XCTAssertEqual(capturedBody?["max_tokens"] as? Int, 1)
@@ -825,7 +879,7 @@ final class LLMClientTests: XCTestCase {
         XCTAssertNil(capturedBody?["temperature"])
     }
 
-    func testGPT5UsesMaxCompletionTokensButKeepsTemperature() async throws {
+    func testGPT5ReasoningTierUsesMaxCompletionTokensAndOmitsTemperature() async throws {
         var capturedBody: [String: Any]?
 
         MockURLProtocol.handler = { request in
@@ -835,7 +889,68 @@ final class LLMClientTests: XCTestCase {
             return (self.okResponse(for: request), self.validResponseData())
         }
 
-        let config = LLMProviderConfig.openai(apiKey: "sk-test", model: "gpt-5.2")
+        let config = LLMProviderConfig.openai(apiKey: "sk-test", model: "gpt-5.5")
+        let response = try await llmClient.chatCompletion(
+            messages: [ChatMessage(role: .user, content: "Hi")],
+            config: config,
+            options: ChatCompletionOptions(temperature: 0.7, maxTokens: 500)
+        )
+
+        // GPT-5.x requires max_completion_tokens, not max_tokens
+        XCTAssertNil(capturedBody?["max_tokens"])
+        XCTAssertEqual(capturedBody?["max_completion_tokens"] as? Int, 500)
+        // MacParakeet omits temperature for the GPT-5.x reasoning tier
+        XCTAssertNil(capturedBody?["temperature"])
+        XCTAssertNil(response.effectiveInferenceSettings, "Direct options cannot attest to settings the adapter omitted.")
+    }
+
+    func testResolvedGPT5ReceiptsOnlyIncludeSettingsActuallySentInBothCompletionModes() async throws {
+        MockURLProtocol.handler = { request in
+            let body = try XCTUnwrap(self.extractBody(from: request))
+            XCTAssertNil(body["temperature"])
+            XCTAssertNil(body["top_p"])
+            XCTAssertEqual(body["max_completion_tokens"] as? Int, 500)
+            if body["stream"] as? Bool == true {
+                let data = Data("""
+                    data: {"model":"gpt-5.5","choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
+
+                    data: {"model":"gpt-5.5","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+                    data: [DONE]
+
+                    """.utf8)
+                return (self.okResponse(for: request), data)
+            }
+            return (self.okResponse(for: request), self.validResponseData())
+        }
+        let config = LLMProviderConfig.openai(apiKey: "sk-test", model: "gpt-5.5")
+        let options = try PromptInferenceCapabilityResolver.resolve(
+            config: config,
+            requested: PromptInferenceSettings(temperature: 0.7, topP: 0.9, maxTokens: 500)
+        ).options
+        let messages = [ChatMessage(role: .user, content: "Hi")]
+        let response = try await llmClient.chatCompletion(messages: messages, config: config, options: options)
+        XCTAssertEqual(response.effectiveInferenceSettings, PromptInferenceSettings(maxTokens: 500))
+        var terminal: LLMStreamTerminal?
+        for try await event in llmClient.chatCompletionDetailedStream(
+            messages: messages, config: config, options: options
+        ) {
+            if case .completed(let receipt) = event { terminal = receipt }
+        }
+        XCTAssertEqual(try XCTUnwrap(terminal).effectiveSettings, PromptInferenceSettings(maxTokens: 500))
+    }
+
+    func testGPT5ChatTierUsesMaxCompletionTokensAndKeepsTemperature() async throws {
+        var capturedBody: [String: Any]?
+
+        MockURLProtocol.handler = { request in
+            if let body = self.extractBody(from: request) {
+                capturedBody = body
+            }
+            return (self.okResponse(for: request), self.validResponseData())
+        }
+
+        let config = LLMProviderConfig.openai(apiKey: "sk-test", model: "gpt-5.3-chat-latest")
         _ = try await llmClient.chatCompletion(
             messages: [ChatMessage(role: .user, content: "Hi")],
             config: config,
@@ -845,7 +960,7 @@ final class LLMClientTests: XCTestCase {
         // GPT-5.x requires max_completion_tokens, not max_tokens
         XCTAssertNil(capturedBody?["max_tokens"])
         XCTAssertEqual(capturedBody?["max_completion_tokens"] as? Int, 500)
-        // But GPT-5.x still accepts temperature (unlike reasoning models)
+        // Chat-tier GPT-5.x variants still accept explicit temperature
         XCTAssertEqual(capturedBody?["temperature"] as? Double, 0.7)
     }
 
@@ -947,7 +1062,13 @@ final class LLMClientTests: XCTestCase {
         MockURLProtocol.handler = { request in
             capturedRequest = request
             return (self.okResponse(for: request), Data("""
-            {"models":[{"name":"qwen3.5:4b"},{"name":"gemma3:4b"}]}
+            {
+              "models": [
+                {"name":"qwen3.5:4b"},
+                {"name":"gemma3:4b"},
+                {"name":"nomic-embed-text"}
+              ]
+            }
             """.utf8))
         }
 
@@ -1009,6 +1130,225 @@ final class LLMClientTests: XCTestCase {
             ]
         )
         XCTAssertEqual(models, ["qwen3.5:4b"])
+    }
+
+    func testOpenAIListModelsFiltersCatalogToStreamingChatModels() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://api.openai.com/v1/models")
+            return (self.okResponse(for: request), Data("""
+            {
+              "data": [
+                {"id":"gpt-5.5"},
+                {"id":"gpt-5.5-pro"},
+                {"id":"gpt-4.1-mini"},
+                {"id":"gpt-4o-transcribe"},
+                {"id":"gpt-image-1"},
+                {"id":"text-embedding-3-large"},
+                {"id":"omni-moderation-latest"},
+                {"id":"chatgpt-4o-latest"},
+                {"id":"o2-mini"},
+                {"id":"o10-mini"},
+                {"id":"o4-mini"}
+              ]
+            }
+            """.utf8))
+        }
+
+        let models = try await llmClient.listModels(config: .openai(apiKey: "sk-test"))
+
+        XCTAssertEqual(models, ["chatgpt-4o-latest", "gpt-4.1-mini", "gpt-5.5", "o2-mini", "o4-mini"])
+    }
+
+    func testOpenAICompatibleListModelsFiltersObviousNonTextModels() async throws {
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://custom.example.test/v1/models")
+            return (self.okResponse(for: request), Data("""
+            {
+              "data": [
+                {"id":"llama-3.1-8b-instruct"},
+                {"id":"text-embedding-3-large"},
+                {"id":"stable-diffusion-xl"},
+                {"id":"whisper-large-v3"},
+                {"id":"bge-reranker-v2"}
+              ]
+            }
+            """.utf8))
+        }
+
+        let config = LLMProviderConfig.openaiCompatible(
+            model: "llama-3.1-8b-instruct",
+            baseURL: URL(string: "https://custom.example.test/v1")!
+        )
+        let models = try await llmClient.listModels(config: config)
+
+        XCTAssertEqual(models, ["llama-3.1-8b-instruct"])
+    }
+
+    func testGeminiListModelsUsesNativeModelsEndpoint() async throws {
+        var capturedRequest: URLRequest?
+
+        MockURLProtocol.handler = { request in
+            capturedRequest = request
+            return (self.okResponse(for: request), Data("""
+            {
+              "models": [
+                {
+                  "name": "models/text-embedding-004",
+                  "supportedGenerationMethods": ["embedContent"]
+                },
+                {
+                  "name": "models/gemini-3-pro-image-preview",
+                  "supportedGenerationMethods": ["generateContent"]
+                },
+                {
+                  "name": "models/nano-banana-pro-preview",
+                  "supportedGenerationMethods": ["generateContent"]
+                },
+                {
+                  "name": "models/gemini-3.5-flash",
+                  "supportedGenerationMethods": ["generateContent", "countTokens"]
+                }
+              ]
+            }
+            """.utf8))
+        }
+
+        let models = try await llmClient.listModels(config: .gemini(apiKey: "gem-key", model: "gemini-3.5-flash"))
+
+        XCTAssertEqual(capturedRequest?.url?.scheme, "https")
+        XCTAssertEqual(capturedRequest?.url?.host, "generativelanguage.googleapis.com")
+        XCTAssertEqual(capturedRequest?.url?.path, "/v1beta/models")
+        let queryItems = URLComponents(url: try XCTUnwrap(capturedRequest?.url), resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .reduce(into: [String: String]()) { result, item in result[item.name] = item.value }
+        XCTAssertEqual(queryItems?["pageSize"], "1000")
+        XCTAssertEqual(queryItems?["key"], "gem-key")
+        XCTAssertNil(capturedRequest?.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertEqual(models, ["gemini-3.5-flash"])
+    }
+
+    func testGeminiListModelsPreservesCustomBaseURLQueryItems() async throws {
+        var capturedRequest: URLRequest?
+
+        MockURLProtocol.handler = { request in
+            capturedRequest = request
+            return (self.okResponse(for: request), Data("""
+            {"models":[{"name":"models/gemini-3.5-flash","supportedGenerationMethods":["generateContent"]}]}
+            """.utf8))
+        }
+
+        let config = LLMProviderConfig.gemini(
+            apiKey: "gem-key",
+            model: "gemini-3.5-flash",
+            baseURL: URL(string: "https://proxy.example.test/gemini/openai?proxy=1&alt=json")!
+        )
+        let models = try await llmClient.listModels(config: config)
+
+        XCTAssertEqual(capturedRequest?.url?.host, "proxy.example.test")
+        XCTAssertEqual(capturedRequest?.url?.path, "/gemini/models")
+        let queryItems = URLComponents(url: try XCTUnwrap(capturedRequest?.url), resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .reduce(into: [String: String]()) { result, item in result[item.name] = item.value }
+        XCTAssertEqual(queryItems?["proxy"], "1")
+        XCTAssertEqual(queryItems?["alt"], "json")
+        XCTAssertEqual(queryItems?["pageSize"], "1000")
+        XCTAssertEqual(queryItems?["key"], "gem-key")
+        XCTAssertEqual(models, ["gemini-3.5-flash"])
+    }
+
+    func testOpenRouterListModelsRequestsTextOutputAndFiltersModalities() async throws {
+        var capturedRequest: URLRequest?
+
+        MockURLProtocol.handler = { request in
+            capturedRequest = request
+            return (self.okResponse(for: request), Data("""
+            {
+              "data": [
+                {
+                  "id":"openai/gpt-5.5",
+                  "architecture": {
+                    "input_modalities": ["text"],
+                    "output_modalities": ["text"]
+                  }
+                },
+                {
+                  "id":"google/gemini-3-pro-image-preview",
+                  "architecture": {
+                    "input_modalities": ["text"],
+                    "output_modalities": ["image"]
+                  }
+                },
+                {
+                  "id":"openai/text-embedding-3-large",
+                  "architecture": {
+                    "input_modalities": ["text"],
+                    "output_modalities": ["embeddings"]
+                  }
+                },
+                {
+                  "id":"anthropic/claude-sonnet-4.6"
+                }
+              ]
+            }
+            """.utf8))
+        }
+
+        let models = try await llmClient.listModels(config: .openrouter(apiKey: "sk-or-test"))
+
+        XCTAssertEqual(capturedRequest?.url?.path, "/api/v1/models")
+        let queryItems = URLComponents(url: try XCTUnwrap(capturedRequest?.url), resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .reduce(into: [String: String]()) { result, item in result[item.name] = item.value }
+        XCTAssertEqual(queryItems?["output_modalities"], "text")
+        XCTAssertEqual(models, ["anthropic/claude-sonnet-4.6", "openai/gpt-5.5"])
+    }
+
+    func testAnthropicListModelsRequestsLargePageWithNativeHeaders() async throws {
+        var capturedRequest: URLRequest?
+
+        MockURLProtocol.handler = { request in
+            capturedRequest = request
+            return (self.okResponse(for: request), Data("""
+            {
+              "data": [
+                {"id":"claude-sonnet-4-6","type":"model"},
+                {"id":"workspace-audit-log","type":"audit_log"}
+              ]
+            }
+            """.utf8))
+        }
+
+        let models = try await llmClient.listModels(config: .anthropic(apiKey: "sk-ant-test"))
+
+        XCTAssertEqual(capturedRequest?.url?.path, "/v1/models")
+        let queryItems = URLComponents(url: try XCTUnwrap(capturedRequest?.url), resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .reduce(into: [String: String]()) { result, item in result[item.name] = item.value }
+        XCTAssertEqual(queryItems?["limit"], "1000")
+        XCTAssertEqual(capturedRequest?.value(forHTTPHeaderField: "x-api-key"), "sk-ant-test")
+        XCTAssertEqual(capturedRequest?.value(forHTTPHeaderField: "anthropic-version"), "2023-06-01")
+        XCTAssertEqual(models, ["claude-sonnet-4-6"])
+    }
+
+    func testListModelsThrowsUnsupportedProviderErrorWithoutRequest() async {
+        var didRequest = false
+        MockURLProtocol.handler = { request in
+            didRequest = true
+            return (self.okResponse(for: request), Data())
+        }
+
+        do {
+            _ = try await llmClient.listModels(config: .localCLI())
+            XCTFail("Expected LLMError.connectionFailed")
+        } catch let error as LLMError {
+            XCTAssertEqual(
+                error.localizedDescription,
+                "Connection failed: Model listing is not supported for this provider."
+            )
+            XCTAssertFalse(didRequest)
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
     }
 
     func testListModelsConnectionFailureIncludesUnderlyingError() async {
@@ -1276,6 +1616,51 @@ final class LLMClientTests: XCTestCase {
 
     func testScrubLeavesPlainErrorAlone() {
         let original = "Rate limit exceeded. Try again in 30 seconds."
+        XCTAssertEqual(LLMClient.scrubAPIKeyArtifacts(from: original), original)
+    }
+
+    func testScrubReplacesURLEncodedBearerTokens() {
+        // AUDIT-076: URL-encoded echoes (`%2B`, `%3D`, ...) must not escape
+        // the Bearer pattern.
+        let scrubbed = LLMClient.scrubAPIKeyArtifacts(
+            from: "Forwarded: 'Authorization: Bearer abc123%2Bdef%3D456ghi789'"
+        )
+        XCTAssertFalse(scrubbed.contains("abc123%2Bdef%3D456ghi789"))
+        XCTAssertTrue(scrubbed.contains("Bearer <token>"))
+    }
+
+    func testScrubReplacesRawBase64BearerTokens() {
+        // PR #477 review: raw Base64 tokens contain `+`, `/`, `=`. A short
+        // pre-`+` prefix must not dodge the length floor, and no suffix may
+        // leak past the first special character.
+        let scrubbed = LLMClient.scrubAPIKeyArtifacts(
+            from: "Forwarded: 'Authorization: Bearer ab+cdef/g=hijklmnop'"
+        )
+        XCTAssertFalse(scrubbed.contains("ab+cdef/g=hijklmnop"))
+        XCTAssertTrue(scrubbed.contains("Bearer <token>"))
+    }
+
+    func testScrubReplacesRawBase64KeyParams() {
+        let scrubbed = LLMClient.scrubAPIKeyArtifacts(
+            from: "Bad URL: ?key=AAAbbbCCC+ddd/EE==&retry=1"
+        )
+        XCTAssertFalse(scrubbed.contains("AAAbbbCCC+ddd/EE=="))
+        XCTAssertTrue(scrubbed.contains("key=<token>"))
+        XCTAssertTrue(scrubbed.contains("&retry=1"), "scrub must stop at the next query separator")
+    }
+
+    func testScrubReplacesSixteenCharGenericKeyParams() {
+        // AUDIT-076: the old 20-char floor let shorter real keys through.
+        let scrubbed = LLMClient.scrubAPIKeyArtifacts(
+            from: "Bad URL: ?key=AIzaSyD4x8Q2hP0a"
+        )
+        XCTAssertFalse(scrubbed.contains("AIzaSyD4x8Q2hP0a"))
+        XCTAssertTrue(scrubbed.contains("key=<token>"))
+    }
+
+    func testScrubLeavesInnocentShortKeyParamsAlone() {
+        // Conservative floor: ordinary `key=<word>` params stay readable.
+        let original = "Lookup failed for key=transcription."
         XCTAssertEqual(LLMClient.scrubAPIKeyArtifacts(from: original), original)
     }
 

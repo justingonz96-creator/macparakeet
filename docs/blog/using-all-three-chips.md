@@ -1,6 +1,6 @@
 # Using All Three Chips: How We Rebuilt MacParakeet's Speech Engine for Apple Silicon
 
-> Status: **HISTORICAL** - The old on-device Qwen3-8B / mlx-swift-lm path was removed 2026-02-23. GPU-local LLM content below is outdated; current LLM features use external providers or local CLI, while core speech remains a two-chip architecture (CPU + ANE).
+> Status: **HISTORICAL** - The old on-device Qwen3-8B / mlx-swift-lm path was removed 2026-02-23. GPU-local LLM content below is outdated; current LLM features use external providers or local CLI, while core speech remains a two-chip architecture (CPU + ANE). The `155x` / `~66 MB` numbers below are migration-era measurements, not current release claims; current M4 Pro results are ~81–93x steady realtime and 115–131 MB peak RSS by Parakeet build (see `spec/06-stt-engine.md`).
 
 *MacParakeet Engineering*
 
@@ -174,11 +174,9 @@ We're still investigating why — likely their CTC/TDT decoding optimizations re
 
 ## The Model Size Tradeoff
 
-There is one cost: the CoreML model bundle is larger. The MLX version weighs about 2.5 GB; the CoreML version is roughly 6 GB.
+Early CoreML planning treated the full repository footprint as the user-facing download, but the shipped app fetches only the components it loads. The current Parakeet CoreML download is roughly 465 MB per build.
 
-Why? MLX stores model weights in a compact format that the GPU interprets at runtime. CoreML stores **pre-compiled, hardware-optimized model graphs** — separate bundles for the encoder, decoder, joint network, and preprocessor, each optimized for the ANE's specific execution pipeline. Think of it like the difference between source code and a compiled binary: more bytes on disk, but faster and more efficient execution.
-
-For a one-time download during first launch, we think that's a fair trade. Lower memory usage, better accuracy, and a simpler architecture are worth an extra few gigabytes of initial download.
+That keeps the first-launch cost modest while preserving the important tradeoff: lower memory usage, better accuracy, and a simpler architecture without cloud STT.
 
 ---
 

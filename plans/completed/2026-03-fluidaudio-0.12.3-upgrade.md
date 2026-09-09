@@ -134,7 +134,7 @@ Already done during verification:
 
 ### Step 5: Add model cache clearing to Settings
 
-**Problem:** No way for users to reclaim ~6 GB of disk space. The "Repair" button only re-downloads.
+**Problem:** No way for users to reclaim model cache disk space. Current Parakeet ASR usage downloads roughly ~465 MB per selected build, plus diarization/VAD/other FluidAudio caches as enabled. The "Repair" button only re-downloads.
 
 **Solution:** Use `DownloadUtils.clearAllModelCaches()`.
 
@@ -157,7 +157,7 @@ Already done during verification:
 
 - `Sources/MacParakeet/Views/Settings/SettingsView.swift`:
   - Add "Delete Models" button (destructive style) in the Speech Model card
-  - Confirmation dialog: "This will delete ~6 GB of speech and speaker models. You'll need to re-download them before transcribing."
+  - Confirmation dialog: "This will delete local speech and speaker models. You'll need to re-download them before transcribing."
   - Disable button while transcription/dictation is active
 
 - `Sources/CLI/Commands/ModelsCommand.swift`:

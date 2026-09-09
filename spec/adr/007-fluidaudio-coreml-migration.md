@@ -2,7 +2,11 @@
 
 > Status: **Accepted**
 > Date: 2026-02-13
+> Current LLM scope (2026-09-07): removal of the original Qwen3-8B baseline remains historical fact. ADR-011 now governs a separate developer-gated Local MLX implementation; external providers/local CLI remain the public/default path.
 > Note: Core decision (FluidAudio CoreML for STT) is implemented and active. GPU/LLM references (Qwen3-8B, "GPU contention") are historical — the old on-device mlx-swift-lm path was removed 2026-02-23.
+> Benchmark note (2026-07-16): the `155x` / `~66 MB` figures below record the migration-era comparison. Current MacParakeet M4 Pro results are ~81–93x steady realtime and 115–131 MB peak RSS by Parakeet build; use [`benchmarks/asr/`](../../benchmarks/asr/) and `spec/06-stt-engine.md` for current comparisons.
+> Amendment (2026-05-30): The migration remains the active runtime decision. MacParakeet exposed FluidAudio's Parakeet v3 multilingual build by default and v2 English-only as an opt-in build; this did not change the Python-elimination decision.
+> Amendment (2026-06-18): Parakeet Unified is also exposed as an opt-in English build through FluidAudio CoreML, with a dedicated runtime path. This preserves the Python-elimination decision.
 
 ## Context
 
@@ -56,7 +60,7 @@ The model choice (Parakeet TDT 0.6B-v3) is unchanged. Only the runtime changes. 
 | Speed | ~300x realtime | ~155x realtime |
 | WER | ~6.3% | ~2.5% (improved decoding) |
 | Peak working RAM | ~2 GB (GPU pool) | ~66 MB (~130 MB with vocabulary boosting) |
-| Model download | ~2.5 GB MLX weights | ~6 GB CoreML compiled bundles |
+| Model download | ~2.5 GB MLX weights | ~465 MB fetched components per Parakeet build (current); full CoreML repos are larger |
 | Dependencies | Python + uv + venv + JSON-RPC | SwiftPM (FluidAudio) |
 | IPC | JSON-RPC over stdin/stdout | In-process async/await |
 | Python in project | Yes (STT daemon, yt-dlp, FFmpeg via imageio) | None |
@@ -130,7 +134,7 @@ v0.2 adds Qwen3-8B to the GPU — the exact moment GPU contention becomes real. 
 
 ### Negative
 
-- **Larger model download**: ~6 GB CoreML bundles vs ~2.5 GB MLX weights. Acceptable for one-time onboarding download — the previous Python venv + model was already ~3 GB total, so the net increase is ~3 GB.
+- **Model distribution shape changed after implementation**: the full CoreML repos are larger than the old MLX weights, but MacParakeet now fetches only the components it loads, roughly ~465 MB per Parakeet build. v2 and v3 cache independently.
 - **Slower raw throughput**: ~155x realtime vs ~300x. Imperceptible for dictation (0.4s vs 0.2s for 1 minute of audio). Noticeable only for very long file transcription (23s vs 12s for 1 hour).
 - **No crash isolation**: CoreML runs in-process. A CoreML crash takes down the app (vs the Python daemon crashing independently). Mitigated by CoreML's maturity and proper error handling.
 - **Third-party dependency**: FluidAudio is maintained by a small independent team (FluidInference). Mitigated by Apache 2.0 license (forkable), CoreML models hosted independently on HuggingFace, and 20+ production apps providing ecosystem validation.

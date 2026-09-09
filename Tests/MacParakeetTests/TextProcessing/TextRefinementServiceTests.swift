@@ -5,7 +5,7 @@ final class TextRefinementServiceTests: XCTestCase {
     func testCleanModeReturnsDeterministicText() async {
         let service = TextRefinementService()
         let result = await service.refine(
-            rawText: "um hello world",
+            rawText: "uh hello world",
             mode: .clean,
             customWords: [],
             snippets: []
@@ -89,5 +89,18 @@ final class TextRefinementServiceTests: XCTestCase {
         )
         XCTAssertEqual(result.text, "Hello")
         XCTAssertEqual(result.postPasteAction, .returnKey)
+    }
+
+    func testDeterministicModeHonorsInlineInsertionStyle() async {
+        let service = TextRefinementService()
+        let result = await service.refine(
+            rawText: "Hello world.",
+            mode: .clean,
+            customWords: [],
+            snippets: [],
+            insertionStyle: .inline
+        )
+        XCTAssertEqual(result.text, "hello world")
+        XCTAssertEqual(result.path, .deterministic)
     }
 }

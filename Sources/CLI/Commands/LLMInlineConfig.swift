@@ -9,6 +9,15 @@ struct InlineLLMExecutionContext {
     let client: any LLMClientProtocol
 }
 
+private enum InlineLLMCompatibilityDefaults {
+    // Inline CLI commands keep historical defaults for script compatibility.
+    // Settings and app picker defaults come from LLMProviderDescriptor and may
+    // move faster as provider model recommendations change.
+    static let openAIModel = "gpt-4.1"
+    static let geminiModel = "gemini-2.5-flash"
+    static let openRouterModel = "anthropic/claude-sonnet-5"
+}
+
 func validateBaseURL(_ value: String) throws -> URL {
     guard let url = URL(string: value),
           let scheme = url.scheme?.lowercased(),
@@ -67,7 +76,7 @@ struct LLMInlineOptions: ParsableArguments {
     @Option(name: .long, help: "Environment variable name containing the API key.")
     var apiKeyEnv: String?
 
-    @Option(name: .long, help: "Model name (e.g. gpt-4o, claude-sonnet-4-20250514, gemini-2.0-flash).")
+    @Option(name: .long, help: "Model name (e.g. gpt-4o, claude-sonnet-5, gemini-2.0-flash).")
     var model: String?
 
     @Option(name: .long, help: "Base URL override (e.g. https://us.api.openai.com/v1).")
@@ -101,6 +110,9 @@ struct LLMInlineOptions: ParsableArguments {
                 "Unknown provider '\(provider)'. Options: anthropic, openai, openaiCompatible, gemini, openrouter, ollama, lmstudio, cli"
             )
         }
+        if providerID == .inProcessLocal {
+            throw ValidationError("The in-process local provider is not exposed through inline CLI configuration yet.")
+        }
         return providerID
     }
 
@@ -127,18 +139,22 @@ struct LLMInlineOptions: ParsableArguments {
         switch providerID {
         case .anthropic:
             let key = try requiredAPIKey(
-                providerName: "Anthropic",
+                providerName: providerID.displayName,
                 defaultEnvNames: ["ANTHROPIC_API_KEY"],
                 environment: environment
             )
-            providerConfig = .anthropic(apiKey: key, model: model ?? "claude-sonnet-4-6", baseURL: overrideURL)
+            providerConfig = .anthropic(apiKey: key, model: model ?? providerID.defaultModelName, baseURL: overrideURL)
         case .openai:
             let key = try requiredAPIKey(
-                providerName: "OpenAI",
+                providerName: providerID.displayName,
                 defaultEnvNames: ["OPENAI_API_KEY"],
                 environment: environment
             )
-            providerConfig = .openai(apiKey: key, model: model ?? "gpt-4.1", baseURL: overrideURL)
+            providerConfig = .openai(
+                apiKey: key,
+                model: model ?? InlineLLMCompatibilityDefaults.openAIModel,
+                baseURL: overrideURL
+            )
         case .openaiCompatible:
             guard let overrideURL else { throw ValidationError("--base-url is required for OpenAI-Compatible") }
             guard let model, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -151,20 +167,28 @@ struct LLMInlineOptions: ParsableArguments {
             )
         case .gemini:
             let key = try requiredAPIKey(
-                providerName: "Gemini",
+                providerName: providerID.displayName,
                 defaultEnvNames: ["GEMINI_API_KEY"],
                 environment: environment
             )
-            providerConfig = .gemini(apiKey: key, model: model ?? "gemini-2.5-flash", baseURL: overrideURL)
+            providerConfig = .gemini(
+                apiKey: key,
+                model: model ?? InlineLLMCompatibilityDefaults.geminiModel,
+                baseURL: overrideURL
+            )
         case .openrouter:
             let key = try requiredAPIKey(
-                providerName: "OpenRouter",
+                providerName: providerID.displayName,
                 defaultEnvNames: ["OPENROUTER_API_KEY"],
                 environment: environment
             )
-            providerConfig = .openrouter(apiKey: key, model: model ?? "anthropic/claude-sonnet-4", baseURL: overrideURL)
+            providerConfig = .openrouter(
+                apiKey: key,
+                model: model ?? InlineLLMCompatibilityDefaults.openRouterModel,
+                baseURL: overrideURL
+            )
         case .ollama:
-            providerConfig = .ollama(model: model ?? "qwen3.5:4b", baseURL: overrideURL)
+            providerConfig = .ollama(model: model ?? providerID.defaultModelName, baseURL: overrideURL)
         case .lmstudio:
             guard let rawModel = model?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !rawModel.isEmpty else {
@@ -184,6 +208,8 @@ struct LLMInlineOptions: ParsableArguments {
             localCLIConfig = LocalCLIConfig(
                 commandTemplate: rawCommand.trimmingCharacters(in: .whitespacesAndNewlines)
             )
+        case .inProcessLocal:
+            throw ValidationError("The in-process local provider is not exposed through inline CLI configuration yet.")
         }
 
         if local && !providerConfig.isLocal {

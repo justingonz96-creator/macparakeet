@@ -3,29 +3,89 @@ import MacParakeetCore
 import OSLog
 import SwiftUI
 
+/// A persisted user-driven meeting rename that other loaded view models can apply in place.
+public struct MeetingRename: Equatable, Sendable {
+    public let id: UUID
+    public let title: String
+
+    public init(id: UUID, title: String) {
+        self.id = id
+        self.title = title
+    }
+}
+
 @MainActor
 @Observable
 public final class TranscriptionViewModel {
+    public struct AudioTrackSelectionRequest: Identifiable, Equatable, Sendable {
+        public let id: UUID
+        public let fileName: String
+        public let fileCount: Int
+        public let tracks: [AudioTrackDescriptor]
+
+        public var isBatch: Bool { fileCount > 1 }
+    }
+
     public struct RetranscriptionEngineOption: Equatable, Sendable {
+        public struct Choice: Identifiable, Equatable, Sendable {
+            public let selection: SpeechEngineSelection
+            public let capabilities: SpeechEngineCapabilities
+            public let isPrimary: Bool
+            public let isAvailable: Bool
+            public let unavailableReason: String?
+            public let advisory: String?
+
+            public var id: String {
+                "\(selection.engine.rawValue)-\(selection.language ?? "none")"
+            }
+        }
+
         public let primaryEngine: SpeechEngineSelection
-        public let alternativeEngine: SpeechEngineSelection
-        public let isAlternativeAvailable: Bool
-        public let unavailableReason: String?
+        public let choices: [Choice]
+        /// Persisted Nemotron build a Nemotron rerun would load (STTRuntime
+        /// resolves the persisted variant at run start).
+        public let nemotronVariant: NemotronModelVariant
+        /// Persisted Parakeet build a Parakeet rerun would load. Drives the
+        /// engine card's subtitle so it reflects the actual v3/v2/Unified
+        /// posture (e.g. Unified is English-only and emits word timestamps)
+        /// rather than always advertising the multilingual v3 build.
+        public let parakeetVariant: ParakeetModelVariant
+        /// Whether `primaryEngine` reflects the engine that actually produced
+        /// this transcript (a captured meeting engine, or the engine recorded on
+        /// the row) rather than a fall-back to the user's current default. The
+        /// menu badges the primary "Original" when this is `true` and "Current"
+        /// when it is `false` (legacy rows predating engine attribution), and
+        /// only the latter reruns through the plain current-settings path.
+        public let primaryReflectsTranscriptEngine: Bool
 
         public var title: String {
-            "Try with \(alternativeEngine.engine.displayName)"
+            "Retranscribe with speech engine"
+        }
+
+        public var firstTimestampCapableChoice: Choice? {
+            choices.first { choice in
+                choice.isAvailable && choice.capabilities.providesWordTimestamps
+            }
+        }
+
+        public func producesWordTimestamps(_ selection: SpeechEngineSelection) -> Bool {
+            choices
+                .first { $0.selection.engine == selection.engine }?
+                .capabilities.providesWordTimestamps ?? false
         }
     }
 
     public enum SourceKind: Sendable {
         case localFile
         case youtubeURL
+        case podcastURL
     }
 
     public enum ProgressPhase: Int, CaseIterable, Sendable {
         case preparing
         case downloading
         case converting
+        case preparingSpeechModel
         case transcribing
         case identifyingSpeakers
         case finalizing
@@ -33,6 +93,7 @@ public final class TranscriptionViewModel {
 
     public enum TranscriptTab: Hashable, Sendable {
         case transcript
+        case notes
         case result(id: UUID)
         case generation(id: UUID)
         case chat
@@ -46,16 +107,47 @@ public final class TranscriptionViewModel {
     }
 
     public var transcriptions: [Transcription] = []
+    /// Monotonic identity for the selected transcript snapshot. Views use this
+    /// to reject asynchronous derivations that finished after a same-row edit,
+    /// retranscription, refresh, or metadata update.
+    public private(set) var currentTranscriptionRevision: UInt64 = 0
     public var currentTranscription: Transcription? {
         didSet {
+            currentTranscriptionRevision &+= 1
             let transcriptionChanged = oldValue?.id != currentTranscription?.id
             if transcriptionChanged {
+                if let previousID = oldValue?.id {
+                    clearMeetingNotesError(for: previousID)
+                }
                 selectedTab = .transcript
             }
             if transcriptionChanged || currentTranscription == nil {
                 hasConversations = false
             }
             refreshPromptResultStatus()
+            // Attribution belongs to a selected snapshot, including updates of
+            // the same row when a queued meeting finishes transcription.
+            speakerAttributionLoadToken = nil
+            // Notes and title updates do not change speaker evidence. Keep
+            // the displayed projection stable while refreshing its DB state.
+            let sameSpeakerSource = currentTranscription != nil
+                && oldValue?.id == currentTranscription?.id
+                && oldValue?.status == currentTranscription?.status
+                && oldValue?.sourceType == currentTranscription?.sourceType
+                && oldValue?.wordTimestamps == currentTranscription?.wordTimestamps
+                && oldValue?.transcriptSegments == currentTranscription?.transcriptSegments
+                && oldValue?.speakers == currentTranscription?.speakers
+                && oldValue?.diarizationSegments == currentTranscription?.diarizationSegments
+            if !sameSpeakerSource {
+                speakerAttributionTranscriptionID = nil
+                speakerAttribution = nil
+                speakerCorrectionsApplied = false
+                canUndoSpeakerCorrection = false
+                canRedoSpeakerCorrection = false
+            }
+            if let currentTranscription {
+                loadSpeakerAttribution(for: currentTranscription)
+            }
         }
     }
     public var pendingDeleteTranscription: Transcription?
@@ -66,8 +158,43 @@ public final class TranscriptionViewModel {
     public private(set) var progressPhase: ProgressPhase = .preparing
     public private(set) var progressHeadline: String = "Preparing transcription pipeline"
     public private(set) var progressSubline: String? = nil
-    public var errorMessage: String?
+    /// The error-banner headline. Mutated only via `setError`/`clearError` so it
+    /// can never drift out of sync with `errorDetail`.
+    public private(set) var errorMessage: String?
+    private var currentErrorID = UUID()
+    private var meetingNotesErrorID: UUID?
+    private var meetingNotesErrorMeetingID: UUID?
+    /// Rich, copyable diagnostic for the most recent URL-download failure: the
+    /// terse `errorMessage` headline plus the source link and environment. Only
+    /// ever shown/copied on explicit user action (the banner's copy button), so —
+    /// unlike `errorMessage`, which telemetry classifies — it can safely carry the
+    /// URL. `nil` for non-URL failures, where the copy button falls back to
+    /// `errorMessage`.
+    public private(set) var errorDetail: String?
+    /// A derived-artifact failure never rolls back saved meeting notes. Warnings
+    /// are retained per meeting until a later ordered refresh succeeds.
+    public var meetingNotesArtifactWarning: String? {
+        guard let id = currentTranscription?.id else { return nil }
+        return meetingNotesArtifactWarnings[id]
+    }
+
+    /// Sets the error-banner state. Headline and its optional rich diagnostic are
+    /// updated together, so a diagnostic built for one failure can never linger
+    /// under a later, unrelated error — the single choke point that keeps the two
+    /// in sync (the copy button reads `errorDetail ?? errorMessage`).
+    public func setError(message: String?, detail: String? = nil) {
+        currentErrorID = UUID()
+        errorMessage = message
+        errorDetail = detail
+    }
+
+    /// Clears the error banner.
+    public func clearError() {
+        setError(message: nil)
+    }
     public private(set) var transcribingFileName: String = ""
+    public private(set) var isInspectingAudioTracks = false
+    public private(set) var pendingAudioTrackSelection: AudioTrackSelectionRequest?
     public var isDragging = false
     public var urlInput: String = ""
     public var hasPromptResultTabs: Bool = false
@@ -77,19 +204,73 @@ public final class TranscriptionViewModel {
     public var selectedTab: TranscriptTab = .transcript
 
     public var onTranscribingChanged: ((Bool) -> Void)?
+    /// Fired only after a meeting rename is persisted.
+    public var onMeetingRenamed: ((MeetingRename) -> Void)?
+
+    /// Fired once when a single transcription, or a whole batch, finishes and
+    /// the user's completion-notification setting is on. The app layer plays
+    /// the chime and (when backgrounded) posts a banner. Nil-safe: the
+    /// ViewModel only invokes this with a non-nil `Content`.
+    public var onTranscriptionCompleted: ((TranscriptionCompletionNotifier.Content) -> Void)?
+
+    // MARK: - Batch transcription (local files only)
+    //
+    // A multi-file drop / multi-select / folder fans out into a sequential
+    // queue drained on the shared file-transcription path — no new STT slot and
+    // no parallelism (ADR-016). YouTube stays single-URL. The single-file path
+    // (`count <= 1`) is untouched: it never enters batch state.
+    public private(set) var isBatchActive = false
+    public private(set) var batchTotalCount = 0
+    public private(set) var batchCompletedCount = 0
+    public private(set) var batchFailedCount = 0
+    private var batchQueue: [URL] = []
+    private var batchSource: TelemetryTranscriptionSource = .file
+    private var batchAudioTrackOrdinal: Int?
+    private var batchMultiTrackFilePaths: Set<String> = []
+    private var batchAudioTrackPreflightFailedPaths: Set<String> = []
+
+    /// One-line batch status for the global progress bar / batch card,
+    /// e.g. "Transcribing 7 of 40" or "Transcribing 7 of 40 · 1 failed".
+    public var batchStatusHeadline: String {
+        let current = min(batchCompletedCount + batchFailedCount + 1, max(batchTotalCount, 1))
+        var line = "Transcribing \(current) of \(batchTotalCount)"
+        if batchFailedCount > 0 {
+            line += " \u{00B7} \(batchFailedCount) failed"
+        }
+        return line
+    }
 
     public var isValidURL: Bool {
-        YouTubeURLValidator.isYouTubeURL(urlInput)
+        MediaPlatform.isTranscribable(urlInput)
     }
 
     public var hasConversations: Bool = false
 
     public var showTabs: Bool {
-        llmAvailable
+        currentTranscription?.sourceType == .meeting
+            || llmAvailable
             || hasPromptResultTabs
             || hasConversations
     }
     public private(set) var isConfigured = false
+    public private(set) var speakerAttribution: EffectiveSpeakerAttribution?
+    public private(set) var speakerCorrectionsApplied = false
+    public private(set) var canUndoSpeakerCorrection = false
+    public private(set) var canRedoSpeakerCorrection = false
+    public private(set) var isApplyingSpeakerCorrection = false
+    public var effectiveCurrentTranscription: Transcription? {
+        guard let currentTranscription,
+              speakerAttributionTranscriptionID == currentTranscription.id,
+              let speakerAttribution
+        else {
+            return currentTranscription
+        }
+        return SpeakerAttributionProjection(
+            automaticTranscription: currentTranscription,
+            attribution: speakerAttribution,
+            correctionsApplied: speakerCorrectionsApplied
+        ).effectiveTranscription
+    }
 
     public func handlePromptResultDeleted(_ deletedID: UUID) {
         guard case .result(let selectedID) = selectedTab, selectedID == deletedID else { return }
@@ -101,58 +282,111 @@ public final class TranscriptionViewModel {
         selectedTab = .result(id: promptResultID)
     }
 
-    public func handleGenerationFailed(_ generationID: UUID, replacingPromptResultID: UUID?) {
-        guard case .generation(let selectedID) = selectedTab, selectedID == generationID else { return }
-        if let replacingPromptResultID {
-            selectedTab = .result(id: replacingPromptResultID)
-        } else {
-            selectedTab = .transcript
-        }
-    }
-
     private var transcriptionService: TranscriptionServiceProtocol?
+    private var audioTrackService: AudioTrackSelectingTranscriptionService?
     private var transcriptionRepo: TranscriptionRepositoryProtocol?
     private var promptResultRepo: PromptResultRepositoryProtocol?
+    private var speakerAttributionReader: SpeakerAttributionReading?
+    private var speakerCorrectionService: SpeakerCorrectionServicing?
+    private var speakerAttributionLoadToken: UUID?
+    private var speakerAttributionTranscriptionID: UUID?
     private var transcriptionTask: Task<Void, Never>?
     private var activeTranscriptionTaskID: UUID?
+    private var audioTrackPreflightID: UUID?
+    private var pendingAudioTrackFiles: [URL] = []
+    private var pendingAudioTrackSource: TelemetryTranscriptionSource = .file
+    private var pendingAudioTrackExpansion: AudioFileEnumerator.Result?
+    private var pendingMultiTrackFilePaths: Set<String> = []
+    private var pendingAudioTrackPreflightFailedPaths: Set<String> = []
     private var activeProgressSpeechEngine: SpeechEngineSelection?
     private var activeProgressWhisperVariant: String?
+    private var activeProgressNemotronVariant: NemotronModelVariant?
     private var activeDropRequestID: UUID?
+    private var speakerRenameGenerations: [UUID: Int] = [:]
+    private var speakerRenameArtifactRefreshTasks: [UUID: Task<Void, Never>] = [:]
+    private var speakerRenameArtifactRefreshTokens: [UUID: UUID] = [:]
+    private var speakerRenameArtifactRefreshRequestedGenerations: [UUID: Int] = [:]
+    private var speakerRenameArtifactRefreshCompletedGenerations: [UUID: Int] = [:]
+    private var meetingArtifactRefreshTasks: [UUID: (token: UUID, task: Task<Bool, Never>)] = [:]
+    private var meetingNotesSaveTask: Task<Bool, Never>?
+    // Queue-tail identity includes artifact retries; error ownership belongs
+    // only to note writes so an artifact retry cannot suppress their failures.
+    private var meetingNotesSaveToken: UUID?
+    private var meetingNotesSaveRequestTokens: [UUID: UUID] = [:]
+    private var meetingNotesArtifactWarnings: [UUID: String] = [:]
     private var dropPendingCount = 0
-    private var dropAccepted = false
+    private var dropCollectedURLs: [URL] = []
     private static let configurationError = "Transcription services are unavailable. Please try again."
     private let logger = Logger(subsystem: "com.macparakeet.viewmodels", category: "TranscriptionViewModel")
     private let defaults: UserDefaults
+    private var speakerAttributionLoadTask: Task<Bool, Never>?
+    private let meetingArtifactStore: MeetingArtifactStoring
     private let isWhisperModelDownloaded: () -> Bool
+    private let isNemotronModelDownloaded: () -> Bool
+    private let isCohereModelDownloaded: () -> Bool
     public var promptResultsViewModel: PromptResultsViewModel?
 
     public init(
         defaults: UserDefaults = .standard,
-        isWhisperModelDownloaded: (() -> Bool)? = nil
+        meetingArtifactStore: MeetingArtifactStoring = MeetingArtifactStore(),
+        isWhisperModelDownloaded: (() -> Bool)? = nil,
+        isNemotronModelDownloaded: (() -> Bool)? = nil,
+        isCohereModelDownloaded: (() -> Bool)? = nil
     ) {
         self.defaults = defaults
-        self.isWhisperModelDownloaded = isWhisperModelDownloaded ?? {
-            WhisperEngine.isModelDownloaded(
-                model: SpeechEnginePreference.whisperModelVariant(defaults: defaults)
-            )
-        }
+        self.meetingArtifactStore = meetingArtifactStore
+        self.isWhisperModelDownloaded =
+            isWhisperModelDownloaded ?? {
+                WhisperEngine.isModelDownloaded(
+                    model: SpeechEnginePreference.whisperModelVariant(defaults: defaults)
+                )
+            }
+        self.isNemotronModelDownloaded =
+            isNemotronModelDownloaded ?? {
+                STTClient.isNemotronModelCached(
+                    modelVariant: SpeechEnginePreference.nemotronModelVariant(defaults: defaults),
+                    language: SpeechEnginePreference.nemotronDefaultLanguage(defaults: defaults)
+                )
+            }
+        self.isCohereModelDownloaded =
+            isCohereModelDownloaded ?? {
+                CohereTranscribeEngine.isModelCached()
+            }
+    }
+
+    private func aiContextText(for transcription: Transcription) -> String {
+        TranscriptAIContextFormatter.format(
+            transcription: transcription,
+            mode: TranscriptAIContextMode.current(defaults: defaults)
+        )
     }
 
     public func configure(
         transcriptionService: TranscriptionServiceProtocol,
         transcriptionRepo: TranscriptionRepositoryProtocol,
+        audioTrackService: AudioTrackSelectingTranscriptionService? = nil,
         llmService: LLMServiceProtocol? = nil,
         promptResultRepo: PromptResultRepositoryProtocol? = nil,
-        promptResultsViewModel: PromptResultsViewModel? = nil
+        promptResultsViewModel: PromptResultsViewModel? = nil,
+        speakerAttributionReader: SpeakerAttributionReading? = nil,
+        speakerCorrectionService: SpeakerCorrectionServicing? = nil
     ) {
         self.transcriptionService = transcriptionService
+        self.audioTrackService =
+            audioTrackService
+            ?? (transcriptionService as? any AudioTrackSelectingTranscriptionService)
         self.transcriptionRepo = transcriptionRepo
         self.llmAvailable = llmService != nil
         self.promptResultRepo = promptResultRepo
         self.promptResultsViewModel = promptResultsViewModel
+        self.speakerAttributionReader = speakerAttributionReader
+        self.speakerCorrectionService = speakerCorrectionService
         isConfigured = true
-        errorMessage = nil
+        clearError()
         loadTranscriptions()
+        if let currentTranscription {
+            loadSpeakerAttribution(for: currentTranscription)
+        }
     }
 
     public func loadTranscriptions() {
@@ -164,14 +398,36 @@ public final class TranscriptionViewModel {
         do {
             transcriptions = try repo.fetchAll(limit: 50)
         } catch {
-            logger.error("Failed to load transcriptions: \(error.localizedDescription, privacy: .public)")
+            logger.error(
+                "Failed to load transcriptions error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+            )
             transcriptions = []
         }
     }
 
     public func transcribeFile(url: URL, source: TelemetryTranscriptionSource = .file) {
-        guard let service = transcriptionService else {
+        guard transcriptionService != nil else {
             reportMissingConfiguration("transcriptionService", action: "transcribeFile")
+            return
+        }
+        if audioTrackService != nil {
+            startAudioTrackPreflight(
+                files: [url],
+                source: source,
+                expansion: AudioFileEnumerator.Result(files: [url], droppedCount: 0)
+            )
+        } else {
+            startTranscribingFile(url: url, source: source, audioTrackOrdinal: nil)
+        }
+    }
+
+    private func startTranscribingFile(
+        url: URL,
+        source: TelemetryTranscriptionSource,
+        audioTrackOrdinal: Int?
+    ) {
+        guard let service = transcriptionService else {
+            reportMissingConfiguration("transcriptionService", action: "startTranscribingFile")
             return
         }
         let taskID = beginNewTranscription(source: .localFile, fileName: url.lastPathComponent)
@@ -179,10 +435,30 @@ public final class TranscriptionViewModel {
         transcriptionTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let result = try await service.transcribe(fileURL: url, source: source) { [weak self] progress in
+                let progressHandler: @Sendable (TranscriptionProgress) -> Void = { [weak self] progress in
                     Task { @MainActor [weak self] in
                         self?.updateProgress(with: progress, taskID: taskID)
                     }
+                }
+                let result: Transcription
+                if let audioTrackOrdinal {
+                    guard let audioTrackService else {
+                        throw AudioProcessorError.conversionFailed(
+                            "Audio-track selection is unavailable for this transcription service."
+                        )
+                    }
+                    result = try await audioTrackService.transcribe(
+                        fileURL: url,
+                        source: source,
+                        audioTrackOrdinal: audioTrackOrdinal,
+                        onProgress: progressHandler
+                    )
+                } else {
+                    result = try await service.transcribe(
+                        fileURL: url,
+                        source: source,
+                        onProgress: progressHandler
+                    )
                 }
                 completeSuccessfulTranscription(taskID: taskID, result: result)
             } catch is CancellationError {
@@ -193,22 +469,260 @@ public final class TranscriptionViewModel {
         }
     }
 
+    /// Entry point for one-or-many local files (drag-drop, Browse, menu-bar
+    /// open). Folders are expanded recursively; a single resolved file follows
+    /// the single-job path, while two or more start a sequential batch. Returns
+    /// `true` when at least one supported file was accepted (so the drop handler
+    /// knows whether to dismiss the drop UI).
+    @discardableResult
+    public func transcribeFiles(urls: [URL], source: TelemetryTranscriptionSource = .file) -> Bool {
+        guard transcriptionService != nil else {
+            reportMissingConfiguration("transcriptionService", action: "transcribeFiles")
+            return false
+        }
+        guard !isTranscribing,
+            !isBatchActive,
+            !isInspectingAudioTracks,
+            pendingAudioTrackSelection == nil
+        else { return false }
+        let expansion = AudioFileEnumerator.expand(urls: urls)
+        let files = expansion.files
+        guard !files.isEmpty else {
+            setError(message: unsupportedDropMessage)
+            return false
+        }
+
+        if audioTrackService != nil {
+            startAudioTrackPreflight(files: files, source: source, expansion: expansion)
+        } else {
+            startResolvedFiles(
+                files,
+                source: source,
+                audioTrackOrdinal: nil,
+                multiTrackFilePaths: [],
+                expansion: expansion
+            )
+        }
+        return true
+    }
+
+    public func selectAudioTrack(ordinal: Int) {
+        guard let request = pendingAudioTrackSelection,
+            request.tracks.contains(where: { $0.ordinal == ordinal }),
+            !pendingAudioTrackFiles.isEmpty
+        else {
+            return
+        }
+
+        let files = pendingAudioTrackFiles
+        let source = pendingAudioTrackSource
+        let expansion = pendingAudioTrackExpansion
+        let multiTrackFilePaths = pendingMultiTrackFilePaths
+        let preflightFailedFilePaths = pendingAudioTrackPreflightFailedPaths
+        clearPendingAudioTrackSelection()
+        startResolvedFiles(
+            files,
+            source: source,
+            audioTrackOrdinal: ordinal,
+            multiTrackFilePaths: multiTrackFilePaths,
+            preflightFailedFilePaths: preflightFailedFilePaths,
+            expansion: expansion
+        )
+    }
+
+    public func cancelAudioTrackSelection() {
+        clearPendingAudioTrackSelection()
+    }
+
+    private func startAudioTrackPreflight(
+        files: [URL],
+        source: TelemetryTranscriptionSource,
+        expansion: AudioFileEnumerator.Result
+    ) {
+        guard let audioTrackService else {
+            startResolvedFiles(
+                files,
+                source: source,
+                audioTrackOrdinal: nil,
+                multiTrackFilePaths: [],
+                expansion: expansion
+            )
+            return
+        }
+
+        transcriptionTask?.cancel()
+        let preflightID = UUID()
+        audioTrackPreflightID = preflightID
+        isInspectingAudioTracks = true
+        clearPendingAudioTrackSelection()
+        clearError()
+
+        transcriptionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                var firstMultiTrackFile: (url: URL, tracks: [AudioTrackDescriptor])?
+                var multiTrackFilePaths: Set<String> = []
+                var preflightFailedFilePaths: Set<String> = []
+                for file in files {
+                    try Task.checkCancellation()
+                    do {
+                        let tracks = try await audioTrackService.audioTracks(in: file)
+                        guard !tracks.isEmpty else {
+                            throw AudioProcessorError.conversionFailed(
+                                "No audio tracks were found in \(file.lastPathComponent)."
+                            )
+                        }
+                        if firstMultiTrackFile == nil, tracks.count > 1 {
+                            firstMultiTrackFile = (file, tracks)
+                        }
+                        if tracks.count > 1 {
+                            multiTrackFilePaths.insert(file.standardizedFileURL.path)
+                        }
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        guard files.count > 1 else { throw error }
+                        preflightFailedFilePaths.insert(file.standardizedFileURL.path)
+                        logger.error(
+                            "Batch audio-track discovery failed error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+                        )
+                    }
+                }
+
+                guard audioTrackPreflightID == preflightID else { return }
+                transcriptionTask = nil
+                audioTrackPreflightID = nil
+                isInspectingAudioTracks = false
+
+                if let multiTrack = firstMultiTrackFile {
+                    pendingAudioTrackFiles = files
+                    pendingAudioTrackSource = source
+                    pendingAudioTrackExpansion = expansion
+                    pendingMultiTrackFilePaths = multiTrackFilePaths
+                    pendingAudioTrackPreflightFailedPaths = preflightFailedFilePaths
+                    pendingAudioTrackSelection = AudioTrackSelectionRequest(
+                        id: UUID(),
+                        fileName: multiTrack.url.lastPathComponent,
+                        fileCount: files.count,
+                        tracks: multiTrack.tracks
+                    )
+                } else {
+                    startResolvedFiles(
+                        files,
+                        source: source,
+                        audioTrackOrdinal: nil,
+                        multiTrackFilePaths: [],
+                        preflightFailedFilePaths: preflightFailedFilePaths,
+                        expansion: expansion
+                    )
+                }
+            } catch is CancellationError {
+                guard audioTrackPreflightID == preflightID else { return }
+                transcriptionTask = nil
+                audioTrackPreflightID = nil
+                isInspectingAudioTracks = false
+            } catch {
+                guard audioTrackPreflightID == preflightID else { return }
+                transcriptionTask = nil
+                audioTrackPreflightID = nil
+                isInspectingAudioTracks = false
+                setError(message: error.localizedDescription)
+            }
+        }
+    }
+
+    private func startResolvedFiles(
+        _ files: [URL],
+        source: TelemetryTranscriptionSource,
+        audioTrackOrdinal: Int?,
+        multiTrackFilePaths: Set<String>,
+        preflightFailedFilePaths: Set<String> = [],
+        expansion: AudioFileEnumerator.Result?
+    ) {
+        guard let first = files.first else { return }
+        let firstAudioTrackOrdinal =
+            multiTrackFilePaths.contains(first.standardizedFileURL.path)
+            ? audioTrackOrdinal
+            : nil
+
+        if files.count == 1 {
+            startTranscribingFile(url: first, source: source, audioTrackOrdinal: firstAudioTrackOrdinal)
+        } else {
+            batchSource = source
+            batchAudioTrackOrdinal = audioTrackOrdinal
+            batchMultiTrackFilePaths = multiTrackFilePaths
+            batchAudioTrackPreflightFailedPaths = preflightFailedFilePaths
+            batchTotalCount = files.count
+            batchCompletedCount = 0
+            batchFailedCount = 0
+            batchQueue = files
+            isBatchActive = true
+            advanceBatch()
+        }
+
+        if let expansion, expansion.truncated {
+            let dropped =
+                expansion.stoppedEarly
+                ? "at least \(expansion.droppedCount)"
+                : "\(expansion.droppedCount)"
+            setError(
+                message: "Queued the first \(files.count) files; "
+                    + "\(dropped) more were skipped "
+                    + "(\(AudioFileEnumerator.defaultMaxFiles)-file limit).")
+        }
+    }
+
+    private func clearPendingAudioTrackSelection() {
+        pendingAudioTrackSelection = nil
+        pendingAudioTrackFiles.removeAll()
+        pendingAudioTrackExpansion = nil
+        pendingMultiTrackFilePaths.removeAll()
+        pendingAudioTrackPreflightFailedPaths.removeAll()
+    }
+
     public func transcribeURL() {
+        guard !isInspectingAudioTracks, pendingAudioTrackSelection == nil else { return }
         guard let service = transcriptionService else {
             reportMissingConfiguration("transcriptionService", action: "transcribeURL")
             return
         }
-        let url = urlInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let videoID = YouTubeURLValidator.extractVideoID(url) else { return }
+        // Normalize so a scheme-less but recognized host (e.g. typed
+        // `vimeo.com/123`) reaches the download layer with an explicit scheme,
+        // which it requires — otherwise the button would light up and then fail.
+        let url = MediaPlatform.normalizedURLString(urlInput)
 
-        // Check for existing transcription of the same video
-        if let existing = try? transcriptionRepo?.fetchCompletedByVideoID(videoID) {
-            currentTranscription = existing
-            urlInput = ""
-            return
+        let source: SourceKind
+        let placeholderName: String
+        if PodcastURLValidator.isApplePodcastsURL(url) {
+            // Apple Podcasts episodes carry no stable client-side id to dedup on
+            // (the enclosure is resolved server-side), so each request runs.
+            source = .podcastURL
+            placeholderName = "Podcast episode"
+        } else if YouTubeURLValidator.isYouTubeURL(url) {
+            guard let videoID = YouTubeURLValidator.extractVideoID(url) else { return }
+            // Check for existing transcription of the same video
+            if let existing = try? transcriptionRepo?.fetchCompletedByVideoID(videoID) {
+                currentTranscription = existing
+                urlInput = ""
+                return
+            }
+            source = .youtubeURL
+            placeholderName = "YouTube video"
+        } else {
+            // Any other media URL flows through the generic yt-dlp download lane
+            // (`.youtubeURL` is the shared "download a URL" path, not YouTube-only).
+            // Label it with the recognized platform when we know it.
+            guard MediaPlatform.isTranscribable(url) else { return }
+            source = .youtubeURL
+            if let platform = MediaPlatform.recognize(url) {
+                placeholderName =
+                    platform.isAudioFirst ? "\(platform.displayName) audio" : "\(platform.displayName) video"
+            } else {
+                placeholderName = "Video"
+            }
         }
 
-        let taskID = beginNewTranscription(source: .youtubeURL, fileName: "YouTube video")
+        let taskID = beginNewTranscription(source: source, fileName: placeholderName)
         urlInput = ""
 
         transcriptionTask = Task { @MainActor [weak self] in
@@ -223,7 +737,7 @@ public final class TranscriptionViewModel {
             } catch is CancellationError {
                 completeCancelledTranscription(taskID: taskID)
             } catch {
-                completeFailedTranscription(taskID: taskID, error: error)
+                completeFailedTranscription(taskID: taskID, error: error, failedURL: url)
             }
         }
     }
@@ -232,45 +746,36 @@ public final class TranscriptionViewModel {
         providers: [NSItemProvider],
         onAccepted: (@MainActor @Sendable () -> Void)? = nil
     ) -> Bool {
-        guard !isTranscribing else { return false }
+        guard !isTranscribing, !isBatchActive else { return false }
         let fileProviders = providers.filter { $0.hasItemConformingToTypeIdentifier("public.file-url") }
         guard !fileProviders.isEmpty else { return false }
 
         let requestID = UUID()
         activeDropRequestID = requestID
         dropPendingCount = fileProviders.count
-        dropAccepted = false
+        dropCollectedURLs = []
 
+        // Collect every dropped URL (files and folders), then dispatch once when
+        // the last provider resolves. `transcribeFiles` expands folders, applies
+        // the supported-extension filter, and chooses single vs. batch.
         for provider in fileProviders {
             provider.loadItem(forTypeIdentifier: "public.file-url") { item, _ in
-                let droppedURL: URL?
-                if let data = item as? Data {
-                    droppedURL = URL(dataRepresentation: data, relativeTo: nil)
-                } else {
-                    droppedURL = nil
-                }
+                let droppedURL: URL? = (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
 
                 Task { @MainActor in
                     guard self.activeDropRequestID == requestID else { return }
-                    defer {
-                        self.dropPendingCount -= 1
-                        if self.dropPendingCount == 0 {
-                            if !self.dropAccepted {
-                                self.errorMessage = self.unsupportedDropMessage
-                            }
-                            self.activeDropRequestID = nil
-                        }
+                    if let droppedURL {
+                        self.dropCollectedURLs.append(droppedURL)
                     }
+                    self.dropPendingCount -= 1
+                    guard self.dropPendingCount == 0 else { return }
 
-                    guard let droppedURL else { return }
-                    let ext = droppedURL.pathExtension.lowercased()
-                    guard AudioFileConverter.supportedExtensions.contains(ext) else { return }
-                    guard !self.dropAccepted, !self.isTranscribing else { return }
-
-                    self.dropAccepted = true
-                    self.errorMessage = nil
-                    onAccepted?()
-                    self.transcribeFile(url: droppedURL, source: .dragDrop)
+                    self.activeDropRequestID = nil
+                    let urls = self.dropCollectedURLs
+                    self.dropCollectedURLs = []
+                    if self.transcribeFiles(urls: urls, source: .dragDrop) {
+                        onAccepted?()
+                    }
                 }
             }
         }
@@ -287,52 +792,150 @@ public final class TranscriptionViewModel {
 
     public func retranscriptionEngineOption(for original: Transcription) -> RetranscriptionEngineOption? {
         guard let filePath = original.filePath,
-              FileManager.default.fileExists(atPath: filePath) else {
+            FileManager.default.fileExists(atPath: filePath)
+        else {
             return nil
         }
 
+        // The primary card should name the engine that actually produced this
+        // transcript, not the user's current default — otherwise a Cohere or
+        // Whisper transcript would surface "Parakeet" as its primary. Meetings
+        // carry the captured selection; file/URL transcripts carry the engine on
+        // the row (since the engine-attribution migration). Rows predating
+        // attribution have no engine and fall back to the current final route.
         let primaryEngine: SpeechEngineSelection
+        let primaryReflectsTranscriptEngine: Bool
         if original.sourceType == .meeting,
-           let archivedRecording = archivedMeetingRecording(
-               for: original,
-               mixedAudioURL: URL(fileURLWithPath: filePath),
-               logFailure: false
-           ),
-           archivedRecording.speechEngineWasCaptured {
+            let archivedRecording = archivedMeetingRecording(
+                for: original,
+                mixedAudioURL: URL(fileURLWithPath: filePath),
+                logFailure: false
+            ),
+            archivedRecording.speechEngineWasCaptured
+        {
             primaryEngine = archivedRecording.speechEngine
+            primaryReflectsTranscriptEngine = true
+        } else if let recordedEngine = original.engine.flatMap(SpeechEnginePreference.init(rawValue:)) {
+            primaryEngine = SpeechEngineSelection(engine: recordedEngine, language: original.language)
+            primaryReflectsTranscriptEngine = true
         } else {
-            primaryEngine = SpeechEngineSelection.current(defaults: defaults)
+            primaryEngine = SpeechEngineSelection.finalTranscription(defaults: defaults)
+            primaryReflectsTranscriptEngine = false
         }
 
-        let alternativePreference = primaryEngine.engine.alternative
-        let alternativeEngine = SpeechEngineSelection(
-            engine: alternativePreference,
-            language: alternativePreference == .whisper
-                ? SpeechEnginePreference.whisperDefaultLanguage(defaults: defaults)
-                : nil
-        )
-        let unavailableReason: String?
-        if alternativePreference == .whisper && !isWhisperModelDownloaded() {
-            unavailableReason = "Download the Whisper model in Settings before trying Whisper."
-        } else {
-            unavailableReason = nil
+        let parakeetVariant = SpeechEnginePreference.parakeetModelVariant(defaults: defaults)
+        let nemotronVariant = SpeechEnginePreference.nemotronModelVariant(defaults: defaults)
+        let whisperVariant = SpeechEnginePreference.whisperModelVariant(defaults: defaults)
+
+        let choices = retranscriptionEngineOrder(primary: primaryEngine.engine).map { engine in
+            let selection = SpeechEngineSelection(
+                engine: engine,
+                language: Self.retranscriptionLanguage(for: engine, defaults: defaults)
+            )
+            guard
+                let capabilities = SpeechEngineCapabilityRegistry.capabilities(
+                    for: engine,
+                    parakeetModelVariant: parakeetVariant,
+                    nemotronModelVariant: nemotronVariant,
+                    whisperModelVariant: whisperVariant
+                )
+            else {
+                preconditionFailure("Missing SpeechEngineCapabilities row for \(engine.rawValue)")
+            }
+            let unavailableReason = retranscriptionUnavailableReason(for: engine)
+            return RetranscriptionEngineOption.Choice(
+                selection: engine == primaryEngine.engine ? primaryEngine : selection,
+                capabilities: capabilities,
+                isPrimary: engine == primaryEngine.engine,
+                isAvailable: unavailableReason == nil,
+                unavailableReason: unavailableReason,
+                advisory: retranscriptionAdvisory(for: engine, unavailableReason: unavailableReason)
+            )
         }
 
         return RetranscriptionEngineOption(
             primaryEngine: primaryEngine,
-            alternativeEngine: alternativeEngine,
-            isAlternativeAvailable: unavailableReason == nil,
-            unavailableReason: unavailableReason
+            choices: choices,
+            nemotronVariant: nemotronVariant,
+            parakeetVariant: parakeetVariant,
+            primaryReflectsTranscriptEngine: primaryReflectsTranscriptEngine
         )
     }
 
-    public func retranscribe(_ original: Transcription, speechEngineOverride: SpeechEngineSelection? = nil) {
+    private func retranscriptionEngineOrder(primary: SpeechEnginePreference) -> [SpeechEnginePreference] {
+        // Gate Cohere on its feature flag, consistent with the settings engine
+        // picker — when the flag is off, Cohere must not leak in as a
+        // retranscription choice.
+        let defaultOrder: [SpeechEnginePreference] =
+            AppFeatures.cohereEngineEnabled
+            ? [.parakeet, .nemotron, .whisper, .cohere]
+            : [.parakeet, .nemotron, .whisper]
+        return [primary] + defaultOrder.filter { $0 != primary }
+    }
+
+    private func retranscriptionUnavailableReason(for engine: SpeechEnginePreference) -> String? {
+        switch engine {
+        case .parakeet:
+            return nil
+        case .nemotron:
+            return isNemotronModelDownloaded()
+                ? nil
+                : "Download the Nemotron model in Settings before trying Nemotron."
+        case .whisper:
+            return isWhisperModelDownloaded()
+                ? nil
+                : "Download the Whisper model in Settings before trying Whisper."
+        case .cohere:
+            return isCohereModelDownloaded()
+                ? nil
+                : "Download Cohere Transcribe in Settings before trying Cohere."
+        }
+    }
+
+    private func retranscriptionAdvisory(
+        for engine: SpeechEnginePreference,
+        unavailableReason: String?
+    ) -> String? {
+        guard engine == .whisper,
+            unavailableReason == nil,
+            SpeechEnginePreference.isColdSwitch(to: .whisper, defaults: defaults)
+        else {
+            return nil
+        }
+        return "First run may spend a few minutes preparing this Whisper model."
+    }
+
+    private static func retranscriptionLanguage(
+        for engine: SpeechEnginePreference,
+        defaults: UserDefaults
+    ) -> String? {
+        switch engine {
+        case .parakeet:
+            return nil
+        case .nemotron:
+            return SpeechEnginePreference.nemotronDefaultLanguage(defaults: defaults)
+        case .whisper:
+            return SpeechEnginePreference.whisperDefaultLanguage(defaults: defaults)
+        case .cohere:
+            // Cohere has no auto-detect and its engine defaults to English, so a
+            // retranscription must carry the user's chosen language explicitly,
+            // exactly as Nemotron/Whisper do above.
+            return SpeechEnginePreference.cohereDefaultLanguage(defaults: defaults)
+        }
+    }
+
+    public func retranscribe(
+        _ original: Transcription,
+        speechEngineOverride: SpeechEngineSelection? = nil,
+        speakerSelection: RetranscriptionSpeakerSelection? = nil
+    ) {
         guard let service = transcriptionService else {
             reportMissingConfiguration("transcriptionService", action: "retranscribe")
             return
         }
         guard let filePath = original.filePath,
-              FileManager.default.fileExists(atPath: filePath) else { return }
+            FileManager.default.fileExists(atPath: filePath)
+        else { return }
 
         let url = URL(fileURLWithPath: filePath)
         let taskID = beginNewTranscription(
@@ -341,14 +944,17 @@ public final class TranscriptionViewModel {
             clearCurrent: true,
             speechEngine: speechEngineOverride
         )
-        let retranscriptionSource: TelemetryTranscriptionSource = switch original.sourceType {
-        case .file:
-            .file
-        case .youtube:
-            .youtube
-        case .meeting:
-            .meeting
-        }
+        let retranscriptionSource: TelemetryTranscriptionSource =
+            switch original.sourceType {
+            case .file:
+                .file
+            case .youtube:
+                .youtube
+            case .podcast:
+                .podcast
+            case .meeting:
+                .meeting
+            }
 
         transcriptionTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -360,21 +966,43 @@ public final class TranscriptionViewModel {
                 }
                 let result: Transcription
                 if original.sourceType == .meeting,
-                   let meetingRecording = archivedMeetingRecording(for: original, mixedAudioURL: url) {
-                    result = try await service.retranscribeMeeting(
-                        existing: original,
-                        recording: meetingRecording,
-                        speechEngineOverride: speechEngineOverride,
-                        onProgress: progressHandler
-                    )
+                    let meetingRecording = archivedMeetingRecording(for: original, mixedAudioURL: url)
+                {
+                    if let speakerSelection, meetingRecording.sourceAlignment.system != nil {
+                        result = try await service.retranscribeMeeting(
+                            existing: original,
+                            recording: meetingRecording,
+                            speechEngineOverride: speechEngineOverride,
+                            speakerSelection: speakerSelection,
+                            onProgress: progressHandler
+                        )
+                    } else {
+                        result = try await service.retranscribeMeeting(
+                            existing: original,
+                            recording: meetingRecording,
+                            speechEngineOverride: speechEngineOverride,
+                            onProgress: progressHandler
+                        )
+                    }
                 } else {
-                    result = try await service.retranscribe(
-                        existing: original,
-                        fileURL: url,
-                        source: retranscriptionSource,
-                        speechEngineOverride: speechEngineOverride,
-                        onProgress: progressHandler
-                    )
+                    if let speakerSelection, original.sourceType != .meeting {
+                        result = try await service.retranscribe(
+                            existing: original,
+                            fileURL: url,
+                            source: retranscriptionSource,
+                            speechEngineOverride: speechEngineOverride,
+                            speakerSelection: speakerSelection,
+                            onProgress: progressHandler
+                        )
+                    } else {
+                        result = try await service.retranscribe(
+                            existing: original,
+                            fileURL: url,
+                            source: retranscriptionSource,
+                            speechEngineOverride: speechEngineOverride,
+                            onProgress: progressHandler
+                        )
+                    }
                 }
                 var updatedResult = result
                 // Preserve row identity and user-owned metadata so retranscription updates
@@ -393,11 +1021,20 @@ public final class TranscriptionViewModel {
                 updatedResult.userNotes = original.userNotes
                 updatedResult.updatedAt = Date()
                 do {
-                    try transcriptionRepo?.save(updatedResult)
+                    if let transcriptionRepo {
+                        updatedResult = try transcriptionRepo.savePreservingUserMetadata(
+                            updatedResult, originalFileName: original.fileName
+                        )
+                    }
+                    promptResultsViewModel?.generateKnowledgeCard(
+                        transcriptionId: updatedResult.id
+                    )
                     // Skip auto-run prompts on retranscribe — they would duplicate the existing tabs.
                     completeSuccessfulTranscription(taskID: taskID, result: updatedResult, runAutoPrompts: false)
                 } catch {
-                    logger.error("Failed to save transcription result error=\(error.localizedDescription, privacy: .public)")
+                    logger.error(
+                        "Failed to save transcription result error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+                    )
                     completeFailedTranscription(taskID: taskID, error: error)
                 }
             } catch is CancellationError {
@@ -406,6 +1043,20 @@ public final class TranscriptionViewModel {
                 completeFailedTranscription(taskID: taskID, error: error)
             }
         }
+    }
+
+    /// Whether the retranscription UI can safely offer a per-run speaker count.
+    /// Archived meetings require their retained isolated system track; applying
+    /// a remote-speaker count to the mixed-audio fallback would include `Me` and
+    /// change the option's meaning.
+    public nonisolated func canConfigureSpeakersForRetranscription(_ original: Transcription) -> Bool {
+        guard original.sourceType == .meeting else { return true }
+        guard let filePath = original.filePath else { return false }
+        return (try? MeetingRecordingOutput.loadArchived(
+            displayName: original.fileName,
+            mixedAudioURL: URL(fileURLWithPath: filePath),
+            durationSeconds: Double(original.durationMs ?? 0) / 1000.0
+        ))?.sourceAlignment.system != nil
     }
 
     private func archivedMeetingRecording(
@@ -432,6 +1083,87 @@ public final class TranscriptionViewModel {
 
     public func cancelTranscription() {
         transcriptionTask?.cancel()
+        if isInspectingAudioTracks {
+            audioTrackPreflightID = nil
+            transcriptionTask = nil
+            isInspectingAudioTracks = false
+        }
+    }
+
+    /// Cancel an in-progress batch deterministically: drop everything still
+    /// queued, cancel the in-flight task, and clear all batch + transcription
+    /// state *now*. Crucially we also drop `activeTranscriptionTaskID`, so if the
+    /// in-flight file's STT inference isn't cancellation-aware and completes
+    /// anyway, its completion funnel no-ops on the task-ID guard — the batch
+    /// never advances or fires a spurious completion chime after "Cancel all".
+    public func cancelBatch() {
+        guard isBatchActive else { return }
+        batchQueue.removeAll()
+        transcriptionTask?.cancel()
+        transcriptionTask = nil
+        activeTranscriptionTaskID = nil
+        resetBatchState()
+        endTranscription()
+        clearError()
+        loadTranscriptions()
+    }
+
+    /// Submit the next queued file, or finish the batch when the queue drains.
+    /// Preflight failures are counted and skipped here so one unreadable file
+    /// does not prevent the rest of the batch from reaching transcription.
+    private func advanceBatch() {
+        guard isBatchActive else { return }
+        while !batchQueue.isEmpty {
+            let next = batchQueue.removeFirst()
+            if batchAudioTrackPreflightFailedPaths.remove(next.standardizedFileURL.path) != nil {
+                batchFailedCount += 1
+                continue
+            }
+            startTranscribingFile(
+                url: next,
+                source: batchSource,
+                audioTrackOrdinal: batchMultiTrackFilePaths.contains(next.standardizedFileURL.path)
+                    ? batchAudioTrackOrdinal
+                    : nil
+            )
+            return
+        }
+        finishBatch()
+    }
+
+    private func finishBatch() {
+        let content = TranscriptionCompletionNotifier.batchContent(
+            settingEnabled: notifyOnCompletionEnabled,
+            completed: batchCompletedCount,
+            failed: batchFailedCount
+        )
+        resetBatchState()
+        emitCompletionSignal(content)
+    }
+
+    private func resetBatchState() {
+        isBatchActive = false
+        batchTotalCount = 0
+        batchCompletedCount = 0
+        batchFailedCount = 0
+        batchQueue.removeAll()
+        batchAudioTrackOrdinal = nil
+        batchMultiTrackFilePaths.removeAll()
+        batchAudioTrackPreflightFailedPaths.removeAll()
+    }
+
+    private func emitCompletionSignal(_ content: TranscriptionCompletionNotifier.Content?) {
+        guard let content else { return }
+        onTranscriptionCompleted?(content)
+    }
+
+    private var notifyOnCompletionEnabled: Bool {
+        defaults.object(forKey: UserDefaultsAppRuntimePreferences.notifyOnTranscriptionCompleteKey) as? Bool ?? true
+    }
+
+    private static func wordCount(of transcription: Transcription) -> Int {
+        let text = transcription.cleanTranscript ?? transcription.rawTranscript ?? ""
+        return text.split(whereSeparator: { $0.isWhitespace }).count
     }
 
     public func confirmDelete() {
@@ -457,7 +1189,50 @@ public final class TranscriptionViewModel {
             loadTranscriptions()
         } catch {
             logger.error("Failed to delete transcription: \(error.localizedDescription, privacy: .private)")
-            errorMessage = "Failed to delete transcription: \(error.localizedDescription)"
+            setError(message: "Failed to delete transcription: \(error.localizedDescription)")
+        }
+    }
+
+    public func deleteMeetingAudio(
+        _ transcription: Transcription,
+        clearExistingErrorOnSuccess: Bool = true
+    ) {
+        guard let repo = transcriptionRepo else {
+            reportMissingConfiguration("transcriptionRepo", action: "deleteMeetingAudio")
+            return
+        }
+
+        do {
+            guard transcription.sourceType == .meeting else { return }
+            let result = try TranscriptionAssetCleanup.detachOwnedMeetingAudio(
+                for: transcription,
+                repository: repo
+            )
+            guard result.detached else {
+                setError(message: TranscriptionAssetCleanup.unmanagedMeetingAudioMessage)
+                return
+            }
+            let artifactFolderPath = MeetingArtifactStore.sessionFolderURL(for: transcription)?.standardizedFileURL.path
+            if let current = currentTranscription, current.id == transcription.id {
+                var updated = current
+                updated.meetingArtifactFolderPath = updated.meetingArtifactFolderPath ?? artifactFolderPath
+                updated.filePath = nil
+                currentTranscription = updated
+            }
+            if let index = transcriptions.firstIndex(where: { $0.id == transcription.id }) {
+                transcriptions[index].meetingArtifactFolderPath =
+                    transcriptions[index].meetingArtifactFolderPath
+                    ?? artifactFolderPath
+                transcriptions[index].filePath = nil
+            }
+            if clearExistingErrorOnSuccess {
+                clearError()
+            }
+        } catch TranscriptionAssetCleanupError.meetingAudioFinalizationInProgress {
+            setError(message: TranscriptionAssetCleanup.meetingAudioFinalizationInProgressMessage)
+        } catch {
+            logger.error("Failed to delete meeting audio: \(error.localizedDescription, privacy: .private)")
+            setError(message: "Failed to delete meeting audio: \(error.localizedDescription)")
         }
     }
 
@@ -473,10 +1248,15 @@ public final class TranscriptionViewModel {
 
         let taskID = UUID()
         activeTranscriptionTaskID = taskID
-        let progressSpeechEngine = speechEngine ?? SpeechEngineSelection.current(defaults: defaults)
+        let progressSpeechEngine = speechEngine ?? SpeechEngineSelection.finalTranscription(defaults: defaults)
         activeProgressSpeechEngine = progressSpeechEngine
-        activeProgressWhisperVariant = progressSpeechEngine.engine == .whisper
+        activeProgressWhisperVariant =
+            progressSpeechEngine.engine == .whisper
             ? SpeechEnginePreference.whisperModelVariant(defaults: defaults)
+            : nil
+        activeProgressNemotronVariant =
+            progressSpeechEngine.engine == .nemotron
+            ? SpeechEnginePreference.nemotronModelVariant(defaults: defaults)
             : nil
         transcribingFileName = fileName
         beginTranscription(source: source)
@@ -493,7 +1273,7 @@ public final class TranscriptionViewModel {
             "Missing dependency action=\(action, privacy: .public) dependency=\(dependency, privacy: .public)"
         )
         if errorMessage == nil {
-            errorMessage = Self.configurationError
+            setError(message: Self.configurationError)
         }
     }
 
@@ -506,14 +1286,62 @@ public final class TranscriptionViewModel {
         transcriptionTask = nil
         activeTranscriptionTaskID = nil
         endTranscription()
-        presentCompletedTranscription(result, autoSave: false, runAutoPrompts: runAutoPrompts)
-        autoSaveIfEnabled(result)
+
+        if isBatchActive {
+            // Ambient batch: don't present each file (no nav thrash) and don't
+            // auto-run prompts per file. Export-to-folder still honors its own
+            // toggle, and Library refreshes live so results appear as they land.
+            batchCompletedCount += 1
+            autoSaveIfEnabled(result)
+            applyMeetingAudioRetentionIfNeeded(result)
+            loadTranscriptions()
+            advanceBatch()
+        } else {
+            presentCompletedTranscription(result, autoSave: false, runAutoPrompts: runAutoPrompts)
+            autoSaveIfEnabled(result)
+            applyMeetingAudioRetentionIfNeeded(result)
+            emitCompletionSignal(
+                TranscriptionCompletionNotifier.singleContent(
+                    settingEnabled: notifyOnCompletionEnabled,
+                    transcriptName: result.fileName,
+                    wordCount: Self.wordCount(of: result)
+                )
+            )
+        }
     }
 
     private func autoSaveIfEnabled(_ transcription: Transcription) {
-        let service = AutoSaveService()
         let scope: AutoSaveScope = transcription.sourceType == .meeting ? .meeting : .transcription
-        service.saveIfEnabled(transcription, scope: scope)
+        let result = AutoSaveService(defaults: defaults).saveIfEnabled(transcription, scope: scope)
+        guard scope == .meeting else { return }
+
+        let warning: String
+        switch result {
+        case .folderUnavailable:
+            warning =
+                "Meeting saved in MacParakeet, but the selected auto-save folder is unavailable. Choose another folder in Settings."
+        case .failed:
+            warning =
+                "Meeting saved in MacParakeet, but it couldn't be saved to the selected folder. Check the folder in Settings and try again."
+        case .disabled, .saved:
+            return
+        }
+
+        if let existingMessage = errorMessage {
+            setError(
+                message: "\(existingMessage)\n\n\(warning)",
+                detail: errorDetail.map { "\($0)\n\n\(warning)" }
+            )
+        } else {
+            setError(message: warning)
+        }
+    }
+
+    private func applyMeetingAudioRetentionIfNeeded(_ transcription: Transcription) {
+        guard transcription.sourceType == .meeting else { return }
+        let prefs = UserDefaultsAppRuntimePreferences(defaults: defaults)
+        guard !prefs.shouldSaveMeetingAudio else { return }
+        deleteMeetingAudio(transcription, clearExistingErrorOnSuccess: false)
     }
 
     /// Persist a new playback-friendly file path produced by the background
@@ -533,7 +1361,9 @@ public final class TranscriptionViewModel {
         do {
             try repo.updateFilePath(id: transcriptionID, filePath: newFilePath)
         } catch {
-            logger.error("transcription_file_path_update_failed id=\(transcriptionID, privacy: .public) error_detail=\(error.localizedDescription, privacy: .private)")
+            logger.error(
+                "transcription_file_path_update_failed id=\(transcriptionID, privacy: .public) error_detail=\(error.localizedDescription, privacy: .private)"
+            )
             throw error
         }
         if let sourceFileToCleanup, sourceFileToCleanup != newFilePath {
@@ -560,39 +1390,101 @@ public final class TranscriptionViewModel {
     public func presentCompletedTranscription(
         _ transcription: Transcription,
         autoSave: Bool,
-        runAutoPrompts: Bool
+        runAutoPrompts: Bool,
+        applyMeetingRetention: Bool = true,
+        selectTranscription: Bool = true
     ) {
-        currentTranscription = transcription
+        if selectTranscription || currentTranscription?.id == transcription.id {
+            currentTranscription = transcription
+        }
         loadTranscriptions()
         if autoSave {
             autoSaveIfEnabled(transcription)
+            // Crash-recovered meetings pass `false` so recovery can turn the
+            // interrupted audio into a transcript before immediate-delete
+            // retention runs. Once the recovery lock is gone, scheduled
+            // retention applies normally.
+            if applyMeetingRetention {
+                applyMeetingAudioRetentionIfNeeded(transcription)
+            }
         }
         guard runAutoPrompts else { return }
-        let text = transcription.cleanTranscript ?? transcription.rawTranscript ?? ""
-        promptResultsViewModel?.autoGeneratePromptResults(transcript: text, transcriptionId: transcription.id)
+        let text = aiContextText(for: transcription)
+        promptResultsViewModel?.autoGeneratePromptResults(
+            transcript: text,
+            transcriptionId: transcription.id,
+            sourceType: transcription.sourceType,
+            meetingTypeId: transcription.meetingTypeId,
+            runInBackground: !selectTranscription
+        )
     }
 
     public func showInputPortal() {
         currentTranscription = nil
         selectedTab = .transcript
-        errorMessage = nil
+        clearError()
     }
 
-    private func completeFailedTranscription(taskID: UUID, error: Error) {
+    /// `failedURL` is the link that was being downloaded, when the failure came
+    /// from the URL lane — it drives the richer `errorDetail` copy payload. File
+    /// and batch failures pass `nil` and keep the plain headline as the copy text.
+    private func completeFailedTranscription(taskID: UUID, error: Error, failedURL: String? = nil) {
         guard activeTranscriptionTaskID == taskID else { return }
         transcriptionTask = nil
         activeTranscriptionTaskID = nil
-        errorMessage = error.localizedDescription
         endTranscription()
-        loadTranscriptions()
+
+        if isBatchActive {
+            // A failed file never aborts the batch — it bumps the failure count
+            // (surfaced in the status line + completion banner) and advances.
+            batchFailedCount += 1
+            logger.error(
+                "Batch file transcription failed error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+            )
+            loadTranscriptions()
+            advanceBatch()
+        } else {
+            let message = error.localizedDescription
+            setError(
+                message: message,
+                detail: failedURL.map {
+                    Self.urlFailureDiagnostic(message: message, url: $0, platform: MediaPlatform.recognize($0))
+                })
+            loadTranscriptions()
+        }
+    }
+
+    /// Builds the rich, copyable diagnostic for a failed URL transcription: the
+    /// headline plus the source link and environment — exactly the context a
+    /// yt-dlp/site bug report needs. Kept separate from `errorMessage` (which
+    /// telemetry classifies) so the URL never reaches telemetry; this string is
+    /// only surfaced when the user clicks the banner's copy button.
+    static func urlFailureDiagnostic(
+        message: String,
+        url: String,
+        platform: MediaPlatform?,
+        system: SystemInfo = .current
+    ) -> String {
+        [
+            message,
+            "",
+            "URL: \(url)",
+            "Platform: \(platform?.displayName ?? "Unrecognized link")",
+            "App: \(system.appVersion) (\(system.buildNumber)) · macOS \(system.macOSVersion) · \(system.chipType)",
+        ].joined(separator: "\n")
     }
 
     private func completeCancelledTranscription(taskID: UUID) {
         guard activeTranscriptionTaskID == taskID else { return }
         transcriptionTask = nil
         activeTranscriptionTaskID = nil
-        errorMessage = nil
+        clearError()
         endTranscription()
+        // Any cancellation ends the whole batch — there is no per-item cancel,
+        // so "Cancel all" and a stray single cancel converge to the same reset.
+        if isBatchActive {
+            resetBatchState()
+        }
         loadTranscriptions()
     }
 
@@ -605,7 +1497,7 @@ public final class TranscriptionViewModel {
         progressPhase = .preparing
         progressHeadline = Self.headline(for: .preparing)
         progressSubline = nil
-        errorMessage = nil
+        clearError()
         selectedTab = .transcript
     }
 
@@ -617,6 +1509,7 @@ public final class TranscriptionViewModel {
         transcribingFileName = ""
         activeProgressSpeechEngine = nil
         activeProgressWhisperVariant = nil
+        activeProgressNemotronVariant = nil
         progressPhase = .preparing
         progressHeadline = Self.headline(for: .preparing)
         progressSubline = nil
@@ -631,14 +1524,21 @@ public final class TranscriptionViewModel {
         self.transcriptionProgress = progress.fraction
         self.progressPhase = phase
         self.progressHeadline = Self.headline(for: phase)
-        let speechEngine = activeProgressSpeechEngine ?? SpeechEngineSelection.current(defaults: defaults)
-        let whisperVariant = activeProgressWhisperVariant
+        let speechEngine =
+            activeProgressSpeechEngine
+            ?? SpeechEngineSelection.finalTranscription(defaults: defaults)
+        let whisperVariant =
+            activeProgressWhisperVariant
             ?? SpeechEnginePreference.whisperModelVariant(defaults: defaults)
+        let nemotronVariant =
+            activeProgressNemotronVariant
+            ?? SpeechEnginePreference.nemotronModelVariant(defaults: defaults)
         self.progressSubline = Self.subline(
             for: phase,
             sourceKind: sourceKind,
             engine: speechEngine.engine,
-            whisperVariant: whisperVariant
+            whisperVariant: whisperVariant,
+            nemotronVariant: nemotronVariant
         )
     }
 
@@ -646,6 +1546,7 @@ public final class TranscriptionViewModel {
         switch progress {
         case .converting: return .converting
         case .downloading: return .downloading
+        case .preparingSpeechModel: return .preparingSpeechModel
         case .transcribing: return .transcribing
         case .identifyingSpeakers: return .identifyingSpeakers
         case .finalizing: return .finalizing
@@ -659,6 +1560,8 @@ public final class TranscriptionViewModel {
             return "Converting audio..."
         case .downloading(let percent):
             return "Downloading audio... \(percent)%"
+        case .preparingSpeechModel:
+            return "Preparing speech model..."
         case .transcribing(let percent):
             return "Transcribing... \(percent)%"
         case .identifyingSpeakers:
@@ -681,6 +1584,8 @@ public final class TranscriptionViewModel {
             return "Fetching source audio"
         case .converting:
             return "Normalizing audio stream"
+        case .preparingSpeechModel:
+            return "Preparing speech model"
         case .transcribing:
             return "Running speech recognition"
         case .identifyingSpeakers:
@@ -694,34 +1599,61 @@ public final class TranscriptionViewModel {
         for phase: ProgressPhase,
         sourceKind: SourceKind,
         engine: SpeechEnginePreference,
-        whisperVariant: String
+        whisperVariant: String,
+        nemotronVariant: NemotronModelVariant
     ) -> String? {
         switch phase {
         case .downloading:
-            return sourceKind == .youtubeURL
-                ? "Longer videos take more time to fetch"
+            switch sourceKind {
+            case .youtubeURL:
+                return "Longer videos take more time to fetch"
+            case .podcastURL:
+                return "Longer episodes take more time to fetch"
+            case .localFile:
+                return nil
+            }
+        case .preparingSpeechModel:
+            return engine == .whisper
+                ? "First use may take several minutes while Core ML optimizes Whisper."
                 : nil
         case .transcribing:
             switch engine {
             case .parakeet:
-                return "Parakeet TDT \u{00B7} Neural Engine"
+                return "Parakeet TDT \u{00B7} Local Core ML"
+            case .nemotron:
+                return nemotronVariant.isEnglishOnly
+                    ? "Nemotron EN Beta \u{00B7} Local Core ML"
+                    : "Nemotron 3.5 Beta \u{00B7} Local Core ML"
             case .whisper:
                 let friendly = SpeechEnginePreference.friendlyVariantName(whisperVariant)
-                return "Whisper \(friendly) \u{00B7} Neural Engine"
+                return "Whisper \(friendly) \u{00B7} Local Core ML"
+            case .cohere:
+                return "Cohere Transcribe \u{00B7} Local Core ML"
             }
         case .identifyingSpeakers:
-            return "May take several minutes per hour of audio. Speaker labels are approximate \u{2014} click to rename."
+            return
+                "May take several minutes per hour of audio. Speaker labels are approximate \u{2014} click to rename."
         default:
             return nil
         }
     }
 
+    /// Refreshes prompt-result tab chrome for the already-selected row.
+    ///
+    /// Library and Meetings already hand a fully decoded `Transcription`.
+    /// Re-fetching the row here would JSON-decode word timestamps on the
+    /// main actor before the detail view's first frame.
     public func loadPersistedContent() {
-        if let id = currentTranscription?.id,
-           let fresh = try? transcriptionRepo?.fetch(id: id) {
-            currentTranscription = fresh
-        }
         refreshPromptResultStatus()
+    }
+
+    public func refreshCurrentTranscriptionIfMatching(id: UUID) {
+        guard currentTranscription?.id == id,
+            let fresh = try? transcriptionRepo?.fetch(id: id)
+        else {
+            return
+        }
+        currentTranscription = fresh
     }
 
     public func updateConversationStatus(id: UUID, hasConversations: Bool) {
@@ -734,6 +1666,201 @@ public final class TranscriptionViewModel {
     }
 
     // MARK: - Transcript Editing
+
+    private enum MeetingNotesReadError: Error {
+        case repositoryUnavailable
+    }
+
+    /// A missing row means the meeting was deleted, including by another
+    /// process. Throwing reads must never be treated as permission to discard
+    /// a pending draft during navigation or application termination.
+    public func isMeetingDeleted(id: UUID) async throws -> Bool {
+        guard let repo = transcriptionRepo else {
+            throw MeetingNotesReadError.repositoryUnavailable
+        }
+        return try await Task.detached(priority: .utility) {
+            try repo.fetch(id: id) == nil
+        }.value
+    }
+
+    /// Persists the current saved meeting's notes. SQLite remains canonical;
+    /// meeting artifacts are refreshed after the committed row has been
+    /// synchronized into both detail and list state. Saves are serialized so
+    /// an older artifact refresh can never overwrite a newer notes value.
+    @discardableResult
+    public func updateCurrentMeetingNotes(to newText: String) async -> Bool {
+        guard let transcription = currentTranscription,
+              transcription.sourceType == .meeting
+        else { return false }
+        return await updateMeetingNotes(for: transcription, to: newText)
+    }
+
+    /// Persists notes for the captured meeting even if navigation changes the
+    /// current selection while an autosave is pending.
+    @discardableResult
+    public func updateMeetingNotes(
+        for transcription: Transcription,
+        to newText: String,
+        refreshArtifacts: Bool = true
+    ) async -> Bool {
+        guard transcription.sourceType == .meeting else { return false }
+        guard let repo = transcriptionRepo else {
+            reportMissingConfiguration("transcriptionRepo", action: "updateMeetingNotes")
+            return false
+        }
+
+        let normalizedNotes =
+            newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? nil
+            : newText
+        let previousTask = meetingNotesSaveTask
+        let token = UUID()
+        meetingNotesSaveToken = token
+        meetingNotesSaveRequestTokens[transcription.id] = token
+        let operation = Task { @MainActor [weak self, previousTask, repo, transcription, normalizedNotes] in
+            _ = await previousTask?.value
+            guard let self else { return false }
+            self.clearMeetingNotesError(for: transcription.id)
+            do {
+                let persistence = try await Task.detached(priority: .utility) {
+                    let updated = try repo.updateUserNotes(
+                        id: transcription.id,
+                        userNotes: normalizedNotes
+                    )
+                    guard updated else { return (updated: false, fetched: nil as Transcription?) }
+                    // The write is canonical. A follow-up read failure must not
+                    // misreport a committed note as an unsuccessful save.
+                    return (updated: true, fetched: try? repo.fetch(id: transcription.id))
+                }.value
+                guard persistence.updated else {
+                    if self.currentTranscription?.id == transcription.id,
+                        self.meetingNotesSaveRequestTokens[transcription.id] == token
+                    {
+                        self.setMeetingNotesError(
+                            message: "This meeting no longer exists and its notes could not be saved.",
+                            meetingID: transcription.id)
+                    }
+                    return false
+                }
+                guard let committed = persistence.fetched else {
+                    // The write succeeded. Only patch notes in current UI snapshots:
+                    // the editor's captured row can predate a rename, favorite or chat edit.
+                    let committedAt = Date()
+                    if self.currentTranscription?.id == transcription.id {
+                        self.currentTranscription?.userNotes = normalizedNotes
+                        if let updatedAt = self.currentTranscription?.updatedAt {
+                            self.currentTranscription?.updatedAt = max(updatedAt, committedAt)
+                        }
+                    }
+                    if let index = self.transcriptions.firstIndex(where: { $0.id == transcription.id }) {
+                        self.transcriptions[index].userNotes = normalizedNotes
+                        self.transcriptions[index].updatedAt = max(self.transcriptions[index].updatedAt, committedAt)
+                    }
+                    // Without an authoritative snapshot, leave existing artifacts intact.
+                    if refreshArtifacts {
+                        self.meetingNotesArtifactWarnings[transcription.id] =
+                            "Notes were saved, but the meeting files could not be refreshed."
+                    }
+                    return true
+                }
+                if self.currentTranscription?.id == committed.id {
+                    self.currentTranscription = committed
+                }
+                if let index = self.transcriptions.firstIndex(where: { $0.id == committed.id }) {
+                    self.transcriptions[index] = committed
+                }
+
+                if refreshArtifacts {
+                    let refreshed = await self.refreshMeetingArtifacts(transcription: committed)
+                    self.meetingNotesArtifactWarnings[committed.id] = refreshed
+                        ? nil
+                        : "Notes were saved, but the meeting files could not be refreshed."
+                }
+                return true
+            } catch {
+                self.logger.error(
+                    "Failed to persist meeting notes error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+                )
+                if self.currentTranscription?.id == transcription.id,
+                    self.meetingNotesSaveRequestTokens[transcription.id] == token
+                {
+                    self.setMeetingNotesError(
+                        message: "Failed to save meeting notes: \(error.localizedDescription)",
+                        meetingID: transcription.id)
+                }
+                return false
+            }
+        }
+        meetingNotesSaveTask = operation
+        let saved = await operation.value
+        if meetingNotesSaveToken == token {
+            meetingNotesSaveTask = nil
+            meetingNotesSaveToken = nil
+        }
+        if meetingNotesSaveRequestTokens[transcription.id] == token {
+            meetingNotesSaveRequestTokens[transcription.id] = nil
+        }
+        return saved
+    }
+
+    private func setMeetingNotesError(message: String, meetingID: UUID) {
+        setError(message: message)
+        meetingNotesErrorID = currentErrorID
+        meetingNotesErrorMeetingID = meetingID
+    }
+
+    private func clearMeetingNotesError(for meetingID: UUID) {
+        guard meetingNotesErrorMeetingID == meetingID else { return }
+        if meetingNotesErrorID == currentErrorID {
+            clearError()
+        }
+        meetingNotesErrorID = nil
+        meetingNotesErrorMeetingID = nil
+    }
+
+    public func retryCurrentMeetingNotesArtifactRefresh() async {
+        guard let meetingID = currentTranscription?.id else { return }
+        await refreshMeetingNotesArtifacts(for: meetingID)
+    }
+
+    /// Refresh derived files at an explicit editor flush, after debounced DB saves.
+    public func refreshMeetingNotesArtifacts(for meetingID: UUID) async {
+        guard let repo = transcriptionRepo else { return }
+        let previousTask = meetingNotesSaveTask
+        let token = UUID()
+        meetingNotesSaveToken = token
+        let operation = Task { @MainActor [weak self, previousTask, repo] in
+            _ = await previousTask?.value
+            guard let self else { return false }
+            do {
+                let fetched = try await Task.detached(priority: .utility) {
+                    try repo.fetch(id: meetingID)
+                }.value
+                guard let persisted = fetched,
+                      persisted.sourceType == .meeting
+                else {
+                    self.meetingNotesArtifactWarnings[meetingID] = nil
+                    return false
+                }
+                let refreshed = await self.refreshMeetingArtifacts(transcription: persisted)
+                self.meetingNotesArtifactWarnings[persisted.id] = refreshed
+                    ? nil
+                    : "Notes were saved, but the meeting files could not be refreshed."
+                return refreshed
+            } catch {
+                self.logger.warning("Failed to retry meeting artifact refresh error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)")
+                self.meetingNotesArtifactWarnings[meetingID] =
+                    "Notes were saved, but the meeting files could not be refreshed."
+                return false
+            }
+        }
+        meetingNotesSaveTask = operation
+        _ = await operation.value
+        if meetingNotesSaveToken == token {
+            meetingNotesSaveTask = nil
+            meetingNotesSaveToken = nil
+        }
+    }
 
     @discardableResult
     public func updateCurrentTranscriptText(to newText: String) -> Bool {
@@ -760,7 +1887,9 @@ public final class TranscriptionViewModel {
             }
             return true
         } catch {
-            logger.error("Failed to persist transcript edit error=\(error.localizedDescription, privacy: .public)")
+            logger.error(
+                "Failed to persist transcript edit error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+            )
             return false
         }
     }
@@ -768,7 +1897,7 @@ public final class TranscriptionViewModel {
     @discardableResult
     public func revertCurrentTranscriptToOriginal() -> Bool {
         guard var transcription = currentTranscription,
-              transcription.cleanTranscript != nil
+            transcription.cleanTranscript != nil
         else { return false }
         guard let repo = transcriptionRepo else {
             reportMissingConfiguration("transcriptionRepo", action: "revertCurrentTranscriptToOriginal")
@@ -787,45 +1916,450 @@ public final class TranscriptionViewModel {
             }
             return true
         } catch {
-            logger.error("Failed to persist transcript revert error=\(error.localizedDescription, privacy: .public)")
+            logger.error(
+                "Failed to persist transcript revert error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+            )
             return false
         }
     }
 
-    // MARK: - Speaker Rename
+    // MARK: - Speaker Corrections
 
-    public func renameSpeaker(id speakerId: String, to newLabel: String) {
-        guard var transcription = currentTranscription,
-              var speakers = transcription.speakers else { return }
-        guard let index = speakers.firstIndex(where: { $0.id == speakerId }) else { return }
-        let trimmed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, speakers[index].label != trimmed else { return }
-        speakers[index].label = trimmed
-        transcription.speakers = speakers
-        currentTranscription = transcription
-        do {
-            try transcriptionRepo?.updateSpeakers(id: transcription.id, speakers: speakers)
-        } catch {
-            logger.error("Failed to persist speaker rename error=\(error.localizedDescription, privacy: .public)")
+    /// A notes flush may publish a new row before its correction read finishes.
+    /// AI actions must await that exact read instead of accepting a nil revision.
+    public func waitForCurrentSpeakerAttribution() async -> Bool {
+        let revision = currentTranscriptionRevision
+        let token = speakerAttributionLoadToken
+        let loaded = await speakerAttributionLoadTask?.value ?? (speakerAttribution != nil)
+        return loaded && speakerAttributionLoadToken == token
+            && currentTranscriptionRevision == revision
+            && speakerAttribution != nil
+            && speakerAttributionTranscriptionID == currentTranscription?.id
+    }
+
+    /// Output actions must not use the automatic display fallback while the
+    /// selected snapshot's persisted corrections are still loading.
+    public func currentTranscriptionForSpeakerOutput() async -> Transcription? {
+        guard !isApplyingSpeakerCorrection,
+              await waitForCurrentSpeakerAttribution(),
+              !isApplyingSpeakerCorrection
+        else { return nil }
+        return effectiveCurrentTranscription
+    }
+
+    public func loadSpeakerAttribution(for transcription: Transcription) {
+        let token = UUID()
+        speakerAttributionLoadToken = token
+        let transcriptionID = transcription.id
+        let selectedRevision = currentTranscriptionRevision
+        let reader = speakerAttributionReader
+        speakerAttributionLoadTask = Task { [weak self, reader] in
+            do {
+                let projection = try await Task.detached(priority: .userInitiated) {
+                    if let reader {
+                        return try reader.resolve(transcription: transcription)
+                    }
+                    return SpeakerAttributionProjection(
+                        automaticTranscription: transcription,
+                        attribution: SpeakerAttributionResolver.resolve(transcription: transcription),
+                        correctionsApplied: false
+                    )
+                }.value
+                guard let self,
+                      self.speakerAttributionLoadToken == token,
+                      self.currentTranscriptionRevision == selectedRevision,
+                      self.currentTranscription?.id == transcriptionID
+                else { return false }
+                self.speakerAttribution = projection.attribution
+                self.speakerAttributionTranscriptionID = transcriptionID
+                self.speakerCorrectionsApplied = projection.correctionsApplied
+                self.canUndoSpeakerCorrection = projection.canUndo
+                self.canRedoSpeakerCorrection = projection.canRedo
+                return true
+            } catch {
+                guard let self,
+                      self.speakerAttributionLoadToken == token,
+                      self.currentTranscriptionRevision == selectedRevision
+                else { return false }
+                self.setError(message: "Couldn't load speaker corrections.")
+                self.logger.error(
+                    "speaker_correction_load_failed error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+                )
+                return false
+            }
         }
     }
 
+    /// Returns `false` when the correction was refused because speaker changes
+    /// are still loading or saving, so the caller can keep its pending input
+    /// and retry once `isApplyingSpeakerCorrection` clears.
+    @discardableResult
+    public func applySpeakerCorrection(_ command: SpeakerCorrectionCommand) -> Bool {
+        guard let transcriptionID = currentTranscription?.id,
+              let speakerCorrectionService
+        else { return true }
+        guard let attribution = speakerAttribution, !isApplyingSpeakerCorrection else {
+            setError(message: "Speaker changes are still loading or saving. Please try again.")
+            return false
+        }
+        isApplyingSpeakerCorrection = true
+        let selectedRevision = currentTranscriptionRevision
+        Task { [weak self, speakerCorrectionService] in
+            do {
+                let result = try await speakerCorrectionService.apply(
+                    transcriptionId: transcriptionID,
+                    command: command,
+                    expectedFingerprint: attribution.fingerprint,
+                    expectedRevision: attribution.correctionRevision
+                )
+                self?.publishSpeakerCorrectionResult(
+                    result, transcriptionID: transcriptionID, selectedRevision: selectedRevision
+                )
+            } catch {
+                self?.handleSpeakerCorrectionFailure(error, transcriptionID: transcriptionID)
+            }
+        }
+        return true
+    }
+
+    public func undoSpeakerCorrection() {
+        performSpeakerHistoryAction(isUndo: true)
+    }
+
+    public func redoSpeakerCorrection() {
+        performSpeakerHistoryAction(isUndo: false)
+    }
+
+    private func performSpeakerHistoryAction(isUndo: Bool) {
+        guard let transcriptionID = currentTranscription?.id,
+              let speakerCorrectionService
+        else { return }
+        guard let attribution = speakerAttribution, !isApplyingSpeakerCorrection else {
+            setError(message: "Speaker changes are still loading or saving. Please try again.")
+            return
+        }
+        isApplyingSpeakerCorrection = true
+        let selectedRevision = currentTranscriptionRevision
+        Task { [weak self, speakerCorrectionService] in
+            do {
+                let result: SpeakerCorrectionResult
+                if isUndo {
+                    result = try await speakerCorrectionService.undo(
+                        transcriptionId: transcriptionID,
+                        expectedFingerprint: attribution.fingerprint,
+                        expectedRevision: attribution.correctionRevision
+                    )
+                } else {
+                    result = try await speakerCorrectionService.redo(
+                        transcriptionId: transcriptionID,
+                        expectedFingerprint: attribution.fingerprint,
+                        expectedRevision: attribution.correctionRevision
+                    )
+                }
+                self?.publishSpeakerCorrectionResult(
+                    result, transcriptionID: transcriptionID, selectedRevision: selectedRevision
+                )
+            } catch {
+                self?.handleSpeakerCorrectionFailure(error, transcriptionID: transcriptionID)
+            }
+        }
+    }
+
+    private func publishSpeakerCorrectionResult(
+        _ result: SpeakerCorrectionResult,
+        transcriptionID: UUID,
+        selectedRevision: UInt64
+    ) {
+        isApplyingSpeakerCorrection = false
+        if currentTranscription?.id == transcriptionID {
+            if currentTranscriptionRevision == selectedRevision {
+                // A committed correction is newer than the read that initiated it.
+                speakerAttributionLoadToken = UUID()
+                speakerAttributionLoadTask = nil
+                speakerAttribution = result.attribution
+                speakerAttributionTranscriptionID = transcriptionID
+                speakerCorrectionsApplied = result.canUndo
+                canUndoSpeakerCorrection = result.canUndo
+                canRedoSpeakerCorrection = result.canRedo
+            } else if let currentTranscription {
+                // The selected row changed while the mutation was committing.
+                // Resolve its latest snapshot instead of restoring the old words.
+                loadSpeakerAttribution(for: currentTranscription)
+            }
+        }
+        // Artifact refresh generations are local monotonic tokens, independent
+        // of correction revisions (which restart after retranscription).
+        let artifactGeneration = (speakerRenameGenerations[transcriptionID] ?? 0) + 1
+        speakerRenameGenerations[transcriptionID] = artifactGeneration
+        enqueueMeetingArtifactRefresh(
+            transcriptionID: transcriptionID,
+            generation: artifactGeneration
+        )
+    }
+
+    private func handleSpeakerCorrectionFailure(_ error: Error, transcriptionID: UUID) {
+        isApplyingSpeakerCorrection = false
+        guard currentTranscription?.id == transcriptionID else { return }
+        if error as? SpeakerCorrectionServiceError == .conflict,
+           let transcription = currentTranscription,
+           transcription.id == transcriptionID {
+            loadSpeakerAttribution(for: transcription)
+            setError(message: "Speaker changes were updated elsewhere. Review and try again.")
+        } else {
+            setError(message: "Couldn't save speaker changes. Nothing was changed.")
+        }
+        logger.error(
+            "speaker_correction_failed error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+        )
+    }
+
+    // MARK: - Speaker Rename
+
+    /// Returns `false` only when the rename must be retried later because
+    /// speaker corrections are still loading or saving.
+    @discardableResult
+    public func renameSpeaker(id speakerId: String, to newLabel: String) -> Bool {
+        let trimmed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        if speakerCorrectionService != nil,
+           currentTranscription?.status == .completed,
+           !(currentTranscription?.wordTimestamps ?? []).isEmpty,
+           !(currentTranscription?.transcriptSegments ?? []).isEmpty {
+            // Loading correction history must never enable a legacy write to
+            // the automatic baseline: that would bypass undo and active edits.
+            guard speakerAttribution != nil else {
+                setError(message: "Speaker corrections are loading. Try the rename again in a moment.")
+                return false
+            }
+            clearError()
+            return applySpeakerCorrection(.rename(speakerID: speakerId, label: trimmed))
+        }
+        guard var transcription = currentTranscription,
+            var speakers = transcription.speakers
+        else { return true }
+        guard let index = speakers.firstIndex(where: { $0.id == speakerId }) else { return true }
+        guard !trimmed.isEmpty, speakers[index].label != trimmed else { return true }
+        let previousCurrentSpeakers = speakers
+        let previousCurrentSegments = transcription.transcriptSegments
+        let previousCurrentUpdatedAt = transcription.updatedAt
+        let transcriptionIndex = transcriptions.firstIndex(where: { $0.id == transcription.id })
+        let previousListSpeakers = transcriptionIndex.flatMap { transcriptions[$0].speakers }
+        let previousListSegments = transcriptionIndex.flatMap { transcriptions[$0].transcriptSegments }
+        let previousListUpdatedAt = transcriptionIndex.map { transcriptions[$0].updatedAt }
+        let renameGeneration = (speakerRenameGenerations[transcription.id] ?? 0) + 1
+        speakerRenameGenerations[transcription.id] = renameGeneration
+        speakers[index].label = trimmed
+        transcription.speakers = speakers
+        transcription.transcriptSegments = TranscriptSegmentRecord.updatingSpeakerLabels(
+            in: transcription.transcriptSegments,
+            using: speakers
+        )
+        transcription.updatedAt = Date()
+        currentTranscription = transcription
+        if let transcriptionIndex {
+            transcriptions[transcriptionIndex].speakers = speakers
+            transcriptions[transcriptionIndex].transcriptSegments = transcription.transcriptSegments
+            transcriptions[transcriptionIndex].updatedAt = transcription.updatedAt
+        }
+        guard let transcriptionRepo else { return true }
+        let transcriptionID = transcription.id
+        Task {
+            [
+                weak self,
+                transcriptionRepo,
+                transcriptionID,
+                speakers,
+                previousCurrentSpeakers,
+                previousCurrentSegments,
+                previousCurrentUpdatedAt,
+                previousListSpeakers,
+                previousListSegments,
+                previousListUpdatedAt,
+                renameGeneration
+            ] in
+            do {
+                try await Task.detached(priority: .utility) {
+                    try transcriptionRepo.updateSpeakers(id: transcriptionID, speakers: speakers)
+                }.value
+                self?.enqueueMeetingArtifactRefresh(
+                    transcriptionID: transcriptionID,
+                    generation: renameGeneration
+                )
+            } catch {
+                let errorType = TelemetryErrorClassifier.classify(error)
+                self?.handleSpeakerRenamePersistenceFailure(
+                    transcriptionID: transcriptionID,
+                    generation: renameGeneration,
+                    previousCurrentSpeakers: previousCurrentSpeakers,
+                    previousCurrentSegments: previousCurrentSegments,
+                    previousCurrentUpdatedAt: previousCurrentUpdatedAt,
+                    previousListSpeakers: previousListSpeakers,
+                    previousListSegments: previousListSegments,
+                    previousListUpdatedAt: previousListUpdatedAt,
+                    errorType: errorType
+                )
+                self?.enqueueMeetingArtifactRefresh(
+                    transcriptionID: transcriptionID,
+                    generation: renameGeneration
+                )
+            }
+        }
+        return true
+    }
+
+    private func handleSpeakerRenamePersistenceFailure(
+        transcriptionID: UUID,
+        generation: Int,
+        previousCurrentSpeakers: [SpeakerInfo],
+        previousCurrentSegments: [TranscriptSegmentRecord]?,
+        previousCurrentUpdatedAt: Date,
+        previousListSpeakers: [SpeakerInfo]?,
+        previousListSegments: [TranscriptSegmentRecord]?,
+        previousListUpdatedAt: Date?,
+        errorType: String
+    ) {
+        guard speakerRenameGenerations[transcriptionID] == generation else { return }
+        if var currentTranscription, currentTranscription.id == transcriptionID {
+            currentTranscription.speakers = previousCurrentSpeakers
+            currentTranscription.transcriptSegments = previousCurrentSegments
+            currentTranscription.updatedAt = previousCurrentUpdatedAt
+            self.currentTranscription = currentTranscription
+        }
+        if let index = transcriptions.firstIndex(where: { $0.id == transcriptionID }) {
+            transcriptions[index].speakers = previousListSpeakers
+            transcriptions[index].transcriptSegments = previousListSegments
+            if let previousListUpdatedAt {
+                transcriptions[index].updatedAt = previousListUpdatedAt
+            }
+        }
+        setError(message: "Failed to save speaker rename. The previous label was restored.")
+        logger.error("Failed to persist speaker rename error_type=\(errorType, privacy: .public)")
+    }
+
+    private func enqueueMeetingArtifactRefresh(transcriptionID: UUID, generation: Int) {
+        guard speakerRenameGenerations[transcriptionID] == generation,
+            transcriptionRepo != nil,
+            promptResultRepo != nil
+        else {
+            return
+        }
+
+        let previousTask = speakerRenameArtifactRefreshTasks[transcriptionID]
+        let token = UUID()
+        speakerRenameArtifactRefreshTokens[transcriptionID] = token
+        speakerRenameArtifactRefreshRequestedGenerations[transcriptionID] = max(
+            speakerRenameArtifactRefreshRequestedGenerations[transcriptionID] ?? 0,
+            generation
+        )
+
+        let task = Task.detached(priority: .utility) { [weak self, previousTask] in
+            await previousTask?.value
+            let shouldMaterialize = await MainActor.run { [weak self] in
+                guard let self else { return false }
+                let requestedGeneration = self.speakerRenameArtifactRefreshRequestedGenerations[transcriptionID] ?? 0
+                let completedGeneration = self.speakerRenameArtifactRefreshCompletedGenerations[transcriptionID] ?? 0
+                return requestedGeneration >= generation && completedGeneration < generation
+            }
+            guard shouldMaterialize else {
+                await MainActor.run { [weak self] in
+                    self?.finishSpeakerRenameArtifactRefresh(transcriptionID: transcriptionID, token: token)
+                }
+                return
+            }
+
+            var materializedGeneration = generation
+            while true {
+                let refreshed = await self?.refreshMeetingArtifacts(transcriptionID: transcriptionID, requiresSessionFolder: true) ?? false
+                if !refreshed { break }
+
+                let completedTargetGeneration = materializedGeneration
+                let nextGeneration = await MainActor.run { [weak self] () -> Int? in
+                    guard let self else { return nil }
+                    let completedGeneration =
+                        self.speakerRenameArtifactRefreshCompletedGenerations[transcriptionID] ?? 0
+                    self.speakerRenameArtifactRefreshCompletedGenerations[transcriptionID] = max(
+                        completedGeneration,
+                        completedTargetGeneration
+                    )
+                    let requestedGeneration =
+                        self.speakerRenameArtifactRefreshRequestedGenerations[transcriptionID]
+                        ?? completedTargetGeneration
+                    return requestedGeneration > completedTargetGeneration ? requestedGeneration : nil
+                }
+                guard let nextGeneration else { break }
+                materializedGeneration = nextGeneration
+            }
+            await MainActor.run { [weak self] in
+                self?.finishSpeakerRenameArtifactRefresh(transcriptionID: transcriptionID, token: token)
+            }
+        }
+        speakerRenameArtifactRefreshTasks[transcriptionID] = task
+    }
+
+    private func finishSpeakerRenameArtifactRefresh(transcriptionID: UUID, token: UUID) {
+        guard speakerRenameArtifactRefreshTokens[transcriptionID] == token else { return }
+        speakerRenameArtifactRefreshTokens[transcriptionID] = nil
+        speakerRenameArtifactRefreshTasks[transcriptionID] = nil
+        speakerRenameArtifactRefreshRequestedGenerations[transcriptionID] = nil
+        speakerRenameArtifactRefreshCompletedGenerations[transcriptionID] = nil
+    }
+
     public func renameCurrentTranscription(to newFileName: String) {
-        guard var transcription = currentTranscription else { return }
+        guard let transcription = currentTranscription else { return }
+        guard transcription.sourceType == .meeting else { return }
+        guard let transcriptionRepo else { return }
         let trimmed = newFileName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != transcription.fileName else { return }
 
-        transcription.fileName = trimmed
-        transcription.derivedTitle = trimmed
-        currentTranscription = transcription
+        clearError()
+        let persistedTranscription: Transcription
         do {
-            try transcriptionRepo?.updateFileName(id: transcription.id, fileName: trimmed)
+            guard let updated = try transcriptionRepo.updateFileName(id: transcription.id, fileName: trimmed) else {
+                setError(message: "Failed to rename transcription: the meeting no longer exists.")
+                return
+            }
+            persistedTranscription = updated
+        } catch {
+            logger.error(
+                "Failed to persist transcription rename error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+            )
+            setError(message: "Failed to rename transcription: \(error.localizedDescription)")
+            return
+        }
+
+        currentTranscription = persistedTranscription
+        if let index = transcriptions.firstIndex(where: { $0.id == transcription.id }) {
+            transcriptions[index] = persistedTranscription
+        }
+        onMeetingRenamed?(MeetingRename(id: persistedTranscription.id, title: persistedTranscription.fileName))
+        Task { [weak self, persistedTranscription] in
+            await self?.refreshMeetingArtifacts(transcription: persistedTranscription)
+        }
+    }
+
+    public func renameCurrentTranscriptionTitle(to newTitle: String) {
+        guard let transcription = currentTranscription else { return }
+        guard transcription.sourceType == .file else { return }
+        guard let transcriptionRepo else { return }
+        guard let normalizedTitle = Transcription.normalizedTitleOverride(from: newTitle),
+            normalizedTitle != transcription.effectiveDisplayTitle
+        else {
+            return
+        }
+
+        clearError()
+        do {
+            try transcriptionRepo.updateTitleOverride(id: transcription.id, titleOverride: normalizedTitle)
+            guard let updatedTranscription = try transcriptionRepo.fetch(id: transcription.id) else { return }
+            currentTranscription = updatedTranscription
             if let index = transcriptions.firstIndex(where: { $0.id == transcription.id }) {
-                transcriptions[index].fileName = trimmed
-                transcriptions[index].derivedTitle = trimmed
+                transcriptions[index] = updatedTranscription
             }
         } catch {
-            logger.error("Failed to persist transcription rename error=\(error.localizedDescription, privacy: .public)")
+            logger.error(
+                "Failed to persist transcription title rename error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+            )
+            setError(message: "Failed to rename transcription: \(error.localizedDescription)")
         }
     }
 
@@ -838,8 +2372,56 @@ public final class TranscriptionViewModel {
         do {
             hasPromptResultTabs = try promptResultRepo?.hasPromptResults(transcriptionId: transcriptionID) ?? false
         } catch {
-            logger.error("Failed to query prompt results error=\(error.localizedDescription, privacy: .public)")
+            logger.error(
+                "Failed to query prompt results error_type=\(TelemetryErrorClassifier.classify(error), privacy: .public)"
+            )
             hasPromptResultTabs = false
         }
+    }
+
+    /// Serializes notes and rename artifact writes per meeting. Read canonical
+    /// state after the previous write finishes so queued snapshots cannot restore
+    /// old notes or metadata. A derived-file failure never rolls back the DB.
+    @discardableResult
+    private func refreshMeetingArtifacts(transcription: Transcription) async -> Bool {
+        guard transcription.sourceType == .meeting else { return true }
+        return await refreshMeetingArtifacts(transcriptionID: transcription.id)
+    }
+
+    /// All metadata/correction refreshes share one queue per meeting. Read the
+    /// canonical row only after earlier writes finish, so a queued old snapshot
+    /// cannot overwrite more recent notes, names or speaker corrections.
+    private func refreshMeetingArtifacts(transcriptionID: UUID, requiresSessionFolder: Bool = false) async -> Bool {
+        guard let transcriptionRepo, let promptResultRepo else { return true }
+        let previousTask = meetingArtifactRefreshTasks[transcriptionID]?.task
+        let token = UUID()
+        let store = meetingArtifactStore
+        let reader = speakerAttributionReader
+        let logger = logger
+        let task = Task.detached(priority: .utility) {
+            _ = await previousTask?.value
+            do {
+                guard let current = try transcriptionRepo.fetch(id: transcriptionID),
+                    current.sourceType == .meeting
+                else { return true }
+                if requiresSessionFolder && MeetingArtifactStore.sessionFolderURL(for: current) == nil { return true }
+                let results = try promptResultRepo.fetchAll(transcriptionId: transcriptionID)
+                if let projection = try reader?.resolve(transcription: current) {
+                    _ = try await store.materialize(projection: projection, promptResults: results)
+                } else {
+                    _ = try await store.materialize(transcription: current, promptResults: results)
+                }
+                return true
+            } catch {
+                logger.warning("Failed to refresh meeting artifact for transcription \(transcriptionID.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                return false
+            }
+        }
+        meetingArtifactRefreshTasks[transcriptionID] = (token, task)
+        let refreshed = await task.value
+        if meetingArtifactRefreshTasks[transcriptionID]?.token == token {
+            meetingArtifactRefreshTasks[transcriptionID] = nil
+        }
+        return refreshed
     }
 }

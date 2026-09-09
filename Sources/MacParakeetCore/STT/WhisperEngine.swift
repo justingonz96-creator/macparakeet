@@ -1,108 +1,9 @@
 import Foundation
 import OSLog
 
-#if canImport(WhisperKit)
+#if MACPARAKEET_HAS_WHISPERKIT
 import WhisperKit
 #endif
-
-final class AsyncPermit: @unchecked Sendable {
-    private final class WaitState: @unchecked Sendable {
-        var cancelled = false
-        var completed = false
-    }
-
-    private struct Waiter {
-        let state: WaitState
-        let continuation: CheckedContinuation<Void, Error>
-    }
-
-    private let lock = NSLock()
-    private var permits: Int
-    private var waiterOrder: [UUID] = []
-    private var waiterHeadIndex = 0
-    private var waiters: [UUID: Waiter] = [:]
-
-    init(value: Int = 1) {
-        permits = max(0, value)
-    }
-
-    func wait() async throws {
-        let id = UUID()
-        let state = WaitState()
-        try await withTaskCancellationHandler {
-            let _: Void = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                lock.lock()
-                if state.cancelled {
-                    state.completed = true
-                    lock.unlock()
-                    continuation.resume(throwing: CancellationError())
-                    return
-                }
-                if permits > 0 {
-                    permits -= 1
-                    state.completed = true
-                    lock.unlock()
-                    continuation.resume()
-                } else {
-                    waiterOrder.append(id)
-                    waiters[id] = Waiter(state: state, continuation: continuation)
-                    lock.unlock()
-                }
-            }
-        } onCancel: {
-            cancelWaiter(id: id, state: state)
-        }
-    }
-
-    private func cancelWaiter(id: UUID, state: WaitState) {
-        lock.lock()
-        if state.completed {
-            lock.unlock()
-            return
-        }
-        guard let waiter = waiters.removeValue(forKey: id) else {
-            state.cancelled = true
-            lock.unlock()
-            return
-        }
-        state.completed = true
-        lock.unlock()
-        waiter.continuation.resume(throwing: CancellationError())
-    }
-
-    func signal() {
-        lock.lock()
-        while waiterHeadIndex < waiterOrder.count {
-            let id = waiterOrder[waiterHeadIndex]
-            waiterHeadIndex += 1
-            guard let waiter = waiters.removeValue(forKey: id) else {
-                continue
-            }
-            waiter.state.completed = true
-            compactWaiterOrderIfNeeded()
-            lock.unlock()
-            waiter.continuation.resume()
-            return
-        }
-        permits += 1
-        compactWaiterOrderIfNeeded()
-        lock.unlock()
-    }
-
-    func pendingWaiterCount() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return waiters.count
-    }
-
-    private func compactWaiterOrderIfNeeded() {
-        guard waiterHeadIndex > 64, waiterHeadIndex * 2 > waiterOrder.count else {
-            return
-        }
-        waiterOrder = Array(waiterOrder.dropFirst(waiterHeadIndex))
-        waiterHeadIndex = 0
-    }
-}
 
 public actor WhisperEngine: STTTranscribing {
     public static let defaultModelVariant = SpeechEnginePreference.defaultWhisperModelVariant
@@ -119,7 +20,7 @@ public actor WhisperEngine: STTTranscribing {
     private let vocabularyProvider: (@Sendable () -> [String])?
     private let transcriptionPermit = AsyncPermit()
 
-    #if canImport(WhisperKit)
+    #if MACPARAKEET_HAS_WHISPERKIT
     private var whisperKit: WhisperKit?
     private var isLoaded = false
     #endif
@@ -198,6 +99,31 @@ public actor WhisperEngine: STTTranscribing {
         }
     }
 
+    /// Removes a downloaded Whisper variant from disk and forgets its optimized
+    /// flag so a later re-download honestly reports the cold-start cost. A
+    /// no-op (returns `false`) when the variant isn't present. Pure file work —
+    /// callers are responsible for not deleting the engine currently in use.
+    @discardableResult
+    public static func deleteModel(
+        model: String = WhisperEngine.defaultModelVariant,
+        downloadBase: URL = WhisperEngine.defaultDownloadBase,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        guard let folder = localModelFolder(model: model, downloadBase: downloadBase) else {
+            return false
+        }
+        do {
+            try FileManager.default.removeItem(at: folder)
+        } catch {
+            return false
+        }
+        let removed = localModelFolder(model: model, downloadBase: downloadBase) == nil
+        if removed {
+            SpeechEnginePreference.clearWhisperOptimized(variant: model, defaults: defaults)
+        }
+        return removed
+    }
+
     public func transcribe(
         audioPath: String,
         job: STTJobKind,
@@ -228,13 +154,64 @@ public actor WhisperEngine: STTTranscribing {
         )
     }
 
+    public func transcribe(
+        samples: [Float],
+        language: String?,
+        onProgress: (@Sendable (Int, Int) -> Void)? = nil
+    ) async throws -> STTResult {
+        try await transcriptionPermit.wait()
+        defer { transcriptionPermit.signal() }
+        try Task.checkCancellation()
+        return try await transcribeSamplesLocked(
+            samples,
+            language: language,
+            onProgress: onProgress
+        )
+    }
+
+    private func transcribeSamplesLocked(
+        _ samples: [Float],
+        language: String?,
+        onProgress: (@Sendable (Int, Int) -> Void)? = nil
+    ) async throws -> STTResult {
+        #if MACPARAKEET_HAS_WHISPERKIT
+        do {
+            try await prepareLocked(onProgress: nil)
+            guard let whisperKit else {
+                throw STTError.modelNotLoaded
+            }
+
+            let requestedLanguage = SpeechEnginePreference.normalizeLanguage(language)
+
+            onProgress?(0, 100)
+            let callback: TranscriptionCallback = { _ in
+                onProgress?(50, 100)
+                return true
+            }
+            let result = try await Self.transcribeWithLanguageFallback(
+                whisperKit,
+                audioArray: samples,
+                requestedLanguage: requestedLanguage,
+                callback: callback
+            )
+
+            onProgress?(100, 100)
+            return Self.makeResult(from: result, modelVariant: modelVariant)
+        } catch {
+            throw try Self.mapTranscriptionError(error)
+        }
+        #else
+        throw STTError.engineStartFailed("WhisperKit is not available in this build.")
+        #endif
+    }
+
     private func transcribeLocked(
         audioURL: URL,
         language: String?,
         tuning: WhisperEngineTuning = SpeechEnginePreference.whisperTuning(),
         onProgress: (@Sendable (Int, Int) -> Void)? = nil
     ) async throws -> STTResult {
-        #if canImport(WhisperKit)
+        #if MACPARAKEET_HAS_WHISPERKIT
         do {
             try await prepareLocked(onProgress: nil)
             guard let whisperKit else {
@@ -282,7 +259,7 @@ public actor WhisperEngine: STTTranscribing {
     }
 
     private func prepareLocked(onProgress: (@Sendable (String) -> Void)? = nil) async throws {
-        #if canImport(WhisperKit)
+        #if MACPARAKEET_HAS_WHISPERKIT
         if isLoaded, whisperKit != nil { return }
         guard let modelFolder = Self.localModelFolder(model: modelVariant, downloadBase: downloadBase) else {
             throw STTError.engineStartFailed(
@@ -352,7 +329,7 @@ public actor WhisperEngine: STTTranscribing {
         defer { transcriptionPermit.signal() }
         guard !Task.isCancelled else { return }
 
-        #if canImport(WhisperKit)
+        #if MACPARAKEET_HAS_WHISPERKIT
         await whisperKit?.unloadModels()
         whisperKit = nil
         isLoaded = false
@@ -360,7 +337,7 @@ public actor WhisperEngine: STTTranscribing {
     }
 
     public func isReady() -> Bool {
-        #if canImport(WhisperKit)
+        #if MACPARAKEET_HAS_WHISPERKIT
         isLoaded && whisperKit != nil
         #else
         false
@@ -372,7 +349,7 @@ public actor WhisperEngine: STTTranscribing {
         downloadBase: URL = WhisperEngine.defaultDownloadBase,
         onProgress: (@Sendable (Int, Int) -> Void)? = nil
     ) async throws -> URL {
-        #if canImport(WhisperKit)
+        #if MACPARAKEET_HAS_WHISPERKIT
         try AppPaths.ensureDirectories()
         return try await WhisperKit.download(
             variant: normalizeModelVariant(model),
@@ -430,7 +407,7 @@ public actor WhisperEngine: STTTranscribing {
         return appended > 0 ? prompt + "." : nil
     }
 
-    #if canImport(WhisperKit)
+    #if MACPARAKEET_HAS_WHISPERKIT
     static func makeDecodingOptions(
         language: String?,
         tuning: WhisperEngineTuning = SpeechEnginePreference.whisperTuning(),
@@ -479,23 +456,66 @@ public actor WhisperEngine: STTTranscribing {
         )
     }
 
+    private static func transcribeWithLanguageFallback(
+        _ whisperKit: WhisperKit,
+        audioArray: [Float],
+        requestedLanguage: String?,
+        callback: @escaping TranscriptionCallback
+    ) async throws -> TranscriptionResult {
+        let result = try await transcribeWithWhisperKit(
+            whisperKit,
+            audioArray: audioArray,
+            decodeOptions: makeDecodingOptions(language: requestedLanguage),
+            callback: callback
+        )
+
+        guard requestedLanguage != nil, shouldRetryWithoutForcedLanguage(result) else {
+            return result
+        }
+
+        return try await transcribeWithWhisperKit(
+            whisperKit,
+            audioArray: audioArray,
+            decodeOptions: makeDecodingOptions(language: nil),
+            callback: callback
+        )
+    }
+
     private static func transcribeWithWhisperKit(
         _ whisperKit: WhisperKit,
         audioPaths: [String],
         decodeOptions: DecodingOptions,
         callback: @escaping TranscriptionCallback
     ) async throws -> TranscriptionResult {
-        let results = await whisperKit.transcribeWithResults(
-            audioPaths: audioPaths,
-            decodeOptions: decodeOptions,
-            callback: callback
-        )
+        let results = try await ANEInferenceGate.shared.withExclusiveAccess {
+            await whisperKit.transcribeWithResults(
+                audioPaths: audioPaths,
+                decodeOptions: decodeOptions,
+                callback: callback
+            )
+        }
 
         guard let first = results.first else {
             throw STTError.invalidResponse
         }
 
         let partialResults = try first.get()
+        return TranscriptionUtilities.mergeTranscriptionResults(partialResults)
+    }
+
+    private static func transcribeWithWhisperKit(
+        _ whisperKit: WhisperKit,
+        audioArray: [Float],
+        decodeOptions: DecodingOptions,
+        callback: @escaping TranscriptionCallback
+    ) async throws -> TranscriptionResult {
+        let partialResults = try await ANEInferenceGate.shared.withExclusiveAccess {
+            try await whisperKit.transcribe(
+                audioArray: audioArray,
+                decodeOptions: decodeOptions,
+                callback: callback
+            )
+        }
         return TranscriptionUtilities.mergeTranscriptionResults(partialResults)
     }
 

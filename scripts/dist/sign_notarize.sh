@@ -16,6 +16,7 @@ set -euo pipefail
 #   CREATE_DMG            (default: 1)
 #   NOTARY_TIMEOUT_SECONDS       (default: 1800)
 #   NOTARY_POLL_INTERVAL_SECONDS (default: 15)
+#   MACPARAKEET_ALLOW_DEV_VERSION_SIGNING (default: 0; set 1 only for diagnostic signing)
 #
 # Outputs:
 #   dist/MacParakeet.app (signed + stapled)
@@ -84,6 +85,8 @@ if [[ ! -d "$APP_PATH" ]]; then
   echo "Run: $ROOT_DIR/scripts/dist/build_app_bundle.sh" >&2
   exit 1
 fi
+
+"$ROOT_DIR/scripts/dist/verify_release_version.sh" "$APP_PATH"
 
 echo "[1/8] Clearing extended attributes…"
 xattr -cr "$APP_PATH" || true
@@ -163,6 +166,7 @@ codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp \
 
 echo "[4/8] Verifying signature…"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+"$ROOT_DIR/scripts/dist/verify_app_privacy_surface.sh" "$APP_PATH"
 VERIFY_CODE_SIGNATURES=1 "$ROOT_DIR/scripts/dist/verify_meeting_echo_assets.sh" "$APP_PATH"
 
 ZIP_PATH="$DIST_DIR/${APP_NAME}.app.zip"

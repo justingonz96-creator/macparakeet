@@ -24,10 +24,86 @@ public struct Prompt: Codable, Identifiable, Sendable {
     /// naturally, falling back to *Transforming…* for awkward names.
     public var runningLabel: String?
 
+    /// Which transcription sources this `.result` prompt auto-runs for, when
+    /// `isAutoRun` is true. `nil` means **all sources** — the historical
+    /// behavior, and what every existing/migrated row decodes to. A non-nil
+    /// set restricts auto-run to those sources: e.g. `[.meeting]` makes it a
+    /// meeting-only auto-note that won't fire on file/YouTube transcriptions.
+    /// Has no effect when `isAutoRun` is false, and is irrelevant to
+    /// `.transform` prompts. Stored as JSON (GRDB encodes the Set). See
+    /// ADR-020 (2026-05 amendment) and the Meetings "After each meeting" card.
+    public var appliesToSources: Set<Transcription.SourceType>?
+
+    /// Optional transport-neutral generation settings for this result prompt.
+    /// GRDB stores the Codable value as JSON; nil preserves the historical
+    /// provider-default behavior. Result prompts and Transforms both use it.
+    public var inferenceSettings: PromptInferenceSettings?
+
+    /// Whether meeting notes should be appended as additional context when
+    /// this result prompt runs. Explicit `{{userNotes}}` template references
+    /// continue to work independently of this preference. Transform prompts
+    /// never use this field.
+    public var includeMeetingNotes: Bool
+
+    /// Immutable version selected for execution. PromptRepository resolves
+    /// `content`, `inferenceSettings`, and `modelOverride` from this row.
+    public var activeVersionId: UUID?
+
+    /// Optional model selected specifically for this prompt version. Nil uses
+    /// the provider's active model.
+    public var modelOverride: String?
+
+    /// Stable bundled identity for built-ins. This is provenance only and
+    /// never restricts editing or deletion.
+    public var canonicalKey: String?
+    public var lastAppliedCanonicalRevision: Int?
+
+    /// Set when a user changes a built-in's name or versioned request values,
+    /// or deletes it. Operational metadata does not customize the canonical
+    /// definition.
+    public var userCustomizedAt: Date?
+
+    /// Uniform recoverable deletion for built-in and user-created prompts.
+    public var deletedAt: Date?
+
+    /// Optional user-facing organization collection. This metadata is not
+    /// versioned and never affects the LLM request.
+    public var collectionId: UUID?
+
     public enum Category: String, Codable, Sendable {
         // Keep the stored raw value as "summary" until the prompts table itself is migrated.
         case result = "summary"
         case transform
+    }
+
+    /// Legacy JSON predates the meeting-notes preference. Only an absent key
+    /// defaults to false; malformed or null values remain decoding errors.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        content = try container.decode(String.self, forKey: .content)
+        category = try container.decode(Category.self, forKey: .category)
+        isBuiltIn = try container.decode(Bool.self, forKey: .isBuiltIn)
+        isVisible = try container.decode(Bool.self, forKey: .isVisible)
+        isAutoRun = try container.decode(Bool.self, forKey: .isAutoRun)
+        sortOrder = try container.decode(Int.self, forKey: .sortOrder)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        keyboardShortcut = try container.decodeIfPresent(String.self, forKey: .keyboardShortcut)
+        runningLabel = try container.decodeIfPresent(String.self, forKey: .runningLabel)
+        appliesToSources = try container.decodeIfPresent(Set<Transcription.SourceType>.self, forKey: .appliesToSources)
+        inferenceSettings = try container.decodeIfPresent(PromptInferenceSettings.self, forKey: .inferenceSettings)
+        includeMeetingNotes =
+            container.contains(.includeMeetingNotes)
+            ? try container.decode(Bool.self, forKey: .includeMeetingNotes) : false
+        activeVersionId = try container.decodeIfPresent(UUID.self, forKey: .activeVersionId)
+        modelOverride = try container.decodeIfPresent(String.self, forKey: .modelOverride)
+        canonicalKey = try container.decodeIfPresent(String.self, forKey: .canonicalKey)
+        lastAppliedCanonicalRevision = try container.decodeIfPresent(Int.self, forKey: .lastAppliedCanonicalRevision)
+        userCustomizedAt = try container.decodeIfPresent(Date.self, forKey: .userCustomizedAt)
+        deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
+        collectionId = try container.decodeIfPresent(UUID.self, forKey: .collectionId)
     }
 
     public init(
@@ -42,7 +118,17 @@ public struct Prompt: Codable, Identifiable, Sendable {
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         keyboardShortcut: String? = nil,
-        runningLabel: String? = nil
+        runningLabel: String? = nil,
+        appliesToSources: Set<Transcription.SourceType>? = nil,
+        inferenceSettings: PromptInferenceSettings? = nil,
+        includeMeetingNotes: Bool = false,
+        activeVersionId: UUID? = nil,
+        modelOverride: String? = nil,
+        canonicalKey: String? = nil,
+        lastAppliedCanonicalRevision: Int? = nil,
+        userCustomizedAt: Date? = nil,
+        deletedAt: Date? = nil,
+        collectionId: UUID? = nil
     ) {
         self.id = id
         self.name = name
@@ -56,6 +142,25 @@ public struct Prompt: Codable, Identifiable, Sendable {
         self.updatedAt = updatedAt
         self.keyboardShortcut = keyboardShortcut
         self.runningLabel = runningLabel
+        self.appliesToSources = appliesToSources
+        self.inferenceSettings = inferenceSettings?.normalized
+        self.includeMeetingNotes = category == .result ? includeMeetingNotes : false
+        self.activeVersionId = activeVersionId
+        self.modelOverride = modelOverride
+        self.canonicalKey = canonicalKey
+        self.lastAppliedCanonicalRevision = lastAppliedCanonicalRevision
+        self.userCustomizedAt = userCustomizedAt
+        self.deletedAt = deletedAt
+        self.collectionId = collectionId
+    }
+
+    /// Whether this prompt should auto-run after a transcription of `source`
+    /// completes. Centralizes the scoping rule: must be auto-run-enabled, and
+    /// either unscoped (`nil` = all sources) or explicitly include `source`.
+    public func autoRuns(for source: Transcription.SourceType) -> Bool {
+        guard isAutoRun else { return false }
+        guard let appliesToSources else { return true }
+        return appliesToSources.contains(source)
     }
 
     // MARK: - Transform convenience
@@ -114,8 +219,9 @@ public struct Prompt: Codable, Identifiable, Sendable {
         sortOrder: Int,
         now: Date
     ) -> Prompt {
-        Prompt(
-            id: UUID(uuidString: id) ?? UUID(),
+        let promptID = UUID(uuidString: id) ?? UUID()
+        return Prompt(
+            id: promptID,
             name: name,
             content: content,
             category: .result,
@@ -123,7 +229,9 @@ public struct Prompt: Codable, Identifiable, Sendable {
             isAutoRun: isAutoRun,
             sortOrder: sortOrder,
             createdAt: now,
-            updatedAt: now
+            updatedAt: now,
+            canonicalKey: promptID.uuidString.lowercased(),
+            lastAppliedCanonicalRevision: 1
         )
     }
 
@@ -136,8 +244,9 @@ public struct Prompt: Codable, Identifiable, Sendable {
         runningLabel: String?,
         now: Date
     ) -> Prompt {
-        Prompt(
-            id: UUID(uuidString: id) ?? UUID(),
+        let promptID = UUID(uuidString: id) ?? UUID()
+        return Prompt(
+            id: promptID,
             name: name,
             content: content,
             category: .transform,
@@ -148,7 +257,9 @@ public struct Prompt: Codable, Identifiable, Sendable {
             createdAt: now,
             updatedAt: now,
             keyboardShortcut: defaultShortcut?.encodedString(),
-            runningLabel: runningLabel
+            runningLabel: runningLabel,
+            canonicalKey: promptID.uuidString.lowercased(),
+            lastAppliedCanonicalRevision: 1
         )
     }
 
@@ -302,20 +413,22 @@ public struct Prompt: Codable, Identifiable, Sendable {
     /// each pedagogically distinct so the lineup itself teaches what
     /// Transforms is for:
     ///
-    /// - *Polish* (⌥1) — make text read like the writer's best version, voice
+    /// - *Polish* (⌃⌥1) — make text read like the writer's best version, voice
     ///   intact. The everyday driver.
-    /// - *Distill* (⌥2) — compress to signal, raise information density.
+    /// - *Distill* (⌃⌥2) — compress to signal, raise information density.
     ///   The "I have a rambling braindump" tool.
-    /// - *Decide* (⌥3) — turn discussion into a decision-ready note with
+    /// - *Decide* (⌃⌥3) — turn discussion into a decision-ready note with
     ///   tradeoffs + recommended next step. The forward-motion tool.
     ///
-    /// Together: **Improve → Re-shape → Re-direct**. Three slots; ⌥4–9
-    /// reserved for user customization.
+    /// Together: **Improve → Re-shape → Re-direct**. Three slots; ⌃⌥4–9
+    /// reserved for user customization. The built-ins use the Control-Option
+    /// prefix rather than bare Option so they don't steal the Option-only
+    /// symbols some Mac layouts type (⌥1 = ¡, ⌥2 = ™, ⌥3 = # / £, …).
     ///
     /// Each row is seeded by the reconciler at app launch if missing; user
-    /// edits to the row are preserved — the reconciler never overwrites
-    /// content, shortcut, or runningLabel on existing built-in transform
-    /// rows.
+    /// edits to the row are preserved. Existing shortcuts are preserved except
+    /// for the legacy Option+digit → Control-Option+digit default migrations
+    /// (⌥1→⌃⌥1, ⌥2→⌃⌥2, ⌥3→⌃⌥3).
     ///
     /// UUIDs are reserved — never reuse for a different prompt.
     private static func builtInTransformPrompts(now: Date) -> [Prompt] {
@@ -334,8 +447,9 @@ public struct Prompt: Codable, Identifiable, Sendable {
                     """.replacingOccurrences(of: "                    ", with: ""),
                 sortOrder: 100,
                 defaultShortcut: KeyboardShortcut(
-                    modifiers: KeyboardShortcut.ModifierFlag.option.rawValue,
-                    keyCode: 0x12, // kVK_ANSI_1
+                    modifiers: KeyboardShortcut.ModifierFlag.control.rawValue
+                        | KeyboardShortcut.ModifierFlag.option.rawValue,
+                    keyCode: 0x12,  // kVK_ANSI_1
                     keyLabel: "1"
                 ),
                 runningLabel: "Polishing…",
@@ -357,8 +471,9 @@ public struct Prompt: Codable, Identifiable, Sendable {
                     """.replacingOccurrences(of: "                    ", with: ""),
                 sortOrder: 101,
                 defaultShortcut: KeyboardShortcut(
-                    modifiers: KeyboardShortcut.ModifierFlag.option.rawValue,
-                    keyCode: 0x13, // kVK_ANSI_2
+                    modifiers: KeyboardShortcut.ModifierFlag.control.rawValue
+                        | KeyboardShortcut.ModifierFlag.option.rawValue,
+                    keyCode: 0x13,  // kVK_ANSI_2
                     keyLabel: "2"
                 ),
                 runningLabel: "Distilling…",
@@ -383,8 +498,9 @@ public struct Prompt: Codable, Identifiable, Sendable {
                     """.replacingOccurrences(of: "                    ", with: ""),
                 sortOrder: 102,
                 defaultShortcut: KeyboardShortcut(
-                    modifiers: KeyboardShortcut.ModifierFlag.option.rawValue,
-                    keyCode: 0x14, // kVK_ANSI_3
+                    modifiers: KeyboardShortcut.ModifierFlag.control.rawValue
+                        | KeyboardShortcut.ModifierFlag.option.rawValue,
+                    keyCode: 0x14,  // kVK_ANSI_3
                     keyLabel: "3"
                 ),
                 runningLabel: "Deciding…",
@@ -394,12 +510,15 @@ public struct Prompt: Codable, Identifiable, Sendable {
     }
 }
 
-extension Prompt: FetchableRecord, PersistableRecord {
+extension Prompt: FetchableRecord, TableRecord {
     public static let databaseTableName = "prompts"
 
     public enum Columns: String, ColumnExpression {
         case id, name, content, category, isBuiltIn, isVisible, isAutoRun
         case sortOrder, createdAt, updatedAt
-        case keyboardShortcut, runningLabel
+        case keyboardShortcut, runningLabel, appliesToSources, inferenceSettings, includeMeetingNotes
+        case activeVersionId, modelOverride, canonicalKey, lastAppliedCanonicalRevision
+        case userCustomizedAt, deletedAt
+        case collectionId
     }
 }

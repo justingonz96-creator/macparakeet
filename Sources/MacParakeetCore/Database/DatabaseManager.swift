@@ -6,6 +6,12 @@ import Darwin
 public final class DatabaseManager: Sendable {
     public let dbQueue: DatabaseQueue
 
+    /// Identifiers of every migration this build knows, in registration order.
+    /// Derived from the migrator itself so it can never drift from `migrate()`.
+    public static var registeredMigrationIdentifiers: [String] {
+        makeMigrator().migrations
+    }
+
     #if DEBUG
     private static let sqlTraceEnvKey = "MACPARAKEET_DEBUG_SQL"
     #endif
@@ -19,12 +25,60 @@ public final class DatabaseManager: Sendable {
         }
     }
 
+    /// Open an existing database without initializing or migrating its schema.
+    public init(readOnlyPath path: String) throws {
+        var config = Self.makeConfiguration()
+        config.readonly = true
+        dbQueue = try DatabaseQueue(path: path, configuration: config)
+    }
+
     /// Create a DatabaseManager with an in-memory database (for tests)
     public init() throws {
         let config = Self.makeConfiguration()
         dbQueue = try DatabaseQueue(configuration: config)
         try migrate()
     }
+
+    public func appliedMigrationIdentifiers() throws -> [String] {
+        try Self.appliedMigrationIdentifiers(in: dbQueue)
+    }
+
+    public static func appliedMigrationIdentifiers(at path: String) throws -> [String] {
+        var config = makeConfiguration()
+        config.readonly = true
+        let queue = try DatabaseQueue(path: path, configuration: config)
+        return try appliedMigrationIdentifiers(in: queue)
+    }
+
+    public static func unknownAppliedMigrationIdentifiers(at path: String) throws -> [String] {
+        let registered = Set(registeredMigrationIdentifiers)
+        return try appliedMigrationIdentifiers(at: path)
+            .filter { !registered.contains($0) }
+            .sorted()
+    }
+
+    private static func appliedMigrationIdentifiers(in queue: DatabaseQueue) throws -> [String] {
+        try queue.read { db in
+            guard try db.tableExists("grdb_migrations") else {
+                return []
+            }
+            return try String.fetchAll(
+                db,
+                sql: "SELECT identifier FROM grdb_migrations ORDER BY rowid"
+            )
+        }
+    }
+
+    #if DEBUG
+    func recordAppliedMigrationIdentifierForTesting(_ identifier: String) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "INSERT INTO grdb_migrations (identifier) VALUES (?)",
+                arguments: [identifier]
+            )
+        }
+    }
+    #endif
 
     private static func makeConfiguration() -> Configuration {
         var config = Configuration()
@@ -55,6 +109,12 @@ public final class DatabaseManager: Sendable {
     #endif
 
     private func migrate() throws {
+        try Self.makeMigrator().migrate(dbQueue)
+        try reconcileBuiltInPrompts()
+        try reconcileBuiltInQuickPrompts()
+    }
+
+    static func makeMigrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
 
         // v0.1 — Dictations table + FTS5
@@ -79,34 +139,38 @@ public final class DatabaseManager: Sendable {
             )
 
             // FTS5 external content table
-            try db.execute(sql: """
-                CREATE VIRTUAL TABLE dictations_fts USING fts5(
-                    rawTranscript, cleanTranscript,
-                    content='dictations', content_rowid='rowid'
-                )
-            """)
+            try db.execute(
+                sql: """
+                        CREATE VIRTUAL TABLE dictations_fts USING fts5(
+                            rawTranscript, cleanTranscript,
+                            content='dictations', content_rowid='rowid'
+                        )
+                    """)
 
             // Sync triggers
-            try db.execute(sql: """
-                CREATE TRIGGER dictations_ai AFTER INSERT ON dictations BEGIN
-                    INSERT INTO dictations_fts(rowid, rawTranscript, cleanTranscript)
-                    VALUES (new.rowid, new.rawTranscript, new.cleanTranscript);
-                END
-            """)
-            try db.execute(sql: """
-                CREATE TRIGGER dictations_ad AFTER DELETE ON dictations BEGIN
-                    INSERT INTO dictations_fts(dictations_fts, rowid, rawTranscript, cleanTranscript)
-                    VALUES ('delete', old.rowid, old.rawTranscript, old.cleanTranscript);
-                END
-            """)
-            try db.execute(sql: """
-                CREATE TRIGGER dictations_au AFTER UPDATE ON dictations BEGIN
-                    INSERT INTO dictations_fts(dictations_fts, rowid, rawTranscript, cleanTranscript)
-                    VALUES ('delete', old.rowid, old.rawTranscript, old.cleanTranscript);
-                    INSERT INTO dictations_fts(rowid, rawTranscript, cleanTranscript)
-                    VALUES (new.rowid, new.rawTranscript, new.cleanTranscript);
-                END
-            """)
+            try db.execute(
+                sql: """
+                        CREATE TRIGGER dictations_ai AFTER INSERT ON dictations BEGIN
+                            INSERT INTO dictations_fts(rowid, rawTranscript, cleanTranscript)
+                            VALUES (new.rowid, new.rawTranscript, new.cleanTranscript);
+                        END
+                    """)
+            try db.execute(
+                sql: """
+                        CREATE TRIGGER dictations_ad AFTER DELETE ON dictations BEGIN
+                            INSERT INTO dictations_fts(dictations_fts, rowid, rawTranscript, cleanTranscript)
+                            VALUES ('delete', old.rowid, old.rawTranscript, old.cleanTranscript);
+                        END
+                    """)
+            try db.execute(
+                sql: """
+                        CREATE TRIGGER dictations_au AFTER UPDATE ON dictations BEGIN
+                            INSERT INTO dictations_fts(dictations_fts, rowid, rawTranscript, cleanTranscript)
+                            VALUES ('delete', old.rowid, old.rawTranscript, old.cleanTranscript);
+                            INSERT INTO dictations_fts(rowid, rawTranscript, cleanTranscript)
+                            VALUES (new.rowid, new.rawTranscript, new.cleanTranscript);
+                        END
+                    """)
         }
 
         // v0.1 — Transcriptions table
@@ -147,10 +211,11 @@ public final class DatabaseManager: Sendable {
                 t.column("createdAt", .text).notNull()
                 t.column("updatedAt", .text).notNull()
             }
-            try db.execute(sql: """
-                CREATE UNIQUE INDEX idx_custom_words_word
-                ON custom_words(word COLLATE NOCASE)
-            """)
+            try db.execute(
+                sql: """
+                        CREATE UNIQUE INDEX idx_custom_words_word
+                        ON custom_words(word COLLATE NOCASE)
+                    """)
         }
 
         // v0.2 — Text snippets table
@@ -164,10 +229,11 @@ public final class DatabaseManager: Sendable {
                 t.column("createdAt", .text).notNull()
                 t.column("updatedAt", .text).notNull()
             }
-            try db.execute(sql: """
-                CREATE UNIQUE INDEX idx_text_snippets_trigger
-                ON text_snippets("trigger" COLLATE NOCASE)
-            """)
+            try db.execute(
+                sql: """
+                        CREATE UNIQUE INDEX idx_text_snippets_trigger
+                        ON text_snippets("trigger" COLLATE NOCASE)
+                    """)
         }
 
         // v0.3 — Add sourceURL to transcriptions (YouTube URL tracking)
@@ -208,10 +274,12 @@ public final class DatabaseManager: Sendable {
             }
             // Backfill wordCount for existing completed rows.
             // Use DatabaseValue to safely skip rows with corrupt/non-UUID ids.
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT id, COALESCE(cleanTranscript, rawTranscript) AS text
-                FROM dictations WHERE status = 'completed'
-            """)
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                        SELECT id, COALESCE(cleanTranscript, rawTranscript) AS text
+                        FROM dictations WHERE status = 'completed'
+                    """)
             for row in rows {
                 guard let id = UUID.fromDatabaseValue(row["id"] as DatabaseValue) else { continue }
                 let text: String = row["text"] ?? ""
@@ -250,16 +318,19 @@ public final class DatabaseManager: Sendable {
             // no audit trail. Now: skipped rows are logged via OSLog and
             // their chatMessages column is left intact for forensic recovery.
             let logger = Logger(subsystem: "com.macparakeet.core", category: "DatabaseMigration")
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT id, chatMessages FROM transcriptions WHERE chatMessages IS NOT NULL
-            """)
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                        SELECT id, chatMessages FROM transcriptions WHERE chatMessages IS NOT NULL
+                    """)
             let now = Date()
             var migratedRawIDs: [String] = []
             var skippedCount = 0
             for row in rows {
                 let rawIDString: String? = row["id"]
                 guard let transcriptionId = UUID.fromDatabaseValue(row["id"] as DatabaseValue),
-                      let chatMessagesJSON = String.fromDatabaseValue(row["chatMessages"] as DatabaseValue) else {
+                    let chatMessagesJSON = String.fromDatabaseValue(row["chatMessages"] as DatabaseValue)
+                else {
                     skippedCount += 1
                     if let rawIDString {
                         logger.warning(
@@ -276,7 +347,8 @@ public final class DatabaseManager: Sendable {
                 // preserved in chat_conversations.messages.
                 var title = "Chat"
                 if let data = chatMessagesJSON.data(using: .utf8),
-                   let messages = try? JSONDecoder().decode([ChatMessage].self, from: data) {
+                    let messages = try? JSONDecoder().decode([ChatMessage].self, from: data)
+                {
                     if let firstUser = messages.first(where: { $0.role == .user }) {
                         title = String(firstUser.content.prefix(50))
                     }
@@ -287,10 +359,11 @@ public final class DatabaseManager: Sendable {
                 }
 
                 let conversationId = UUID()
-                try db.execute(sql: """
-                    INSERT INTO chat_conversations (id, transcriptionId, title, messages, createdAt, updatedAt)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, arguments: [conversationId, transcriptionId, title, chatMessagesJSON, now, now])
+                try db.execute(
+                    sql: """
+                            INSERT INTO chat_conversations (id, transcriptionId, title, messages, createdAt, updatedAt)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, arguments: [conversationId, transcriptionId, title, chatMessagesJSON, now, now])
                 migratedRawIDs.append(rawIDString ?? transcriptionId.uuidString)
             }
 
@@ -336,10 +409,10 @@ public final class DatabaseManager: Sendable {
 
             try db.execute(
                 sql: """
-                    UPDATE transcriptions
-                    SET sourceType = ?
-                    WHERE sourceURL IS NOT NULL
-                """,
+                        UPDATE transcriptions
+                        SET sourceType = ?
+                        WHERE sourceURL IS NOT NULL
+                    """,
                 arguments: ["youtube"]
             )
         }
@@ -365,9 +438,10 @@ public final class DatabaseManager: Sendable {
                 t.column("createdAt", .text).notNull()
                 t.column("updatedAt", .text).notNull()
             }
-            try db.execute(sql: """
-                CREATE UNIQUE INDEX idx_prompts_name ON prompts(name COLLATE NOCASE)
-            """)
+            try db.execute(
+                sql: """
+                        CREATE UNIQUE INDEX idx_prompts_name ON prompts(name COLLATE NOCASE)
+                    """)
 
             let now = Date()
             let legacySummaryPrompt = Prompt.classicSummaryPrompt(now: now)
@@ -417,11 +491,13 @@ public final class DatabaseManager: Sendable {
                 columns: ["transcriptionId"]
             )
 
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT id, summary, createdAt
-                FROM transcriptions
-                WHERE summary IS NOT NULL AND summary != ''
-            """)
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                        SELECT id, summary, createdAt
+                        FROM transcriptions
+                        WHERE summary IS NOT NULL AND summary != ''
+                    """)
 
             for row in rows {
                 guard
@@ -462,20 +538,25 @@ public final class DatabaseManager: Sendable {
         migrator.registerMigration("v0.7.1-prompt-default") { db in
             let columns = try db.columns(in: "prompts")
             // Only add isDefault if neither isDefault nor isAutoRun exists
-            if !columns.contains(where: { $0.name == "isDefault" }) && !columns.contains(where: { $0.name == "isAutoRun" }) {
+            if !columns.contains(where: { $0.name == "isDefault" })
+                && !columns.contains(where: { $0.name == "isAutoRun" })
+            {
                 try db.alter(table: "prompts") { t in
                     t.add(column: "isDefault", .boolean).notNull().defaults(to: false)
                 }
-                try db.execute(sql: """
-                    UPDATE prompts SET isDefault = 1 WHERE name = 'General Summary' AND isBuiltIn = 1
-                """)
+                try db.execute(
+                    sql: """
+                            UPDATE prompts SET isDefault = 1 WHERE name = 'General Summary' AND isBuiltIn = 1
+                        """)
             }
         }
 
         // v0.7.2 - Rename isDefault to isAutoRun for multi-auto-run support
         migrator.registerMigration("v0.7.2-prompt-autorun") { db in
             let columns = try db.columns(in: "prompts")
-            if columns.contains(where: { $0.name == "isDefault" }) && !columns.contains(where: { $0.name == "isAutoRun" }) {
+            if columns.contains(where: { $0.name == "isDefault" })
+                && !columns.contains(where: { $0.name == "isAutoRun" })
+            {
                 try db.alter(table: "prompts") { t in
                     t.rename(column: "isDefault", to: "isAutoRun")
                 }
@@ -483,9 +564,10 @@ public final class DatabaseManager: Sendable {
                 try db.alter(table: "prompts") { t in
                     t.add(column: "isAutoRun", .boolean).notNull().defaults(to: false)
                 }
-                try db.execute(sql: """
-                    UPDATE prompts SET isAutoRun = 1 WHERE name = 'General Summary' AND isBuiltIn = 1
-                """)
+                try db.execute(
+                    sql: """
+                            UPDATE prompts SET isAutoRun = 1 WHERE name = 'General Summary' AND isBuiltIn = 1
+                        """)
             }
         }
 
@@ -617,18 +699,21 @@ public final class DatabaseManager: Sendable {
         }
 
         migrator.registerMigration("v0.10-transcription-library-indexes") { db in
-            try db.execute(sql: """
-                CREATE INDEX IF NOT EXISTS idx_transcriptions_source_type_created_at
-                ON transcriptions(sourceType, createdAt)
-            """)
-            try db.execute(sql: """
-                CREATE INDEX IF NOT EXISTS idx_transcriptions_favorite_created_at
-                ON transcriptions(isFavorite, createdAt)
-            """)
-            try db.execute(sql: """
-                CREATE INDEX IF NOT EXISTS idx_transcriptions_status_created_at
-                ON transcriptions(status, createdAt)
-            """)
+            try db.execute(
+                sql: """
+                        CREATE INDEX IF NOT EXISTS idx_transcriptions_source_type_created_at
+                        ON transcriptions(sourceType, createdAt)
+                    """)
+            try db.execute(
+                sql: """
+                        CREATE INDEX IF NOT EXISTS idx_transcriptions_favorite_created_at
+                        ON transcriptions(isFavorite, createdAt)
+                    """)
+            try db.execute(
+                sql: """
+                        CREATE INDEX IF NOT EXISTS idx_transcriptions_status_created_at
+                        ON transcriptions(status, createdAt)
+                    """)
         }
 
         // v0.11 — Per-day dictation rollup (Stats tab heatmap, current/longest
@@ -640,7 +725,7 @@ public final class DatabaseManager: Sendable {
         // than SQLite's UTC-leaning `date()` function.
         migrator.registerMigration("v0.11-daily-dictation-stats") { db in
             try db.create(table: "daily_dictation_stats") { t in
-                t.column("day", .text).primaryKey()       // YYYY-MM-DD, local day
+                t.column("day", .text).primaryKey()  // YYYY-MM-DD, local day
                 t.column("count", .integer).notNull().defaults(to: 0)
                 t.column("words", .integer).notNull().defaults(to: 0)
                 t.column("durationMs", .integer).notNull().defaults(to: 0)
@@ -747,11 +832,12 @@ public final class DatabaseManager: Sendable {
         // existing developer/prerelease databases from retaining selected-text
         // rewrite history or writing samples after the feature was reverted.
         migrator.registerMigration("v0.16-drop-transform-workbench-tables") { db in
-            let historyAlreadyRestored = try Bool.fetchOne(
-                db,
-                sql: "SELECT EXISTS(SELECT 1 FROM grdb_migrations WHERE identifier = ?)",
-                arguments: ["v0.17-recreate-transform-history"]
-            ) ?? false
+            let historyAlreadyRestored =
+                try Bool.fetchOne(
+                    db,
+                    sql: "SELECT EXISTS(SELECT 1 FROM grdb_migrations WHERE identifier = ?)",
+                    arguments: ["v0.17-recreate-transform-history"]
+                ) ?? false
             try db.execute(sql: "DROP TABLE IF EXISTS transform_profiles")
             try db.execute(sql: "DROP TABLE IF EXISTS writing_samples")
             if !historyAlreadyRestored {
@@ -828,13 +914,14 @@ public final class DatabaseManager: Sendable {
                 t.column("messageCount", .integer)
                 t.column("createdAt", .text).notNull()
                 t.column("updatedAt", .text).notNull()
-                t.check(sql: """
-                    dictationId IS NOT NULL
-                    OR transcriptionId IS NOT NULL
-                    OR promptResultId IS NOT NULL
-                    OR chatConversationId IS NOT NULL
-                    OR transformHistoryId IS NOT NULL
-                    """)
+                t.check(
+                    sql: """
+                        dictationId IS NOT NULL
+                        OR transcriptionId IS NOT NULL
+                        OR promptResultId IS NOT NULL
+                        OR chatConversationId IS NOT NULL
+                        OR transformHistoryId IS NOT NULL
+                        """)
             }
             try db.create(
                 index: "idx_llm_runs_feature_created_at",
@@ -905,9 +992,1011 @@ public final class DatabaseManager: Sendable {
             }
         }
 
-        try migrator.migrate(dbQueue)
-        try reconcileBuiltInPrompts()
-        try reconcileBuiltInQuickPrompts()
+        // v0.20 — Source-scoped auto-run (ADR-020 2026-05 amendment). Adds one
+        // nullable JSON column to `prompts` so a `.result` prompt can restrict
+        // which transcription sources it auto-runs for (e.g. meeting-only
+        // auto-notes). NULL = all sources = the historical behavior, so every
+        // existing row keeps running exactly as before. Pre-check existence for
+        // re-run safety. No row inserts here — the seed stays in v0.7.
+        migrator.registerMigration("v0.20-prompt-applies-to-sources") { db in
+            let existingColumns = try db.columns(in: "prompts").map(\.name)
+            if !existingColumns.contains("appliesToSources") {
+                try db.alter(table: "prompts") { t in
+                    t.add(column: "appliesToSources", .text)
+                }
+            }
+        }
+
+        // v0.21 — App-aware AI Formatter profiles. Profiles are local user
+        // data: exact app bundle IDs and display names are used only for local
+        // prompt resolution and local history/debug provenance.
+        migrator.registerMigration("v0.21-ai-formatter-profiles") { db in
+            // Freeze the v0.21 category set inside the migration. Future
+            // category additions need a follow-up migration so old and fresh
+            // databases enforce the same contract.
+            let allowedCategories = "'messaging', 'email', 'browser', 'notes', 'docs', 'code', 'terminal', 'other'"
+            if !(try db.tableExists("ai_formatter_profiles")) {
+                try db.create(table: "ai_formatter_profiles") { t in
+                    t.column("id", .text).primaryKey()
+                    t.column("name", .text).notNull()
+                    t.column("isEnabled", .boolean).notNull().defaults(to: true)
+                    t.column("targetKind", .text).notNull()
+                    t.column("bundleIdentifier", .text)
+                    t.column("appDisplayName", .text)
+                    t.column("appCategory", .text)
+                    t.column("promptTemplate", .text).notNull()
+                    t.column("origin", .text).notNull().defaults(to: AIFormatterProfileOrigin.custom.rawValue)
+                    t.column("sortOrder", .integer).notNull().defaults(to: 0)
+                    t.column("createdAt", .text).notNull()
+                    t.column("updatedAt", .text).notNull()
+                    t.check(sql: "targetKind IN ('bundle', 'category')")
+                    t.check(sql: "origin IN ('custom', 'template')")
+                    t.check(
+                        sql: """
+                            (
+                                targetKind = 'bundle'
+                                AND bundleIdentifier IS NOT NULL
+                                AND TRIM(bundleIdentifier) != ''
+                                AND bundleIdentifier = LOWER(TRIM(bundleIdentifier))
+                                AND appCategory IS NULL
+                            )
+                            OR (
+                                targetKind = 'category'
+                                AND appCategory IS NOT NULL
+                                AND appCategory IN (\(allowedCategories))
+                                AND bundleIdentifier IS NULL
+                                AND appDisplayName IS NULL
+                            )
+                            """)
+                }
+                try db.create(
+                    index: "idx_ai_formatter_profiles_enabled_sort",
+                    on: "ai_formatter_profiles",
+                    columns: ["isEnabled", "sortOrder"]
+                )
+                try db.create(
+                    index: "idx_ai_formatter_profiles_target_kind",
+                    on: "ai_formatter_profiles",
+                    columns: ["targetKind"]
+                )
+                try db.execute(
+                    sql: """
+                        CREATE UNIQUE INDEX idx_ai_formatter_profiles_bundle_unique
+                        ON ai_formatter_profiles(LOWER(TRIM(bundleIdentifier)))
+                        WHERE targetKind = 'bundle' AND bundleIdentifier IS NOT NULL
+                        """)
+                try db.execute(
+                    sql: """
+                        CREATE UNIQUE INDEX idx_ai_formatter_profiles_category_unique
+                        ON ai_formatter_profiles(appCategory)
+                        WHERE targetKind = 'category' AND appCategory IS NOT NULL
+                        """)
+            }
+
+            let existingColumns = try db.columns(in: "dictations").map(\.name)
+            try db.alter(table: "dictations") { t in
+                if !existingColumns.contains("aiFormatterProfileID") {
+                    t.add(column: "aiFormatterProfileID", .text)
+                }
+                if !existingColumns.contains("aiFormatterProfileName") {
+                    t.add(column: "aiFormatterProfileName", .text)
+                }
+                if !existingColumns.contains("aiFormatterProfileMatchKind") {
+                    t.add(column: "aiFormatterProfileMatchKind", .text)
+                }
+            }
+
+            try db.execute(
+                sql: """
+                    UPDATE dictations
+                    SET rawTranscript = '',
+                        cleanTranscript = NULL,
+                        audioPath = NULL,
+                        pastedToApp = NULL,
+                        aiFormatterProfileID = NULL,
+                        aiFormatterProfileName = NULL,
+                        aiFormatterProfileMatchKind = NULL
+                    WHERE hidden = 1
+                    """)
+        }
+
+        // v0.22 — Durable meeting artifact folder locator. `filePath` remains
+        // the mixed-audio playback/export path and can be cleared by retention.
+        // This column preserves the session folder for Finder, CLI, and
+        // automation surfaces after audio is intentionally deleted.
+        migrator.registerMigration("v0.22-meeting-artifact-folder-path") { db in
+            let columns = try db.columns(in: "transcriptions").map(\.name)
+            if !columns.contains("meetingArtifactFolderPath") {
+                try db.alter(table: "transcriptions") { t in
+                    t.add(column: "meetingArtifactFolderPath", .text)
+                }
+            }
+
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                        SELECT id, filePath
+                        FROM transcriptions
+                        WHERE sourceType = ?
+                          AND filePath IS NOT NULL
+                          AND TRIM(filePath) != ''
+                          AND meetingArtifactFolderPath IS NULL
+                    """, arguments: [Transcription.SourceType.meeting.rawValue])
+
+            for row in rows {
+                guard let rawID = String.fromDatabaseValue(row["id"] as DatabaseValue),
+                    let filePath = String.fromDatabaseValue(row["filePath"] as DatabaseValue)
+                else { continue }
+                let folderPath = URL(fileURLWithPath: filePath)
+                    .deletingLastPathComponent()
+                    .standardizedFileURL
+                    .path
+                try db.execute(
+                    sql: "UPDATE transcriptions SET meetingArtifactFolderPath = ? WHERE id = ?",
+                    arguments: [folderPath, rawID]
+                )
+            }
+        }
+
+        // v0.23 — Durable meeting transcript segments. Raw SQL is intentional:
+        // historical migrations must not depend on the evolving Codable model.
+        migrator.registerMigration("v0.23-transcript-segments") { db in
+            let columns = try db.columns(in: "transcriptions").map(\.name)
+            if !columns.contains("transcriptSegments") {
+                try db.execute(sql: "ALTER TABLE transcriptions ADD COLUMN transcriptSegments TEXT")
+            }
+        }
+
+        // v0.24 — One-shot meeting start context. Raw SQL by design: migrations
+        // must not depend on the evolving Codable model shape for this JSON blob.
+        migrator.registerMigration("v0.24-meeting-start-context") { db in
+            let columns = try db.columns(in: "transcriptions").map(\.name)
+            if !columns.contains("meetingStartContext") {
+                try db.execute(sql: "ALTER TABLE transcriptions ADD COLUMN meetingStartContext TEXT")
+            }
+        }
+
+        // v0.25 — Local EventKit context snapshot for meeting recordings.
+        // Keep the ALTER raw SQL so historical migrations never instantiate
+        // the evolving Transcription Codable shape while the column is absent.
+        migrator.registerMigration("v0.25-meeting-calendar-event-snapshot") { db in
+            let columns = try db.columns(in: "transcriptions").map(\.name)
+            if !columns.contains("calendarEventSnapshot") {
+                try db.execute(sql: "ALTER TABLE transcriptions ADD COLUMN calendarEventSnapshot TEXT")
+            }
+        }
+
+        // v0.26 — User-authored display titles for local transcription rows.
+        // This is app metadata only: source file names and paths stay intact.
+        migrator.registerMigration("v0.26-transcription-title-override") { db in
+            let columns = try db.columns(in: "transcriptions").map(\.name)
+            if !columns.contains("titleOverride") {
+                try db.execute(sql: "ALTER TABLE transcriptions ADD COLUMN titleOverride TEXT")
+            }
+        }
+
+        // v0.27 — Derived, rebuildable transcript retrieval segments and their
+        // external-content FTS5 index. Raw SQL is intentional: historical
+        // migrations must never depend on the evolving Codable row models.
+        migrator.registerMigration("v0.27-segments-fts") { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE segments (
+                        id INTEGER PRIMARY KEY,
+                        transcriptionId TEXT NOT NULL
+                            REFERENCES transcriptions(id) ON DELETE CASCADE,
+                        seq INTEGER NOT NULL,
+                        startMs INTEGER,
+                        endMs INTEGER,
+                        speaker TEXT,
+                        text TEXT NOT NULL,
+                        segmenterVersion INTEGER NOT NULL,
+                        UNIQUE(transcriptionId, seq)
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE INDEX idx_segments_transcription
+                    ON segments(transcriptionId, seq)
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE VIRTUAL TABLE segments_fts USING fts5(
+                        text, speaker UNINDEXED,
+                        content='segments', content_rowid='id',
+                        tokenize='unicode61 remove_diacritics 2'
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER segments_ai AFTER INSERT ON segments BEGIN
+                        INSERT INTO segments_fts(rowid, text, speaker)
+                        VALUES (new.id, new.text, new.speaker);
+                    END
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER segments_ad AFTER DELETE ON segments BEGIN
+                        INSERT INTO segments_fts(segments_fts, rowid, text, speaker)
+                        VALUES ('delete', old.id, old.text, old.speaker);
+                    END
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER segments_au AFTER UPDATE ON segments BEGIN
+                        INSERT INTO segments_fts(segments_fts, rowid, text, speaker)
+                        VALUES ('delete', old.id, old.text, old.speaker);
+                        INSERT INTO segments_fts(rowid, text, speaker)
+                        VALUES (new.id, new.text, new.speaker);
+                    END
+                    """)
+        }
+
+        // v0.28 — Derived per-recording knowledge cards and their small
+        // external-content FTS5 index. Raw SQL is intentional: historical
+        // migrations must never depend on evolving Codable card models.
+        migrator.registerMigration("v0.28-cards") { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE cards (
+                        transcriptionId TEXT PRIMARY KEY
+                            REFERENCES transcriptions(id) ON DELETE CASCADE,
+                        cardSchemaVersion INTEGER NOT NULL,
+                        transcriptHash TEXT NOT NULL,
+                        segmenterVersion INTEGER NOT NULL,
+                        promptVersion TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        generatedAt TEXT NOT NULL,
+                        synopsis TEXT NOT NULL,
+                        topics TEXT NOT NULL,
+                        decisions TEXT NOT NULL,
+                        actions TEXT NOT NULL
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TABLE cards_search_content (
+                        rowid INTEGER PRIMARY KEY,
+                        synopsis TEXT NOT NULL,
+                        topics TEXT NOT NULL
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE VIRTUAL TABLE cards_fts USING fts5(
+                        synopsis, topics,
+                        content='cards_search_content', content_rowid='rowid',
+                        tokenize='unicode61 remove_diacritics 2'
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER cards_ai AFTER INSERT ON cards BEGIN
+                        INSERT INTO cards_search_content(rowid, synopsis, topics)
+                        VALUES (
+                            new.rowid,
+                            new.synopsis,
+                            COALESCE(
+                                (SELECT group_concat(CAST(value AS TEXT), ' ')
+                                 FROM json_each(new.topics)),
+                                ''
+                            )
+                        );
+                        INSERT INTO cards_fts(rowid, synopsis, topics)
+                        VALUES (
+                            new.rowid,
+                            new.synopsis,
+                            COALESCE(
+                                (SELECT group_concat(CAST(value AS TEXT), ' ')
+                                 FROM json_each(new.topics)),
+                                ''
+                            )
+                        );
+                    END
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER cards_ad AFTER DELETE ON cards BEGIN
+                        INSERT INTO cards_fts(cards_fts, rowid, synopsis, topics)
+                        VALUES (
+                            'delete',
+                            old.rowid,
+                            old.synopsis,
+                            COALESCE(
+                                (SELECT group_concat(CAST(value AS TEXT), ' ')
+                                 FROM json_each(old.topics)),
+                                ''
+                            )
+                        );
+                        DELETE FROM cards_search_content WHERE rowid = old.rowid;
+                    END
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER cards_au AFTER UPDATE ON cards BEGIN
+                        INSERT INTO cards_fts(cards_fts, rowid, synopsis, topics)
+                        VALUES (
+                            'delete',
+                            old.rowid,
+                            old.synopsis,
+                            COALESCE(
+                                (SELECT group_concat(CAST(value AS TEXT), ' ')
+                                 FROM json_each(old.topics)),
+                                ''
+                            )
+                        );
+                        UPDATE cards_search_content
+                        SET synopsis = new.synopsis,
+                            topics = COALESCE(
+                                (SELECT group_concat(CAST(value AS TEXT), ' ')
+                                 FROM json_each(new.topics)),
+                                ''
+                            )
+                        WHERE rowid = new.rowid;
+                        INSERT INTO cards_fts(rowid, synopsis, topics)
+                        VALUES (
+                            new.rowid,
+                            new.synopsis,
+                            COALESCE(
+                                (SELECT group_concat(CAST(value AS TEXT), ' ')
+                                 FROM json_each(new.topics)),
+                                ''
+                            )
+                        );
+                    END
+                    """)
+        }
+
+        // v0.29 — Remember which embedded audio stream a user explicitly
+        // selected for local file transcription. Nil preserves legacy
+        // automatic/single-track behavior.
+        migrator.registerMigration("v0.29-transcription-audio-track") { db in
+            try db.alter(table: "transcriptions") { t in
+                t.add(column: "audioTrackOrdinal", .integer)
+            }
+        }
+
+        // v0.30 — Durable, frame-derived meeting capture quality. The JSON
+        // shape is additive and optional so legacy rows remain "unknown"
+        // instead of being mislabeled healthy.
+        migrator.registerMigration("v0.30-meeting-capture-report") { db in
+            let columns = try db.columns(in: "transcriptions").map(\.name)
+            if !columns.contains("meetingCaptureReport") {
+                try db.execute(sql: "ALTER TABLE transcriptions ADD COLUMN meetingCaptureReport TEXT")
+            }
+        }
+
+        // v0.31 — Per-prompt inference settings and the effective settings
+        // snapshot retained with each generated result. Both are optional JSON
+        // so existing rows preserve the historical provider-default behavior.
+        migrator.registerMigration("v0.31-prompt-inference-settings") { db in
+            let promptColumns = try db.columns(in: "prompts").map(\.name)
+            if !promptColumns.contains("inferenceSettings") {
+                try db.execute(sql: "ALTER TABLE prompts ADD COLUMN inferenceSettings TEXT")
+            }
+
+            let summaryColumns = try db.columns(in: "summaries").map(\.name)
+            if !summaryColumns.contains("inferenceSettingsSnapshot") {
+                try db.execute(sql: "ALTER TABLE summaries ADD COLUMN inferenceSettingsSnapshot TEXT")
+            }
+        }
+
+        // v0.32 — Append-only speaker-attribution corrections and their
+        // transcript-scoped persistent undo/redo cursor. Keep this state out
+        // of `transcriptions`: callers often save whole Transcription values,
+        // and an older value must not be able to overwrite correction history.
+        migrator.registerMigration("v0.32-speaker-corrections") { db in
+            try db.execute(sql: """
+                CREATE TABLE speaker_corrections (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    transcriptionId TEXT NOT NULL
+                        REFERENCES transcriptions(id) ON DELETE CASCADE,
+                    parentId TEXT,
+                    sequence INTEGER NOT NULL CHECK (sequence > 0),
+                    transcriptFingerprint TEXT NOT NULL,
+                    operation TEXT NOT NULL CHECK (
+                        operation IN (
+                            'rename', 'add', 'assign', 'split', 'unsplit',
+                            'merge', 'remove', 'reset'
+                        )
+                    ),
+                    payload TEXT NOT NULL,
+                    branchState TEXT NOT NULL CHECK (
+                        branchState IN ('current', 'redo', 'abandoned')
+                    ),
+                    createdAt TEXT NOT NULL,
+                    UNIQUE (transcriptionId, sequence),
+                    UNIQUE (id, transcriptionId),
+                    FOREIGN KEY (parentId, transcriptionId)
+                        REFERENCES speaker_corrections(id, transcriptionId)
+                        ON DELETE CASCADE
+                )
+                """)
+            try db.execute(sql: """
+                CREATE INDEX idx_speaker_corrections_replay
+                ON speaker_corrections (
+                    transcriptionId,
+                    transcriptFingerprint,
+                    branchState,
+                    sequence
+                )
+                """)
+            try db.execute(sql: """
+                CREATE TABLE speaker_correction_states (
+                    transcriptionId TEXT PRIMARY KEY NOT NULL
+                        REFERENCES transcriptions(id) ON DELETE CASCADE,
+                    transcriptFingerprint TEXT NOT NULL,
+                    headId TEXT,
+                    revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+                    updatedAt TEXT NOT NULL,
+                    FOREIGN KEY (headId, transcriptionId)
+                        REFERENCES speaker_corrections(id, transcriptionId)
+                        ON DELETE CASCADE
+                )
+                """)
+        }
+
+        // v0.33 — Per-result-prompt opt-in for adding meeting notes to LLM
+        // context, plus the immutable preference receipt on saved results.
+        migrator.registerMigration("v0.33-prompt-meeting-notes-context") { db in
+            let promptColumns = try db.columns(in: "prompts").map(\.name)
+            if !promptColumns.contains("includeMeetingNotes") {
+                try db.alter(table: "prompts") { t in
+                    t.add(column: "includeMeetingNotes", .boolean).notNull().defaults(to: false)
+                }
+            }
+
+            let summaryColumns = try db.columns(in: "summaries").map(\.name)
+            if !summaryColumns.contains("includeMeetingNotesSnapshot") {
+                try db.alter(table: "summaries") { t in
+                    t.add(column: "includeMeetingNotesSnapshot", .boolean).notNull().defaults(to: false)
+                }
+            }
+        }
+
+        // v0.32 — Immutable prompt versions. The legacy content/settings
+        // columns remain for one bounded compatibility window, but all current
+        // reads resolve them from the active version join.
+        migrator.registerMigration("v0.32-prompt-versions") { db in
+            try db.create(table: "prompt_versions") { t in
+                t.column("id", .text).primaryKey()
+                // The FK is installed after `prompts` is rebuilt below.
+                t.column("promptId", .text).notNull()
+                t.column("versionNumber", .integer).notNull()
+                t.column("content", .text).notNull()
+                t.column("inferenceSettings", .text)
+                t.column("modelOverride", .text)
+                t.column("origin", .text).notNull()
+                t.column("changeNote", .text)
+                t.column("createdAt", .text).notNull()
+                t.uniqueKey(["promptId", "versionNumber"])
+            }
+            try db.create(
+                index: "idx_prompt_versions_prompt_version",
+                on: "prompt_versions",
+                columns: ["promptId", "versionNumber"]
+            )
+
+            try db.alter(table: "prompts") { t in
+                t.add(column: "activeVersionId", .text)
+                t.add(column: "canonicalKey", .text)
+                t.add(column: "lastAppliedCanonicalRevision", .integer)
+                t.add(column: "userCustomizedAt", .text)
+                t.add(column: "deletedAt", .text)
+            }
+
+            let canonicalByID = Dictionary(
+                uniqueKeysWithValues: Prompt.builtInPrompts().map { ($0.id, $0) }
+            )
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT id, name, content, isBuiltIn, inferenceSettings, updatedAt
+                    FROM prompts
+                    """
+            )
+            for row in rows {
+                let promptIDValue: DatabaseValue = row["id"]
+                let promptID: UUID = row["id"]
+                let name: String = row["name"]
+                let content: String = row["content"]
+                let isBuiltIn: Bool = row["isBuiltIn"]
+                let inferenceSettings: String? = row["inferenceSettings"]
+                let updatedAt: Date = row["updatedAt"]
+                let versionID = UUID()
+
+                try db.execute(
+                    sql: """
+                        INSERT INTO prompt_versions (
+                            id, promptId, versionNumber, content,
+                            inferenceSettings, modelOverride, origin,
+                            changeNote, createdAt
+                        ) VALUES (?, ?, 1, ?, ?, NULL, ?, NULL, ?)
+                        """,
+                    arguments: [
+                        versionID,
+                        promptIDValue,
+                        content,
+                        inferenceSettings,
+                        PromptVersion.Origin.`import`.rawValue,
+                        updatedAt,
+                    ]
+                )
+
+                let canonical = canonicalByID[promptID]
+                let canonicalKey = isBuiltIn ? canonical?.canonicalKey : nil
+                let definitionDiffers = canonical.map {
+                    name != $0.name || content != $0.content
+                } ?? false
+                let customizedAt: Date? = {
+                    guard isBuiltIn else { return nil }
+                    let hasVersionCustomization: Bool
+                    if let canonical {
+                        hasVersionCustomization =
+                            inferenceSettings != nil
+                            || (canonical.category == .transform && definitionDiffers)
+                    } else {
+                        // A removed built-in has no bundled body to compare.
+                        // Persisted per-prompt settings are nevertheless
+                        // unambiguous user intent and must prevent retirement.
+                        hasVersionCustomization = inferenceSettings != nil
+                    }
+                    return hasVersionCustomization ? updatedAt : nil
+                }()
+                // Result built-ins were not editable before this migration, so
+                // a definition mismatch without settings is an older bundled
+                // revision, not user intent. Revision zero lets reconciliation
+                // append the current canonical version after migration.
+                let canonicalRevision: Int? = {
+                    guard isBuiltIn, let canonical else { return nil }
+                    if definitionDiffers, customizedAt == nil { return 0 }
+                    return canonical.lastAppliedCanonicalRevision
+                }()
+                try db.execute(
+                    sql: """
+                        UPDATE prompts
+                        SET activeVersionId = ?, canonicalKey = ?,
+                            lastAppliedCanonicalRevision = ?, userCustomizedAt = ?
+                        WHERE id = ?
+                        """,
+                    arguments: [
+                        versionID,
+                        canonicalKey,
+                        canonicalRevision,
+                        customizedAt,
+                        promptIDValue,
+                    ]
+                )
+            }
+
+            // Soft-deleted rows must not reserve their old display name.
+            try db.execute(sql: "DROP INDEX idx_prompts_name")
+            try db.execute(
+                sql: """
+                    CREATE UNIQUE INDEX idx_prompts_name
+                    ON prompts(name COLLATE NOCASE)
+                    WHERE deletedAt IS NULL
+                    """
+            )
+            try db.create(index: "idx_prompts_deleted_at", on: "prompts", columns: ["deletedAt"])
+        }
+
+        // v0.33 — Nullable prompt/version and provider/model provenance for
+        // historical prompt results. Existing snapshots remain authoritative.
+        migrator.registerMigration("v0.33-prompt-result-provenance") { db in
+            try db.alter(table: "summaries") { t in
+                t.add(column: "promptId", .text)
+                    .references("prompts", onDelete: .setNull)
+                t.add(column: "promptVersionId", .text)
+                    .references("prompt_versions", onDelete: .setNull)
+                t.add(column: "providerSnapshot", .text)
+                t.add(column: "modelSnapshot", .text)
+            }
+        }
+
+        // v0.34 — Meeting classification and prompt applicability policies.
+        migrator.registerMigration("v0.34-meeting-classification-policies") { db in
+            try db.create(table: "meeting_types") { t in
+                t.column("id", .text).primaryKey()
+                t.column("name", .text).notNull()
+                t.column("colorToken", .text)
+                t.column("iconName", .text)
+                t.column("sortOrder", .integer).notNull().defaults(to: 0)
+                t.column("isArchived", .boolean).notNull().defaults(to: false)
+                t.column("createdAt", .text).notNull()
+                t.column("updatedAt", .text).notNull()
+            }
+            try db.execute(
+                sql: "CREATE UNIQUE INDEX idx_meeting_types_name ON meeting_types(name COLLATE NOCASE)"
+            )
+
+            try db.create(table: "meeting_labels") { t in
+                t.column("id", .text).primaryKey()
+                t.column("name", .text).notNull()
+                t.column("colorToken", .text)
+                t.column("sortOrder", .integer).notNull().defaults(to: 0)
+                t.column("isArchived", .boolean).notNull().defaults(to: false)
+                t.column("createdAt", .text).notNull()
+                t.column("updatedAt", .text).notNull()
+            }
+            try db.execute(
+                sql: "CREATE UNIQUE INDEX idx_meeting_labels_name ON meeting_labels(name COLLATE NOCASE)"
+            )
+
+            try db.alter(table: "transcriptions") { t in
+                t.add(column: "meetingTypeId", .text)
+                    .references("meeting_types", onDelete: .setNull)
+            }
+            try db.create(
+                index: "idx_transcriptions_meeting_type",
+                on: "transcriptions",
+                columns: ["meetingTypeId"]
+            )
+
+            try db.create(table: "transcription_meeting_labels") { t in
+                t.column("transcriptionId", .text)
+                    .notNull()
+                    .references("transcriptions", onDelete: .cascade)
+                t.column("labelId", .text)
+                    .notNull()
+                    .references("meeting_labels", onDelete: .cascade)
+                t.primaryKey(["transcriptionId", "labelId"])
+            }
+            try db.create(
+                index: "idx_transcription_meeting_labels_label",
+                on: "transcription_meeting_labels",
+                columns: ["labelId", "transcriptionId"]
+            )
+
+            try db.create(table: "prompt_meeting_policies") { t in
+                t.column("id", .text).primaryKey()
+                t.column("promptId", .text)
+                    .notNull()
+                    .references("prompts", onDelete: .cascade)
+                t.column("scopeKind", .text).notNull()
+                t.column("meetingTypeId", .text)
+                    .references("meeting_types", onDelete: .cascade)
+                t.column("isAvailable", .boolean).notNull()
+                t.column("isAutoRun", .boolean).notNull()
+                t.column("sortOrder", .integer)
+                t.column("createdAt", .text).notNull()
+                t.column("updatedAt", .text).notNull()
+                t.check(
+                    sql:
+                        "(scopeKind = 'all' AND meetingTypeId IS NULL) OR (scopeKind = 'type' AND meetingTypeId IS NOT NULL)"
+                )
+                t.check(sql: "isAutoRun = 0 OR isAvailable = 1")
+            }
+            try db.execute(
+                sql: """
+                    CREATE UNIQUE INDEX idx_prompt_meeting_policies_all
+                    ON prompt_meeting_policies(promptId)
+                    WHERE scopeKind = 'all'
+                    """
+            )
+            try db.execute(
+                sql: """
+                    CREATE UNIQUE INDEX idx_prompt_meeting_policies_type
+                    ON prompt_meeting_policies(promptId, meetingTypeId)
+                    WHERE scopeKind = 'type'
+                    """
+            )
+
+            let promptRows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT id, isAutoRun, appliesToSources, sortOrder
+                    FROM prompts
+                    WHERE category = ? AND deletedAt IS NULL
+                    """,
+                arguments: [Prompt.Category.result.rawValue]
+            )
+            let now = Date()
+            for row in promptRows {
+                let promptID: DatabaseValue = row["id"]
+                let isAutoRun: Bool = row["isAutoRun"]
+                let appliesJSON: String? = row["appliesToSources"]
+                let decodedSources = appliesJSON.flatMap {
+                    try? JSONDecoder().decode(Set<Transcription.SourceType>.self, from: Data($0.utf8))
+                }
+                let meetingAutoRun: Bool
+                if appliesJSON == nil {
+                    meetingAutoRun = isAutoRun
+                } else {
+                    meetingAutoRun = isAutoRun && decodedSources?.contains(.meeting) == true
+                }
+                let sortOrder: Int = row["sortOrder"]
+                try db.execute(
+                    sql: """
+                        INSERT INTO prompt_meeting_policies (
+                            id, promptId, scopeKind, meetingTypeId, isAvailable,
+                            isAutoRun, sortOrder, createdAt, updatedAt
+                        ) VALUES (?, ?, 'all', NULL, 1, ?, ?, ?, ?)
+                        """,
+                    arguments: [
+                        UUID(),
+                        promptID,
+                        meetingAutoRun,
+                        sortOrder,
+                        now,
+                        now,
+                    ]
+                )
+            }
+        }
+
+        // v0.35 — User-defined prompt organization collections.
+        migrator.registerMigration("v0.35-prompt-collections") { db in
+            try db.create(table: "prompt_collections") { t in
+                t.column("id", .text).primaryKey()
+                t.column("name", .text).notNull()
+                t.column("colorToken", .text)
+                t.column("sortOrder", .integer).notNull().defaults(to: 0)
+                t.column("createdAt", .text).notNull()
+                t.column("updatedAt", .text).notNull()
+            }
+            try db.execute(
+                sql: "CREATE UNIQUE INDEX idx_prompt_collections_name ON prompt_collections(name COLLATE NOCASE)"
+            )
+            try db.alter(table: "prompts") { t in
+                t.add(column: "collectionId", .text)
+                    .references("prompt_collections", onDelete: .setNull)
+            }
+            try db.create(
+                index: "idx_prompts_collection",
+                on: "prompts",
+                columns: ["collectionId"]
+            )
+        }
+
+        migrator.registerMigration("v0.36-drop-legacy-prompt-values") { db in
+            // End the compatibility window with a forward-only rebuild:
+            // migration: prompt_versions is the only source of versioned
+            // values. Rebuilding is required because SQLite cannot drop these
+            // legacy columns safely on every supported macOS SQLite version.
+            try db.create(table: "prompts_rebuilt") { t in
+                t.column("id", .text).primaryKey()
+                t.column("name", .text).notNull()
+                t.column("category", .text).notNull().defaults(to: "summary")
+                t.column("isBuiltIn", .boolean).notNull().defaults(to: false)
+                t.column("isVisible", .boolean).notNull().defaults(to: true)
+                t.column("isAutoRun", .boolean).notNull().defaults(to: false)
+                t.column("sortOrder", .integer).notNull().defaults(to: 0)
+                t.column("createdAt", .text).notNull()
+                t.column("updatedAt", .text).notNull()
+                t.column("keyboardShortcut", .text)
+                t.column("runningLabel", .text)
+                t.column("appliesToSources", .text)
+                t.column("includeMeetingNotes", .boolean).notNull().defaults(to: false)
+                t.column("collectionId", .text)
+                    .references("prompt_collections", onDelete: .setNull)
+                t.column("activeVersionId", .text).notNull()
+                t.column("canonicalKey", .text)
+                t.column("lastAppliedCanonicalRevision", .integer)
+                t.column("userCustomizedAt", .text)
+                t.column("deletedAt", .text)
+            }
+            try db.execute(
+                sql: """
+                    INSERT INTO prompts_rebuilt (
+                        id, name, category, isBuiltIn, isVisible, isAutoRun,
+                        sortOrder, createdAt, updatedAt, keyboardShortcut,
+                        runningLabel, appliesToSources, includeMeetingNotes,
+                        collectionId, activeVersionId,
+                        canonicalKey, lastAppliedCanonicalRevision,
+                        userCustomizedAt, deletedAt
+                    )
+                    SELECT id, name, category, isBuiltIn, isVisible, isAutoRun,
+                           sortOrder, createdAt, updatedAt, keyboardShortcut,
+                           runningLabel, appliesToSources, includeMeetingNotes,
+                           collectionId, activeVersionId,
+                           canonicalKey, lastAppliedCanonicalRevision,
+                           userCustomizedAt, deletedAt
+                    FROM prompts
+                    """
+            )
+            try db.drop(table: "prompts")
+            try db.rename(table: "prompts_rebuilt", to: "prompts")
+            try db.execute(
+                sql: """
+                    CREATE UNIQUE INDEX idx_prompts_name
+                    ON prompts(name COLLATE NOCASE)
+                    WHERE deletedAt IS NULL
+                    """
+            )
+            try db.create(index: "idx_prompts_deleted_at", on: "prompts", columns: ["deletedAt"])
+            try db.create(index: "idx_prompts_collection", on: "prompts", columns: ["collectionId"])
+
+            try db.create(table: "prompt_versions_rebuilt") { t in
+                t.column("id", .text).primaryKey()
+                t.column("promptId", .text)
+                    .notNull()
+                    .references("prompts", onDelete: .cascade)
+                t.column("versionNumber", .integer).notNull()
+                t.column("content", .text).notNull()
+                t.column("inferenceSettings", .text)
+                t.column("modelOverride", .text)
+                t.column("origin", .text).notNull()
+                t.column("changeNote", .text)
+                t.column("createdAt", .text).notNull()
+                t.uniqueKey(["promptId", "versionNumber"])
+            }
+            try db.execute(sql: "INSERT INTO prompt_versions_rebuilt SELECT * FROM prompt_versions")
+            try db.drop(table: "prompt_versions")
+            try db.rename(table: "prompt_versions_rebuilt", to: "prompt_versions")
+            try db.create(
+                index: "idx_prompt_versions_prompt_version",
+                on: "prompt_versions",
+                columns: ["promptId", "versionNumber"]
+            )
+        }
+
+        // v0.37 — Labels are the single user-defined classification shared by
+        // every transcription source. Preserve legacy custom meeting types by
+        // copying them to labels and attaching those labels to their meetings.
+        // The old columns/tables remain readable for downgrade compatibility.
+        migrator.registerMigration("v0.37-general-transcription-labels") { db in
+            let meetingTypes = try MeetingType.fetchAll(db)
+            for meetingType in meetingTypes {
+                let existingByName = try MeetingLabel
+                    .filter(sql: "name = ? COLLATE NOCASE", arguments: [meetingType.name])
+                    .fetchOne(db)
+
+                let label: MeetingLabel
+                if let existingByName {
+                    label = existingByName
+                } else {
+                    let idIsAvailable = try MeetingLabel.fetchOne(db, key: meetingType.id) == nil
+                    label = MeetingLabel(
+                        id: idIsAvailable ? meetingType.id : UUID(),
+                        name: meetingType.name,
+                        colorToken: meetingType.colorToken,
+                        sortOrder: meetingType.sortOrder,
+                        isArchived: meetingType.isArchived,
+                        createdAt: meetingType.createdAt,
+                        updatedAt: meetingType.updatedAt
+                    )
+                    try label.insert(db)
+                }
+
+                try db.execute(
+                    sql: """
+                        INSERT OR IGNORE INTO transcription_meeting_labels (transcriptionId, labelId)
+                        SELECT id, ? FROM transcriptions WHERE meetingTypeId = ?
+                        """,
+                    arguments: [label.id, meetingType.id]
+                )
+            }
+        }
+
+        // v0.38 — Prompt availability is now label-based for every
+        // transcription source. Keep the meeting-type policies for downgrade
+        // compatibility, but copy their effective scopes to the new model.
+        migrator.registerMigration("v0.38-prompt-label-policies") { db in
+            try db.create(table: "prompt_label_policies") { t in
+                t.column("id", .text).primaryKey()
+                t.column("promptId", .text)
+                    .notNull()
+                    .references("prompts", onDelete: .cascade)
+                t.column("scopeKind", .text).notNull()
+                t.column("labelId", .text)
+                    .references("meeting_labels", onDelete: .cascade)
+                t.column("isAvailable", .boolean).notNull()
+                t.column("createdAt", .text).notNull()
+                t.column("updatedAt", .text).notNull()
+                t.check(
+                    sql:
+                        "(scopeKind = 'all' AND labelId IS NULL) OR (scopeKind = 'label' AND labelId IS NOT NULL)"
+                )
+            }
+            try db.execute(
+                sql: """
+                    CREATE UNIQUE INDEX idx_prompt_label_policies_all
+                    ON prompt_label_policies(promptId)
+                    WHERE scopeKind = 'all'
+                    """
+            )
+            try db.execute(
+                sql: """
+                    CREATE UNIQUE INDEX idx_prompt_label_policies_label
+                    ON prompt_label_policies(promptId, labelId)
+                    WHERE scopeKind = 'label'
+                    """
+            )
+            try db.create(
+                index: "idx_prompt_label_policies_label_lookup",
+                on: "prompt_label_policies",
+                columns: ["labelId", "promptId"]
+            )
+
+            let labelRows = try Row.fetchAll(db, sql: "SELECT * FROM meeting_labels")
+            let labels = try labelRows.map { try MeetingLabel(row: $0) }
+            let storedLabelIDs = Dictionary(
+                uniqueKeysWithValues: labelRows.map { row in
+                    (row["id"] as UUID, row["id"] as DatabaseValue)
+                }
+            )
+            let labelsByID = Dictionary(uniqueKeysWithValues: labels.map { ($0.id, $0) })
+            let labelsByName = Dictionary(
+                labels.map { ($0.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil), $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            let typesByID = Dictionary(uniqueKeysWithValues: try MeetingType.fetchAll(db).map { ($0.id, $0) })
+
+            for row in try Row.fetchAll(db, sql: "SELECT * FROM prompt_meeting_policies") {
+                let legacy = try PromptMeetingPolicy(row: row)
+                let scope: PromptLabelPolicy.ScopeKind
+                let labelID: UUID?
+                switch legacy.scopeKind {
+                case .all:
+                    scope = .all
+                    labelID = nil
+                case .type:
+                    guard let typeID = legacy.meetingTypeId,
+                        let meetingType = typesByID[typeID]
+                    else { continue }
+                    scope = .label
+                    labelID = labelsByID[typeID]?.id
+                        ?? labelsByName[
+                            meetingType.name.folding(
+                                options: [.caseInsensitive, .diacriticInsensitive],
+                                locale: nil
+                            )
+                        ]?.id
+                    guard labelID != nil else { continue }
+                }
+
+                // Copy foreign keys as stored: decoding a TEXT UUID and then
+                // encoding it through a record changes it to a BLOB, which no
+                // longer matches the original parent row in SQLite.
+                let promptID: DatabaseValue = row["promptId"]
+                let storedLabelID = labelID.flatMap { storedLabelIDs[$0] } ?? .null
+                try db.execute(
+                    sql: """
+                        INSERT OR IGNORE INTO prompt_label_policies (
+                            id, promptId, scopeKind, labelId, isAvailable, createdAt, updatedAt
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                    arguments: [
+                        UUID(), promptID, scope.rawValue, storedLabelID, legacy.isAvailable,
+                        row["createdAt"] as DatabaseValue, row["updatedAt"] as DatabaseValue,
+                    ]
+                )
+            }
+        }
+
+        // v0.39 — Echo fork: split engine-emitted segments off `transcriptSegments`.
+        // The fork stored Whisper's native segment boundaries ([STTSegment]) in a
+        // column named `transcriptSegments` (fork migration v0.20). Upstream later
+        // introduced its own `transcriptSegments` column holding speaker-attribution
+        // records ([TranscriptSegmentRecord]) with an incompatible JSON shape, so the
+        // fork's payload moves to a dedicated `engineSegments` column. The UPDATE is
+        // a no-op on fresh databases and on upstream-shaped rows written after this
+        // migration; on a pre-merge Echo database it relocates the fork's data and
+        // clears the legacy value so the new decoder never sees the old JSON.
+        migrator.registerMigration("v0.39-echo-engine-segments") { db in
+            let columns = try db.columns(in: "transcriptions").map(\.name)
+            if !columns.contains("engineSegments") {
+                try db.alter(table: "transcriptions") { t in
+                    t.add(column: "engineSegments", .text)
+                }
+            }
+            if columns.contains("transcriptSegments") {
+                try db.execute(
+                    sql: """
+                        UPDATE transcriptions
+                        SET engineSegments = transcriptSegments,
+                            transcriptSegments = NULL
+                        WHERE transcriptSegments IS NOT NULL
+                          AND engineSegments IS NULL
+                          AND json_valid(transcriptSegments)
+                          AND json_extract(transcriptSegments, '$[0].id') IS NULL
+                        """
+                )
+            }
+        }
+
+        return migrator
     }
 
     private static func withMigrationLock<T>(forDatabasePath path: String, _ body: () throws -> T) throws -> T {
@@ -941,39 +2030,97 @@ public final class DatabaseManager: Sendable {
             // enabled if the user already has at least one auto-run prompt today.
             // This preserves ADR-013's "zero auto-run is a valid state" invariant
             // for users who have explicitly disabled every auto-run prompt.
-            let userHasAnyAutoRunPrompt = try Bool.fetchOne(
-                db,
-                sql: "SELECT EXISTS(SELECT 1 FROM prompts WHERE isAutoRun = 1)"
-            ) ?? false
+            let userHasAnyAutoRunPrompt =
+                try Bool.fetchOne(
+                    db,
+                    sql: "SELECT EXISTS(SELECT 1 FROM prompts WHERE isAutoRun = 1 AND deletedAt IS NULL)"
+                ) ?? false
 
             for prompt in builtInPrompts {
-                if let existing = try Prompt.fetchOne(db, key: prompt.id) {
-                    if prompt.category == .transform {
-                        try db.execute(
-                            sql: """
-                                UPDATE prompts
-                                SET category = ?, isBuiltIn = 1, isVisible = 1, isAutoRun = 0, sortOrder = ?
-                                WHERE id = ?
-                                """,
-                            arguments: [
-                                prompt.category.rawValue,
-                                prompt.sortOrder,
-                                existing.id,
-                            ]
+                if let existing = try PromptQuery.fetch(id: prompt.id, includingDeleted: true, db: db) {
+                    // A deleted or customized built-in is fully user-owned.
+                    // Never resurrect it or insert a bundled candidate into its
+                    // history without an explicit user action.
+                    guard existing.deletedAt == nil, existing.userCustomizedAt == nil else {
+                        continue
+                    }
+
+                    let canonicalRevision = prompt.lastAppliedCanonicalRevision ?? 1
+                    let appliedRevision = existing.lastAppliedCanonicalRevision ?? 0
+                    if canonicalRevision > appliedRevision {
+                        let canonicalNameIsClaimed =
+                            try Bool.fetchOne(
+                                db,
+                                sql: """
+                                    SELECT EXISTS(
+                                        SELECT 1 FROM prompts
+                                        WHERE name = ? COLLATE NOCASE
+                                          AND deletedAt IS NULL
+                                          AND id != ?
+                                    )
+                                    """,
+                                arguments: [prompt.name, existing.id]
+                            ) ?? false
+                        // Preserve both active identities. The bundled update
+                        // remains pending until the collision is resolved by
+                        // an explicit user rename; do not create hidden history.
+                        if canonicalNameIsClaimed { continue }
+                        let nextVersion =
+                            (try Int.fetchOne(
+                                db,
+                                sql: "SELECT MAX(versionNumber) FROM prompt_versions WHERE promptId = ?",
+                                arguments: [existing.id]
+                            ) ?? 0) + 1
+                        let version = PromptVersion(
+                            promptId: existing.id,
+                            versionNumber: nextVersion,
+                            content: prompt.content,
+                            inferenceSettings: prompt.inferenceSettings,
+                            modelOverride: prompt.modelOverride,
+                            origin: .systemUpdate,
+                            createdAt: prompt.updatedAt
                         )
-                    } else {
+                        try version.insert(db)
                         try db.execute(
                             sql: """
                                 UPDATE prompts
-                                SET name = ?, content = ?, category = ?, isBuiltIn = 1, sortOrder = ?, updatedAt = ?
+                                SET name = ?, category = ?, isBuiltIn = 1,
+                                    activeVersionId = ?, canonicalKey = ?,
+                                    lastAppliedCanonicalRevision = ?, updatedAt = ?
                                 WHERE id = ?
                                 """,
                             arguments: [
                                 prompt.name,
-                                prompt.content,
                                 prompt.category.rawValue,
-                                prompt.sortOrder,
+                                version.id,
+                                prompt.canonicalKey,
+                                canonicalRevision,
                                 prompt.updatedAt,
+                                existing.id,
+                            ]
+                        )
+                    } else {
+                        var shortcut = existing.keyboardShortcut
+                        if prompt.category == .transform {
+                            shortcut = try Self.reconciledBuiltInTransformShortcut(
+                                existing: existing,
+                                canonical: prompt,
+                                db: db
+                            )
+                        }
+                        try db.execute(
+                            sql: """
+                                UPDATE prompts
+                                SET isBuiltIn = 1, canonicalKey = ?,
+                                    lastAppliedCanonicalRevision = ?,
+                                    isAutoRun = ?, keyboardShortcut = ?
+                                WHERE id = ?
+                                """,
+                            arguments: [
+                                prompt.canonicalKey,
+                                canonicalRevision,
+                                prompt.category == .transform ? false : existing.isAutoRun,
+                                shortcut,
                                 existing.id,
                             ]
                         )
@@ -992,39 +2139,30 @@ public final class DatabaseManager: Sendable {
                         """,
                     arguments: [prompt.name]
                 ) {
+                    // Preserve the legacy row and its history, but retire it so
+                    // the stable canonical identity can be inserted safely.
                     try db.execute(
-                        sql: """
-                            UPDATE prompts
-                            SET id = ?, name = ?, content = ?, category = ?, isBuiltIn = 1, sortOrder = ?, updatedAt = ?
-                            WHERE id = ?
-                            """,
-                        arguments: [
-                            prompt.id,
-                            prompt.name,
-                            prompt.content,
-                            prompt.category.rawValue,
-                            prompt.sortOrder,
-                            prompt.updatedAt,
-                            legacyPromptID,
-                        ]
+                        sql: "UPDATE prompts SET deletedAt = ?, updatedAt = ? WHERE id = ?",
+                        arguments: [prompt.updatedAt, prompt.updatedAt, legacyPromptID]
                     )
-                    continue
                 }
 
                 // A custom prompt already owns this name. Preserve the user's prompt and
                 // skip re-inserting the built-in because names are globally unique today.
-                let hasCustomPromptWithSameName = try Bool.fetchOne(
-                    db,
-                    sql: """
-                        SELECT EXISTS(
-                            SELECT 1
-                            FROM prompts
-                            WHERE name = ? COLLATE NOCASE
-                              AND isBuiltIn = 0
-                        )
-                        """,
-                    arguments: [prompt.name]
-                ) ?? false
+                let hasCustomPromptWithSameName =
+                    try Bool.fetchOne(
+                        db,
+                        sql: """
+                            SELECT EXISTS(
+                                SELECT 1
+                                FROM prompts
+                                WHERE name = ? COLLATE NOCASE
+                                  AND isBuiltIn = 0
+                                  AND deletedAt IS NULL
+                            )
+                            """,
+                        arguments: [prompt.name]
+                    ) ?? false
                 if hasCustomPromptWithSameName {
                     continue
                 }
@@ -1036,17 +2174,123 @@ public final class DatabaseManager: Sendable {
                 if promptToInsert.isAutoRun && !userHasAnyAutoRunPrompt {
                     promptToInsert.isAutoRun = false
                 }
-                try promptToInsert.insert(db)
+                try Self.insertCanonicalPrompt(promptToInsert, db: db)
             }
 
-            // Delete any built-in prompts that are no longer in the canonical list
+            // Retire removed built-ins without destroying prompt history.
+            var retirementArguments: StatementArguments = [Date(), Date()]
+            retirementArguments += StatementArguments(canonicalIDs)
             try db.execute(
                 sql: """
-                    DELETE FROM prompts
-                    WHERE isBuiltIn = 1 AND id NOT IN (\(canonicalIDs.map { _ in "?" }.joined(separator: ",")))
+                    UPDATE prompts
+                    SET deletedAt = COALESCE(deletedAt, ?), updatedAt = ?
+                    WHERE isBuiltIn = 1
+                      AND deletedAt IS NULL
+                      AND userCustomizedAt IS NULL
+                      AND id NOT IN (\(canonicalIDs.map { _ in "?" }.joined(separator: ",")))
                     """,
-                arguments: StatementArguments(canonicalIDs)
+                arguments: retirementArguments
             )
         }
+    }
+
+    private static func insertCanonicalPrompt(_ prompt: Prompt, db: Database) throws {
+        let version = PromptVersion(
+            promptId: prompt.id,
+            versionNumber: 1,
+            content: prompt.content,
+            inferenceSettings: prompt.inferenceSettings,
+            modelOverride: prompt.modelOverride,
+            origin: .systemUpdate,
+            createdAt: prompt.createdAt
+        )
+        try db.execute(
+            sql: """
+                INSERT INTO prompts (
+                    id, name, category, isBuiltIn, isVisible, isAutoRun,
+                    sortOrder, createdAt, updatedAt, keyboardShortcut,
+                    runningLabel, appliesToSources, includeMeetingNotes, activeVersionId,
+                    canonicalKey, lastAppliedCanonicalRevision,
+                    userCustomizedAt, deletedAt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL)
+                """,
+            arguments: [
+                prompt.id,
+                prompt.name,
+                prompt.category.rawValue,
+                prompt.isBuiltIn,
+                prompt.isVisible,
+                prompt.isAutoRun,
+                prompt.sortOrder,
+                prompt.createdAt,
+                prompt.updatedAt,
+                prompt.keyboardShortcut,
+                prompt.runningLabel,
+                prompt.includeMeetingNotes,
+                version.id,
+                prompt.canonicalKey,
+                prompt.lastAppliedCanonicalRevision,
+            ]
+        )
+        let storedVersion = version
+        try storedVersion.insert(db)
+        if prompt.category == .result, try db.tableExists("prompt_meeting_policies") {
+            let policy = PromptMeetingPolicy.defaultForNewPrompt(prompt, now: prompt.createdAt)
+            try policy.insert(db)
+        }
+    }
+
+    /// The Phase-2 built-in Transforms moved from bare Option+digit to
+    /// Control-Option+digit defaults so they stop stealing the Option-only
+    /// symbols some Mac layouts type (⌥1 = ¡, ⌥2 = ™, ⌥3 = # / £, …). Migrate a
+    /// built-in row that still carries the exact legacy Option+digit default to
+    /// the new chord; leave custom or cleared bindings untouched, and clear
+    /// rather than duplicate when the new chord is already claimed.
+    private static func reconciledBuiltInTransformShortcut(
+        existing: Prompt,
+        canonical: Prompt,
+        db: Database
+    ) throws -> String? {
+        guard let legacyShortcut = legacyTransformOptionDefaults[canonical.name],
+            existing.shortcut == legacyShortcut
+        else {
+            return existing.keyboardShortcut
+        }
+
+        guard let canonicalShortcut = canonical.shortcut else { return nil }
+        if try transformShortcutIsUsed(canonicalShortcut, excluding: existing.id, db: db) {
+            return nil
+        }
+        return canonical.keyboardShortcut
+    }
+
+    /// Legacy Option+digit defaults that predate the Control-Option+digit move,
+    /// keyed by built-in Transform name. A row still carrying exactly this
+    /// shortcut migrates to its canonical Control-Option+digit default.
+    private static let legacyTransformOptionDefaults: [String: KeyboardShortcut] = [
+        "Polish": KeyboardShortcut(
+            modifiers: KeyboardShortcut.ModifierFlag.option.rawValue,
+            keyCode: 0x12,  // kVK_ANSI_1
+            keyLabel: "1"
+        ),
+        "Distill": KeyboardShortcut(
+            modifiers: KeyboardShortcut.ModifierFlag.option.rawValue,
+            keyCode: 0x13,  // kVK_ANSI_2
+            keyLabel: "2"
+        ),
+        "Decide": KeyboardShortcut(
+            modifiers: KeyboardShortcut.ModifierFlag.option.rawValue,
+            keyCode: 0x14,  // kVK_ANSI_3
+            keyLabel: "3"
+        ),
+    ]
+
+    private static func transformShortcutIsUsed(
+        _ shortcut: KeyboardShortcut,
+        excluding id: UUID,
+        db: Database
+    ) throws -> Bool {
+        let transforms = try PromptQuery.fetchAll(category: .transform, db: db)
+        return transforms.contains { $0.id != id && $0.shortcut == shortcut }
     }
 }

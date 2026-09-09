@@ -30,10 +30,131 @@ public final class LLMSettingsViewModel {
         case cannotConnect(displayName: String, message: String)
     }
 
+    public struct AIFormatterProfileDraft: Identifiable, Equatable, Sendable {
+        private let draftID: UUID
+        public var profileID: UUID?
+        public var name: String
+        public var isEnabled: Bool
+        public var targetKind: AIFormatterProfileTargetKind
+        public var bundleIdentifier: String
+        public var appDisplayName: String
+        public var appCategory: TelemetryAppCategory
+        public var promptTemplate: String
+        public var origin: AIFormatterProfileOrigin
+        public var sortOrder: Int
+        public var createdAt: Date
+
+        public var id: UUID {
+            profileID ?? draftID
+        }
+
+        public init(
+            profileID: UUID? = nil,
+            name: String,
+            isEnabled: Bool = true,
+            targetKind: AIFormatterProfileTargetKind,
+            bundleIdentifier: String = "",
+            appDisplayName: String = "",
+            appCategory: TelemetryAppCategory = .messaging,
+            promptTemplate: String,
+            origin: AIFormatterProfileOrigin = .custom,
+            sortOrder: Int = 0,
+            createdAt: Date = Date(),
+            draftID: UUID = UUID()
+        ) {
+            self.draftID = draftID
+            self.profileID = profileID
+            self.name = name
+            self.isEnabled = isEnabled
+            self.targetKind = targetKind
+            self.bundleIdentifier = bundleIdentifier
+            self.appDisplayName = appDisplayName
+            self.appCategory = appCategory
+            self.promptTemplate = promptTemplate
+            self.origin = origin
+            self.sortOrder = sortOrder
+            self.createdAt = createdAt
+        }
+
+        public init(profile: AIFormatterProfile) {
+            // Bundle profiles persist `appCategory = nil` (the category is
+            // derived from the bundle ID at match time), so rehydrate the
+            // draft's category the same way — otherwise the editor mislabels
+            // every saved app profile as the fallback `.messaging`.
+            self.init(
+                profileID: profile.id,
+                name: profile.name,
+                isEnabled: profile.isEnabled,
+                targetKind: profile.targetKind,
+                bundleIdentifier: profile.bundleIdentifier ?? "",
+                appDisplayName: profile.appDisplayName ?? "",
+                appCategory: profile.appCategory
+                    ?? profile.bundleIdentifier.map { TelemetryAppCategory(bundleIdentifier: $0) }
+                    ?? .messaging,
+                promptTemplate: profile.promptTemplate,
+                origin: profile.origin,
+                sortOrder: profile.sortOrder,
+                createdAt: profile.createdAt
+            )
+        }
+
+        public var validationMessage: String? {
+            if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return "Name is required."
+            }
+            if targetKind == .bundle,
+                bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                return "Bundle ID is required for app profiles."
+            }
+            if promptTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return "Prompt template is required."
+            }
+            return nil
+        }
+
+        public var canSave: Bool {
+            validationMessage == nil
+        }
+
+        /// Whether the draft's target is concrete enough to participate in a
+        /// match preview (a name or prompt can still be missing).
+        public var hasResolvableTarget: Bool {
+            switch targetKind {
+            case .bundle:
+                return AppPromptContext.normalizedBundleIdentifier(bundleIdentifier) != nil
+            case .category:
+                return true
+            }
+        }
+
+        func makeProfile(now: Date = Date()) -> AIFormatterProfile {
+            AIFormatterProfile(
+                id: id,
+                name: name,
+                isEnabled: isEnabled,
+                targetKind: targetKind,
+                bundleIdentifier: targetKind == .bundle ? bundleIdentifier : nil,
+                appDisplayName: targetKind == .bundle ? appDisplayName : nil,
+                appCategory: targetKind == .category ? appCategory : nil,
+                promptTemplate: promptTemplate,
+                origin: origin,
+                sortOrder: sortOrder,
+                createdAt: createdAt,
+                updatedAt: now
+            )
+        }
+    }
+
     public private(set) var draft: LLMSettingsDraft
     public var connectionTestState: ConnectionTestState = .idle
     public var saveState: SaveState = .idle
     public private(set) var modelListState: ModelListState = .idle
+    public private(set) var aiFormatterProfiles: [AIFormatterProfile] = []
+    public var aiFormatterProfileDraft: AIFormatterProfileDraft?
+    public var aiFormatterProfileError: String?
+    public private(set) var aiFormatterSmartDefaultsPolicy: AIFormatterSmartDefaultsPolicy
+    public let inProcessModelManager: InProcessModelManagerViewModel
     private var discoveredModels: [String] = []
 
     public var selectedProviderID: LLMProviderID? {
@@ -68,6 +189,15 @@ public final class LLMSettingsViewModel {
         }
     }
 
+    public var allowInsecureLocalNetworkHTTP: Bool {
+        get { draft.allowInsecureLocalNetworkHTTP }
+        set {
+            var nextDraft = draft
+            nextDraft.allowInsecureLocalNetworkHTTP = newValue
+            updateDraft(nextDraft)
+        }
+    }
+
     public var baseURLPlaceholder: String {
         guard let providerID = draft.providerID else { return "https://..." }
         let fallback = providerID == .openaiCompatible ? "https://api.example.com/v1" : "https://..."
@@ -89,7 +219,7 @@ public final class LLMSettingsViewModel {
             return "Optional API key"
         case .openai:
             return "sk-..."
-        case .ollama, .localCLI, nil:
+        case .ollama, .localCLI, .inProcessLocal, nil:
             return ""
         }
     }
@@ -117,7 +247,9 @@ public final class LLMSettingsViewModel {
     }
 
     public var setupStatus: AISetupStatus {
-        if case .error(let message) = connectionTestState {
+        if case .error(let message) = connectionTestState,
+            !isConfigured || !hasUnsavedChanges
+        {
             let displayName = draftAIOptionDisplayName ?? savedAIOptionDisplayName ?? "AI"
             return .cannotConnect(displayName: displayName, message: message)
         }
@@ -147,10 +279,10 @@ public final class LLMSettingsViewModel {
     public var availableModels: [String] {
         guard let providerID = draft.providerID else { return [] }
         if Self.usesDiscoveredModelList(providerID) {
-            if providerID == .ollama, discoveredModels.isEmpty {
-                return Self.suggestedModels(for: providerID)
-            }
-            return discoveredModels
+            return LLMModelAvailability.settingsModels(
+                for: providerID,
+                discoveredModels: discoveredModels
+            )
         }
         return Self.suggestedModels(for: providerID)
     }
@@ -198,6 +330,40 @@ public final class LLMSettingsViewModel {
         draft.isLocalConfiguration
     }
 
+    public var usesInsecureLocalNetworkHTTP: Bool {
+        draft.usesInsecureLocalNetworkHTTP
+    }
+
+    public var shouldShowInProcessLocalSetup: Bool {
+        AppFeatures.isInProcessLocalLLMVisible(
+            defaults: defaults,
+            runtimeAvailable: isInProcessLocalLLMRuntimeAvailable
+        )
+    }
+
+    public var shouldShowInProcessLocalUnavailableExplanation: Bool {
+        AppFeatures.shouldShowInProcessLocalLLMUnavailableExplanation(
+            defaults: defaults,
+            runtimeAvailable: isInProcessLocalLLMRuntimeAvailable
+        )
+    }
+
+    public var inProcessLocalUnavailableMessage: String? {
+        guard shouldShowInProcessLocalUnavailableExplanation else { return nil }
+        return
+            "Local AI is enabled by a developer override, but this app build does not include the MLX runtime. Build with MACPARAKEET_ENABLE_MLX_LOCAL_LLM=1 to test it. The model download is disabled for this build."
+    }
+
+    public var selectableProviderIDs: [LLMProviderID] {
+        LLMProviderID.userSelectableProviderIDs(
+            inProcessLocalLLMVisible: shouldShowInProcessLocalSetup
+        )
+    }
+
+    private var isInProcessLocalLLMRuntimeAvailable: Bool {
+        llmClient?.supportsInProcessLocalLLM == true
+    }
+
     public var validationMessage: String? {
         draft.validationError?.localizedDescription
     }
@@ -210,7 +376,8 @@ public final class LLMSettingsViewModel {
             nextDraft.commandTemplate = newValue
             // Clear template picker when user manually edits the command
             if let template = nextDraft.selectedCLITemplate,
-               newValue != template.defaultCommand {
+                newValue != template.defaultCommand
+            {
                 nextDraft.selectedCLITemplate = nil
             }
             updateDraft(nextDraft)
@@ -240,13 +407,7 @@ public final class LLMSettingsViewModel {
     }
 
     public var aiFormatterEnabled: Bool {
-        get { draft.providerID != nil && draft.aiFormatterEnabled }
-        set {
-            var nextDraft = draft
-            nextDraft.aiFormatterEnabled = canToggleAIFormatter ? newValue : false
-            updateDraft(nextDraft)
-            persistAIFormatterDraftIfNeeded()
-        }
+        isAIFormatterAvailable
     }
 
     public var aiFormatterPrompt: String {
@@ -259,29 +420,127 @@ public final class LLMSettingsViewModel {
         }
     }
 
-    public var canToggleAIFormatter: Bool {
-        draft.providerID != nil && draft.providerID == savedProviderID
+    /// Whether the AI Formatter also runs on live dictation. Transcript
+    /// formatting has its own routing toggle; dictation remains the
+    /// latency-sensitive opt-in path. The value persists immediately through
+    /// the injected `defaults` store. Default `false` keeps live dictation
+    /// low-latency unless the user opts in. See issue #408.
+    public var aiFormatterEnabledForDictation: Bool {
+        didSet {
+            guard aiFormatterEnabledForDictation != oldValue else { return }
+            defaults.set(
+                aiFormatterEnabledForDictation,
+                forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForDictationKey
+            )
+        }
     }
 
-    public var aiFormatterStatusText: String {
-        aiFormatterEnabled ? "Enabled" : "Disabled"
+    /// Whether the AI Formatter runs on file/meeting transcripts. Default
+    /// `true` preserves the pre-#493 behavior where transcripts followed the
+    /// saved provider config alone; the toggle gives users an opt-out (slow
+    /// providers can spend the entire timeout on long transcripts). The value
+    /// persists immediately through the injected `defaults` store.
+    public var aiFormatterEnabledForTranscriptions: Bool {
+        didSet {
+            guard aiFormatterEnabledForTranscriptions != oldValue else { return }
+            defaults.set(
+                aiFormatterEnabledForTranscriptions,
+                forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForTranscriptionsKey
+            )
+        }
+    }
+
+    /// Whether completed meeting recordings may use the saved LLM provider to
+    /// replace the default timestamp title with a short topic title. Defaults
+    /// to `true`; it is still gated at runtime on an actual provider config.
+    public var autoGenerateMeetingTitles: Bool {
+        didSet {
+            guard autoGenerateMeetingTitles != oldValue else { return }
+            defaults.set(
+                autoGenerateMeetingTitles,
+                forKey: UserDefaultsAppRuntimePreferences.autoGenerateMeetingTitlesKey
+            )
+        }
+    }
+
+    public var transcriptAIContextMode: TranscriptAIContextMode {
+        didSet {
+            guard transcriptAIContextMode != oldValue else { return }
+            defaults.set(
+                transcriptAIContextMode.rawValue,
+                forKey: UserDefaultsAppRuntimePreferences.transcriptAIContextModeKey
+            )
+        }
+    }
+
+    public var isAIFormatterAvailable: Bool {
+        draft.providerID != nil && draft.providerID == savedProviderID
     }
 
     public var aiFormatterPromptModeText: String {
         draft.normalizedAIFormatterPrompt == AIFormatter.defaultPromptTemplate
-            ? "Default prompt"
-            : "Custom prompt"
+            ? "Built-in default"
+            : "Customized"
     }
 
-    public var aiFormatterDisabledReason: String? {
+    /// Master switch for the built-in smart-default prompts. Off restores the
+    /// pre-profiles behavior: the fallback prompt is used wherever no custom
+    /// profile matches.
+    public var aiFormatterSmartDefaultsEnabled: Bool {
+        get { aiFormatterSmartDefaultsPolicy.isEnabled }
+        set {
+            guard aiFormatterSmartDefaultsPolicy.isEnabled != newValue else { return }
+            aiFormatterSmartDefaultsPolicy.isEnabled = newValue
+            aiFormatterSmartDefaultsPolicy.save(to: defaults)
+        }
+    }
+
+    public func isAIFormatterSmartDefaultEnabled(_ category: TelemetryAppCategory) -> Bool {
+        aiFormatterSmartDefaultsPolicy.allowsCategory(category)
+    }
+
+    public func isAIFormatterSmartDefaultCategoryEnabled(_ category: TelemetryAppCategory) -> Bool {
+        !aiFormatterSmartDefaultsPolicy.disabledCategories.contains(category)
+    }
+
+    public func setAIFormatterSmartDefault(_ category: TelemetryAppCategory, enabled: Bool) {
+        if enabled {
+            aiFormatterSmartDefaultsPolicy.disabledCategories.remove(category)
+        } else {
+            aiFormatterSmartDefaultsPolicy.disabledCategories.insert(category)
+        }
+        aiFormatterSmartDefaultsPolicy.save(to: defaults)
+    }
+
+    /// Provenance badge for a saved profile row: does its prompt match the
+    /// category's built-in smart default, the user's current fallback prompt,
+    /// or neither (genuinely custom)?
+    public func aiFormatterProfileBadgeText(_ profile: AIFormatterProfile) -> String {
+        let promptTemplate = AIFormatter.normalizedPromptTemplate(profile.promptTemplate)
+        let category =
+            profile.appCategory
+            ?? profile.bundleIdentifier.map { TelemetryAppCategory(bundleIdentifier: $0) }
+        if let category,
+            let categoryDefault = AIFormatterSmartDefaults.categoryDefault(for: category),
+            promptTemplate == AIFormatter.normalizedPromptTemplate(categoryDefault.promptTemplate)
+        {
+            return "Smart default"
+        }
+        if promptTemplate == draft.normalizedAIFormatterPrompt {
+            return "Fallback prompt"
+        }
+        return "Custom prompt"
+    }
+
+    public var aiFormatterUnavailableReason: String? {
         if draft.providerID == nil {
             return "Set up AI to enable the formatter."
         }
         if !isConfigured {
-            return "Save your AI setup first. Formatter changes apply immediately after that."
+            return "Save your AI setup first."
         }
         if draft.providerID != savedProviderID {
-            return "Save this AI option first. Formatter changes apply immediately after that."
+            return "Save this AI option first."
         }
         return nil
     }
@@ -294,7 +553,8 @@ public final class LLMSettingsViewModel {
     private var savedAIOptionDisplayName: String? {
         guard let configStore, let config = try? configStore.loadConfig() else { return nil }
         if config.id == .localCLI {
-            return cliConfigStore
+            return
+                cliConfigStore
                 .flatMap { $0.load() }
                 .map { LocalCLITemplate.displayName(for: $0.commandTemplate) }
                 ?? config.id.displayName
@@ -314,6 +574,10 @@ public final class LLMSettingsViewModel {
         draft.aiFormatterPrompt != AIFormatter.defaultPromptTemplate
     }
 
+    public var canManageAIFormatterProfiles: Bool {
+        aiFormatterProfileRepo != nil
+    }
+
     public var onConfigurationChanged: (() -> Void)?
 
     /// The resolved model profile for the currently configured LLM.
@@ -324,6 +588,7 @@ public final class LLMSettingsViewModel {
     private var configStore: LLMConfigStoreProtocol?
     private var llmClient: LLMClientProtocol?
     private var cliConfigStore: LocalCLIConfigStore?
+    private var aiFormatterProfileRepo: AIFormatterProfileRepositoryProtocol?
     private let defaults: UserDefaults
     private let logger = Logger(subsystem: "com.macparakeet.viewmodels", category: "LLMSettingsViewModel")
 
@@ -334,14 +599,20 @@ public final class LLMSettingsViewModel {
             baseURL: String,
             modelName: String,
             apiKey: String?,
+            isLocal: Bool,
             localCLIConfig: LocalCLIConfig?
         )
     }
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.inProcessModelManager = InProcessModelManagerViewModel()
+        self.aiFormatterEnabledForDictation = Self.loadStoredAIFormatterEnabledForDictation(from: defaults)
+        self.aiFormatterEnabledForTranscriptions = Self.loadStoredAIFormatterEnabledForTranscriptions(from: defaults)
+        self.autoGenerateMeetingTitles = Self.loadStoredAutoGenerateMeetingTitles(from: defaults)
+        self.aiFormatterSmartDefaultsPolicy = AIFormatterSmartDefaultsPolicy.current(defaults: defaults)
+        self.transcriptAIContextMode = TranscriptAIContextMode.current(defaults: defaults)
         self.draft = LLMSettingsDraft(
-            aiFormatterEnabled: false,
             aiFormatterPrompt: Self.loadStoredAIFormatterPrompt(from: defaults)
         )
     }
@@ -349,43 +620,59 @@ public final class LLMSettingsViewModel {
     public func configure(
         configStore: LLMConfigStoreProtocol,
         llmClient: LLMClientProtocol,
-        cliConfigStore: LocalCLIConfigStore = LocalCLIConfigStore()
+        cliConfigStore: LocalCLIConfigStore = LocalCLIConfigStore(),
+        aiFormatterProfileRepo: AIFormatterProfileRepositoryProtocol? = nil,
+        inProcessModelDownloader: any InProcessModelDownloading = InProcessModelDownloader(),
+        physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
     ) {
         self.configStore = configStore
         self.llmClient = llmClient
         self.cliConfigStore = cliConfigStore
+        self.aiFormatterProfileRepo = aiFormatterProfileRepo
+        inProcessModelManager.configure(
+            downloader: inProcessModelDownloader,
+            configStore: configStore,
+            llmClient: llmClient,
+            physicalMemoryBytes: physicalMemoryBytes,
+            onConfigurationChanged: { [weak self] in
+                self?.loadExistingConfig()
+                self?.onConfigurationChanged?()
+            }
+        )
         loadExistingConfig()
+        loadAIFormatterProfiles()
+        Task {
+            await inProcessModelManager.refresh()
+        }
     }
 
     public func saveConfiguration() {
         guard let configStore else { return }
         guard draft.providerID != nil else {
-            clearConfiguration()
-            saveState = .saved
+            clearConfiguration(finalSaveState: .saved)
             return
         }
         do {
             guard let config = try buildConfig(from: draft) else { return }
-            try configStore.saveConfig(config)
-
-            // Save CLI config separately when using Local CLI
-            if draft.providerID == .localCLI {
-                let cliConfig = LocalCLIConfig(
+            let cliConfig = draft.providerID == .localCLI
+                ? LocalCLIConfig(
                     commandTemplate: draft.trimmedCommandTemplate,
                     timeoutSeconds: draft.cliTimeoutSeconds
-                )
-                try cliConfigStore?.save(cliConfig)
+                ) : nil
+            if let cliConfig {
+                guard let cliConfigStore else { throw LocalCLIError.commandNotConfigured }
+                try cliConfigStore.save(cliConfig, providerConfig: config, configStore: configStore)
+            } else {
+                try configStore.saveConfig(config)
             }
 
-            let normalizedFormatterPrompt = persistAIFormatterPreferences(from: draft)
-            if draft.aiFormatterPrompt != normalizedFormatterPrompt || draft.aiFormatterEnabled != aiFormatterEnabled {
-                var normalizedDraft = draft
-                normalizedDraft.aiFormatterEnabled = aiFormatterEnabled
-                normalizedDraft.aiFormatterPrompt = normalizedFormatterPrompt
-                draft = normalizedDraft
-            }
+            _ = persistAIFormatterPreferences(from: draft)
+            // Rehydrate the exact committed payload, without a fallible credential
+            // reread or restarting discovery after the save has already succeeded.
+            loadCommittedDraft(config, cliConfig: cliConfig, suggestedModels: availableModels)
 
             saveState = .saved
+            inProcessModelManager.refreshSelectionState()
             onConfigurationChanged?()
             let savedConfig = config
             let snapshot = draft
@@ -411,10 +698,11 @@ public final class LLMSettingsViewModel {
             guard let config = try buildConfig(from: snapshot) else { return }
             context = LLMExecutionContext(
                 providerConfig: config,
-                localCLIConfig: snapshot.providerID == .localCLI ? LocalCLIConfig(
-                    commandTemplate: snapshot.trimmedCommandTemplate,
-                    timeoutSeconds: snapshot.cliTimeoutSeconds
-                ) : nil
+                localCLIConfig: snapshot.providerID == .localCLI
+                    ? LocalCLIConfig(
+                        commandTemplate: snapshot.trimmedCommandTemplate,
+                        timeoutSeconds: snapshot.cliTimeoutSeconds
+                    ) : nil
             )
         } catch {
             connectionTestState = .error(error.localizedDescription)
@@ -442,18 +730,25 @@ public final class LLMSettingsViewModel {
     }
 
     public func clearConfiguration() {
+        clearConfiguration(finalSaveState: .idle)
+    }
+
+    private func clearConfiguration(finalSaveState: SaveState) {
         guard let configStore else { return }
-        // Use the persisted provider to decide what to delete. The draft may
-        // point at an unsaved provider switch in Settings.
+        // Provider lookup only controls optional CLI cleanup. The store's
+        // deletion boundary can also recover undecodable provider metadata.
         let storedProviderID = (try? configStore.loadConfig())?.id
-        let preservedCLIConfig = draft.providerID == .localCLI && storedProviderID != .localCLI
-            ? cliConfigStore?.load()
-            : nil
         do {
             try configStore.deleteConfig()
         } catch {
             logger.error("Failed to delete LLM configuration error=\(error.localizedDescription, privacy: .public)")
+            saveState = .error(error.localizedDescription)
+            return
         }
+        let preservedCLIConfig =
+            draft.providerID == .localCLI && storedProviderID != .localCLI
+            ? cliConfigStore?.load()
+            : nil
         if storedProviderID == .localCLI {
             cliConfigStore?.delete()
         }
@@ -464,14 +759,18 @@ public final class LLMSettingsViewModel {
         } else {
             apiKey = ""
         }
-        defaults.set(false, forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledKey)
+        defaults.removeObject(forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledKey)
         defaults.set(AIFormatter.defaultPromptTemplate, forKey: UserDefaultsAppRuntimePreferences.aiFormatterPromptKey)
+        // Restore the routing preferences to their defaults so a config
+        // clear returns the formatter to a fully predictable state.
+        aiFormatterEnabledForDictation = false
+        aiFormatterEnabledForTranscriptions = true
+        autoGenerateMeetingTitles = true
         draft = .defaults(
             for: currentProvider,
             apiKey: apiKey,
             defaultModelName: defaultModelNameAfterClearing(currentProvider),
             cliConfig: preservedCLIConfig,
-            aiFormatterEnabled: false,
             aiFormatterPrompt: AIFormatter.defaultPromptTemplate
         )
         if currentProvider == .lmstudio {
@@ -482,12 +781,331 @@ public final class LLMSettingsViewModel {
             resetDiscoveredModels()
         }
         connectionTestState = .idle
-        saveState = .idle
+        saveState = finalSaveState
+        inProcessModelManager.refreshSelectionState()
         onConfigurationChanged?()
     }
 
     public func resetAIFormatterPrompt() {
         aiFormatterPrompt = AIFormatter.defaultPromptTemplate
+    }
+
+    public func loadAIFormatterProfiles() {
+        guard let aiFormatterProfileRepo else {
+            aiFormatterProfiles = []
+            aiFormatterProfileError = nil
+            return
+        }
+        do {
+            // Display in match-precedence order so the list reads as "first
+            // match wins" — the same ordering the matcher uses for ties.
+            aiFormatterProfiles = AIFormatterProfileMatcher.sortedByPrecedence(
+                try aiFormatterProfileRepo.fetchAll()
+            )
+            aiFormatterProfileError = nil
+        } catch {
+            aiFormatterProfileError = error.localizedDescription
+        }
+    }
+
+    public func startCreatingAIFormatterProfile(targetKind: AIFormatterProfileTargetKind) {
+        let nextSortOrder = (aiFormatterProfiles.map(\.sortOrder).max() ?? -1) + 1
+        let defaultCategory = TelemetryAppCategory.messaging
+        let promptTemplate: String
+        let name: String
+        if targetKind == .category,
+            let categoryDefault = AIFormatterSmartDefaults.categoryDefault(for: defaultCategory)
+        {
+            name = Self.aiFormatterProfileCategoryName(defaultCategory)
+            promptTemplate = categoryDefault.promptTemplate
+        } else {
+            name = "New app profile"
+            promptTemplate = draft.normalizedAIFormatterPrompt
+        }
+
+        aiFormatterProfileDraft = AIFormatterProfileDraft(
+            name: name,
+            targetKind: targetKind,
+            appCategory: defaultCategory,
+            promptTemplate: promptTemplate,
+            sortOrder: nextSortOrder
+        )
+        aiFormatterProfileError = nil
+    }
+
+    public func applyAIFormatterProfileDraftCategory(_ category: TelemetryAppCategory) {
+        if aiFormatterProfileDraft == nil {
+            startCreatingAIFormatterProfile(targetKind: .category)
+        }
+
+        guard var draft = aiFormatterProfileDraft else { return }
+        let previousCategory = draft.appCategory
+        let previousSmartDefault = AIFormatterSmartDefaults.categoryDefault(for: previousCategory)
+        let normalizedPrompt = AIFormatter.normalizedPromptTemplate(draft.promptTemplate)
+        let shouldUseSmartDefaultPrompt = isAIFormatterAutoPrompt(
+            normalizedPrompt,
+            previousCategoryDefault: previousSmartDefault
+        )
+        let currentName = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousAppDisplayName = AppPromptContext.normalizedDisplayName(draft.appDisplayName)
+        let previousBundleIdentifier = AppPromptContext.normalizedBundleIdentifier(draft.bundleIdentifier)
+        let shouldReplaceName =
+            currentName.isEmpty
+            || currentName == "New app profile"
+            || currentName == Self.aiFormatterProfileCategoryName(previousCategory)
+            || previousAppDisplayName.map { currentName == $0 } == true
+            || previousBundleIdentifier.map { currentName == $0 } == true
+
+        draft.targetKind = .category
+        draft.appCategory = category
+        if shouldReplaceName {
+            draft.name = Self.aiFormatterProfileCategoryName(category)
+        }
+        if shouldUseSmartDefaultPrompt,
+            let categoryDefault = AIFormatterSmartDefaults.categoryDefault(for: category)
+        {
+            draft.promptTemplate = categoryDefault.promptTemplate
+        }
+        aiFormatterProfileDraft = draft
+        aiFormatterProfileError = nil
+    }
+
+    public func applyAIFormatterProfileDraftTargetKind(_ targetKind: AIFormatterProfileTargetKind) {
+        if aiFormatterProfileDraft == nil {
+            startCreatingAIFormatterProfile(targetKind: targetKind)
+            return
+        }
+
+        switch targetKind {
+        case .category:
+            applyAIFormatterProfileDraftCategory(aiFormatterProfileDraft?.appCategory ?? .messaging)
+        case .bundle:
+            guard var draft = aiFormatterProfileDraft else { return }
+            if AppPromptContext.normalizedBundleIdentifier(draft.bundleIdentifier) != nil {
+                applyAIFormatterProfileDraftApp(
+                    bundleIdentifier: draft.bundleIdentifier,
+                    displayName: draft.appDisplayName
+                )
+                return
+            }
+
+            let previousCategory = draft.appCategory
+            let previousSmartDefault = AIFormatterSmartDefaults.categoryDefault(for: previousCategory)
+            let normalizedPrompt = AIFormatter.normalizedPromptTemplate(draft.promptTemplate)
+            let currentName = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let shouldReplaceName =
+                currentName.isEmpty
+                || currentName == Self.aiFormatterProfileCategoryName(previousCategory)
+
+            draft.targetKind = .bundle
+            if shouldReplaceName {
+                draft.name = "New app profile"
+            }
+            if isAIFormatterAutoPrompt(normalizedPrompt, previousCategoryDefault: previousSmartDefault) {
+                draft.promptTemplate = self.draft.normalizedAIFormatterPrompt
+            }
+            aiFormatterProfileDraft = draft
+            aiFormatterProfileError = nil
+        }
+    }
+
+    public func applyAIFormatterProfileDraftApp(
+        bundleIdentifier: String?,
+        displayName: String?
+    ) {
+        guard let normalizedBundleIdentifier = AppPromptContext.normalizedBundleIdentifier(bundleIdentifier) else {
+            aiFormatterProfileError = "Bundle ID is required for app profiles."
+            return
+        }
+
+        if aiFormatterProfileDraft == nil {
+            startCreatingAIFormatterProfile(targetKind: .bundle)
+        }
+
+        guard var draft = aiFormatterProfileDraft else { return }
+        let normalizedDisplayName = AppPromptContext.normalizedDisplayName(displayName)
+        let previousSmartDefault = AIFormatterSmartDefaults.categoryDefault(for: draft.appCategory)
+        let normalizedPrompt = AIFormatter.normalizedPromptTemplate(draft.promptTemplate)
+        let appCategory = TelemetryAppCategory(bundleIdentifier: normalizedBundleIdentifier)
+        let currentName = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousAppDisplayName = AppPromptContext.normalizedDisplayName(draft.appDisplayName)
+        let previousBundleIdentifier = AppPromptContext.normalizedBundleIdentifier(draft.bundleIdentifier)
+        let shouldReplaceName =
+            currentName.isEmpty
+            || currentName == "New app profile"
+            || currentName == Self.aiFormatterProfileCategoryName(draft.appCategory)
+            || previousAppDisplayName.map { currentName == $0 } == true
+            || previousBundleIdentifier.map { currentName == $0 } == true
+        let shouldUseSmartDefaultPrompt = isAIFormatterAutoPrompt(
+            normalizedPrompt,
+            previousCategoryDefault: previousSmartDefault
+        )
+
+        draft.targetKind = .bundle
+        draft.bundleIdentifier = normalizedBundleIdentifier
+        draft.appDisplayName = normalizedDisplayName ?? ""
+        draft.appCategory = appCategory
+        if shouldReplaceName {
+            draft.name = normalizedDisplayName ?? normalizedBundleIdentifier
+        }
+        if shouldUseSmartDefaultPrompt,
+            let categoryDefault = AIFormatterSmartDefaults.categoryDefault(for: appCategory)
+        {
+            draft.promptTemplate = categoryDefault.promptTemplate
+        } else if shouldUseSmartDefaultPrompt {
+            draft.promptTemplate = self.draft.normalizedAIFormatterPrompt
+        }
+        aiFormatterProfileDraft = draft
+        aiFormatterProfileError = nil
+    }
+
+    public func aiFormatterPromptPreview(
+        for context: AppPromptContext?,
+        including draft: AIFormatterProfileDraft? = nil
+    ) -> AIFormatterPromptResolution {
+        var profiles = aiFormatterProfiles
+        // Include the open draft whenever its target is concrete — a missing
+        // name shouldn't flip the preview back to "Smart default" mid-edit.
+        if let draft, draft.hasResolvableTarget {
+            let draftProfile = draft.makeProfile()
+            profiles.removeAll { $0.id == draftProfile.id }
+            profiles.append(draftProfile)
+        }
+
+        return AIFormatterProfileMatcher.resolve(
+            profiles: profiles,
+            context: context,
+            globalPromptTemplate: self.draft.normalizedAIFormatterPrompt,
+            smartDefaultsPolicy: aiFormatterSmartDefaultsPolicy
+        )
+    }
+
+    public func editAIFormatterProfile(_ profile: AIFormatterProfile) {
+        aiFormatterProfileDraft = AIFormatterProfileDraft(profile: profile)
+        aiFormatterProfileError = nil
+    }
+
+    /// Manual bundle-ID typing path. Mirrors the app-picker derivation
+    /// (`applyAIFormatterProfileDraftApp`) so both entry paths produce the same
+    /// draft: category tracks the typed ID, auto names/prompts follow, and a
+    /// genuinely custom prompt is never clobbered. Tolerates partial input —
+    /// an empty or malformed ID maps to `.other` without raising an error.
+    public func applyAIFormatterProfileDraftManualBundleIdentifier(_ rawValue: String) {
+        guard var draft = aiFormatterProfileDraft else { return }
+        let previousCategory = draft.appCategory
+        let previousSmartDefault = AIFormatterSmartDefaults.categoryDefault(for: previousCategory)
+        let normalizedPrompt = AIFormatter.normalizedPromptTemplate(draft.promptTemplate)
+        let shouldUseSmartDefaultPrompt = isAIFormatterAutoPrompt(
+            normalizedPrompt,
+            previousCategoryDefault: previousSmartDefault
+        )
+        let currentName = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousAppDisplayName = AppPromptContext.normalizedDisplayName(draft.appDisplayName)
+        let previousBundleIdentifier = AppPromptContext.normalizedBundleIdentifier(draft.bundleIdentifier)
+        let shouldReplaceName =
+            currentName.isEmpty
+            || currentName == "New app profile"
+            || currentName == Self.aiFormatterProfileCategoryName(previousCategory)
+            || previousAppDisplayName.map { currentName == $0 } == true
+            || previousBundleIdentifier.map { currentName == $0 } == true
+
+        let normalizedBundleIdentifier = AppPromptContext.normalizedBundleIdentifier(rawValue)
+        let appCategory = TelemetryAppCategory(bundleIdentifier: normalizedBundleIdentifier)
+
+        draft.bundleIdentifier = rawValue
+        draft.appCategory = appCategory
+        if normalizedBundleIdentifier != previousBundleIdentifier {
+            // A display name carried over from a previous pick no longer
+            // describes the typed ID.
+            draft.appDisplayName = ""
+        }
+        if shouldReplaceName {
+            draft.name = normalizedBundleIdentifier ?? "New app profile"
+        }
+        if shouldUseSmartDefaultPrompt {
+            if let categoryDefault = AIFormatterSmartDefaults.categoryDefault(for: appCategory) {
+                draft.promptTemplate = categoryDefault.promptTemplate
+            } else {
+                draft.promptTemplate = self.draft.normalizedAIFormatterPrompt
+            }
+        }
+        aiFormatterProfileDraft = draft
+        aiFormatterProfileError = nil
+    }
+
+    public func updateAIFormatterProfileDraft<Value>(
+        _ keyPath: WritableKeyPath<AIFormatterProfileDraft, Value>,
+        to value: Value
+    ) {
+        guard var draft = aiFormatterProfileDraft else { return }
+        draft[keyPath: keyPath] = value
+        aiFormatterProfileDraft = draft
+        aiFormatterProfileError = nil
+    }
+
+    private func isAIFormatterAutoPrompt(
+        _ normalizedPrompt: String,
+        previousCategoryDefault: AIFormatterSmartDefaults.CategoryDefault?
+    ) -> Bool {
+        if let previousCategoryDefault,
+            normalizedPrompt == AIFormatter.normalizedPromptTemplate(previousCategoryDefault.promptTemplate)
+        {
+            return true
+        }
+        return normalizedPrompt == draft.normalizedAIFormatterPrompt
+            || normalizedPrompt == AIFormatter.defaultPromptTemplate
+    }
+
+    @discardableResult
+    public func saveAIFormatterProfileDraft() -> Bool {
+        guard let aiFormatterProfileRepo else {
+            aiFormatterProfileError = "Formatter profiles are not available."
+            return false
+        }
+        guard let draft = aiFormatterProfileDraft else { return false }
+        if let validationMessage = draft.validationMessage {
+            aiFormatterProfileError = validationMessage
+            return false
+        }
+        do {
+            try aiFormatterProfileRepo.save(draft.makeProfile())
+            aiFormatterProfileDraft = nil
+            loadAIFormatterProfiles()
+            return true
+        } catch {
+            aiFormatterProfileError = error.localizedDescription
+            return false
+        }
+    }
+
+    public func cancelAIFormatterProfileEdit() {
+        aiFormatterProfileDraft = nil
+        aiFormatterProfileError = nil
+    }
+
+    public func setAIFormatterProfile(_ profile: AIFormatterProfile, enabled: Bool) {
+        guard let aiFormatterProfileRepo else { return }
+        var copy = profile
+        copy.isEnabled = enabled
+        do {
+            try aiFormatterProfileRepo.save(copy)
+            loadAIFormatterProfiles()
+        } catch {
+            aiFormatterProfileError = error.localizedDescription
+        }
+    }
+
+    public func deleteAIFormatterProfile(_ profile: AIFormatterProfile) {
+        guard let aiFormatterProfileRepo else { return }
+        do {
+            _ = try aiFormatterProfileRepo.delete(id: profile.id)
+            if aiFormatterProfileDraft?.profileID == profile.id {
+                aiFormatterProfileDraft = nil
+            }
+            loadAIFormatterProfiles()
+        } catch {
+            aiFormatterProfileError = error.localizedDescription
+        }
     }
 
     public func refreshAvailableModels() {
@@ -506,7 +1124,7 @@ public final class LLMSettingsViewModel {
         modelListState = .loading
         Task {
             do {
-                let models = normalizeDiscoveredModels(try await llmClient.listModels(context: context))
+                let models = LLMModelAvailability.normalize(try await llmClient.listModels(context: context))
                 guard shouldApplyModelListResult(for: snapshot) else { return }
                 discoveredModels = models
                 modelListState = .idle
@@ -533,20 +1151,16 @@ public final class LLMSettingsViewModel {
     private func applyProviderChange(to providerID: LLMProviderID?) {
         guard draft.providerID != providerID else { return }
         let formatterPrompt = draft.aiFormatterPrompt
-        let formatterEnabled = providerID == nil ? false : draft.aiFormatterEnabled
         guard let providerID else {
             resetDiscoveredModels()
             updateDraft(
                 LLMSettingsDraft(
-                    aiFormatterEnabled: false,
                     aiFormatterPrompt: formatterPrompt
                 )
             )
             return
         }
-        if !Self.usesDiscoveredModelList(providerID) {
-            resetDiscoveredModels()
-        }
+        resetDiscoveredModels()
         let apiKey = providerID.supportsAPIKey ? ((try? configStore?.loadAPIKey(for: providerID)) ?? "") : ""
         let cliConfig = providerID == .localCLI ? cliConfigStore?.load() : nil
         var nextDraft = LLMSettingsDraft.defaults(
@@ -554,18 +1168,14 @@ public final class LLMSettingsViewModel {
             apiKey: apiKey,
             defaultModelName: Self.defaultModelName(for: providerID),
             cliConfig: cliConfig,
-            aiFormatterEnabled: formatterEnabled,
             aiFormatterPrompt: formatterPrompt
         )
-        // Auto-switch to custom model input when provider has no suggested models.
-        if providerID == .lmstudio
-            || (Self.suggestedModels(for: providerID).isEmpty
-                && providerID != .localCLI
-                && !Self.usesDiscoveredModelList(providerID)) {
+        // Auto-switch to custom model input when provider has no fallback list.
+        if Self.suggestedModels(for: providerID).isEmpty && providerID != .localCLI {
             nextDraft.useCustomModel = true
         }
         updateDraft(nextDraft)
-        if Self.usesDiscoveredModelList(providerID) {
+        if canBuildModelListContext(from: draft) {
             refreshAvailableModels()
         }
     }
@@ -573,7 +1183,6 @@ public final class LLMSettingsViewModel {
     private func loadExistingConfig() {
         guard let configStore, let config = try? configStore.loadConfig() else {
             draft = LLMSettingsDraft(
-                aiFormatterEnabled: false,
                 aiFormatterPrompt: Self.loadStoredAIFormatterPrompt(from: defaults)
             )
             resetDiscoveredModels()
@@ -582,15 +1191,7 @@ public final class LLMSettingsViewModel {
             return
         }
         let cliConfig = config.id == .localCLI ? cliConfigStore?.load() : nil
-        draft = .fromStoredConfig(
-            config,
-            suggestedModels: Self.suggestedModels(for: config.id),
-            defaultModelName: Self.defaultModelName(for: config.id),
-            defaultBaseURL: Self.defaultBaseURL(for: config.id),
-            cliConfig: cliConfig,
-            aiFormatterEnabled: Self.loadStoredAIFormatterEnabled(from: defaults),
-            aiFormatterPrompt: Self.loadStoredAIFormatterPrompt(from: defaults)
-        )
+        loadCommittedDraft(config, cliConfig: cliConfig, suggestedModels: Self.suggestedModels(for: config.id))
         if Self.usesDiscoveredModelList(config.id) {
             refreshAvailableModels()
         } else {
@@ -613,6 +1214,21 @@ public final class LLMSettingsViewModel {
         }
     }
 
+    private func loadCommittedDraft(
+        _ config: LLMProviderConfig,
+        cliConfig: LocalCLIConfig?,
+        suggestedModels: [String]
+    ) {
+        draft = .fromStoredConfig(
+            config,
+            suggestedModels: suggestedModels,
+            defaultModelName: Self.defaultModelName(for: config.id),
+            defaultBaseURL: Self.defaultBaseURL(for: config.id),
+            cliConfig: cliConfig,
+            aiFormatterPrompt: Self.loadStoredAIFormatterPrompt(from: defaults)
+        )
+    }
+
     private func buildConfig(from draft: LLMSettingsDraft) throws -> LLMProviderConfig? {
         guard let providerID = draft.providerID else { return nil }
         return try draft.buildConfig(defaultBaseURL: Self.defaultBaseURL(for: providerID))
@@ -620,35 +1236,35 @@ public final class LLMSettingsViewModel {
 
     private func buildModelListContext(from draft: LLMSettingsDraft) throws -> LLMExecutionContext? {
         guard let providerID = draft.providerID, Self.usesDiscoveredModelList(providerID) else { return nil }
-        guard let config = try draft.buildConfig(
-            defaultBaseURL: Self.defaultBaseURL(for: providerID),
-            allowMissingModelName: true
-        ) else {
+        guard
+            let config = try draft.buildConfig(
+                defaultBaseURL: Self.defaultBaseURL(for: providerID),
+                allowMissingModelName: true
+            )
+        else {
             return nil
         }
         return LLMExecutionContext(providerConfig: config)
+    }
+
+    private func canBuildModelListContext(from draft: LLMSettingsDraft) -> Bool {
+        (try? buildModelListContext(from: draft)) != nil
     }
 
     private func shouldApplyModelListResult(for snapshot: LLMSettingsDraft) -> Bool {
         draft.providerID == snapshot.providerID
             && draft.trimmedAPIKey == snapshot.trimmedAPIKey
             && draft.trimmedBaseURLOverride == snapshot.trimmedBaseURLOverride
-    }
-
-    private func normalizeDiscoveredModels(_ models: [String]) -> [String] {
-        var seen = Set<String>()
-        return models
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .filter { seen.insert($0).inserted }
+            && draft.allowInsecureLocalNetworkHTTP == snapshot.allowInsecureLocalNetworkHTTP
     }
 
     private func reconcileModelSelection(with models: [String], snapshot: LLMSettingsDraft) {
         guard !models.isEmpty else { return }
         guard draft.providerID == snapshot.providerID else { return }
         guard draft.useCustomModel == snapshot.useCustomModel,
-              draft.customModelName == snapshot.customModelName,
-              draft.suggestedModelName == snapshot.suggestedModelName else {
+            draft.customModelName == snapshot.customModelName,
+            draft.suggestedModelName == snapshot.suggestedModelName
+        else {
             return
         }
 
@@ -666,8 +1282,13 @@ public final class LLMSettingsViewModel {
         }
 
         guard currentSuggestedModel.isEmpty || !models.contains(currentSuggestedModel) else { return }
-        nextDraft.suggestedModelName = models[0]
+        nextDraft.suggestedModelName = preferredModel(from: models, providerID: snapshot.providerID) ?? models[0]
         updateDraft(nextDraft)
+    }
+
+    private func preferredModel(from models: [String], providerID: LLMProviderID?) -> String? {
+        guard let providerID else { return nil }
+        return Self.suggestedModels(for: providerID).first { models.contains($0) }
     }
 
     private func resetDiscoveredModels() {
@@ -695,6 +1316,7 @@ public final class LLMSettingsViewModel {
                 baseURL: Self.defaultBaseURL(for: providerID),
                 modelName: "cli",
                 apiKey: nil,
+                isLocal: false,
                 localCLIConfig: LocalCLIConfig(
                     commandTemplate: draft.trimmedCommandTemplate,
                     timeoutSeconds: draft.cliTimeoutSeconds
@@ -707,6 +1329,7 @@ public final class LLMSettingsViewModel {
             baseURL: draftBaseURL(for: providerID),
             modelName: draft.effectiveModelName,
             apiKey: providerID.supportsAPIKey ? draft.trimmedAPIKey : nil,
+            isLocal: draft.isLocalConfiguration,
             localCLIConfig: nil
         )
     }
@@ -718,6 +1341,7 @@ public final class LLMSettingsViewModel {
             baseURL: config.baseURL.absoluteString,
             modelName: config.modelName,
             apiKey: config.id.supportsAPIKey ? (config.apiKey ?? "") : nil,
+            isLocal: config.isLocal,
             localCLIConfig: config.id == .localCLI ? cliConfigStore?.load() : nil
         )
     }
@@ -731,29 +1355,50 @@ public final class LLMSettingsViewModel {
     }
 
     private nonisolated static func usesDiscoveredModelList(_ providerID: LLMProviderID) -> Bool {
-        providerID == .lmstudio || providerID == .ollama
+        providerID.supportsModelListing
     }
 
     private func persistAIFormatterPreferences(from draft: LLMSettingsDraft) -> String {
-        let enabled = draft.providerID != nil && draft.aiFormatterEnabled
+        let enabled = draft.providerID != nil
         let normalizedPrompt = draft.normalizedAIFormatterPrompt
         defaults.set(enabled, forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledKey)
         defaults.set(normalizedPrompt, forKey: UserDefaultsAppRuntimePreferences.aiFormatterPromptKey)
+        if defaults.object(forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForDictationKey) == nil {
+            defaults.set(
+                aiFormatterEnabledForDictation,
+                forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForDictationKey
+            )
+        }
+        if defaults.object(forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForTranscriptionsKey) == nil {
+            defaults.set(
+                aiFormatterEnabledForTranscriptions,
+                forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForTranscriptionsKey
+            )
+        }
         return normalizedPrompt
     }
 
     private func persistAIFormatterDraftIfNeeded() {
-        guard canToggleAIFormatter else { return }
-        let normalizedPrompt = persistAIFormatterPreferences(from: draft)
-        if draft.aiFormatterPrompt != normalizedPrompt {
+        guard isAIFormatterAvailable else { return }
+        let persistedPrompt = persistAIFormatterPreferences(from: draft)
+        if draft.aiFormatterPrompt != persistedPrompt {
             var normalizedDraft = draft
-            normalizedDraft.aiFormatterPrompt = normalizedPrompt
+            normalizedDraft.aiFormatterPrompt = persistedPrompt
             updateDraft(normalizedDraft)
         }
     }
 
-    private static func loadStoredAIFormatterEnabled(from defaults: UserDefaults) -> Bool {
-        defaults.object(forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledKey) as? Bool ?? false
+    private static func loadStoredAIFormatterEnabledForDictation(from defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForDictationKey) as? Bool ?? false
+    }
+
+    private static func loadStoredAIFormatterEnabledForTranscriptions(from defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForTranscriptionsKey) as? Bool
+            ?? true
+    }
+
+    private static func loadStoredAutoGenerateMeetingTitles(from defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: UserDefaultsAppRuntimePreferences.autoGenerateMeetingTitlesKey) as? Bool ?? true
     }
 
     private static func loadStoredAIFormatterPrompt(from defaults: UserDefaults) -> String {
@@ -762,76 +1407,19 @@ public final class LLMSettingsViewModel {
         )
     }
 
-    /// Popular models for each provider. Empty means free-text input.
+    private static func aiFormatterProfileCategoryName(_ category: TelemetryAppCategory) -> String {
+        category.formatterDisplayName
+    }
+
     public static func suggestedModels(for provider: LLMProviderID) -> [String] {
-        switch provider {
-        case .anthropic: return [
-            "claude-sonnet-4-6",
-            "claude-opus-4-6",
-            "claude-haiku-4-5-20251001",
-        ]
-        case .openai: return [
-            "gpt-5.4",
-            "gpt-5.4-pro",
-            "gpt-5.3-chat-latest",
-            "gpt-5-mini",
-            "gpt-5-nano",
-            "gpt-4.1",
-            "gpt-4.1-mini",
-        ]
-        case .openaiCompatible: return []
-        case .gemini: return [
-            "gemini-3.1-pro-preview",
-            "gemini-3-flash-preview",
-            "gemini-3.1-flash-lite-preview",
-            "gemini-2.5-pro",
-            "gemini-2.5-flash",
-        ]
-        case .openrouter: return [
-            "anthropic/claude-opus-4-6",
-            "anthropic/claude-sonnet-4-6",
-            "anthropic/claude-haiku-4-5",
-            "openai/gpt-5.4",
-            "openai/gpt-5.4-pro",
-            "openai/gpt-5-mini",
-            "openai/gpt-5-nano",
-            "openai/gpt-4.1",
-            "openai/gpt-4.1-mini",
-            "google/gemini-3.1-pro-preview",
-            "google/gemini-3-flash-preview",
-            "google/gemini-2.5-flash",
-            "deepseek/deepseek-v3.2",
-            "meta-llama/llama-4-scout",
-            "qwen/qwen3.5-72b",
-        ]
-        case .ollama: return [
-            "qwen3.5:4b",
-            "qwen3.5:9b",
-            "llama4:8b",
-            "gemma3:4b",
-            "deepseek-v3.2",
-            "qwen3:8b",
-            "mistral",
-        ]
-        case .lmstudio: return []
-        case .localCLI: return []
-        }
+        provider.fallbackModels
     }
 
     static func defaultModelName(for provider: LLMProviderID) -> String {
-        suggestedModels(for: provider).first ?? ""
+        provider.defaultModelName
     }
 
     static func defaultBaseURL(for provider: LLMProviderID) -> String {
-        switch provider {
-        case .anthropic: return "https://api.anthropic.com/v1"
-        case .openai: return "https://api.openai.com/v1"
-        case .openaiCompatible: return ""
-        case .gemini: return "https://generativelanguage.googleapis.com/v1beta/openai"
-        case .openrouter: return "https://openrouter.ai/api/v1"
-        case .ollama: return "http://localhost:11434/v1"
-        case .lmstudio: return "http://localhost:1234/v1"
-        case .localCLI: return "http://localhost"
-        }
+        provider.defaultBaseURL
     }
 }

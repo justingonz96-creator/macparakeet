@@ -3,7 +3,7 @@ import SwiftUI
 import MacParakeetCore
 import MacParakeetViewModels
 
-/// Manages a lightweight floating panel for YouTube URL input (Spotlight-style).
+/// Manages a lightweight floating panel for video URL input (Spotlight-style).
 /// Unlike DictationOverlayController which uses `.nonactivatingPanel`,
 /// this panel needs keyboard focus for the text field, so it uses
 /// `canBecomeKey = true` with `canBecomeMain = false`.
@@ -25,11 +25,12 @@ final class YouTubeInputPanelController {
     func show() {
         if panel != nil { return }
 
-        // Auto-paste: if clipboard has a valid YouTube URL, use it as initial value
+        // Auto-paste: if clipboard has a supported media URL, use it as the
+        // initial value.
         var initialURL = ""
         if let clip = NSPasteboard.general.string(forType: .string)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
-           YouTubeURLValidator.isYouTubeURL(clip) {
+           MediaPlatform.isTranscribable(clip) {
             initialURL = clip
         }
 
@@ -67,8 +68,10 @@ final class YouTubeInputPanelController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentView = hosting
 
-        // Center horizontally, upper third vertically (Spotlight-style)
-        if let screen = NSScreen.main {
+        // Center horizontally, upper third vertically (Spotlight-style).
+        // Fall back to the first screen when there is no main screen (a rare
+        // transition state) so the panel never lands at the bottom-left origin.
+        if let screen = NSScreen.main ?? NSScreen.screens.first {
             let screenFrame = screen.visibleFrame
             let x = screenFrame.midX - panelWidth / 2
             let y = screenFrame.origin.y + screenFrame.height * 0.65 - panelHeight / 2
@@ -77,7 +80,14 @@ final class YouTubeInputPanelController {
 
         self.panel = panel
 
-        NSApp.activate()
+        // This panel is summoned by a global hotkey, typically while another
+        // app is frontmost. The cooperative `NSApp.activate()` is routinely
+        // declined for a background app responding to a CGEvent tap, so the
+        // panel gets ordered into our own window list but is never raised above
+        // the active app — it only appears once the user manually focuses
+        // MacParakeet. Force activation so the panel reliably comes forward,
+        // matching the file-transcription flow in `MenuBarCoordinator`.
+        NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
 
         installResignObserver()

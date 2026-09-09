@@ -5,8 +5,16 @@ public actor AudioProcessor: AudioProcessorProtocol {
     private let recorder: AudioRecorder
     private let converter: AudioFileConverter
 
-    public init(sharedMicStream: SharedMicrophoneStream) {
-        self.recorder = AudioRecorder(sharedStream: sharedMicStream)
+    public init(
+        sharedMicStream: SharedMicrophoneStream,
+        isBluetoothInputProvider: @escaping @Sendable () -> Bool = { false },
+        warmCaptureRefreshDebounce: TimeInterval = 0
+    ) {
+        self.recorder = AudioRecorder(
+            sharedStream: sharedMicStream,
+            isBluetoothInputProvider: isBluetoothInputProvider,
+            warmCaptureRefreshDebounce: warmCaptureRefreshDebounce
+        )
         self.converter = AudioFileConverter()
     }
 
@@ -33,15 +41,39 @@ public actor AudioProcessor: AudioProcessorProtocol {
         get async { await recorder.deviceInfo }
     }
 
+    public var lastCaptureHealth: AudioCaptureHealth? {
+        get async { await recorder.lastCaptureHealth }
+    }
+
     public func convert(fileURL: URL) async throws -> URL {
         try await converter.convert(fileURL: fileURL)
     }
 
+    public func convert(fileURL: URL, audioTrackOrdinal: Int?) async throws -> URL {
+        try await converter.convert(fileURL: fileURL, audioTrackOrdinal: audioTrackOrdinal)
+    }
+
     public func startCapture() async throws {
-        try await recorder.start()
+        try await startCapture(sampleSink: nil)
+    }
+
+    public func startCapture(sampleSink: DictationAudioSampleSink?) async throws {
+        try await recorder.start(sampleSink: sampleSink)
     }
 
     public func stopCapture() async throws -> URL {
         try await recorder.stop()
+    }
+
+    public func discardPreRollForActiveCapture() async {
+        await recorder.discardPreRollForActiveRecording()
+    }
+
+    public func setInstantDictationEnabled(_ enabled: Bool) async {
+        await recorder.setInstantDictationEnabled(enabled)
+    }
+
+    public func refreshInstantDictationWarmCapture() async {
+        await recorder.refreshInstantDictationWarmCapture()
     }
 }

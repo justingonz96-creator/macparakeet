@@ -26,6 +26,7 @@ public enum TelemetryEventName: String, Sendable, CaseIterable {
     case diarizationCompleted = "diarization_completed"
     case diarizationFailed = "diarization_failed"
     case exportUsed = "export_used"
+    case exportFailed = "export_failed"
     case llmPromptResultUsed = "llm_prompt_result_used"
     case llmPromptResultFailed = "llm_prompt_result_failed"
     case llmChatUsed = "llm_chat_used"
@@ -109,6 +110,17 @@ public enum TelemetryEventName: String, Sendable, CaseIterable {
     case meetingRecoveryCompleted = "meeting_recovery_completed"
     case meetingRecoveryDiscarded = "meeting_recovery_discarded"
     case meetingRecoveryFailed = "meeting_recovery_failed"
+    case meetingAutoStopProposed = "meeting_auto_stop_proposed"
+    case meetingAutoStopConfirmed = "meeting_auto_stop_confirmed"
+    case meetingAutoStopVetoed = "meeting_auto_stop_vetoed"
+    case micStallDetected = "mic_stall_detected"
+    /// Universal launch-time Silero VAD model prep for VAD-guided meeting live
+    /// chunking (`plans/completed/2026-05-meeting-vad-guided-live-chunking.md` §6).
+    /// Confirms the installed base actually acquires the model once the feature
+    /// is enabled — see `TelemetryVADModelPrepOutcome`. Gated on
+    /// `AppFeatures.meetingVadLiveChunkingEnabled`, so it never fires in a
+    /// flag-off build.
+    case vadModelPrep = "vad_model_prep"
     // Calendar auto-start (ADR-017)
     case calendarReminderShown = "calendar_reminder_shown"
     case calendarAutoStartTriggered = "calendar_auto_start_triggered"
@@ -146,8 +158,45 @@ public enum TelemetryDictationCancelReason: String, Sendable, Equatable {
 public enum TelemetryTranscriptionSource: String, Sendable, Equatable {
     case file
     case youtube
+    case podcast
     case meeting
     case dragDrop = "drag_drop"
+}
+
+/// The recognized origin platform of a URL-ingest transcription, as a low-
+/// cardinality, non-identifying enum. Orthogonal to `TelemetryTranscriptionSource`:
+/// that names *how* the audio arrived (file/url/meeting), this names *which site*
+/// when it arrived by URL. `other` covers any yt-dlp-supported site we have no brand
+/// mapping for — we never emit the raw host, which could be identifying. Absent on
+/// non-URL (file/meeting) events, so the prop's presence alone marks a URL ingest.
+public enum TelemetryURLPlatform: String, Sendable, Equatable {
+    case youtube
+    case x
+    case vimeo
+    case facebook
+    case tiktok
+    case instagram
+    case applePodcasts = "apple_podcasts"
+    case soundcloud
+    case twitch
+    case other
+
+    /// Maps a recognized `MediaPlatform` (or `nil`, for a transcribable but
+    /// unrecognized link) to its telemetry bucket.
+    public init(_ platform: MediaPlatform?) {
+        switch platform {
+        case .youtube: self = .youtube
+        case .x: self = .x
+        case .vimeo: self = .vimeo
+        case .facebook: self = .facebook
+        case .tiktok: self = .tiktok
+        case .instagram: self = .instagram
+        case .applePodcasts: self = .applePodcasts
+        case .soundcloud: self = .soundcloud
+        case .twitch: self = .twitch
+        case .none: self = .other
+        }
+    }
 }
 
 public enum TelemetryTranscriptionStage: String, Sendable, Equatable {
@@ -162,7 +211,9 @@ public enum TelemetryTranscriptionStage: String, Sendable, Equatable {
 
 public enum TelemetryModelKind: String, Sendable, Equatable {
     case parakeetSTT = "parakeet_stt"
+    case nemotronSTT = "nemotron_stt"
     case whisperSTT = "whisper_stt"
+    case cohereSTT = "cohere_stt"
     case speakerDiarization = "speaker_diarization"
     case localSpeechStack = "local_speech_stack"
 }
@@ -172,6 +223,9 @@ public enum TelemetryModelOperationAction: String, Sendable, Equatable {
     case warmUp = "warm_up"
     case repair
     case clearCache = "clear_cache"
+    /// Removing a single model from disk (one Parakeet build, Nemotron, or the Whisper
+    /// variant), as opposed to `clearCache` which wipes the whole local stack.
+    case deleteModel = "delete_model"
 }
 
 public enum TelemetryModelOperationStage: String, Sendable, Equatable {
@@ -180,10 +234,12 @@ public enum TelemetryModelOperationStage: String, Sendable, Equatable {
     case load
     case warmUp = "warm_up"
     case clearCache = "clear_cache"
+    case delete
 }
 
 public enum TelemetrySpeechEngineSwitchBlockedReason: String, Sendable, Equatable {
     case modelNotDownloaded = "model_not_downloaded"
+    case insufficientMemory = "insufficient_memory"
     case engineBusy = "engine_busy"
     case meetingActive = "meeting_active"
     case transcribing
@@ -290,6 +346,7 @@ public enum TelemetryLLMFeature: String, Sendable, Equatable {
     case promptResult = "prompt_result"
     case chat
     case transform
+    case knowledgeCard = "knowledge_card"
 }
 
 public enum TelemetryLLMSource: String, Sendable, Equatable {
@@ -321,6 +378,48 @@ public enum TelemetryMeetingRecordingTrigger: String, Sendable, Equatable {
     case calendarAutoStart = "calendar_auto_start"
 }
 
+/// Why a full meeting recording operation moved through its lifecycle. This is
+/// wider than start telemetry because auto-stop only applies to finalization.
+public enum TelemetryMeetingOperationTrigger: String, Sendable, Equatable {
+    case manual
+    case hotkey
+    case calendarAutoStart = "calendar_auto_start"
+    case autoStop = "auto_stop"
+
+    public init(_ trigger: TelemetryMeetingRecordingTrigger) {
+        switch trigger {
+        case .manual:
+            self = .manual
+        case .hotkey:
+            self = .hotkey
+        case .calendarAutoStart:
+            self = .calendarAutoStart
+        }
+    }
+}
+
+public enum TelemetryMeetingAutoStopReason: String, Sendable, Equatable {
+    case meetingAppClosed = "meeting_app_closed"
+    case prolongedSilence = "prolonged_silence"
+}
+
+public enum TelemetryMicStallSignature: String, Sendable, Equatable {
+    case micMissing = "mic_missing"
+    case micSilent = "mic_silent"
+    case micGap = "mic_gap"
+
+    public init(_ signature: MeetingMicHealthMonitor.StallSignature) {
+        switch signature {
+        case .micMissing:
+            self = .micMissing
+        case .micSilent:
+            self = .micSilent
+        case .micGap:
+            self = .micGap
+        }
+    }
+}
+
 public enum TelemetryMeetingOperationStage: String, Sendable, Equatable {
     case permissions
     case startRecording = "start_recording"
@@ -336,11 +435,79 @@ public enum TelemetryMeetingRecoverySource: String, Sendable, Equatable {
     case settings
 }
 
+public enum TelemetryMeetingRecoveryPhases {
+    public static let unknown = "unknown"
+
+    public static func aggregate(lockStates: [MeetingRecordingLockState]) -> String {
+        aggregate(rawPhases: lockStates.map(\.rawValue))
+    }
+
+    public static func aggregate(rawPhases: [String]) -> String {
+        var counts: [String: Int] = [:]
+        for phase in rawPhases {
+            counts[normalizedPhase(phase), default: 0] += 1
+        }
+
+        guard !counts.isEmpty else { return unknown }
+
+        return counts.keys.sorted(by: sortPhases).map { phase in
+            "\(phase):\(counts[phase] ?? 0)"
+        }.joined(separator: ",")
+    }
+
+    private static let phaseSortOrder: [String: Int] = Dictionary(
+        uniqueKeysWithValues: MeetingRecordingLockState.allCases.enumerated().map { pair in
+            (pair.element.rawValue, pair.offset)
+        }
+    )
+
+    private static func normalizedPhase(_ phase: String) -> String {
+        let trimmed = phase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return unknown }
+        guard trimmed == unknown || phaseSortOrder[trimmed] != nil else { return unknown }
+        return trimmed
+    }
+
+    private static func sortPhases(_ lhs: String, _ rhs: String) -> Bool {
+        if let lhsIndex = phaseSortOrder[lhs], let rhsIndex = phaseSortOrder[rhs] {
+            return lhsIndex < rhsIndex
+        }
+        if phaseSortOrder[lhs] != nil { return true }
+        if phaseSortOrder[rhs] != nil { return false }
+        return lhs < rhs
+    }
+}
+
+/// Outcome of a launch-time Silero VAD model prep attempt (Phase 4.5,
+/// `plans/completed/2026-05-meeting-vad-guided-live-chunking.md` §6). The full
+/// vocabulary is modeled here, but the launch hook only transmits the
+/// *transitions* worth seeing: `prepared` (an install just acquired the model
+/// — the field-reach signal) and `failed` (a download problem). The
+/// steady-state `alreadyCached` is intentionally NOT emitted on every launch to
+/// avoid per-launch telemetry spam; cumulative `prepared` counts already
+/// approximate how much of the installed base has the model.
+public enum TelemetryVADModelPrepOutcome: String, Sendable, Equatable {
+    case alreadyCached = "already_cached"
+    case prepared
+    case failed
+}
+
 public enum TelemetryPermission: String, Sendable, Equatable {
     case microphone
     case accessibility
     case screenRecording = "screen_recording"
     case calendar
+}
+
+public enum TelemetryOnboardingAction: String, Sendable, Equatable {
+    case viewed
+    case forward
+    case back
+    case jump
+    case completed
+    case dismissed
+    case engineReady = "engine_ready"
+    case engineFailed = "engine_failed"
 }
 
 /// Which capture surface a hotkey customization applies to. Lets us answer
@@ -373,12 +540,22 @@ public enum TelemetryHotkeyKind: String, Sendable, Equatable {
 public enum TelemetrySettingName: String, Sendable, Equatable {
     case saveHistory = "save_history"
     case audioRetention = "audio_retention"
+    case appAppearance = "app_appearance"
     case menuBarOnly = "menu_bar_only"
+    case menuBarIcon = "menu_bar_icon"
     case hidePill = "hide_pill"
     case saveTranscriptionAudio = "save_transcription_audio"
+    case saveMeetingAudio = "save_meeting_audio"
+    case meetingAudioRetention = "meeting_audio_retention"
     case youtubeAudioQuality = "youtube_audio_quality"
     case speakerDiarization = "speaker_diarization"
+    case meetingSpeakerDiarization = "meeting_speaker_diarization"
+    case parakeetModelVariant = "parakeet_model_variant"
+    case nemotronModelVariant = "nemotron_model_variant"
+    case transcriptionSpeechEngine = "transcription_speech_engine"
     case whisperDefaultLanguage = "whisper_default_language"
+    case cohereLanguage = "cohere_language"
+    case cohereComputePolicy = "cohere_compute_policy"
     case autoSave = "auto_save"
     case meetingAutoSave = "meeting_auto_save"
     case meetingHotkey = "meeting_hotkey"
@@ -386,10 +563,20 @@ public enum TelemetrySettingName: String, Sendable, Equatable {
     case youtubeTranscriptionHotkey = "youtube_transcription_hotkey"
     case microphoneSelection = "microphone_selection"
     case meetingAudioSourceMode = "meeting_audio_source_mode"
+    case meetingRecordingPill = "meeting_recording_pill"
+    case meetingAutoStop = "meeting_auto_stop"
+    case openAppAfterMeetingEnd = "open_app_after_meeting_end"
+    case notifyOnMeetingEnd = "notify_on_meeting_end"
     case pauseMediaDuringDictation = "pause_media_during_dictation"
+    case instantDictation = "instant_dictation"
+    case liveDictationPreview = "live_dictation_preview"
+    case dictationUndoCountdown = "dictation_undo_countdown"
+    case dictationInsertionStyle = "dictation_insertion_style"
+    case transcriptionCompletionNotification = "transcription_completion_notification"
 
     case launchAtLogin = "launch_at_login"
     case silenceAutoStop = "silence_auto_stop"
+    case keepDictationOnClipboard = "keep_dictation_on_clipboard"
     case voiceReturn = "voice_return"
     case numberRefinementMode = "number_refinement_mode"
 
@@ -400,6 +587,9 @@ public enum TelemetrySettingName: String, Sendable, Equatable {
     case calendarIncludedCalendars = "calendar_included_calendars"
 }
 
+/// Free-form error details, descriptions and crash reasons are accepted for
+/// source compatibility but omitted from network properties. Pattern-based
+/// redaction cannot guarantee that provider/subprocess output is content-free.
 public enum TelemetryEventSpec: Sendable {
     static let maxCrashStackTraceCharacters = 1024
 
@@ -420,7 +610,8 @@ public enum TelemetryEventSpec: Sendable {
     /// `TelemetryEventName.firstDictationCompleted`). `activationWindow` is the
     /// bucketed time since onboarding completed — coarse buckets only.
     case firstDictationCompleted(activationWindow: TelemetryActivationWindow)
-    case dictationCancelled(durationSeconds: Double?, reason: TelemetryDictationCancelReason?, device: RecordingDeviceInfo? = nil)
+    case dictationCancelled(
+        durationSeconds: Double?, reason: TelemetryDictationCancelReason?, device: RecordingDeviceInfo? = nil)
     case dictationEmpty(durationSeconds: Double?, device: RecordingDeviceInfo? = nil)
     case dictationFailed(errorType: String, errorDetail: String? = nil, device: RecordingDeviceInfo? = nil)
     case dictationOperation(
@@ -484,12 +675,22 @@ public enum TelemetryEventSpec: Sendable {
         speechEngine: String? = nil,
         engineVariant: String? = nil,
         language: String? = nil,
-        errorType: String?
+        errorType: String?,
+        platform: TelemetryURLPlatform? = nil
     )
     case diarizationStarted(source: TelemetryTranscriptionSource)
-    case diarizationCompleted(source: TelemetryTranscriptionSource, speakerCount: Int, durationSeconds: Double)
+    /// `speakerPrior` is the PII-free label of the speaker-count prior applied
+    /// to the run (`MeetingSpeakerPrior.diagnosticsLabel`); `nil` for runs
+    /// without one (file/URL transcription).
+    case diarizationCompleted(
+        source: TelemetryTranscriptionSource,
+        speakerCount: Int,
+        durationSeconds: Double,
+        speakerPrior: String? = nil
+    )
     case diarizationFailed(source: TelemetryTranscriptionSource, errorType: String, errorDetail: String? = nil)
     case exportUsed(format: String)
+    case exportFailed(format: String, errorType: String, errorDetail: String? = nil)
     case llmPromptResultUsed(provider: String)
     case llmPromptResultFailed(provider: String, errorType: String, errorDetail: String? = nil)
     case llmChatUsed(provider: String, source: TelemetryChatSource, messageCount: Int)
@@ -592,9 +793,12 @@ public enum TelemetryEventSpec: Sendable {
         inputTruncated: Bool?,
         promptDefaultUsed: Bool?,
         messageCount: Int?,
-        errorType: String?
+        errorType: String?,
+        promptTokens: Int? = nil,
+        completionTokens: Int? = nil,
+        retryCount: Int? = nil
     )
-    case historySearched
+    case historySearched(resultCountBucket: String? = nil)
     case historyReplayed
     case copyToClipboard(source: TelemetryCopySource)
     case hotkeyCustomized(
@@ -607,10 +811,17 @@ public enum TelemetryEventSpec: Sendable {
     case snippetAdded
     case snippetEdited
     case snippetDeleted
-    case settingChanged(setting: TelemetrySettingName)
+    case settingChanged(setting: TelemetrySettingName, value: String? = nil)
     case telemetryOptedOut
     case onboardingCompleted(durationSeconds: Double?)
-    case onboardingStep(step: String)
+    case onboardingStep(
+        step: String,
+        action: TelemetryOnboardingAction,
+        elapsedSeconds: Double?,
+        stepIndex: Int?,
+        totalSteps: Int?,
+        engineState: String?
+    )
     case licenseActivated
     case licenseActivationFailed(errorType: String, errorDetail: String? = nil)
     case trialStarted
@@ -680,6 +891,7 @@ public enum TelemetryEventSpec: Sendable {
         outcome: ObservabilityOutcome,
         durationSeconds: Double,
         screenshotAttached: Bool,
+        diagnosticLogAttached: Bool,
         systemInfoIncluded: Bool,
         errorType: String?
     )
@@ -703,7 +915,7 @@ public enum TelemetryEventSpec: Sendable {
         operationID: String,
         operationContext: ObservabilityOperationContext? = nil,
         outcome: ObservabilityOutcome,
-        trigger: TelemetryMeetingRecordingTrigger?,
+        trigger: TelemetryMeetingOperationTrigger?,
         stage: TelemetryMeetingOperationStage? = nil,
         durationSeconds: Double?,
         liveWordCount: Int?,
@@ -714,16 +926,36 @@ public enum TelemetryEventSpec: Sendable {
         notesLengthBucket: String?,
         errorType: String?
     )
-    case meetingRecoveryDiscovered(count: Int, source: TelemetryMeetingRecoverySource)
-    case meetingRecoveryStarted(count: Int, source: TelemetryMeetingRecoverySource)
-    case meetingRecoveryCompleted(count: Int, durationSeconds: Double, source: TelemetryMeetingRecoverySource)
-    case meetingRecoveryDiscarded(count: Int, source: TelemetryMeetingRecoverySource)
+    case meetingRecoveryDiscovered(
+        count: Int, source: TelemetryMeetingRecoverySource, phases: [MeetingRecordingLockState])
+    case meetingRecoveryStarted(count: Int, source: TelemetryMeetingRecoverySource, phases: [MeetingRecordingLockState])
+    case meetingRecoveryCompleted(
+        count: Int,
+        durationSeconds: Double,
+        source: TelemetryMeetingRecoverySource,
+        phases: [MeetingRecordingLockState]
+    )
+    case meetingRecoveryDiscarded(
+        count: Int, source: TelemetryMeetingRecoverySource, phases: [MeetingRecordingLockState])
     case meetingRecoveryFailed(
         count: Int,
         source: TelemetryMeetingRecoverySource,
+        phases: [MeetingRecordingLockState],
         errorType: String,
         errorDetail: String? = nil
     )
+    case meetingAutoStopProposed(reason: TelemetryMeetingAutoStopReason)
+    case meetingAutoStopConfirmed(reason: TelemetryMeetingAutoStopReason)
+    case meetingAutoStopVetoed(reason: TelemetryMeetingAutoStopReason)
+    case micStallDetected(
+        signature: TelemetryMicStallSignature? = nil,
+        elapsedMs: Int? = nil,
+        stallCount: Int? = 1,
+        totalStalledSeconds: Double? = nil
+    )
+    /// Launch-time VAD model prep outcome (Phase 4.5). Only `.prepared` /
+    /// `.failed` are ever sent — see `TelemetryVADModelPrepOutcome`.
+    case vadModelPrep(outcome: TelemetryVADModelPrepOutcome)
     // Calendar auto-start (ADR-017). Mode is "notify" / "auto_start" — `.off`
     // never produces an event because the coordinator short-circuits.
     case calendarReminderShown(mode: String, leadMinutes: Int, hasMeetUrl: Bool)
@@ -804,6 +1036,7 @@ extension TelemetryEventSpec {
         case .diarizationCompleted: return .diarizationCompleted
         case .diarizationFailed: return .diarizationFailed
         case .exportUsed: return .exportUsed
+        case .exportFailed: return .exportFailed
         case .llmPromptResultUsed: return .llmPromptResultUsed
         case .llmPromptResultFailed: return .llmPromptResultFailed
         case .llmChatUsed: return .llmChatUsed
@@ -873,6 +1106,11 @@ extension TelemetryEventSpec {
         case .meetingRecoveryCompleted: return .meetingRecoveryCompleted
         case .meetingRecoveryDiscarded: return .meetingRecoveryDiscarded
         case .meetingRecoveryFailed: return .meetingRecoveryFailed
+        case .meetingAutoStopProposed: return .meetingAutoStopProposed
+        case .meetingAutoStopConfirmed: return .meetingAutoStopConfirmed
+        case .meetingAutoStopVetoed: return .meetingAutoStopVetoed
+        case .micStallDetected: return .micStallDetected
+        case .vadModelPrep: return .vadModelPrep
         case .calendarReminderShown: return .calendarReminderShown
         case .calendarAutoStartTriggered: return .calendarAutoStartTriggered
         case .calendarAutoStartCancelled: return .calendarAutoStartCancelled
@@ -888,28 +1126,27 @@ extension TelemetryEventSpec {
     var props: [String: String]? {
         switch self {
         case .appLaunched,
-             .historySearched,
-             .historyReplayed,
-             .customWordAdded,
-             .customWordDeleted,
-             .snippetAdded,
-             .snippetEdited,
-             .snippetDeleted,
-             .telemetryOptedOut,
-             .transcriptionDeleted,
-             .dictationDeleted,
-             .dictationUndoUsed,
-             .chatConversationCreated,
-             .promptCreated,
-             .promptUpdated,
-             .promptDeleted,
-             .askMenuOpened,
-             .licenseActivated,
-             .trialStarted,
-             .trialExpired,
-             .purchaseStarted,
-             .restoreAttempted,
-             .restoreSucceeded:
+            .historyReplayed,
+            .customWordAdded,
+            .customWordDeleted,
+            .snippetAdded,
+            .snippetEdited,
+            .snippetDeleted,
+            .telemetryOptedOut,
+            .transcriptionDeleted,
+            .dictationDeleted,
+            .dictationUndoUsed,
+            .chatConversationCreated,
+            .promptCreated,
+            .promptUpdated,
+            .promptDeleted,
+            .askMenuOpened,
+            .licenseActivated,
+            .trialStarted,
+            .trialExpired,
+            .purchaseStarted,
+            .restoreAttempted,
+            .restoreSucceeded:
             return nil
         case .hotkeyCustomized(let surface, let kind):
             return Self.compactProps(
@@ -933,29 +1170,31 @@ extension TelemetryEventSpec {
             let appCategory,
             let device
         ):
-            return Self.mergeDevice(Self.compactProps(
-                ("duration_seconds", Self.format(durationSeconds)),
-                ("word_count", "\(wordCount)"),
-                ("mode", mode?.rawValue),
-                ("speech_engine", speechEngine),
-                ("engine_variant", Self.safeEngineVariant(engineVariant)),
-                ("language", Self.safeLanguageCode(language)),
-                ("app_category", appCategory?.rawValue)
-            ), device)
+            return Self.mergeDevice(
+                Self.compactProps(
+                    ("duration_seconds", Self.format(durationSeconds)),
+                    ("word_count", "\(wordCount)"),
+                    ("mode", mode?.rawValue),
+                    ("speech_engine", speechEngine),
+                    ("engine_variant", Self.safeEngineVariant(engineVariant)),
+                    ("language", Self.safeLanguageCode(language)),
+                    ("app_category", appCategory?.rawValue)
+                ), device)
         case .firstDictationCompleted(let activationWindow):
             return ["activation_window": activationWindow.rawValue]
         case .dictationCancelled(let durationSeconds, let reason, let device):
-            return Self.mergeDevice(Self.compactProps(
-                ("duration_seconds", durationSeconds.map(Self.format)),
-                ("reason", reason?.rawValue)
-            ), device)
+            return Self.mergeDevice(
+                Self.compactProps(
+                    ("duration_seconds", durationSeconds.map(Self.format)),
+                    ("reason", reason?.rawValue)
+                ), device)
         case .dictationEmpty(let durationSeconds, let device):
-            return Self.mergeDevice(Self.compactProps(
-                ("duration_seconds", durationSeconds.map(Self.format))
-            ), device)
-        case .dictationFailed(let errorType, let errorDetail, let device):
-            var props = ["error_type": errorType]
-            if let errorDetail = Self.sanitizedErrorDetail(errorDetail) { props["error_detail"] = errorDetail }
+            return Self.mergeDevice(
+                Self.compactProps(
+                    ("duration_seconds", durationSeconds.map(Self.format))
+                ), device)
+        case .dictationFailed(let errorType, _, let device):
+            let props = ["error_type": errorType]
             return Self.mergeDevice(props, device)
         case .dictationOperation(
             let operationID,
@@ -973,22 +1212,23 @@ extension TelemetryEventSpec {
             let appCategory,
             let device
         ):
-            return Self.mergeDevice(Self.compactProps(
-                ("operation_id", operationID),
-                ("workflow_id", operationContext?.workflowID),
-                ("parent_operation_id", operationContext?.parentOperationID),
-                ("outcome", outcome.rawValue),
-                ("trigger", trigger?.rawValue),
-                ("mode", mode?.rawValue),
-                ("duration_seconds", durationSeconds.map(Self.format)),
-                ("word_count", wordCount.map(String.init)),
-                ("speech_engine", speechEngine),
-                ("engine_variant", Self.safeEngineVariant(engineVariant)),
-                ("language", Self.safeLanguageCode(language)),
-                ("app_category", appCategory?.rawValue),
-                ("error_type", errorType),
-                ("cancel_reason", cancelReason?.rawValue)
-            ), device)
+            return Self.mergeDevice(
+                Self.compactProps(
+                    ("operation_id", operationID),
+                    ("workflow_id", operationContext?.workflowID),
+                    ("parent_operation_id", operationContext?.parentOperationID),
+                    ("outcome", outcome.rawValue),
+                    ("trigger", trigger?.rawValue),
+                    ("mode", mode?.rawValue),
+                    ("duration_seconds", durationSeconds.map(Self.format)),
+                    ("word_count", wordCount.map(String.init)),
+                    ("speech_engine", speechEngine),
+                    ("engine_variant", Self.safeEngineVariant(engineVariant)),
+                    ("language", Self.safeLanguageCode(language)),
+                    ("app_category", appCategory?.rawValue),
+                    ("error_type", errorType),
+                    ("cancel_reason", cancelReason?.rawValue)
+                ), device)
         case .dictationFirstLoadCaptionShown(let firstInstall):
             return ["first_install": Self.boolString(firstInstall)]
         case .dictationFirstLoadCaptionDuration(let durationMs, let outcome):
@@ -1031,13 +1271,12 @@ extension TelemetryEventSpec {
                 ("audio_duration_seconds", audioDurationSeconds.map(Self.format)),
                 ("stage", stage.rawValue)
             )
-        case .transcriptionFailed(let source, let stage, let errorType, let errorDetail):
-            var props = [
+        case .transcriptionFailed(let source, let stage, let errorType, _):
+            let props = [
                 "source": source.rawValue,
                 "stage": stage.rawValue,
                 "error_type": errorType,
             ]
-            if let errorDetail = Self.sanitizedErrorDetail(errorDetail) { props["error_detail"] = errorDetail }
             return props
         case .transcriptionOperation(
             let operationID,
@@ -1058,7 +1297,8 @@ extension TelemetryEventSpec {
             let speechEngine,
             let engineVariant,
             let language,
-            let errorType
+            let errorType,
+            let platform
         ):
             return Self.compactProps(
                 ("operation_id", operationID),
@@ -1066,6 +1306,7 @@ extension TelemetryEventSpec {
                 ("parent_operation_id", operationContext?.parentOperationID),
                 ("outcome", outcome.rawValue),
                 ("source", source.rawValue),
+                ("platform", platform?.rawValue),
                 ("stage", stage?.rawValue),
                 ("duration_seconds", Self.format(durationSeconds)),
                 ("audio_duration_seconds", audioDurationSeconds.map(Self.format)),
@@ -1084,35 +1325,38 @@ extension TelemetryEventSpec {
             )
         case .diarizationStarted(let source):
             return ["source": source.rawValue]
-        case .diarizationCompleted(let source, let speakerCount, let durationSeconds):
-            return [
+        case .diarizationCompleted(let source, let speakerCount, let durationSeconds, let speakerPrior):
+            var props = [
                 "source": source.rawValue,
                 "speaker_count": "\(speakerCount)",
-                "duration_seconds": Self.format(durationSeconds)
+                "duration_seconds": Self.format(durationSeconds),
             ]
-        case .diarizationFailed(let source, let errorType, let errorDetail):
-            var props = ["source": source.rawValue, "error_type": errorType]
-            if let errorDetail = Self.sanitizedErrorDetail(errorDetail) { props["error_detail"] = errorDetail }
+            if let speakerPrior {
+                props["speaker_prior"] = speakerPrior
+            }
+            return props
+        case .diarizationFailed(let source, let errorType, _):
+            let props = ["source": source.rawValue, "error_type": errorType]
             return props
         case .exportUsed(let format):
             return ["format": format]
+        case .exportFailed(let format, let errorType, _):
+            let props = ["format": format, "error_type": errorType]
+            return props
         case .llmPromptResultUsed(let provider):
             return ["provider": provider]
-        case .llmPromptResultFailed(let provider, let errorType, let errorDetail):
-            var props = ["provider": provider, "error_type": errorType]
-            if let errorDetail = Self.sanitizedErrorDetail(errorDetail) { props["error_detail"] = errorDetail }
+        case .llmPromptResultFailed(let provider, let errorType, _):
+            let props = ["provider": provider, "error_type": errorType]
             return props
         case .llmChatUsed(let provider, let source, let messageCount):
             return ["provider": provider, "source": source.rawValue, "message_count": "\(messageCount)"]
-        case .llmChatFailed(let provider, let source, let errorType, let errorDetail):
-            var props = ["provider": provider, "source": source.rawValue, "error_type": errorType]
-            if let errorDetail = Self.sanitizedErrorDetail(errorDetail) { props["error_detail"] = errorDetail }
+        case .llmChatFailed(let provider, let source, let errorType, _):
+            let props = ["provider": provider, "source": source.rawValue, "error_type": errorType]
             return props
         case .llmTransformUsed(let provider):
             return ["provider": provider]
-        case .llmTransformFailed(let provider, let errorType, let errorDetail):
-            var props = ["provider": provider, "error_type": errorType]
-            if let errorDetail = Self.sanitizedErrorDetail(errorDetail) { props["error_detail"] = errorDetail }
+        case .llmTransformFailed(let provider, let errorType, _):
+            let props = ["provider": provider, "error_type": errorType]
             return props
         case .numberRefinerUsed(let provider, let inputChars, let outputChars, let latencyMs, let safetyGatePassed):
             return [
@@ -1231,7 +1475,10 @@ extension TelemetryEventSpec {
             let inputTruncated,
             let promptDefaultUsed,
             let messageCount,
-            let errorType
+            let errorType,
+            let promptTokens,
+            let completionTokens,
+            let retryCount
         ):
             return Self.compactProps(
                 ("operation_id", operationID),
@@ -1247,26 +1494,43 @@ extension TelemetryEventSpec {
                 ("input_truncated", inputTruncated.map(Self.boolString)),
                 ("prompt_default_used", promptDefaultUsed.map(Self.boolString)),
                 ("message_count", messageCount.map(String.init)),
-                ("error_type", errorType)
+                ("error_type", errorType),
+                ("prompt_tokens", promptTokens.map(String.init)),
+                ("completion_tokens", completionTokens.map(String.init)),
+                ("retry_count", retryCount.map(String.init))
             )
         case .copyToClipboard(let source):
             return ["source": source.rawValue]
         case .processingModeChanged(let mode):
             return ["mode": mode]
-        case .settingChanged(let setting):
-            return ["setting": setting.rawValue]
+        case .historySearched(let resultCountBucket):
+            return Self.compactProps(
+                ("result_count", resultCountBucket)
+            )
+        case .settingChanged(let setting, let value):
+            return Self.compactProps(
+                ("setting", setting.rawValue),
+                ("value", value)
+            )
         case .onboardingCompleted(let durationSeconds):
             return Self.compactProps(
                 ("duration_seconds", durationSeconds.map(Self.format))
             )
-        case .onboardingStep(let step):
-            return ["step": step]
-        case .licenseActivationFailed(let errorType, let errorDetail):
-            var props = ["error_type": errorType]
-            if let errorDetail = Self.sanitizedErrorDetail(errorDetail) { props["error_detail"] = errorDetail }
+        case .onboardingStep(let step, let action, let elapsedSeconds, let stepIndex, let totalSteps, let engineState):
+            return Self.compactProps(
+                ("step", step),
+                ("action", action.rawValue),
+                ("elapsed_seconds", elapsedSeconds.map(Self.format)),
+                ("step_index", stepIndex.map(String.init)),
+                ("total_steps", totalSteps.map(String.init)),
+                ("engine_state", engineState)
+            )
+        case .licenseActivationFailed(let errorType, _):
+            let props = ["error_type": errorType]
             return props
-        case .restoreFailed(let errorType, let errorDetail):
-            return Self.compactProps(("error_type", errorType), ("error_detail", Self.sanitizedErrorDetail(errorDetail)))
+        case .restoreFailed(let errorType, _):
+            return Self.compactProps(
+                ("error_type", errorType))
         case .permissionPrompted(let permission):
             return ["permission": permission.rawValue]
         case .permissionGranted(let permission):
@@ -1293,14 +1557,14 @@ extension TelemetryEventSpec {
                 ("speech_engine", speechEngine?.rawValue),
                 ("engine_variant", Self.safeEngineVariant(engineVariant))
             )
-        case .modelDownloadFailed(let errorType, let errorDetail, let modelKind, let speechEngine, let engineVariant):
-            var props = Self.compactProps(
-                ("error_type", errorType),
-                ("model_kind", modelKind?.rawValue),
-                ("speech_engine", speechEngine?.rawValue),
-                ("engine_variant", Self.safeEngineVariant(engineVariant))
-            ) ?? [:]
-            if let errorDetail = Self.sanitizedErrorDetail(errorDetail) { props["error_detail"] = errorDetail }
+        case .modelDownloadFailed(let errorType, _, let modelKind, let speechEngine, let engineVariant):
+            let props =
+                Self.compactProps(
+                    ("error_type", errorType),
+                    ("model_kind", modelKind?.rawValue),
+                    ("speech_engine", speechEngine?.rawValue),
+                    ("engine_variant", Self.safeEngineVariant(engineVariant))
+                ) ?? [:]
             return props
         case .modelOperation(
             let operationID,
@@ -1359,6 +1623,7 @@ extension TelemetryEventSpec {
             let outcome,
             let durationSeconds,
             let screenshotAttached,
+            let diagnosticLogAttached,
             let systemInfoIncluded,
             let errorType
         ):
@@ -1370,6 +1635,7 @@ extension TelemetryEventSpec {
                 ("outcome", outcome.rawValue),
                 ("duration_seconds", Self.format(durationSeconds)),
                 ("screenshot_attached", Self.boolString(screenshotAttached)),
+                ("diagnostic_log_attached", Self.boolString(diagnosticLogAttached)),
                 ("system_info_included", Self.boolString(systemInfoIncluded)),
                 ("error_type", errorType)
             )
@@ -1387,9 +1653,8 @@ extension TelemetryEventSpec {
             ]
         case .meetingRecordingCancelled(let durationSeconds):
             return ["duration_seconds": Self.format(durationSeconds)]
-        case .meetingRecordingFailed(let errorType, let errorDetail):
-            var props = ["error_type": errorType]
-            if let errorDetail = Self.sanitizedErrorDetail(errorDetail) { props["error_detail"] = errorDetail }
+        case .meetingRecordingFailed(let errorType, _):
+            let props = ["error_type": errorType]
             return props
         case .meetingOperation(
             let operationID,
@@ -1422,35 +1687,52 @@ extension TelemetryEventSpec {
                 ("notes_length_bucket", notesLengthBucket),
                 ("error_type", errorType)
             )
-        case .meetingRecoveryDiscovered(let count, let source):
+        case .meetingRecoveryDiscovered(let count, let source, let phases):
             return [
                 "count": "\(count)",
                 "source": source.rawValue,
+                "phases": TelemetryMeetingRecoveryPhases.aggregate(lockStates: phases),
             ]
-        case .meetingRecoveryStarted(let count, let source):
+        case .meetingRecoveryStarted(let count, let source, let phases):
             return [
                 "count": "\(count)",
                 "source": source.rawValue,
+                "phases": TelemetryMeetingRecoveryPhases.aggregate(lockStates: phases),
             ]
-        case .meetingRecoveryCompleted(let count, let durationSeconds, let source):
+        case .meetingRecoveryCompleted(let count, let durationSeconds, let source, let phases):
             return [
                 "count": "\(count)",
                 "duration_seconds": Self.format(durationSeconds),
                 "source": source.rawValue,
+                "phases": TelemetryMeetingRecoveryPhases.aggregate(lockStates: phases),
             ]
-        case .meetingRecoveryDiscarded(let count, let source):
+        case .meetingRecoveryDiscarded(let count, let source, let phases):
             return [
                 "count": "\(count)",
                 "source": source.rawValue,
+                "phases": TelemetryMeetingRecoveryPhases.aggregate(lockStates: phases),
             ]
-        case .meetingRecoveryFailed(let count, let source, let errorType, let errorDetail):
-            var props = [
+        case .meetingRecoveryFailed(let count, let source, let phases, let errorType, _):
+            let props = [
                 "count": "\(count)",
                 "source": source.rawValue,
+                "phases": TelemetryMeetingRecoveryPhases.aggregate(lockStates: phases),
                 "error_type": errorType,
             ]
-            if let errorDetail = Self.sanitizedErrorDetail(errorDetail) { props["error_detail"] = errorDetail }
             return props
+        case .meetingAutoStopProposed(let reason),
+            .meetingAutoStopConfirmed(let reason),
+            .meetingAutoStopVetoed(let reason):
+            return ["reason": reason.rawValue]
+        case .micStallDetected(let signature, let elapsedMs, let stallCount, let totalStalledSeconds):
+            return Self.compactProps(
+                ("signature", signature?.rawValue),
+                ("elapsed_ms", elapsedMs.map { "\(max(0, $0))" }),
+                ("stall_count", stallCount.map { "\(max(0, $0))" }),
+                ("total_stalled_seconds", totalStalledSeconds.map(Self.format))
+            )
+        case .vadModelPrep(let outcome):
+            return ["outcome": outcome.rawValue]
         case .calendarReminderShown(let mode, let leadMinutes, let hasMeetUrl):
             return [
                 "mode": mode,
@@ -1468,20 +1750,14 @@ extension TelemetryEventSpec {
             return ["reason": reason]
         case .sttRuntimeUnhealthy(let reason):
             return ["reason": reason]
-        case .errorOccurred(let domain, let code, let description):
-            // Defense in depth: sanitize() at the boundary so any caller route
-            // (including future call sites that forget to run
-            // `TelemetryErrorClassifier.errorDetail` first) cannot leak file
-            // paths or URLs into telemetry. `sanitize` is idempotent, so
-            // double-sanitizing existing well-behaved callers costs nothing.
-            return [
-                "domain": domain,
-                "code": code,
-                "description": String(TelemetryErrorClassifier.sanitize(description).prefix(512)),
-            ]
-        case .crashOccurred(let crashType, let signal, let name, let crashTimestamp,
-                            let crashAppVer, let crashOsVer, let uuid, let slide,
-                            let reason, let stackTrace):
+        case .errorOccurred(let domain, let code, _):
+            // Descriptions and provider/subprocess errors can contain arbitrary
+            // user content. Keep only structured dimensions in network telemetry.
+            return ["domain": domain, "code": code]
+        case .crashOccurred(
+            let crashType, let signal, let name, let crashTimestamp,
+            let crashAppVer, let crashOsVer, let uuid, let slide,
+            _, let stackTrace):
             return Self.compactProps(
                 ("crash_type", crashType),
                 ("signal", signal),
@@ -1491,7 +1767,6 @@ extension TelemetryEventSpec {
                 ("crash_os_ver", crashOsVer),
                 ("uuid", uuid),
                 ("slide", slide),
-                ("reason", reason.map { String($0.prefix(512)) }),
                 ("stack_trace", String(stackTrace.prefix(Self.maxCrashStackTraceCharacters)))
             )
         case .cliOperation(
@@ -1521,7 +1796,9 @@ extension TelemetryEventSpec {
                 ("exit_code", exitCode.map(String.init)),
                 ("error_type", errorType)
             )
-        case .autoSaveOperation(let operationID, let operationContext, let scope, let format, let outcome, let durationSeconds, let errorType):
+        case .autoSaveOperation(
+            let operationID, let operationContext, let scope, let format, let outcome, let durationSeconds,
+            let errorType):
             return Self.compactProps(
                 ("operation_id", operationID),
                 ("workflow_id", operationContext?.workflowID),
@@ -1552,26 +1829,28 @@ extension TelemetryEventSpec {
         value ? "true" : "false"
     }
 
-    private static func sanitizedErrorDetail(_ detail: String?) -> String? {
-        guard let detail, !detail.isEmpty else { return nil }
-        return String(TelemetryErrorClassifier.sanitize(detail).prefix(512))
-    }
-
     private static func safeEngineVariant(_ variant: String?) -> String? {
-        guard let normalized = SpeechEnginePreference.normalizeModelVariant(variant) else {
+        guard let variant,
+            !variant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
             return nil
         }
+        let normalized = SpeechEnginePreference.normalizeModelVariant(variant) ?? variant
 
-        let allowedVariants: Set<String> = [
-            "tiny",
-            "base",
-            "small",
-            "medium",
-            "large",
-            "large-v2",
-            "large-v3",
-            SpeechEnginePreference.defaultWhisperModelVariant,
-        ]
+        let allowedVariants = Set(
+            WhisperModelVariant.allCases.map(\.rawValue) + [
+                // First-party fixed build ids / policy ids (privacy-safe enum raw
+                // values). Without them every Parakeet/Nemotron/Cohere event
+                // collapses to "custom" and variant adoption can't be measured.
+                ParakeetModelVariant.v2.rawValue,
+                ParakeetModelVariant.v3.rawValue,
+                ParakeetModelVariant.unified.rawValue,
+                NemotronModelVariant.multilingual1120.rawValue,
+                NemotronModelVariant.english1120.rawValue,
+                CohereTranscribeEngine.ComputePolicy.ane.rawValue,
+                CohereTranscribeEngine.ComputePolicy.gpu.rawValue,
+            ]
+        )
 
         return allowedVariants.contains(normalized) ? normalized : "custom"
     }
@@ -1610,11 +1889,14 @@ public enum TelemetryImplementedContract {
         .transcriptionCompleted: ["source", "word_count", "diarization_requested", "diarization_applied"],
         .transcriptionCancelled: ["source", "stage"],
         .transcriptionFailed: ["source", "stage", "error_type"],
-        .transcriptionOperation: ["operation_id", "outcome", "source", "duration_seconds", "diarization_requested", "diarization_applied"],
+        .transcriptionOperation: [
+            "operation_id", "outcome", "source", "duration_seconds", "diarization_requested", "diarization_applied",
+        ],
         .diarizationStarted: ["source"],
         .diarizationCompleted: ["source", "speaker_count"],
         .diarizationFailed: ["source", "error_type"],
         .exportUsed: ["format"],
+        .exportFailed: ["format", "error_type"],
         .llmPromptResultUsed: ["provider"],
         .llmPromptResultFailed: ["provider", "error_type"],
         .llmChatUsed: ["provider", "source", "message_count"],
@@ -1628,8 +1910,13 @@ public enum TelemetryImplementedContract {
         .transformOperation: ["operation_id", "outcome", "transform_name", "duration_seconds"],
         .askMenuOpened: [],
         .askPromptFired: ["source", "group", "label"],
-        .llmFormatterUsed: ["provider", "source", "duration_seconds", "input_chars", "output_chars", "default_prompt_used", "input_truncated"],
-        .llmFormatterFailed: ["provider", "source", "duration_seconds", "error_type", "default_prompt_used", "input_truncated"],
+        .llmFormatterUsed: [
+            "provider", "source", "duration_seconds", "input_chars", "output_chars", "default_prompt_used",
+            "input_truncated",
+        ],
+        .llmFormatterFailed: [
+            "provider", "source", "duration_seconds", "error_type", "default_prompt_used", "input_truncated",
+        ],
         .llmProviderUnavailable: ["provider", "error_type", "feature"],
         .llmOperation: ["operation_id", "feature", "provider", "streaming", "outcome", "duration_seconds"],
         .historySearched: [],
@@ -1645,7 +1932,7 @@ public enum TelemetryImplementedContract {
         .settingChanged: ["setting"],
         .telemetryOptedOut: [],
         .onboardingCompleted: [],
-        .onboardingStep: ["step"],
+        .onboardingStep: ["step", "action"],
         .licenseActivated: [],
         .licenseActivationFailed: ["error_type"],
         .trialStarted: [],
@@ -1662,9 +1949,14 @@ public enum TelemetryImplementedContract {
         .modelDownloadCompleted: ["duration_seconds"],
         .modelDownloadFailed: ["error_type"],
         .modelOperation: ["operation_id", "action", "outcome", "duration_seconds"],
-        .speechEngineSwitchOperation: ["operation_id", "from_engine", "to_engine", "outcome", "duration_seconds", "was_cold"],
+        .speechEngineSwitchOperation: [
+            "operation_id", "from_engine", "to_engine", "outcome", "duration_seconds", "was_cold",
+        ],
         .feedbackSubmitted: ["category"],
-        .feedbackOperation: ["operation_id", "category", "outcome", "duration_seconds", "screenshot_attached", "system_info_included"],
+        .feedbackOperation: [
+            "operation_id", "category", "outcome", "duration_seconds", "screenshot_attached", "diagnostic_log_attached",
+            "system_info_included",
+        ],
         .transcriptionDeleted: [],
         .dictationDeleted: [],
         .transcriptionFavorited: ["is_favorite"],
@@ -1679,17 +1971,22 @@ public enum TelemetryImplementedContract {
         .meetingRecordingCancelled: ["duration_seconds"],
         .meetingRecordingFailed: ["error_type"],
         .meetingOperation: ["operation_id", "outcome"],
-        .meetingRecoveryDiscovered: ["count", "source"],
-        .meetingRecoveryStarted: ["count", "source"],
-        .meetingRecoveryCompleted: ["count", "duration_seconds", "source"],
-        .meetingRecoveryDiscarded: ["count", "source"],
-        .meetingRecoveryFailed: ["count", "source", "error_type"],
+        .meetingRecoveryDiscovered: ["count", "source", "phases"],
+        .meetingRecoveryStarted: ["count", "source", "phases"],
+        .meetingRecoveryCompleted: ["count", "duration_seconds", "source", "phases"],
+        .meetingRecoveryDiscarded: ["count", "source", "phases"],
+        .meetingRecoveryFailed: ["count", "source", "phases", "error_type"],
+        .meetingAutoStopProposed: ["reason"],
+        .meetingAutoStopConfirmed: ["reason"],
+        .meetingAutoStopVetoed: ["reason"],
+        .micStallDetected: ["stall_count"],
+        .vadModelPrep: ["outcome"],
         .calendarReminderShown: ["mode", "lead_minutes", "has_meet_url"],
         .calendarAutoStartTriggered: ["lead_seconds", "has_meet_url"],
         .calendarAutoStartCancelled: ["reason"],
         .calendarAutoStartFailed: ["reason"],
         .sttRuntimeUnhealthy: ["reason"],
-        .errorOccurred: ["domain", "code", "description"],
+        .errorOccurred: ["domain", "code"],
         .crashOccurred: ["crash_type", "signal", "name", "crash_ts", "crash_app_ver"],
         .cliOperation: ["operation_id", "command", "outcome", "duration_seconds"],
         .autoSaveOperation: ["operation_id", "scope", "format", "outcome", "duration_seconds"],

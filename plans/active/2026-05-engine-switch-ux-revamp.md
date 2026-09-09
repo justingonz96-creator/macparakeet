@@ -46,7 +46,7 @@ Cold first switch to Whisper:
 | Failed | red | **Setup failed** | Retry below |
 | Unavailable (meeting/job active) | dim | **Unavailable** | While a meeting is recording |
 
-Copy guidance: avoid a hard minute count (slower Macs overrun it; the watchdog handles the long tail). Adjacent fix: onboarding states the Whisper download is *"~6 GB"* (`OnboardingFlowView.swift` ~line 1171) — it is 632 MB; ~6 GB is Parakeet's bundle.
+Copy guidance: avoid a hard minute count (slower Macs overrun it; the watchdog handles the long tail). Keep size copy specific: Whisper Large v3 Turbo is 632 MB, while the Parakeet onboarding copy currently describes the selected speech-model download as roughly 465 MB per build.
 
 ## 5. Staged delivery
 

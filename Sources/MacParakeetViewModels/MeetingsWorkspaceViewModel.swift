@@ -1,0 +1,650 @@
+import Foundation
+import MacParakeetCore
+
+@MainActor
+@Observable
+public final class MeetingsWorkspaceViewModel {
+    public enum RecordingStatus: Equatable {
+        case ready
+        case starting
+        case recording
+        case paused
+        case finishing
+        case transcribing
+        case error(String)
+    }
+
+    public enum CalendarStatus: Equatable {
+        case unavailable
+        case off
+        case permissionNeeded
+        case permissionDenied
+        case loading
+        case ready(mode: CalendarAutoStartMode)
+        case error(String)
+    }
+
+    public enum IntelligenceStatus: Equatable {
+        case setupNeeded
+        case ready(displayName: String, isLocal: Bool)
+        case cannotConnect(displayName: String, message: String)
+    }
+
+    public enum AttentionSeverity: Equatable, Sendable {
+        case recommended
+        case required
+    }
+
+    public enum AttentionAction: Equatable, Sendable {
+        case recordMeeting
+        case recoverMeetings
+        case openCalendarSettings
+        case openAISettings
+    }
+
+    public struct AttentionItem: Identifiable, Equatable, Sendable {
+        public let id: String
+        public let severity: AttentionSeverity
+        public let title: String
+        public let detail: String
+        public let actionTitle: String
+        public let action: AttentionAction
+
+        public init(
+            id: String,
+            severity: AttentionSeverity,
+            title: String,
+            detail: String,
+            actionTitle: String,
+            action: AttentionAction
+        ) {
+            self.id = id
+            self.severity = severity
+            self.title = title
+            self.detail = detail
+            self.actionTitle = actionTitle
+            self.action = action
+        }
+    }
+
+    public let recentMeetingsViewModel: TranscriptionLibraryViewModel
+    public let meetingPillViewModel: MeetingRecordingPillViewModel
+    public let settingsViewModel: SettingsViewModel
+    public let llmSettingsViewModel: LLMSettingsViewModel
+    public let quickPromptsViewModel: QuickPromptsViewModel
+    public let promptsViewModel: PromptsViewModel
+
+    public private(set) var upcomingEvents: [CalendarEvent] = []
+    public private(set) var isLoadingUpcomingEvents = false
+    public private(set) var calendarErrorMessage: String?
+    public var calendarLookAheadDays = 7
+    public var upcomingEventLimit = 4
+    /// User-selected type for the next or active meeting. The recording
+    /// coordinator snapshots this value onto the durable transcription stub
+    /// before enqueue so prompt routing stays deterministic.
+    public var recordingMeetingTypeID: UUID?
+    public private(set) var promptPoliciesByPromptID: [UUID: [PromptMeetingPolicy]] = [:]
+    public var meetingPolicyErrorMessage: String?
+
+    public var meetingClassificationViewModel: MeetingClassificationViewModel {
+        recentMeetingsViewModel.meetingClassificationViewModel
+    }
+
+    @ObservationIgnored private let calendarService: any CalendarServicing
+    @ObservationIgnored private var promptMeetingPolicyRepository: (any PromptMeetingPolicyRepositoryProtocol)?
+    @ObservationIgnored private var upcomingEventsTask: Task<Void, Never>?
+    @ObservationIgnored private var upcomingEventsGeneration = 0
+    @ObservationIgnored private var promptPolicyLoadTask: Task<Void, Never>?
+    @ObservationIgnored private var promptPolicyLoadGeneration = 0
+    @ObservationIgnored private var promptPolicyMutationTail: Task<Void, Never>?
+    @ObservationIgnored private var promptPolicyMutationGeneration = 0
+    @ObservationIgnored private var promptPolicyCompletedMutationGeneration = 0
+    @ObservationIgnored private var hasLoadedInitialState = false
+
+    public init(
+        recentMeetingsViewModel: TranscriptionLibraryViewModel,
+        meetingPillViewModel: MeetingRecordingPillViewModel,
+        settingsViewModel: SettingsViewModel,
+        llmSettingsViewModel: LLMSettingsViewModel,
+        quickPromptsViewModel: QuickPromptsViewModel? = nil,
+        promptsViewModel: PromptsViewModel? = nil,
+        calendarService: any CalendarServicing = CalendarService.shared
+    ) {
+        self.recentMeetingsViewModel = recentMeetingsViewModel
+        self.meetingPillViewModel = meetingPillViewModel
+        self.settingsViewModel = settingsViewModel
+        self.llmSettingsViewModel = llmSettingsViewModel
+        self.quickPromptsViewModel = quickPromptsViewModel ?? QuickPromptsViewModel()
+        self.promptsViewModel = promptsViewModel ?? PromptsViewModel()
+        self.calendarService = calendarService
+    }
+
+    deinit {
+        upcomingEventsTask?.cancel()
+        promptPolicyLoadTask?.cancel()
+        promptPolicyMutationTail?.cancel()
+    }
+
+    public func configure(
+        transcriptionRepo: TranscriptionRepositoryProtocol,
+        quickPromptRepo: QuickPromptRepositoryProtocol? = nil,
+        promptRepo: PromptRepositoryProtocol? = nil,
+        promptVersionRepository: PromptVersionRepositoryProtocol? = nil,
+        promptCollectionRepository: PromptCollectionRepositoryProtocol? = nil,
+        promptEditingService: PromptEditingServiceProtocol? = nil,
+        meetingTypeRepository: (any MeetingTypeRepositoryProtocol)? = nil,
+        meetingLabelRepository: (any MeetingLabelRepositoryProtocol)? = nil,
+        meetingClassificationService: (any MeetingClassificationServiceProtocol)? = nil,
+        promptMeetingPolicyRepository: (any PromptMeetingPolicyRepositoryProtocol)? = nil,
+        promptLabelPolicyRepository: (any PromptLabelPolicyRepositoryProtocol)? = nil
+    ) {
+        recentMeetingsViewModel.configure(
+            transcriptionRepo: transcriptionRepo,
+            meetingTypeRepository: meetingTypeRepository,
+            meetingLabelRepository: meetingLabelRepository,
+            meetingClassificationService: meetingClassificationService
+        )
+        if let quickPromptRepo {
+            quickPromptsViewModel.configure(repo: quickPromptRepo)
+        }
+        if let promptRepo {
+            promptsViewModel.configure(
+                repo: promptRepo,
+                versionRepo: promptVersionRepository,
+                collectionRepo: promptCollectionRepository,
+                editingService: promptEditingService,
+                labelRepository: meetingLabelRepository,
+                labelPolicyRepository: promptLabelPolicyRepository
+            )
+        }
+        self.promptMeetingPolicyRepository = promptMeetingPolicyRepository
+    }
+
+    public func refresh() {
+        hasLoadedInitialState = true
+        refreshRecentMeetings()
+        refreshUpcomingEvents()
+        refreshQuickPrompts()
+        refreshAutoNotes()
+    }
+
+    public func refreshIfNeeded() {
+        guard !hasLoadedInitialState else { return }
+        refresh()
+    }
+
+    @discardableResult
+    public func refreshRecentMeetings() -> Task<Void, Never> {
+        recentMeetingsViewModel.loadTranscriptions()
+    }
+
+    @discardableResult
+    public func refreshUpcomingEvents() -> Task<Void, Never> {
+        upcomingEventsTask?.cancel()
+        upcomingEventsGeneration += 1
+        let generation = upcomingEventsGeneration
+
+        guard shouldFetchCalendarEvents else {
+            isLoadingUpcomingEvents = false
+            calendarErrorMessage = nil
+            upcomingEvents = []
+            let task = Task<Void, Never> {}
+            upcomingEventsTask = task
+            return task
+        }
+
+        isLoadingUpcomingEvents = true
+        calendarErrorMessage = nil
+
+        let lookAheadDays = calendarLookAheadDays
+        let eventLimit = upcomingEventLimit
+        let task = Task { @MainActor [weak self, calendarService] in
+            do {
+                let events = try await calendarService.fetchUpcomingEvents(days: lookAheadDays)
+                guard let self, !Task.isCancelled, self.upcomingEventsGeneration == generation else { return }
+                self.upcomingEvents = Self.collapseRecurringOccurrences(
+                    events.filter { event in self.shouldShowCalendarEvent(event) },
+                    limit: eventLimit
+                )
+                self.isLoadingUpcomingEvents = false
+            } catch {
+                guard let self, !Task.isCancelled, self.upcomingEventsGeneration == generation else { return }
+                self.upcomingEvents = []
+                self.isLoadingUpcomingEvents = false
+                self.calendarErrorMessage = error.localizedDescription
+            }
+        }
+        upcomingEventsTask = task
+        return task
+    }
+
+    public func refreshQuickPrompts() {
+        quickPromptsViewModel.refresh()
+    }
+
+    public var liveAskPromptVisiblePinnedCount: Int {
+        quickPromptsViewModel.visiblePinned.count
+    }
+
+    public var liveAskPromptPreviewPrompts: [QuickPrompt] {
+        Array(quickPromptsViewModel.visiblePinned.prefix(2))
+    }
+
+    // MARK: - After-each-meeting auto-notes
+
+    @discardableResult
+    public func refreshAutoNotes() -> Task<Void, Never> {
+        promptsViewModel.loadPrompts()
+        return loadPromptMeetingPolicies()
+    }
+
+    /// Visible result prompts the user can toggle as meeting auto-notes.
+    /// Hidden prompts can't auto-run, so they're excluded from the card.
+    /// (`promptsViewModel.prompts` is already `.result`-only.)
+    public var meetingAutoNotePrompts: [Prompt] {
+        promptsViewModel.prompts.filter {
+            meetingPolicyResolution(for: $0, meetingTypeID: recordingMeetingTypeID).isAvailable
+        }
+    }
+
+    /// Prompts that will actually auto-run after a meeting finishes.
+    public var meetingAutoNoteActivePrompts: [Prompt] {
+        meetingAutoNotePrompts.filter {
+            meetingPolicyResolution(for: $0, meetingTypeID: recordingMeetingTypeID).isAutoRun
+        }
+    }
+
+    public var meetingAutoNoteActiveCount: Int {
+        meetingAutoNoteActivePrompts.count
+    }
+
+    public func isMeetingAutoNote(_ prompt: Prompt) -> Bool {
+        meetingPolicyResolution(for: prompt, meetingTypeID: recordingMeetingTypeID).isAutoRun
+    }
+
+    public func setMeetingAutoNote(_ prompt: Prompt, enabled: Bool) {
+        guard promptMeetingPolicyRepository != nil else {
+            promptsViewModel.setAutoRun(prompt, source: .meeting, enabled: enabled)
+            return
+        }
+        let current = meetingPolicyResolution(for: prompt, meetingTypeID: recordingMeetingTypeID)
+        setMeetingPolicy(
+            prompt: prompt,
+            meetingTypeID: recordingMeetingTypeID,
+            isAvailable: current.isAvailable,
+            isAutoRun: enabled
+        )
+    }
+
+    public func meetingPolicyResolution(
+        for prompt: Prompt,
+        meetingTypeID: UUID?
+    ) -> PromptApplicabilityResolution {
+        guard promptMeetingPolicyRepository != nil else {
+            return PromptApplicabilityResolver.resolve(
+                prompt: prompt,
+                sourceType: .meeting,
+                meetingTypeId: meetingTypeID,
+                policies: [.defaultForNewPrompt(prompt)]
+            )
+        }
+        return PromptApplicabilityResolver.resolve(
+            prompt: prompt,
+            sourceType: .meeting,
+            meetingTypeId: meetingTypeID,
+            policies: promptPoliciesByPromptID[prompt.id] ?? []
+        )
+    }
+
+    public func hasExactMeetingPolicy(for prompt: Prompt, meetingTypeID: UUID?) -> Bool {
+        let policies = promptPoliciesByPromptID[prompt.id] ?? []
+        if let meetingTypeID {
+            return policies.contains { $0.scopeKind == .type && $0.meetingTypeId == meetingTypeID }
+        }
+        return policies.contains { $0.scopeKind == .all && $0.meetingTypeId == nil }
+    }
+
+    @discardableResult
+    public func setMeetingPolicy(
+        prompt: Prompt,
+        meetingTypeID: UUID?,
+        isAvailable: Bool,
+        isAutoRun: Bool
+    ) -> Task<Void, Never> {
+        guard promptMeetingPolicyRepository != nil else { return Task {} }
+        optimisticallySetMeetingPolicy(
+            prompt: prompt,
+            meetingTypeID: meetingTypeID,
+            isAvailable: isAvailable,
+            isAutoRun: isAutoRun
+        )
+        return enqueuePromptPolicyMutation { repository in
+            if let meetingTypeID {
+                _ = try repository.setPolicy(
+                    promptId: prompt.id,
+                    meetingTypeId: meetingTypeID,
+                    isAvailable: isAvailable,
+                    isAutoRun: isAutoRun,
+                    sortOrder: prompt.sortOrder
+                )
+            } else {
+                _ = try repository.setAllMeetingsPolicy(
+                    promptId: prompt.id,
+                    isAvailable: isAvailable,
+                    isAutoRun: isAutoRun,
+                    sortOrder: prompt.sortOrder
+                )
+            }
+        }
+    }
+
+    @discardableResult
+    public func resetMeetingTypePolicy(prompt: Prompt, meetingTypeID: UUID) -> Task<Void, Never> {
+        guard promptMeetingPolicyRepository != nil,
+            let policy = promptPoliciesByPromptID[prompt.id]?.first(where: {
+                $0.scopeKind == .type && $0.meetingTypeId == meetingTypeID
+            })
+        else { return Task {} }
+        promptPoliciesByPromptID[prompt.id]?.removeAll { $0.id == policy.id }
+        return enqueuePromptPolicyMutation { repository in
+            _ = try repository.delete(id: policy.id)
+        }
+    }
+
+    @discardableResult
+    func loadPromptMeetingPolicies() -> Task<Void, Never> {
+        guard let promptMeetingPolicyRepository else { return Task {} }
+        promptPolicyLoadTask?.cancel()
+        promptPolicyLoadGeneration += 1
+        let loadGeneration = promptPolicyLoadGeneration
+        let mutationGeneration = promptPolicyMutationGeneration
+        let promptIDs = Set(promptsViewModel.prompts.map(\.id))
+        let task = Task { @MainActor [weak self, promptMeetingPolicyRepository] in
+            do {
+                let policies = try await Task.detached(priority: .userInitiated) {
+                    try promptMeetingPolicyRepository.fetchPolicies(promptIds: promptIDs)
+                }.value
+                guard let self,
+                    !Task.isCancelled,
+                    self.promptPolicyLoadGeneration == loadGeneration,
+                    self.promptPolicyMutationGeneration == mutationGeneration,
+                    self.promptPolicyCompletedMutationGeneration == mutationGeneration
+                else { return }
+                self.promptPoliciesByPromptID = Dictionary(grouping: policies, by: \.promptId)
+                self.meetingPolicyErrorMessage = nil
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self,
+                    !Task.isCancelled,
+                    self.promptPolicyLoadGeneration == loadGeneration,
+                    self.promptPolicyMutationGeneration == mutationGeneration,
+                    self.promptPolicyCompletedMutationGeneration == mutationGeneration
+                else { return }
+                self.meetingPolicyErrorMessage = "Unable to load prompt availability: \(error.localizedDescription)"
+            }
+        }
+        promptPolicyLoadTask = task
+        return task
+    }
+
+    private func enqueuePromptPolicyMutation(
+        _ operation: @escaping @Sendable (any PromptMeetingPolicyRepositoryProtocol) throws -> Void
+    ) -> Task<Void, Never> {
+        guard let promptMeetingPolicyRepository else { return Task {} }
+        promptPolicyMutationGeneration += 1
+        let mutationGeneration = promptPolicyMutationGeneration
+        promptPolicyLoadTask?.cancel()
+        promptPolicyLoadGeneration += 1
+        let previousMutation = promptPolicyMutationTail
+        let task = Task { @MainActor [weak self, promptMeetingPolicyRepository] in
+            await previousMutation?.value
+            guard !Task.isCancelled else { return }
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try operation(promptMeetingPolicyRepository)
+                }.value
+                guard let self else { return }
+                self.promptPolicyCompletedMutationGeneration = max(
+                    self.promptPolicyCompletedMutationGeneration,
+                    mutationGeneration
+                )
+                if self.promptPolicyMutationGeneration == mutationGeneration {
+                    self.meetingPolicyErrorMessage = nil
+                    await self.loadPromptMeetingPolicies().value
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self else { return }
+                self.promptPolicyCompletedMutationGeneration = max(
+                    self.promptPolicyCompletedMutationGeneration,
+                    mutationGeneration
+                )
+                guard self.promptPolicyMutationGeneration == mutationGeneration else { return }
+                self.meetingPolicyErrorMessage = "Unable to update prompt availability: \(error.localizedDescription)"
+                await self.loadPromptMeetingPolicies().value
+            }
+        }
+        promptPolicyMutationTail = task
+        return task
+    }
+
+    private func optimisticallySetMeetingPolicy(
+        prompt: Prompt,
+        meetingTypeID: UUID?,
+        isAvailable: Bool,
+        isAutoRun: Bool
+    ) {
+        var policies = promptPoliciesByPromptID[prompt.id] ?? []
+        let existing = policies.first { policy in
+            meetingTypeID.map { policy.scopeKind == .type && policy.meetingTypeId == $0 }
+                ?? (policy.scopeKind == .all && policy.meetingTypeId == nil)
+        }
+        let now = Date()
+        let policy = PromptMeetingPolicy(
+            id: existing?.id ?? UUID(),
+            promptId: prompt.id,
+            scopeKind: meetingTypeID == nil ? .all : .type,
+            meetingTypeId: meetingTypeID,
+            isAvailable: isAvailable,
+            isAutoRun: isAvailable && isAutoRun,
+            sortOrder: prompt.sortOrder,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now
+        )
+        policies.removeAll { $0.id == policy.id }
+        policies.append(policy)
+        promptPoliciesByPromptID[prompt.id] = policies
+    }
+
+    /// Auto-notes need a configured AI provider to generate. `false` only when
+    /// no provider is set up yet (the card shows a "Set up AI" prompt instead
+    /// of dead toggles); a chosen-but-unreachable provider still shows toggles.
+    public var isAutoNotesConfigured: Bool {
+        if case .setupNeeded = intelligenceStatus { return false }
+        return true
+    }
+
+    /// Display name of the configured provider, for the card's "Uses …" line.
+    public var autoNotesProviderName: String? {
+        switch intelligenceStatus {
+        case .ready(let displayName, _), .cannotConnect(let displayName, _):
+            return displayName
+        case .setupNeeded:
+            return nil
+        }
+    }
+
+    public var recordingStatus: RecordingStatus {
+        switch meetingPillViewModel.state {
+        case .idle, .completed:
+            return .ready
+        case .starting:
+            return .starting
+        case .recording:
+            return .recording
+        case .paused:
+            return .paused
+        case .completing:
+            return .finishing
+        case .transcribing:
+            return .transcribing
+        case .error(let message):
+            return .error(message)
+        }
+    }
+
+    public var hasActiveRecording: Bool {
+        switch recordingStatus {
+        case .starting, .recording, .paused, .finishing, .transcribing:
+            return true
+        case .ready, .error:
+            return false
+        }
+    }
+
+    public var calendarStatus: CalendarStatus {
+        guard AppFeatures.calendarEnabled else { return .unavailable }
+        guard settingsViewModel.calendarAutoStartMode != .off else { return .off }
+
+        switch settingsViewModel.calendarPermissionStatus {
+        case .notDetermined:
+            return .permissionNeeded
+        case .denied:
+            return .permissionDenied
+        case .granted:
+            if isLoadingUpcomingEvents { return .loading }
+            if let calendarErrorMessage { return .error(calendarErrorMessage) }
+            return .ready(mode: settingsViewModel.calendarAutoStartMode)
+        }
+    }
+
+    public var intelligenceStatus: IntelligenceStatus {
+        switch llmSettingsViewModel.setupStatus {
+        case .setUpNeeded:
+            return .setupNeeded
+        case .ready(let displayName):
+            return .ready(
+                displayName: displayName,
+                isLocal: llmSettingsViewModel.isLocalConfiguration
+            )
+        case .cannotConnect(let displayName, let message):
+            return .cannotConnect(displayName: displayName, message: message)
+        }
+    }
+
+    public var attentionItems: [AttentionItem] {
+        var items: [AttentionItem] = []
+
+        if settingsViewModel.pendingMeetingRecoveryCount > 0 {
+            let count = settingsViewModel.pendingMeetingRecoveryCount
+            items.append(
+                AttentionItem(
+                    id: "meeting-recovery",
+                    severity: .required,
+                    title: "Interrupted recording",
+                    detail: "\(count) partial recording\(count == 1 ? "" : "s") can be recovered.",
+                    actionTitle: "Recover",
+                    action: .recoverMeetings
+                ))
+        }
+
+        if case .error(let message) = recordingStatus {
+            items.append(
+                AttentionItem(
+                    id: "recording-error",
+                    severity: .required,
+                    title: "Recording stopped",
+                    detail: message,
+                    actionTitle: "Record Again",
+                    action: .recordMeeting
+                ))
+        }
+
+        if case .cannotConnect(let displayName, let message) = intelligenceStatus {
+            items.append(
+                AttentionItem(
+                    id: "ai-unavailable",
+                    severity: .recommended,
+                    title: "\(displayName) unavailable",
+                    detail: message,
+                    actionTitle: "Open AI Settings",
+                    action: .openAISettings
+                ))
+        }
+
+        return items
+    }
+
+    private var shouldFetchCalendarEvents: Bool {
+        AppFeatures.calendarEnabled
+            && settingsViewModel.calendarAutoStartMode != .off
+            && settingsViewModel.calendarPermissionStatus == .granted
+    }
+
+    /// Decides which fetched events appear in the "Upcoming" preview.
+    ///
+    /// This mirrors the *candidate* set MacParakeet acts on, so the preview
+    /// never promises behavior the coordinator won't deliver. It matches the
+    /// candidate filter of `MeetingAutoStartCoordinator` + `MeetingMonitor.evaluate`:
+    ///   - exclude all-day and RSVP-declined events (`MeetingMonitor` candidate filter),
+    ///   - exclude calendars the user opted out of (`filterByIncludedCalendars`),
+    ///   - apply the trigger filter (`MeetingMonitor.passesFilter`).
+    /// RSVP is deliberately NOT mode-gated here: every candidate gets a reminder
+    /// in any non-`.off` mode, and `.pending`/`.tentative` differ only in whether
+    /// they additionally auto-*record* (`MeetingMonitor.shouldAutoStart`) — a
+    /// per-event nuance, not list membership. Hiding `.pending` in `.autoStart`
+    /// would make the app remind about an event missing from this list.
+    /// The only candidate-filter input not mirrored is `MeetingMonitor`'s
+    /// runtime `dismissedEventIds` (coordinator-private session state); a
+    /// dismissed event reappears here until it passes or the mode changes.
+    /// If the candidate rules change in `MeetingMonitor`, update this in lockstep.
+    private func shouldShowCalendarEvent(_ event: CalendarEvent) -> Bool {
+        guard !event.isAllDay, !event.userDeclined else { return false }
+
+        if let calendarIdentifier = event.calendarIdentifier,
+            settingsViewModel.calendarExcludedIdentifiers.contains(calendarIdentifier)
+        {
+            return false
+        }
+
+        switch settingsViewModel.meetingTriggerFilter {
+        case .withLink:
+            return event.meetUrl != nil
+        case .withParticipants:
+            return !event.participants.isEmpty
+        case .allEvents:
+            return true
+        }
+    }
+
+    /// Collapses occurrences of a recurring series down to its soonest
+    /// occurrence, then caps the list to `limit`.
+    ///
+    /// Every occurrence of a recurring series shares one `CalendarEvent.id`
+    /// (EventKit's `eventIdentifier` — see the identity note in
+    /// `CalendarEvent.swift`). Two reasons this matters here:
+    ///   1. The "Upcoming" preview should list *distinct* meetings, not the
+    ///      same daily standup four times pushing every other meeting out of a
+    ///      4-row preview.
+    ///   2. The view renders `ForEach(upcomingEvents)` keyed on `id`, so
+    ///      duplicate ids would give SwiftUI "undefined results" (collapsed or
+    ///      mis-diffed rows).
+    /// This collapse is display-only: `MeetingMonitor`/the coordinator still
+    /// act on *every* occurrence (they key on `dedupeKey`, id + start time).
+    /// Picks the soonest occurrence per id regardless of input order so the
+    /// preview never depends on the service's sort guarantee.
+    static func collapseRecurringOccurrences(_ events: [CalendarEvent], limit: Int) -> [CalendarEvent] {
+        var soonestByID: [String: CalendarEvent] = [:]
+        for event in events {
+            if let existing = soonestByID[event.id], existing.startTime <= event.startTime { continue }
+            soonestByID[event.id] = event
+        }
+        return Array(
+            soonestByID.values
+                .sorted { $0.startTime < $1.startTime }
+                .prefix(max(0, limit))
+        )
+    }
+}

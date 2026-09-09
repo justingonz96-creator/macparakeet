@@ -12,6 +12,18 @@ final class MainWindowStateTests: XCTestCase {
 
         XCTAssertEqual(state.selectedItem, .settings)
         XCTAssertEqual(state.requestedSettingsTab, .ai)
+        XCTAssertNil(state.requestedSettingsAnchor)
+        XCTAssertEqual(state.requestedSettingsTabRevision, 1)
+    }
+
+    func testNavigateToSettingsCanRequestAnchor() {
+        let state = MainWindowState()
+
+        state.navigateToSettings(tab: .capture, anchor: "meeting")
+
+        XCTAssertEqual(state.selectedItem, .settings)
+        XCTAssertEqual(state.requestedSettingsTab, .capture)
+        XCTAssertEqual(state.requestedSettingsAnchor, "meeting")
         XCTAssertEqual(state.requestedSettingsTabRevision, 1)
     }
 
@@ -32,6 +44,7 @@ final class MainWindowStateTests: XCTestCase {
         state.consumeRequestedSettingsTab()
 
         XCTAssertNil(state.requestedSettingsTab)
+        XCTAssertNil(state.requestedSettingsAnchor)
         XCTAssertEqual(state.requestedSettingsTabRevision, 1)
         XCTAssertEqual(state.selectedItem, .settings)
     }
@@ -42,6 +55,32 @@ final class MainWindowStateTests: XCTestCase {
         state.navigate(to: .library)
 
         XCTAssertEqual(state.selectedItem, .library)
+    }
+
+    func testNavigateCanSelectMeetingsWorkspace() {
+        let state = MainWindowState()
+
+        state.navigate(to: .meetings)
+
+        XCTAssertEqual(state.selectedItem, .meetings)
+    }
+
+    func testPrimarySidebarOrderRespectsMeetingFeatureFlag() {
+        var expected: [SidebarItem] = [.transcribe, .library, .dictations]
+        if AppFeatures.meetingRecordingEnabled {
+            expected.append(.meetings)
+        }
+        XCTAssertEqual(SidebarItem.primaryItems, expected)
+    }
+
+    func testPromptManagerIsAFirstClassSidebarDestination() {
+        XCTAssertFalse(SidebarItem.primaryItems.contains(.prompts))
+        XCTAssertEqual(SidebarItem.configItems.first, .prompts)
+        if AppFeatures.transformsEnabled {
+            XCTAssertEqual(SidebarItem.configItems.dropFirst().first, .transforms)
+        }
+        XCTAssertEqual(SidebarItem.prompts.rawValue, "Prompts")
+        XCTAssertEqual(SidebarItem.prompts.icon, "text.quote")
     }
 
     func testStartNewTranscriptionReturnsToTranscribeAndHidesProgressDetail() {

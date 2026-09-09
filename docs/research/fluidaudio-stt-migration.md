@@ -1,6 +1,7 @@
 # FluidAudio CoreML Migration: STT Backend Evaluation
 
 > Status: **HISTORICAL** — Research findings from February 12-13, 2026. FluidAudio migration is complete. The local Qwen3-8B GPU path referenced here is outdated because the on-device mlx-swift-lm runtime was removed 2026-02-23; current LLM support uses external providers or local CLI.
+> Implementation update: Pre-implementation size estimates below treated the full CoreML repos as the user download. Current MacParakeet fetches only the Parakeet components it loads, roughly ~465 MB per build; v2 and v3 cache independently.
 
 ## Problem Statement
 
@@ -165,7 +166,7 @@ This means moving STT to the ANE doesn't magically create new memory — but it 
 | **WER** | ~6.3% | 2.1% (v2) / 2.5% (v3) |
 | **Peak working RAM** | ~2GB+ (GPU/MLX pool) | ~66 MB (~130 MB with vocab boosting) |
 | **GPU contention with Qwen3** | Yes | No |
-| **First-run setup** | Minutes (venv + ~500 MB deps) | Seconds (CoreML compile) + ~6 GB model download |
+| **First-run setup** | Minutes (venv + ~500 MB deps) | Seconds (CoreML compile) + ~465 MB fetched components per selected build |
 | **Dependencies** | Python + uv + venv | SwiftPM (FluidAudio + swift-transformers) |
 | **Signing** | Dozens of .so/.dylib files | One Swift framework |
 | **App Store** | Blocked (subprocess) | Compatible |
@@ -195,7 +196,7 @@ The WER improvement from ~6.3% (MLX) to 2.1-2.5% (CoreML) is a genuine bonus. Sa
 
 ### Model Size Tradeoff
 
-The CoreML model bundle is **~6 GB** — roughly 2.4x larger than the MLX weights (~2.5 GB). This is the main cost of the migration in terms of user-facing download size.
+Pre-implementation analysis treated the full CoreML repo as a **~6 GB** user download. Current MacParakeet/FluidAudio usage only fetches the components MacParakeet loads, so the actual per-build user-facing download is roughly **~465 MB**.
 
 **Why is the CoreML version larger?**
 
@@ -205,7 +206,7 @@ The tradeoff is straightforward:
 
 | | MLX/GPU | CoreML/ANE |
 |---|---------|-----------|
-| Model download | ~2.5 GB | ~6 GB |
+| Model download | ~2.5 GB | ~465 MB fetched components per selected build in current MacParakeet usage |
 | Runtime memory | ~2 GB+ | ~66 MB working RAM |
 | First-run compile | None | ~3.4s one-time |
 | Speed | ~300x RTF | ~155x RTF |
@@ -243,7 +244,7 @@ All components we'd use are permissive:
 
 ### Download Size
 
-The CoreML model bundle for `parakeet-tdt-0.6b-v3-coreml` is **~6 GB** on HuggingFace. This is significantly larger than the MLX weights (~2.5 GB) because CoreML bundles include multiple compiled components (encoder, decoder, joint network, preprocessor, mel spectrogram) in mixed precision optimized for ANE.
+The full CoreML repo for `parakeet-tdt-0.6b-v3-coreml` is much larger than the subset MacParakeet uses. Current MacParakeet only fetches the loaded components, roughly **~465 MB per build**.
 
 | Component | Format |
 |-----------|--------|
@@ -264,8 +265,8 @@ The CoreML model bundle for `parakeet-tdt-0.6b-v3-coreml` is **~6 GB** on Huggin
 
 ### Options
 
-1. **Download on first use (recommended):** Show progress during onboarding. ~6 GB download, one-time cost. Keeps app bundle small.
-2. **Pre-bundle in app:** Instant first-run, but app download is ~6 GB+ larger. Not practical for direct distribution.
+1. **Download on first use (recommended):** Show progress during onboarding. ~465 MB per selected Parakeet build, one-time cost. Keeps app bundle small.
+2. **Pre-bundle in app:** Instant first-run, but app download is hundreds of MB larger per build. Not practical for direct distribution.
 3. **Custom mirror:** `ModelRegistry.baseURL = "https://your-cdn.example.com"` for faster downloads or air-gapped environments.
 
 ## Risk Assessment
@@ -278,7 +279,7 @@ The CoreML model bundle for `parakeet-tdt-0.6b-v3-coreml` is **~6 GB** on Huggin
 | Breaking API changes | Low | Pin to specific version, SDK has semver from v0.7.9+, 34 releases with no breaking changes so far |
 | CoreML crash takes down app | Low | CoreML is mature; can wrap in crash handler. Trade-off vs subprocess complexity. |
 | CoreML first-run compilation | Low | ~3.4s one-time, show progress indicator during onboarding |
-| Model download on first run | Medium-High | ~6 GB download. Must show progress. Consider CDN mirror for faster downloads. One-time cost is acceptable. |
+| Model download on first run | Medium | ~465 MB per selected Parakeet build in current MacParakeet usage. Must show progress. Consider CDN mirror for faster downloads. One-time cost is acceptable. |
 | Streaming ASR quality worse than batch | Low | Use batch mode for dictation (process after recording stops), streaming only for real-time feedback if added later |
 | Swift 6 requirement | Low | Our macOS 14.2+ target is compatible; may need swift-tools-version bump |
 
@@ -313,7 +314,7 @@ The CoreML/ANE path is the better architecture — three workloads on three chip
 4. **Standalone yt-dlp binary** — replace pip-installed yt-dlp with standalone macOS binary (`yt-dlp_macos`, ~35 MB). Store in `~/Library/Application Support/MacParakeet/bin/`. Auto-updates via `yt-dlp --update`. See "Eliminating Python" below.
 5. **Bundled FFmpeg binary** — ship FFmpeg in app resources. Still needed for video file transcription (mp4/mov/mkv/webm/avi → audio extraction) and yt-dlp post-processing. FluidAudio's `AudioConverter` handles resampling but NOT video demuxing.
 6. **Update STT tests** — new implementation, same `STTClientProtocol` contract
-7. **Model download during onboarding** — replace Python venv setup with CoreML model download (~6 GB) + yt-dlp binary download (~35 MB)
+7. **Model download during onboarding** — replace Python venv setup with CoreML component download (~465 MB per selected Parakeet build in current MacParakeet usage) + yt-dlp binary download (~35 MB)
 8. **Evaluate custom vocabulary integration** — feed `CustomWord` entries as `CustomVocabularyTerm` to FluidAudio's CTC boosting
 
 ### Eliminating Python entirely

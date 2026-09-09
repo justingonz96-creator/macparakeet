@@ -32,6 +32,23 @@ final class YouTubeDownloaderTests: XCTestCase {
         }
     }
 
+    func testSupportedMediaURLAcceptsFacebookReel() {
+        XCTAssertTrue(YouTubeDownloader.isSupportedMediaURL(
+            "https://www.facebook.com/reel/1998924354042801"
+        ))
+    }
+
+    func testSupportedMediaURLPreservesSchemalessYouTubeCompatibility() {
+        XCTAssertTrue(YouTubeDownloader.isSupportedMediaURL(
+            "youtube.com/watch?v=dQw4w9WgXcQ"
+        ))
+    }
+
+    func testSupportedMediaURLRejectsNonHTTPInput() {
+        XCTAssertFalse(YouTubeDownloader.isSupportedMediaURL("ftp://example.com/video.mp4"))
+        XCTAssertFalse(YouTubeDownloader.isSupportedMediaURL("/tmp/video.mp4"))
+    }
+
     func testParseDownloadProgressPercentParsesYtDlpLine() {
         XCTAssertEqual(
             YouTubeDownloader.parseDownloadProgressPercent(from: "[download]  42.3% of ~12.34MiB at 1.23MiB/s ETA 00:07"),
@@ -46,6 +63,21 @@ final class YouTubeDownloaderTests: XCTestCase {
     func testParseDownloadProgressPercentIgnoresNonProgressLine() {
         XCTAssertNil(YouTubeDownloader.parseDownloadProgressPercent(from: "[info] Downloading webpage"))
         XCTAssertNil(YouTubeDownloader.parseDownloadProgressPercent(from: "some random log line"))
+    }
+
+    func testFetchMetadataArgumentsTerminateOptionsBeforeURL() {
+        // AUDIT-074: every yt-dlp call site must end options with `--` so a
+        // leading-dash input can never be parsed as a flag.
+        let args = YouTubeDownloader.fetchMetadataArguments(
+            url: "https://www.youtube.com/watch?v=abc"
+        )
+
+        XCTAssertEqual(args, [
+            "--skip-download",
+            "--dump-json",
+            "--no-playlist",
+            "--", "https://www.youtube.com/watch?v=abc",
+        ])
     }
 
     func testDownloadAudioArgumentsUseM4ASelector() {

@@ -22,6 +22,44 @@ public protocol STTTranscribing: Sendable {
     ) async throws -> STTResult
 }
 
+public enum STTLiveDictationTranscriptionError: Error, LocalizedError, Equatable {
+    case unsupportedEngine(SpeechEnginePreference)
+    case modelNotReady
+    case sessionNotActive
+
+    public var errorDescription: String? {
+        switch self {
+        case .unsupportedEngine(let engine):
+            return "\(engine.displayName) does not support live dictation partials."
+        case .modelNotReady:
+            return "Speech model is not ready for live dictation."
+        case .sessionNotActive:
+            return "Live dictation transcription is not active."
+        }
+    }
+}
+
+public protocol STTLiveDictationTranscribing: Sendable {
+    func beginLiveDictationTranscription(
+        onPartial: @escaping @Sendable (String) -> Void
+    ) async throws -> UUID
+
+    func appendLiveDictationSamples(_ samples: [Float], sessionID: UUID) async throws
+
+    func finishLiveDictationTranscription(sessionID: UUID) async throws -> STTResult
+
+    func cancelLiveDictationTranscription(sessionID: UUID) async
+}
+
+public protocol STTDictationPreviewTranscribing: Sendable {
+    func transcribeDictationPreview(
+        samples: [Float],
+        speechEngine: SpeechEngineSelection
+    ) async throws -> STTResult
+
+    func cancelDictationPreview() async
+}
+
 public protocol SpeechEngineRoutedTranscribing: STTTranscribing {
     func transcribe(
         audioPath: String,
@@ -29,6 +67,26 @@ public protocol SpeechEngineRoutedTranscribing: STTTranscribing {
         speechEngine: SpeechEngineSelection,
         onProgress: (@Sendable (Int, Int) -> Void)?
     ) async throws -> STTResult
+}
+
+public struct SpeechEngineTelemetryAttribution: Equatable, Sendable {
+    public let speechEngine: SpeechEnginePreference
+    public let engineVariant: String?
+    public let language: String?
+
+    public init(
+        speechEngine: SpeechEnginePreference,
+        engineVariant: String?,
+        language: String?
+    ) {
+        self.speechEngine = speechEngine
+        self.engineVariant = engineVariant
+        self.language = language
+    }
+}
+
+public protocol SpeechEngineTelemetryAttributing: Sendable {
+    func currentSpeechEngineTelemetryAttribution() async -> SpeechEngineTelemetryAttribution?
 }
 
 public protocol STTRuntimeManaging: Sendable {
@@ -41,6 +99,17 @@ public protocol STTRuntimeManaging: Sendable {
     func shutdown() async
 }
 
+/// Prepares and queries a specific routed engine without changing the live
+/// dictation selection. Meeting capture uses this after the dictation and
+/// meetings/transcriptions routes diverge.
+public protocol SpeechEngineRoutedWarmUpManaging: Sendable {
+    func warmUp(
+        speechEngine: SpeechEngineSelection,
+        onProgress: (@Sendable (String) -> Void)?
+    ) async throws
+    func isReady(speechEngine: SpeechEngineSelection) async -> Bool
+}
+
 public typealias STTManaging = STTTranscribing & STTRuntimeManaging
 public typealias STTClientProtocol = STTManaging
 
@@ -48,6 +117,22 @@ public protocol SpeechEngineSwitching: Sendable {
     func setSpeechEngine(_ preference: SpeechEnginePreference) async throws
     func setSpeechEngine(
         _ preference: SpeechEnginePreference,
+        onProgress: (@Sendable (String) -> Void)?
+    ) async throws
+    /// Switches the active Parakeet build (`v3`, `v2`, or `unified`). Like an
+    /// engine switch, this may download the target and reloads the runtime when
+    /// Parakeet is active; see
+    /// ``STTRuntime/setParakeetModelVariant(_:onProgress:)``.
+    func setParakeetModelVariant(
+        _ variant: ParakeetModelVariant,
+        onProgress: (@Sendable (String) -> Void)?
+    ) async throws
+    /// Switches the active Nemotron build (multilingual ↔ English-only).
+    /// Like an engine switch, this may download the target and reloads the
+    /// runtime when Nemotron is active; see
+    /// ``STTRuntime/setNemotronModelVariant(_:onProgress:)``.
+    func setNemotronModelVariant(
+        _ variant: NemotronModelVariant,
         onProgress: (@Sendable (String) -> Void)?
     ) async throws
 }

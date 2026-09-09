@@ -52,6 +52,9 @@ public final class TransformsViewModel {
     private var historyRepo: TransformHistoryRepositoryProtocol?
     private var clipboardService: ClipboardServiceProtocol?
     private var copiedResetTask: Task<Void, Never>?
+    /// Invalidates passive transform loads that started before a
+    /// save/delete/reset changed repository state.
+    private var transformsMutationGeneration: Int = 0
 
     /// Passive reloads are allowed to coalesce with each other, but never to
     /// outrank a user mutation. A `.transformHistoryChanged` reload can start
@@ -73,10 +76,6 @@ public final class TransformsViewModel {
         self.historyRepo = historyRepo
         self.clipboardService = clipboardService
         self.hasLLMProvider = hasLLMProvider
-        // `loadHistory()` is driven by the view (`.onAppear` and the
-        // `.transformHistoryChanged` notification). Doing it here too
-        // would race the view's first explicit load and clobber state
-        // when the generation-guarded snapshot resolves out of order.
         Task { await load() }
     }
 
@@ -86,6 +85,7 @@ public final class TransformsViewModel {
     @discardableResult
     public func load() async -> Bool {
         guard let repo else { return false }
+        let mutationGenerationAtStart = transformsMutationGeneration
         do {
             let loaded = try await Task.detached(priority: .utility) { [repo] in
                 let all = try repo.fetchAll()
@@ -97,11 +97,17 @@ public final class TransformsViewModel {
                     })
                 return (all: all, transforms: transforms)
             }.value
+            guard shouldApplyTransformsLoad(
+                mutationGenerationAtStart: mutationGenerationAtStart
+            ) else { return false }
             allPrompts = loaded.all
             transforms = loaded.transforms
             errorMessage = nil
             return true
         } catch {
+            guard shouldApplyTransformsLoad(
+                mutationGenerationAtStart: mutationGenerationAtStart
+            ) else { return false }
             errorMessage = error.localizedDescription
             return false
         }
@@ -120,6 +126,7 @@ public final class TransformsViewModel {
     @discardableResult
     public func save(_ prompt: Prompt) async -> Bool {
         guard let repo else { return false }
+        beginTransformsMutation()
         do {
             try await Task.detached(priority: .utility) { [repo, prompt] in
                 try repo.save(prompt)
@@ -133,12 +140,12 @@ public final class TransformsViewModel {
         }
     }
 
-    /// Delete a non-built-in Transform. Built-ins are protected — the
-    /// underlying repository refuses them; this helper short-circuits so
-    /// the UI can hide the action entirely.
+    /// Soft-delete a Transform. Built-in provenance does not restrict the
+    /// lifecycle: built-in and user-created Transforms follow the same path.
     @discardableResult
     public func delete(_ prompt: Prompt) async -> Bool {
-        guard let repo, !prompt.isBuiltIn else { return false }
+        guard let repo else { return false }
+        beginTransformsMutation()
         do {
             let deleted = try await Task.detached(priority: .utility) { [repo, id = prompt.id] in
                 try repo.delete(id: id)
@@ -318,6 +325,7 @@ public final class TransformsViewModel {
         guard let canonical = Prompt.builtInPrompts().first(where: { $0.id == prompt.id }) else {
             return false
         }
+        beginTransformsMutation()
         do {
             let result = try await Task.detached(priority: .utility) { [repo, prompt, canonical, reservedHotkeys] in
                 if let shortcut = canonical.shortcut {
@@ -370,21 +378,45 @@ public final class TransformsViewModel {
         }
     }
 
-    /// Re-seed missing built-in Transforms only (does NOT overwrite user
-    /// edits to existing built-ins). The header's *Reset to defaults*
-    /// affordance maps to this.
+    /// Re-show hidden built-in Transforms and re-seed deleted built-ins
+    /// without overwriting user edits to existing built-ins. The header's
+    /// *Reset to defaults* affordance maps to this.
     @discardableResult
     public func reseedMissingBuiltIns(
         reservedHotkeys: [TransformShortcutReservedHotkey] = []
     ) async -> Bool {
         guard let repo else { return false }
+        beginTransformsMutation()
         let canonical = Prompt.builtInPrompts().filter { $0.category == .transform }
         do {
             let clearedShortcuts = try await Task.detached(priority: .utility) { [repo, canonical, reservedHotkeys] in
                 var persisted = try repo.fetchAll()
-                var existingIDs = Set(persisted.map(\.id))
                 var cleared: [String] = []
-                for var prompt in canonical where !existingIDs.contains(prompt.id) {
+                for var prompt in canonical {
+                    if let index = persisted.firstIndex(where: { $0.id == prompt.id }) {
+                        guard !persisted[index].isVisible else { continue }
+
+                        var existing = persisted[index]
+                        existing.isVisible = true
+                        if let shortcut = existing.shortcut,
+                           let conflict = transformShortcutConflict(
+                               for: shortcut,
+                               excluding: existing.id,
+                               in: persisted
+                           ) {
+                            existing.keyboardShortcut = nil
+                            cleared.append("\(existing.name) (\(shortcut.displayString), used by \(conflict.name))")
+                        } else if let shortcut = existing.shortcut,
+                                  let conflict = reservedHotkeyConflict(for: shortcut, in: reservedHotkeys) {
+                            existing.keyboardShortcut = nil
+                            cleared.append("\(existing.name) (\(shortcut.displayString), conflicts with \(conflict.name))")
+                        }
+                        existing.updatedAt = Date()
+                        try repo.save(existing)
+                        persisted[index] = existing
+                        continue
+                    }
+
                     if let shortcut = prompt.shortcut,
                        let conflict = transformShortcutConflict(for: shortcut, excluding: prompt.id, in: persisted) {
                         prompt.keyboardShortcut = nil
@@ -395,7 +427,6 @@ public final class TransformsViewModel {
                         cleared.append("\(prompt.name) (\(shortcut.displayString), conflicts with \(conflict.name))")
                     }
                     try repo.save(prompt)
-                    existingIDs.insert(prompt.id)
                     persisted.append(prompt)
                 }
                 return cleared
@@ -409,6 +440,16 @@ public final class TransformsViewModel {
             errorMessage = error.localizedDescription
             return false
         }
+    }
+
+    private func beginTransformsMutation() {
+        transformsMutationGeneration += 1
+    }
+
+    private func shouldApplyTransformsLoad(
+        mutationGenerationAtStart: Int
+    ) -> Bool {
+        mutationGenerationAtStart == transformsMutationGeneration
     }
 
     // MARK: - Convenience accessors

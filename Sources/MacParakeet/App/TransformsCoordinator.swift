@@ -18,30 +18,29 @@ import OSLog
 /// - manages cancel-then-restart on re-trigger, run-ID stale-event
 ///   guarding, and per-Transform telemetry
 ///
-/// Replaces `TransformsSpikeCoordinator` (which bound a single hardcoded
-/// Opt+Ctrl+1 to a baked-in Polish prompt). The coordinator is gated by
-/// `AppFeatures.transformsEnabled`, which is enabled on `main` after the
+/// Supersedes the original AX-coverage spike (a single hardcoded Opt+Ctrl+1
+/// bound to a baked-in Polish prompt). The coordinator is gated by
+/// `AppFeatures.transformsEnabled`, which is enabled and shipping after the
 /// website telemetry allowlist deploy landed.
 @MainActor
 final class TransformsCoordinator {
     private let llmServiceProvider: () -> LLMServiceProtocol?
     private let promptRepository: PromptRepositoryProtocol
     private let historyRepository: TransformHistoryRepositoryProtocol?
+    private let activeModelNameProvider: () -> String?
     private let reservedHotkeysProvider: () -> [TransformShortcutReservedHotkey]
     private let onLLMProviderRequired: () -> Void
     private let logger = Logger(subsystem: "com.macparakeet", category: "TransformsCoordinator")
 
     private var registry: TransformsHotkeyRegistry?
     private var panelController: TransformSpikeProgressPanelController?
-    private var executor: TransformExecutor?
-    private var inFlightTask: Task<Void, Never>?
+    private let runSerializer = TransformRunSerializer()
     private var bindingsChangedObserver: NSObjectProtocol?
 
-    /// Per-run identity for stale-event guarding. See the same pattern in
-    /// the spike coordinator: if the user re-triggers a hotkey mid-flight,
-    /// the previous task may emit a terminal event after cancellation
-    /// lands. We gate every UI/state mutation in the task body on
-    /// `activeRunID == myRunID`.
+    /// Per-run identity for stale-event guarding: if the user re-triggers a
+    /// hotkey mid-flight, the previous task may emit a terminal event after
+    /// cancellation lands. We gate every UI/state mutation in the task body
+    /// on `activeRunID == myRunID`.
     private var activeRunID: UUID?
 
     /// Cached snapshot of bound `.transform` prompts, keyed by ID. Used to
@@ -54,12 +53,14 @@ final class TransformsCoordinator {
         llmServiceProvider: @escaping () -> LLMServiceProtocol?,
         promptRepository: PromptRepositoryProtocol,
         historyRepository: TransformHistoryRepositoryProtocol? = nil,
+        activeModelNameProvider: @escaping () -> String? = { nil },
         reservedHotkeysProvider: @escaping () -> [TransformShortcutReservedHotkey] = { [] },
         onLLMProviderRequired: @escaping () -> Void = {}
     ) {
         self.llmServiceProvider = llmServiceProvider
         self.promptRepository = promptRepository
         self.historyRepository = historyRepository
+        self.activeModelNameProvider = activeModelNameProvider
         self.reservedHotkeysProvider = reservedHotkeysProvider
         self.onLLMProviderRequired = onLLMProviderRequired
     }
@@ -102,8 +103,7 @@ final class TransformsCoordinator {
 
     /// Tear down event tap + in-flight work. Called from `applicationWillTerminate`.
     func stop() {
-        inFlightTask?.cancel()
-        inFlightTask = nil
+        runSerializer.cancel()
         registry?.stop()
         registry = nil
         panelController?.close()
@@ -194,15 +194,7 @@ final class TransformsCoordinator {
             return
         }
 
-        // Cancel any in-flight Transform if the user re-triggers a hotkey
-        // before the previous one finishes. ADR-022 §4 / spike pattern.
-        if let inFlightTask {
-            inFlightTask.cancel()
-            self.inFlightTask = nil
-        }
-
         let executor = TransformExecutor(llmService: llmService)
-        self.executor = executor
 
         let runID = UUID()
         activeRunID = runID
@@ -211,18 +203,28 @@ final class TransformsCoordinator {
 
         let promptBody = prompt.content
         let runningTransformName = prompt.name
+        // Capture the concrete model before entering the serialized queue. A
+        // queued Transform must not observe a later Settings model change.
+        let modelSnapshot = Self.resolveModelSnapshot(
+            promptOverride: prompt.modelOverride,
+            activeModelName: activeModelNameProvider()
+        )
 
-        inFlightTask = Task { @MainActor [weak self] in
+        // Cancel any in-flight Transform if the user re-triggers a hotkey
+        // before the previous one finishes, and only start this run once the
+        // old one has fully wound down. The executor's replace phase ignores
+        // cancellation by design (clipboard write → target re-activation →
+        // ⌘V → restore must not abort half-pasted), so an immediate restart
+        // could capture the old run's payload off the pasteboard or read
+        // from the wrong app after a focus yank. ADR-022 §4; AUDIT-072.
+        runSerializer.replace { @MainActor [weak self] in
             guard let self else { return }
-            defer {
-                if self.activeRunID == runID {
-                    self.inFlightTask = nil
-                }
-            }
             do {
                 let result = try await Observability.withOperationContext(operationContext) {
                     try await executor.run(
                         prompt: promptBody,
+                        inferenceSettings: prompt.inferenceSettings,
+                        modelOverride: modelSnapshot,
                         replacementMode: .pasteIntoCurrentFocus,
                         onProgress: { [weak self] progress in
                             if case .failed = progress {
@@ -339,6 +341,13 @@ final class TransformsCoordinator {
                 )
             }
         }
+    }
+
+    static func resolveModelSnapshot(promptOverride: String?, activeModelName: String?) -> String? {
+        let override = promptOverride?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let override, !override.isEmpty { return override }
+        let active = activeModelName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return active?.isEmpty == false ? active : nil
     }
 
     private func handleMissingLLMProvider(

@@ -8,8 +8,18 @@ public extension Notification.Name {
     static let macParakeetMeetingHotkeyTriggerDidChange = Notification.Name("macparakeet.meetingHotkeyTriggerDidChange")
     static let macParakeetFileTranscriptionHotkeyTriggerDidChange = Notification.Name("macparakeet.fileTranscriptionHotkeyTriggerDidChange")
     static let macParakeetYouTubeTranscriptionHotkeyTriggerDidChange = Notification.Name("macparakeet.youtubeTranscriptionHotkeyTriggerDidChange")
+    static let macParakeetAppearanceModeDidChange = Notification.Name("macparakeet.appearanceModeDidChange")
     static let macParakeetMenuBarOnlyModeDidChange = Notification.Name("macparakeet.menuBarOnlyModeDidChange")
+    static let macParakeetMenuBarIconVisibilityDidChange = Notification.Name("macparakeet.menuBarIconVisibilityDidChange")
     static let macParakeetShowIdlePillDidChange = Notification.Name("macparakeet.showIdlePillDidChange")
+    static let macParakeetShowDiscoverDidChange = Notification.Name("macparakeet.showDiscoverDidChange")
+    static let macParakeetShowMeetingRecordingPillDidChange = Notification.Name("macparakeet.showMeetingRecordingPillDidChange")
+    static let macParakeetInstantDictationDidChange = Notification.Name("macparakeet.instantDictationDidChange")
+    static let macParakeetMicrophoneSelectionDidChange = Notification.Name("macparakeet.microphoneSelectionDidChange")
+    /// Posted when meeting audio retention changes. The app schedules one
+    /// immediate guarded sweep so auto-delete choices take effect without
+    /// waiting for a relaunch.
+    static let macParakeetMeetingAudioRetentionDidChange = Notification.Name("macparakeet.meetingAudioRetentionDidChange")
     static let macParakeetAIFormatterWarning = Notification.Name("macparakeet.aiFormatterWarning")
     /// Posted by `DictationService`/`TranscriptionService` just before the AI
     /// formatter begins running on a transcript. Observed by the dictation
@@ -29,4 +39,12 @@ public extension Notification.Name {
     /// `MeetingAutoStartCoordinator` re-reads its config and re-evaluates on
     /// the next poll tick instead of waiting for the timer.
     static let macParakeetCalendarSettingsDidChange = Notification.Name("macparakeet.calendarSettingsDidChange")
+    /// Posted when the ADR-023 activity-based meeting auto-stop setting
+    /// changes. The coordinator re-reads the opt-in toggle immediately so
+    /// disabling it tears down observers/countdowns without waiting.
+    static let macParakeetMeetingAutoStopDidChange = Notification.Name("macparakeet.meetingAutoStopDidChange")
+    /// Posted when the live transcript preview text size changes. The dictation
+    /// flow coordinator re-reads the preference and updates the on-screen
+    /// preview live, so a size change is visible mid-dictation.
+    static let macParakeetDictationPreviewTextSizeDidChange = Notification.Name("macparakeet.dictationPreviewTextSizeDidChange")
 }

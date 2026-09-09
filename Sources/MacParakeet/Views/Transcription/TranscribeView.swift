@@ -9,7 +9,8 @@ struct TranscribeView: View {
     @Bindable var promptResultsViewModel: PromptResultsViewModel
     @Bindable var promptsViewModel: PromptsViewModel
     @Bindable var meetingPillViewModel: MeetingRecordingPillViewModel
-    var meetingPermissionState: MeetingRecordingTile.PermissionState = .ready(capturesMicrophone: true)
+    @Bindable var meetingsWorkspaceViewModel: MeetingsWorkspaceViewModel
+    var meetingPermissionState: MeetingRecordingTile.PermissionState = .ready(sourceMode: .microphoneAndSystem)
     @Binding var showingProgressDetail: Bool
     var onRecordMeeting: () -> Void
     var onPauseToggleMeeting: (() -> Void)? = nil
@@ -102,6 +103,24 @@ struct TranscribeView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             onRefreshPermissions()
         }
+        .sheet(item: audioTrackSelectionBinding) { request in
+            AudioTrackSelectionSheet(
+                request: request,
+                onSelect: { viewModel.selectAudioTrack(ordinal: $0) },
+                onCancel: { viewModel.cancelAudioTrackSelection() }
+            )
+        }
+    }
+
+    private var audioTrackSelectionBinding: Binding<TranscriptionViewModel.AudioTrackSelectionRequest?> {
+        Binding(
+            get: { viewModel.pendingAudioTrackSelection },
+            set: { request in
+                if request == nil {
+                    viewModel.cancelAudioTrackSelection()
+                }
+            }
+        )
     }
 
     // MARK: - Drop Zone (Portal)
@@ -135,6 +154,7 @@ struct TranscribeView: View {
                             onPauseToggle: onPauseToggleMeeting
                         )
                         .padding(.horizontal, DesignSystem.Spacing.xl)
+
                     }
 
                     // Error banner
@@ -170,19 +190,19 @@ struct TranscribeView: View {
                 .cardShadow(DesignSystem.Shadows.cardRest)
 
             VStack(spacing: DesignSystem.Spacing.md) {
-                // YouTube icon
-                ZStack {
-                    RoundedRectangle(cornerRadius: 14)
-                        .fill(DesignSystem.Colors.youtubeRed.opacity(0.1))
-                        .frame(width: 56, height: 56)
+                // Platform orbit hero — slowly rotating constellation that blooms
+                // the matched platform to focus as a link is pasted.
+                MediaPlatformOrbitView(matched: recognizedURLPlatform)
+                    .frame(width: 118, height: 118)
+                    .accessibilityHidden(true)
 
-                    Image(systemName: "play.rectangle.fill")
-                        .font(.system(size: 24, weight: .medium))
-                        .foregroundStyle(DesignSystem.Colors.youtubeRed.opacity(0.7))
-                }
-
-                Text("Transcribe a YouTube video")
+                Text(urlCardTitle)
                     .font(DesignSystem.Typography.pageTitle)
+                    .contentTransition(.opacity)
+                    // Key on the platform enum, not the LocalizedStringKey title:
+                    // it changes in lockstep with the title but is a reliable
+                    // Equatable change-signal (LSK equality is opaque/interpolated).
+                    .animation(.easeInOut(duration: 0.2), value: recognizedURLPlatform)
 
                 // URL input row
                 HStack(spacing: DesignSystem.Spacing.sm) {
@@ -192,7 +212,7 @@ struct TranscribeView: View {
                             .foregroundStyle(viewModel.isValidURL ? DesignSystem.Colors.successGreen : .secondary)
                             .contentTransition(.symbolEffect(.replace))
 
-                        TextField("Paste a YouTube link", text: $viewModel.urlInput)
+                        TextField("Paste any video or podcast link", text: $viewModel.urlInput)
                             .textFieldStyle(.plain)
                             .font(DesignSystem.Typography.body)
                             .onSubmit {
@@ -221,7 +241,7 @@ struct TranscribeView: View {
                         .buttonStyle(.plain)
                         .help("Paste from clipboard")
                         .accessibilityLabel("Paste URL from clipboard")
-                        .accessibilityHint("Pastes clipboard text into the YouTube link field")
+                        .accessibilityHint("Pastes clipboard text into the link field")
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
@@ -255,17 +275,49 @@ struct TranscribeView: View {
                     .buttonStyle(.plain)
                     .disabled(!viewModel.isValidURL)
                     .accessibilityLabel("Start transcription")
-                    .accessibilityHint("Starts transcribing the YouTube link")
+                    .accessibilityHint("Starts transcribing the media link")
                 }
                 .padding(.horizontal, DesignSystem.Spacing.md)
 
-                Text("Downloads from YouTube, then transcribes entirely on your Mac.")
+                Text(urlCardCaption)
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, DesignSystem.Spacing.md)
+                    .animation(.easeInOut(duration: 0.2), value: urlCardCaption)
             }
             .padding(.vertical, DesignSystem.Spacing.xl)
         }
         .frame(minHeight: 220)
+    }
+
+    /// The platform recognized from the current URL draft (drives the orbit hero).
+    private var recognizedURLPlatform: MediaPlatform? {
+        MediaPlatform.recognize(viewModel.urlInput)
+    }
+
+    /// Mirrors the brand glyph and `urlCardCaption`: once a link is recognized the
+    /// heading names the platform ("Transcribe TikTok"), so logo, title, and caption
+    /// move together. Falls back to the general invitation while idle or on an
+    /// unrecognized (but still transcribable) link.
+    private var urlCardTitle: LocalizedStringKey {
+        if let platform = recognizedURLPlatform {
+            return "Transcribe \(platform.displayName)"
+        }
+        return "Transcribe YouTube & more"
+    }
+
+    /// Reactive helper copy beneath the link field: confirms a recognized link,
+    /// acknowledges any other link, or lists what's supported while idle.
+    private var urlCardCaption: String {
+        if let platform = recognizedURLPlatform {
+            let kind = platform.isAudioFirst ? "audio" : "video"
+            return "Ready to transcribe this \(platform.displayName) \(kind), on your Mac."
+        }
+        if viewModel.isValidURL {
+            return "Ready to transcribe this link, entirely on your Mac."
+        }
+        return "YouTube, X, Vimeo, TikTok, Instagram, Facebook, podcasts, and more — transcribed on your Mac."
     }
 
     // MARK: - Error Banner
@@ -282,15 +334,17 @@ struct TranscribeView: View {
                 Spacer()
                 Button {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(error, forType: .string)
+                    // Prefer the rich diagnostic (link + app version) when the
+                    // failure came from the URL lane; fall back to the headline.
+                    NSPasteboard.general.setString(viewModel.errorDetail ?? error, forType: .string)
                 } label: {
                     Image(systemName: "doc.on.doc")
                         .font(.system(size: 10, weight: .semibold))
                 }
                 .buttonStyle(.plain)
-                .help("Copy full error")
+                .help("Copy full error details")
                 Button {
-                    viewModel.errorMessage = nil
+                    viewModel.clearError()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 10, weight: .semibold))
@@ -299,7 +353,7 @@ struct TranscribeView: View {
             }
             .foregroundStyle(DesignSystem.Colors.errorRed)
 
-            Text("Click copy icon for full error. Report persistent issues via **Feedback** in the sidebar.")
+            Text("Click copy icon for full error details. Report persistent issues via **Feedback** in the sidebar.")
                 .font(DesignSystem.Typography.micro)
                 .foregroundStyle(DesignSystem.Colors.textTertiary)
         }
@@ -358,7 +412,7 @@ struct TranscribeView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Transcription In Progress")
+                        Text(viewModel.isBatchActive ? "Batch Transcription In Progress" : "Transcription In Progress")
                             .font(DesignSystem.Typography.sectionTitle)
                         if !viewModel.transcribingFileName.isEmpty {
                             Text(viewModel.transcribingFileName)
@@ -366,6 +420,11 @@ struct TranscribeView: View {
                                 .foregroundStyle(.primary.opacity(0.7))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                        }
+                        if viewModel.isBatchActive {
+                            Text(viewModel.batchStatusHeadline)
+                                .font(DesignSystem.Typography.caption.weight(.semibold))
+                                .foregroundStyle(DesignSystem.Colors.accent)
                         }
                         Text(viewModel.progressHeadline)
                             .font(DesignSystem.Typography.bodySmall)
@@ -410,22 +469,33 @@ struct TranscribeView: View {
                     }
                 }
 
-                Text("Processing remains local to this Mac. You can keep working while this runs.")
+                Text(viewModel.isBatchActive
+                    ? "Processing one file at a time on this Mac. Completed transcripts appear in your Library as they finish."
+                    : "Processing remains local to this Mac. You can keep working while this runs.")
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(.tertiary)
 
-                Button("Cancel Transcription", role: .destructive) {
+                Button(viewModel.isBatchActive ? "Cancel All" : "Cancel Transcription", role: .destructive) {
                     showCancelConfirmation = true
                 }
                 .parakeetAction(.destructive)
                 .padding(.top, DesignSystem.Spacing.sm)
-                .alert("Cancel Transcription?", isPresented: $showCancelConfirmation) {
-                    Button("Cancel Transcription", role: .destructive) {
-                        viewModel.cancelTranscription()
+                .alert(
+                    viewModel.isBatchActive ? "Cancel All Transcriptions?" : "Cancel Transcription?",
+                    isPresented: $showCancelConfirmation
+                ) {
+                    Button(viewModel.isBatchActive ? "Cancel All" : "Cancel Transcription", role: .destructive) {
+                        if viewModel.isBatchActive {
+                            viewModel.cancelBatch()
+                        } else {
+                            viewModel.cancelTranscription()
+                        }
                     }
                     Button("Continue", role: .cancel) {}
                 } message: {
-                    Text("This will stop the current transcription. Any progress will be lost.")
+                    Text(viewModel.isBatchActive
+                        ? "This stops the remaining files in the batch. Files already transcribed are kept in your Library."
+                        : "This will stop the current transcription. Any progress will be lost.")
                 }
             }
             .padding(DesignSystem.Spacing.lg)
@@ -455,6 +525,8 @@ struct TranscribeView: View {
             return "arrow.down.circle"
         case .converting:
             return "waveform.path.ecg"
+        case .preparingSpeechModel:
+            return "cpu"
         case .transcribing:
             return "waveform"
         case .identifyingSpeakers:
@@ -466,7 +538,7 @@ struct TranscribeView: View {
 
     private var pipelineSteps: [PipelineStep] {
         switch viewModel.sourceKind {
-        case .youtubeURL:
+        case .youtubeURL, .podcastURL:
             return [.download, .convert, .transcribe]
         case .localFile:
             return [.convert, .transcribe]
@@ -481,7 +553,7 @@ struct TranscribeView: View {
             return .download
         case .converting:
             return .convert
-        case .transcribing, .identifyingSpeakers, .finalizing:
+        case .preparingSpeechModel, .transcribing, .identifyingSpeakers, .finalizing:
             return .transcribe
         }
     }
@@ -570,15 +642,78 @@ struct TranscribeView: View {
 
     private func openFilePicker() {
         let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = true
+        panel.message = "Choose one or more audio/video files, or a folder, to transcribe."
         panel.allowedContentTypes = AudioFileConverter.supportedExtensions.compactMap {
             UTType(filenameExtension: $0)
         }
 
-        if panel.runModal() == .OK, let url = panel.url {
+        if panel.runModal() == .OK, !panel.urls.isEmpty {
             SoundManager.shared.play(.fileDropped)
-            viewModel.transcribeFile(url: url)
+            viewModel.transcribeFiles(urls: panel.urls)
         }
+    }
+}
+
+private struct AudioTrackSelectionSheet: View {
+    let request: TranscriptionViewModel.AudioTrackSelectionRequest
+    let onSelect: (Int) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
+            VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
+                Label("Choose an audio track", systemImage: "waveform.badge.plus")
+                    .font(DesignSystem.Typography.sectionTitle)
+                Text(request.fileName)
+                    .font(DesignSystem.Typography.bodySmall)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(
+                    request.isBatch
+                        ? "This choice will be used for multi-track files in this \(request.fileCount)-file batch."
+                        : "Only the selected track will be transcribed."
+                )
+                .font(DesignSystem.Typography.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            VStack(spacing: DesignSystem.Spacing.sm) {
+                ForEach(request.tracks) { track in
+                    Button {
+                        onSelect(track.ordinal)
+                    } label: {
+                        HStack(spacing: DesignSystem.Spacing.md) {
+                            Image(systemName: "waveform")
+                                .foregroundStyle(DesignSystem.Colors.accent)
+                            Text(track.displayName)
+                                .font(DesignSystem.Typography.body)
+                            Spacer()
+                            Image(systemName: "arrow.right")
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(DesignSystem.Spacing.md)
+                        .contentShape(Rectangle())
+                        .background(
+                            RoundedRectangle(cornerRadius: DesignSystem.Layout.rowCornerRadius)
+                                .fill(DesignSystem.Colors.surfaceElevated)
+                        )
+                    }
+                    .parakeetAction(.subtle)
+                    .accessibilityLabel("Transcribe \(track.displayName)")
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                    .parakeetAction(.secondary)
+            }
+        }
+        .padding(DesignSystem.Spacing.xl)
+        .frame(width: 440)
     }
 }

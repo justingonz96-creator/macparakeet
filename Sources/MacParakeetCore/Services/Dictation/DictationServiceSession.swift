@@ -23,10 +23,23 @@ public final class DictationServiceSession {
         get async { await service.audioLevel }
     }
 
-    public func recordingSnapshot() async -> (state: DictationState, audioLevel: Float) {
+    public var liveTranscript: String {
+        get async { await service.liveTranscript }
+    }
+
+    public func recordingSnapshot() async -> (
+        state: DictationState,
+        audioLevel: Float,
+        liveTranscript: String
+    ) {
         async let state = service.state
         async let audioLevel = service.audioLevel
-        return await (state: state, audioLevel: audioLevel)
+        async let liveTranscript = service.liveTranscript
+        return await (
+            state: state,
+            audioLevel: audioLevel,
+            liveTranscript: liveTranscript
+        )
     }
 
     public func reserveNextSessionID() -> Int {
@@ -53,11 +66,26 @@ public final class DictationServiceSession {
         await service.updateTelemetryAppCategory(appCategory, sessionID: sessionID)
     }
 
+    public func updateAIFormatterAppContext(
+        _ context: AppPromptContext?,
+        phase: AIFormatterAppContextPhase,
+        sessionID: Int
+    ) async {
+        await service.updateAIFormatterAppContext(context, phase: phase, sessionID: sessionID)
+    }
+
     public func cancelRecording(
         reason: TelemetryDictationCancelReason?,
         sessionID: Int
     ) async {
         await service.cancelRecording(reason: reason, sessionID: sessionID)
+    }
+
+    /// Discard the instant-dictation pre-roll from the named session's capture
+    /// because system media was confirmed playing at press time (issue #474).
+    /// Best-effort: stale session IDs and non-recording states are ignored.
+    public func discardPreRollForActiveCapture(sessionID: Int) async {
+        await service.discardPreRollForActiveCapture(sessionID: sessionID)
     }
 
     public func confirmCancel(sessionID: Int) async {
