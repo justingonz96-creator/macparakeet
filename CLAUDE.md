@@ -41,7 +41,7 @@ These PRs contain work that is already shipping in this fork. If they get merged
 - `enforceMinDuration` and `enforceMinGap` post-processing passes
 - `WordNumberSplitter` — fixes fused Parakeet tokens like `next30` → `next 30` in both subtitle and text pipeline paths
 - Whisper: VAD chunking (`chunkingStrategy: .vad`) and a Custom-Words glossary prompt (`WhisperEngine.makeVocabularyPrompt`, `vocabularyProvider`) — Tasks 3/4 of docs/superpowers/plans/2026-09-08-echo-accuracy-utility-upgrade.md
-- WhisperKit pin: fork stays on argmax-oss-swift 1.0.0 (upstream pins 0.18.0); do not downgrade on sync.
+- WhisperKit pin: fork stays on argmax-oss-swift 1.1.0 (upstream pins 0.18.0); do not downgrade on sync.
 - Batch captions: `scripts/echelon/caption_folder.sh <folder> [output-dir]`
 
 ---

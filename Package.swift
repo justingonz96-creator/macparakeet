@@ -42,7 +42,7 @@ let packageDependencies: [Package.Dependency] = [
     // Argmax is not Swift 6 language-mode clean yet, so CI can omit this package
     // as a target dependency for the first-party Swift 6 syntax/concurrency
     // compile check without removing its lockfile pins.
-    .package(url: "https://github.com/argmaxinc/argmax-oss-swift", exact: "1.0.0")
+    .package(url: "https://github.com/argmaxinc/argmax-oss-swift", exact: "1.1.0")
 ] + streamingMarkdownPackageDependencies + (enableMLXLocalLLM ? [
     // Opt-in only. mlx-swift-lm currently needs Swift tools 6.1 and Xcode-built
     // Metal shaders, so plain `swift build` / `swift test` / CI must not resolve it.
