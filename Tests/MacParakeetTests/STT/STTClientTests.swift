@@ -130,6 +130,18 @@ final class STTClientTests: XCTestCase {
         XCTAssertNil(WhisperEngine.makeVocabularyPrompt(terms: ["", "  "]))
     }
 
+    func testVocabularyPromptIsNilWhenNoTermFitsTheCap() {
+        // Cap smaller than the fixed prefix + "." → nothing can fit.
+        XCTAssertNil(WhisperEngine.makeVocabularyPrompt(terms: ["Echelon"], maxCharacters: 5))
+        // Cap fits the prefix but not the first term → still no terms → nil, never "Glossary: .".
+        XCTAssertNil(WhisperEngine.makeVocabularyPrompt(terms: ["Echelon"], maxCharacters: 12))
+        // Cap exactly fits "Glossary: Echelon." (18 chars) → returned intact.
+        XCTAssertEqual(WhisperEngine.makeVocabularyPrompt(terms: ["Echelon"], maxCharacters: 18), "Glossary: Echelon.")
+        // Second term does not fit → first kept, result within cap.
+        let two = WhisperEngine.makeVocabularyPrompt(terms: ["Echelon", "FitPass"], maxCharacters: 20)
+        XCTAssertEqual(two, "Glossary: Echelon.")
+    }
+
     func testWhisperDecodeOptionsCarryPromptTokens() {
         #if canImport(WhisperKit)
         let options = WhisperEngine.makeDecodingOptions(language: "en", promptTokens: [50257, 9012])

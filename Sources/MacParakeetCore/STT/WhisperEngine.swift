@@ -420,12 +420,14 @@ public actor WhisperEngine: STTTranscribing {
         }
         guard !kept.isEmpty else { return nil }
         var prompt = "Glossary: "
+        var appended = 0
         for (index, term) in kept.enumerated() {
             let piece = (index == 0 ? "" : ", ") + term
             guard prompt.count + piece.count + 1 <= maxCharacters else { break }
             prompt += piece
+            appended += 1
         }
-        return prompt + "."
+        return appended > 0 ? prompt + "." : nil
     }
 
     #if canImport(WhisperKit)
