@@ -1261,6 +1261,15 @@ separate sheet. Built-in provenance is shown on rows, without separate built-in
 and custom sections or an always-visible creation form. No search matches is a
 filter empty state, not a claim that the user has no custom prompts.
 
+The Meetings **After Each Meeting → Prompts** entry opens the same manager
+in a meeting presentation: active and deleted lists contain only transcript
+result prompts, creation is fixed to that kind, and the Transform kind picker
+is absent. It receives the same collection, version, editing and label-policy
+dependencies as the standalone manager. Collections remain shared prompt
+organization; they are distinct from recording labels and availability rules.
+Live Ask keeps its separate quick-question manager. Auto-Run help uses native
+help so it is not clipped by a row or sheet and does not intercept clicks.
+
 The editor retains Markdown source/preview, notes-context opt-in, collection
 assignment, model override, and collapsed generation settings. **Version history**
 retains version metadata, text/settings comparisons, and restore-as-new-version.
