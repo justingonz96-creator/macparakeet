@@ -169,6 +169,162 @@ final class PromptsCommandTests: XCTestCase {
         )
     }
 
+    func testCollectionsManagePromptMembershipWithoutExtraVersions() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prompt-collections-cli-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appendingPathComponent("test.db")
+        let database = try DatabaseManager(path: databaseURL.path)
+        let collectionRepository = PromptCollectionRepository(dbQueue: database.dbQueue)
+        let promptRepository = PromptRepository(dbQueue: database.dbQueue)
+        let versionRepository = PromptVersionRepository(dbQueue: database.dbQueue)
+
+        let addFirst = try PromptsCommand.CollectionsSubcommand.AddSubcommand.parse([
+            "--name", "Customer", "--json", "--database", databaseURL.path,
+        ])
+        let firstOutput = try captureStandardOutput { try addFirst.run() }
+        let firstRecord = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(firstOutput.utf8)) as? [String: Any]
+        )
+        let firstID = try XCTUnwrap(firstRecord["id"] as? String).lowercased()
+        let first = try XCTUnwrap(try collectionRepository.fetch(id: UUID(uuidString: firstID)!))
+
+        let addSecond = try PromptsCommand.CollectionsSubcommand.AddSubcommand.parse([
+            "--name", "Internal", "--json", "--database", databaseURL.path,
+        ])
+        _ = try captureStandardOutput { try addSecond.run() }
+        let second = try XCTUnwrap(
+            try collectionRepository.fetchAll().first(where: { $0.name == "Internal" })
+        )
+
+        let addPrompt = try PromptsCommand.AddSubcommand.parse([
+            "--name", "CLI collection prompt",
+            "--content", "Summarize the transcript.",
+            "--collection", first.id.uuidString,
+            "--json",
+            "--database", databaseURL.path,
+        ])
+        let promptOutput = try captureStandardOutput { try addPrompt.run() }
+        let promptRecord = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(promptOutput.utf8)) as? [String: Any]
+        )
+        let promptID = try XCTUnwrap(UUID(uuidString: try XCTUnwrap(promptRecord["id"] as? String)))
+        XCTAssertEqual(promptRecord["collectionId"] as? String, first.id.uuidString.lowercased())
+        XCTAssertEqual(promptRecord["activeVersionNumber"] as? Int, 1)
+
+        let moveAndConfigure = try PromptsCommand.SetSubcommand.parse([
+            promptID.uuidString,
+            "--collection", second.id.uuidString,
+            "--temperature", "0.3",
+            "--json",
+            "--database", databaseURL.path,
+        ])
+        let moveOutput = try captureStandardOutput { try moveAndConfigure.run() }
+        let movedRecord = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(moveOutput.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(movedRecord["collectionId"] as? String, second.id.uuidString.lowercased())
+        XCTAssertEqual(movedRecord["activeVersionNumber"] as? Int, 2)
+        XCTAssertEqual(try versionRepository.fetchAll(promptId: promptID).count, 2)
+
+        let rename = try PromptsCommand.CollectionsSubcommand.RenameSubcommand.parse([
+            first.id.uuidString,
+            "--name", "Customers",
+            "--json",
+            "--database", databaseURL.path,
+        ])
+        _ = try captureStandardOutput { try rename.run() }
+        XCTAssertEqual(try collectionRepository.fetch(id: first.id)?.name, "Customers")
+
+        let reorder = try PromptsCommand.CollectionsSubcommand.ReorderSubcommand.parse([
+            second.id.uuidString, first.id.uuidString, "--json", "--database", databaseURL.path,
+        ])
+        let reorderOutput = try captureStandardOutput { try reorder.run() }
+        let reordered = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(reorderOutput.utf8)) as? [[String: Any]]
+        )
+        XCTAssertEqual(
+            reordered.compactMap { $0["id"] as? String },
+            [
+                second.id.uuidString.lowercased(), first.id.uuidString.lowercased(),
+            ]
+        )
+
+        let delete = try PromptsCommand.CollectionsSubcommand.DeleteSubcommand.parse([
+            second.id.uuidString, "--json", "--database", databaseURL.path,
+        ])
+        let deleteOutput = try captureStandardOutput { try delete.run() }
+        let deleted = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(deleteOutput.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(deleted["deleted"] as? Bool, true)
+        XCTAssertEqual(try promptRepository.fetch(id: promptID)?.collectionId, nil)
+        XCTAssertEqual(try versionRepository.fetchAll(promptId: promptID).count, 2)
+    }
+
+    func testCollectionChangesRejectInvalidTargetsAndIncompleteOrdersWithoutWrites() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prompt-collections-invalid-cli-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appendingPathComponent("test.db")
+        let database = try DatabaseManager(path: databaseURL.path)
+        let collectionRepository = PromptCollectionRepository(dbQueue: database.dbQueue)
+        let promptRepository = PromptRepository(dbQueue: database.dbQueue)
+        let versionRepository = PromptVersionRepository(dbQueue: database.dbQueue)
+        let first = PromptCollection(name: "First", sortOrder: 0)
+        let second = PromptCollection(name: "Second", sortOrder: 1)
+        try collectionRepository.save(first)
+        try collectionRepository.save(second)
+        let prompt = try PromptEditingService(dbQueue: database.dbQueue).create(
+            Prompt(name: "Atomic membership", content: "Keep this version.", collectionId: first.id)
+        )
+
+        let invalidTarget = try PromptsCommand.SetSubcommand.parse([
+            prompt.id.uuidString,
+            "--collection", UUID().uuidString,
+            "--temperature", "0.4",
+            "--json",
+            "--database", databaseURL.path,
+        ])
+        var targetError: Error?
+        let targetOutput = try captureStandardOutput {
+            do {
+                try invalidTarget.run()
+            } catch {
+                targetError = error
+            }
+        }
+        XCTAssertEqual(CLI.normalizedExitCode(for: try XCTUnwrap(targetError)), .failure)
+        let targetFailure = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(targetOutput.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(targetFailure["errorType"] as? String, "lookup")
+        let unchanged = try XCTUnwrap(try promptRepository.fetch(id: prompt.id))
+        XCTAssertEqual(unchanged.collectionId, first.id)
+        XCTAssertNil(unchanged.inferenceSettings)
+        XCTAssertEqual(try versionRepository.fetchAll(promptId: prompt.id).count, 1)
+
+        let incompleteReorder = try PromptsCommand.CollectionsSubcommand.ReorderSubcommand.parse([
+            second.id.uuidString, "--json", "--database", databaseURL.path,
+        ])
+        var reorderError: Error?
+        let reorderOutput = try captureStandardOutput {
+            do {
+                try incompleteReorder.run()
+            } catch {
+                reorderError = error
+            }
+        }
+        XCTAssertEqual(CLI.normalizedExitCode(for: try XCTUnwrap(reorderError)).rawValue, 2)
+        let reorderFailure = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(reorderOutput.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(reorderFailure["errorType"] as? String, "validation")
+        XCTAssertEqual(try collectionRepository.fetchAll().map(\.id), [first.id, second.id])
+    }
+
     func testSetAcceptsModelAndLabelPolicies() throws {
         let model = try PromptsCommand.SetSubcommand.parse(["Prompt", "--model", "qwen-local"])
         XCTAssertEqual(model.model, "qwen-local")
@@ -190,6 +346,17 @@ final class PromptsCommandTests: XCTestCase {
             "Prompt", "--meeting-type", "Customer", "--all-meeting-types", "--available",
         ]))
         XCTAssertThrowsError(try PromptsCommand.SetSubcommand.parse(["Prompt", "--model", " "]))
+    }
+
+    func testSetRejectsSourceScopedCollectionChange() {
+        XCTAssertThrowsError(try PromptsCommand.SetSubcommand.parse([
+            "Prompt",
+            "--source", "meeting",
+            "--auto-run",
+            "--collection", UUID().uuidString,
+        ])) { error in
+            XCTAssertTrue(String(describing: error).contains("collection membership separately"))
+        }
     }
 
     func testStoredPromptRunResultUsesEffectiveSettingsReceipt() {

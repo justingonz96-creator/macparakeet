@@ -583,6 +583,66 @@ private extension CLISpecCommand {
             output: "Prompt object, or PromptVersion object with --version, when --json is used."
         ),
         CLISpecCommand(
+            ["prompts", "collections", "list"],
+            summary: "List prompt collections in display order.",
+            options: [databaseOption],
+            output: "Array of PromptCollection objects."
+        ),
+        CLISpecCommand(
+            ["prompts", "collections", "add"],
+            summary: "Add a prompt collection.",
+            readOnly: false,
+            options: [
+                CLISpecParameter.option(
+                    "--name",
+                    valueName: "NAME",
+                    required: true,
+                    summary: "Collection display name."
+                ),
+                databaseOption,
+            ],
+            output: "Saved PromptCollection object when --json is used."
+        ),
+        CLISpecCommand(
+            ["prompts", "collections", "rename"],
+            summary: "Rename a prompt collection.",
+            readOnly: false,
+            arguments: [.argument("id", summary: "Full prompt collection UUID.")],
+            options: [
+                CLISpecParameter.option(
+                    "--name",
+                    valueName: "NAME",
+                    required: true,
+                    summary: "New collection display name."
+                ),
+                databaseOption,
+            ],
+            output: "Saved PromptCollection object when --json is used."
+        ),
+        CLISpecCommand(
+            ["prompts", "collections", "delete"],
+            summary: "Delete a prompt collection and leave its prompts unfiled.",
+            readOnly: false,
+            arguments: [.argument("id", summary: "Full prompt collection UUID.")],
+            options: [databaseOption],
+            output: "Deletion result with collection ID and name when --json is used."
+        ),
+        CLISpecCommand(
+            ["prompts", "collections", "reorder"],
+            summary: "Replace the complete prompt collection display order.",
+            readOnly: false,
+            arguments: [
+                .argument(
+                    "ids",
+                    required: false,
+                    summary:
+                        "Full collection UUIDs in final order. Include every current collection exactly once; pass none only when there are no collections."
+                )
+            ],
+            options: [databaseOption],
+            output: "PromptCollection objects in saved display order when --json is used."
+        ),
+        CLISpecCommand(
             ["prompts", "history"],
             summary: "List immutable versions for one prompt.",
             arguments: [.argument("prompt", summary: "Prompt ID, UUID prefix, or exact name.")],
@@ -616,15 +676,15 @@ private extension CLISpecCommand {
             ["prompts", "add"],
             summary: "Add a custom result prompt.",
             readOnly: false,
-            jsonMode: "none",
             options: [
                 CLISpecParameter.option("--name", valueName: "NAME", required: true, summary: "Prompt display name."),
                 CLISpecParameter.option("--content", valueName: "TEXT", summary: "Prompt body text."),
                 CLISpecParameter.option("--from-file", valueName: "PATH", summary: "Read prompt body from a file."),
                 CLISpecParameter.flag("--auto-run", summary: "Mark as auto-run for completed transcriptions."),
+                CLISpecParameter.option("--collection", valueName: "UUID", summary: "Assign to a prompt collection."),
                 databaseOption,
             ],
-            output: "Human-readable add confirmation."
+            output: "Saved Prompt object when --json is used."
         ),
         CLISpecCommand(
             ["prompts", "set"],
@@ -655,6 +715,8 @@ private extension CLISpecCommand {
                 CLISpecParameter.option("--thinking-mode", valueName: "MODE", summary: "Set versioned thinking mode."),
                 CLISpecParameter.option("--reasoning-effort", valueName: "LEVEL", summary: "Set versioned reasoning effort."),
                 CLISpecParameter.flag("--provider-default-settings", summary: "Clear all versioned inference overrides."),
+                CLISpecParameter.option("--collection", valueName: "UUID", summary: "Assign to a prompt collection without creating a version by itself."),
+                CLISpecParameter.flag("--no-collection", summary: "Remove collection membership without creating a version by itself."),
                 CLISpecParameter.option("--label", valueName: "LABEL", summary: "Target one label availability rule across transcription sources."),
                 CLISpecParameter.flag("--all-labels", summary: "Target the fallback when no explicit label rule matches."),
                 CLISpecParameter.flag("--available", summary: "Make the targeted policy manually available."),

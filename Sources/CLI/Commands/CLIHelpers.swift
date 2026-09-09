@@ -440,6 +440,14 @@ enum CLIErrorType {
             }
         }
         if error is MeetingClassificationRepositoryError { return validation }
+        if let collection = error as? PromptCollectionRepositoryError {
+            switch collection {
+            case .collectionNotFound:
+                return lookup
+            case .emptyName, .duplicateName, .invalidOrder:
+                return validation
+            }
+        }
         if error is CLILookupError { return lookup }
         if let input = error as? CLIInputError {
             switch input {
@@ -616,6 +624,14 @@ func isCLIValidationMisuse(_ error: Error) -> Bool {
     }
     if error is MeetingClassificationRepositoryError {
         return true
+    }
+    if let collection = error as? PromptCollectionRepositoryError {
+        switch collection {
+        case .emptyName, .duplicateName, .invalidOrder:
+            return true
+        case .collectionNotFound:
+            return false
+        }
     }
     if let transforms = error as? CLITransformsError, transforms.isValidationMisuse {
         return true

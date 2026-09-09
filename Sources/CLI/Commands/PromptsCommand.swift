@@ -28,6 +28,7 @@ struct PromptsCommand: AsyncParsableCommand {
         abstract: "Manage the prompt library and run prompts against transcriptions.",
         subcommands: [
             ListSubcommand.self,
+            CollectionsSubcommand.self,
             ShowSubcommand.self,
             HistorySubcommand.self,
             DiffSubcommand.self,
@@ -46,6 +47,188 @@ struct PromptsCommand: AsyncParsableCommand {
 // MARK: - List
 
 extension PromptsCommand {
+    struct CollectionsSubcommand: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "collections",
+            abstract: "Organize prompts into collections.",
+            subcommands: [
+                ListSubcommand.self,
+                AddSubcommand.self,
+                RenameSubcommand.self,
+                DeleteSubcommand.self,
+                ReorderSubcommand.self,
+            ],
+            defaultSubcommand: ListSubcommand.self
+        )
+
+        struct ListSubcommand: ParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "list",
+                abstract: "List prompt collections in display order."
+            )
+
+            @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
+            var json = false
+
+            @Option(help: "Path to SQLite database file (defaults to the app database).")
+            var database: String?
+
+            func run() throws {
+                try emitJSONOrRethrow(json: json) {
+                    let collections = try promptCollectionRepository(database: database).fetchAll()
+                    if json {
+                        try printJSON(collections)
+                    } else if collections.isEmpty {
+                        print("No prompt collections.")
+                    } else {
+                        for collection in collections {
+                            print("\(collection.id.uuidString)  \(collection.name)")
+                        }
+                    }
+                }
+            }
+        }
+
+        struct AddSubcommand: ParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "add",
+                abstract: "Add a prompt collection."
+            )
+
+            @Option(name: .long, help: "Collection display name (must be unique).")
+            var name: String
+
+            @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
+            var json = false
+
+            @Option(help: "Path to SQLite database file (defaults to the app database).")
+            var database: String?
+
+            func validate() throws {
+                if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    throw ValidationError("--name must not be empty")
+                }
+            }
+
+            func run() throws {
+                try emitJSONOrRethrow(json: json) {
+                    let repository = try promptCollectionRepository(database: database)
+                    let collection = PromptCollection(
+                        name: name,
+                        sortOrder: (try repository.fetchAll().map(\.sortOrder).max() ?? -1) + 1
+                    )
+                    try repository.save(collection)
+                    let saved = try requirePromptCollection(id: collection.id, repository: repository)
+                    if json {
+                        try printJSON(saved)
+                    } else {
+                        print("Added prompt collection '\(saved.name)' (\(saved.id.uuidString))")
+                    }
+                }
+            }
+        }
+
+        struct RenameSubcommand: ParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "rename",
+                abstract: "Rename a prompt collection."
+            )
+
+            @Argument(help: "Full prompt collection UUID.")
+            var id: UUID
+
+            @Option(name: .long, help: "New collection display name (must be unique).")
+            var name: String
+
+            @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
+            var json = false
+
+            @Option(help: "Path to SQLite database file (defaults to the app database).")
+            var database: String?
+
+            func validate() throws {
+                if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    throw ValidationError("--name must not be empty")
+                }
+            }
+
+            func run() throws {
+                try emitJSONOrRethrow(json: json) {
+                    let repository = try promptCollectionRepository(database: database)
+                    var collection = try requirePromptCollection(id: id, repository: repository)
+                    collection.name = name
+                    try repository.save(collection)
+                    let saved = try requirePromptCollection(id: id, repository: repository)
+                    if json {
+                        try printJSON(saved)
+                    } else {
+                        print("Renamed prompt collection '\(saved.name)'.")
+                    }
+                }
+            }
+        }
+
+        struct DeleteSubcommand: ParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "delete",
+                abstract: "Delete a prompt collection and unfile its prompts."
+            )
+
+            @Argument(help: "Full prompt collection UUID.")
+            var id: UUID
+
+            @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
+            var json = false
+
+            @Option(help: "Path to SQLite database file (defaults to the app database).")
+            var database: String?
+
+            func run() throws {
+                try emitJSONOrRethrow(json: json) {
+                    let repository = try promptCollectionRepository(database: database)
+                    let collection = try requirePromptCollection(id: id, repository: repository)
+                    guard try repository.delete(id: id) else {
+                        throw PromptCollectionRepositoryError.collectionNotFound(id)
+                    }
+                    if json {
+                        try printJSON(PromptCollectionDeleteResult(id: id, name: collection.name))
+                    } else {
+                        print("Deleted prompt collection '\(collection.name)'; prompts are now unfiled.")
+                    }
+                }
+            }
+        }
+
+        struct ReorderSubcommand: ParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "reorder",
+                abstract: "Replace the complete prompt collection display order."
+            )
+
+            @Argument(help: "Complete ordered list of prompt collection UUIDs.")
+            var ids: [UUID] = []
+
+            @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
+            var json = false
+
+            @Option(help: "Path to SQLite database file (defaults to the app database).")
+            var database: String?
+
+            func run() throws {
+                try emitJSONOrRethrow(json: json) {
+                    let repository = try promptCollectionRepository(database: database)
+                    try repository.reorder(ids: ids)
+                    let collections = try repository.fetchAll()
+                    if json {
+                        try printJSON(collections)
+                    } else {
+                        print("Reordered \(collections.count) prompt collection(s).")
+                    }
+                }
+            }
+        }
+    }
+
     struct ListSubcommand: ParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "list",
@@ -293,6 +476,12 @@ extension PromptsCommand {
         @Flag(name: .long, help: "Mark as auto-run (implies visible).")
         var autoRun: Bool = false
 
+        @Option(name: .long, help: "Assign the new prompt to this full collection UUID.")
+        var collection: UUID?
+
+        @Flag(name: .long, help: "Emit JSON instead of human-readable output.")
+        var json = false
+
         @Option(help: "Path to SQLite database file (defaults to the app database).")
         var database: String?
 
@@ -306,32 +495,45 @@ extension PromptsCommand {
         }
 
         func run() throws {
-            try AppPaths.ensureDirectories()
-            let db = try DatabaseManager(path: resolvedDatabasePath(database))
-            let repo = PromptRepository(dbQueue: db.dbQueue)
+            try emitJSONOrRethrow(json: json) {
+                let db = try makeDatabaseManager(database: database)
+                if let collection {
+                    _ = try requirePromptCollection(
+                        id: collection,
+                        repository: PromptCollectionRepository(dbQueue: db.dbQueue)
+                    )
+                }
 
-            // Body precedence: --content > --from-file > stdin (for piped workflows
-            // like `cat prompt.md | macparakeet-cli prompts add --name X`).
-            let body: String
-            if let content {
-                body = content
-            } else if let fromFile {
-                body = try String(contentsOfFile: expandTilde(fromFile), encoding: .utf8)
-            } else {
-                body = readStdinUTF8()
-            }
-            guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw ValidationError("prompt body is empty (provide --content, --from-file, or pipe via stdin)")
-            }
+                // Body precedence: --content > --from-file > stdin (for piped workflows
+                // like `cat prompt.md | macparakeet-cli prompts add --name X`).
+                let body: String
+                if let content {
+                    body = content
+                } else if let fromFile {
+                    body = try String(contentsOfFile: expandTilde(fromFile), encoding: .utf8)
+                } else {
+                    body = readStdinUTF8()
+                }
+                guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw ValidationError("prompt body is empty (provide --content, --from-file, or pipe via stdin)")
+                }
 
-            let prompt = Prompt(
-                name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-                content: body,
-                isVisible: true,
-                isAutoRun: autoRun
-            )
-            try repo.save(prompt)
-            print("Added prompt '\(prompt.name)' (\(prompt.id.uuidString.prefix(8)))")
+                let prompt = Prompt(
+                    name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                    content: body,
+                    isVisible: true,
+                    isAutoRun: autoRun,
+                    collectionId: collection
+                )
+                let repo = PromptRepository(dbQueue: db.dbQueue)
+                try repo.save(prompt)
+                let saved = try repo.fetch(id: prompt.id) ?? prompt
+                if json {
+                    try printJSON(try promptCLIRecord(saved, db: db))
+                } else {
+                    print("Added prompt '\(saved.name)' (\(saved.id.uuidString.prefix(8)))")
+                }
+            }
         }
 
         private func readStdinUTF8() -> String {
@@ -405,6 +607,12 @@ extension PromptsCommand {
         @Flag(name: .long, help: "Clear all per-prompt inference settings; creates a version when changed.")
         var providerDefaultSettings = false
 
+        @Option(name: .long, help: "Assign the prompt to this full collection UUID.")
+        var collection: UUID?
+
+        @Flag(name: .long, help: "Remove the prompt from its collection.")
+        var noCollection = false
+
         @Option(name: .long, help: "Obsolete; use --label to configure active label availability.")
         var meetingType: String?
 
@@ -450,6 +658,9 @@ extension PromptsCommand {
             if providerDefaultSettings && hasInferenceOptions {
                 throw ValidationError("--provider-default-settings cannot be combined with inference overrides")
             }
+            if collection != nil && noCollection {
+                throw ValidationError("--collection and --no-collection are mutually exclusive")
+            }
             if let thinkingMode,
                 PromptInferenceSettings.ThinkingMode(rawValue: thinkingMode) == nil
             {
@@ -490,7 +701,7 @@ extension PromptsCommand {
             if hasPolicyTarget {
                 if visible || hidden || source != nil || autoRun || noAutoRun || model != nil || activeModel
                     || hasInferenceOptions || providerDefaultSettings
-                    || includeMeetingNotes || noIncludeMeetingNotes
+                    || includeMeetingNotes || noIncludeMeetingNotes || collection != nil || noCollection
                 {
                     throw ValidationError("label availability must be configured separately from prompt settings and source auto-run")
                 }
@@ -505,8 +716,10 @@ extension PromptsCommand {
                 throw ValidationError("--hidden and --auto-run cannot be combined (auto-run requires visible)")
             }
             if source != nil {
-                if visible || hidden {
-                    throw ValidationError("--source can only be combined with --auto-run or --no-auto-run")
+                if visible || hidden || collection != nil || noCollection {
+                    throw ValidationError(
+                        "--source can only be combined with --auto-run or --no-auto-run; update collection membership separately"
+                    )
                 }
                 if !(autoRun || noAutoRun) {
                     throw ValidationError("--source requires --auto-run or --no-auto-run")
@@ -514,7 +727,7 @@ extension PromptsCommand {
             }
             if !(visible || hidden || autoRun || noAutoRun || model != nil || activeModel
                 || hasInferenceOptions || providerDefaultSettings || hasPolicyTarget
-                || includeMeetingNotes || noIncludeMeetingNotes)
+                || includeMeetingNotes || noIncludeMeetingNotes || collection != nil || noCollection)
             {
                 throw ValidationError("specify at least one setting to change")
             }
@@ -546,6 +759,13 @@ extension PromptsCommand {
                 try AppPaths.ensureDirectories()
                 let db = try DatabaseManager(path: resolvedDatabasePath(database))
                 let repo = PromptRepository(dbQueue: db.dbQueue)
+                let collectionChangeSpecified = collection != nil || noCollection
+                let targetCollection = try collection.map {
+                    try requirePromptCollection(
+                        id: $0,
+                        repository: PromptCollectionRepository(dbQueue: db.dbQueue)
+                    )
+                }
 
                 let meetingNotesFlagSpecified = includeMeetingNotes || noIncludeMeetingNotes
                 var prompt: Prompt
@@ -611,23 +831,31 @@ extension PromptsCommand {
                     }
                     prompt.inferenceSettings = try settings.validated()
                 }
+                if let targetCollection {
+                    prompt.collectionId = targetCollection.id
+                } else if noCollection {
+                    prompt.collectionId = nil
+                }
 
                 if let source {
                     let desiredModelOverride = prompt.modelOverride
                     let desiredInferenceSettings = prompt.inferenceSettings
+                    let desiredCollectionID = prompt.collectionId
                     try repo.setAutoRun(id: prompt.id, source: source.sourceType, enabled: autoRun)
                     prompt = try repo.fetch(id: prompt.id) ?? prompt
                     if prompt.modelOverride != desiredModelOverride
                         || prompt.inferenceSettings != desiredInferenceSettings
+                        || prompt.collectionId != desiredCollectionID
                     {
                         prompt.modelOverride = desiredModelOverride
                         prompt.inferenceSettings = desiredInferenceSettings
+                        prompt.collectionId = desiredCollectionID
                         prompt.updatedAt = Date()
                         prompt = try PromptEditingService(dbQueue: db.dbQueue).save(prompt)
                     }
                 } else if visible || hidden || autoRun || noAutoRun || model != nil || activeModel
                     || providerDefaultSettings || temperature != nil || topP != nil || topK != nil
-                    || maxTokens != nil || thinkingMode != nil || reasoningEffort != nil
+                    || maxTokens != nil || thinkingMode != nil || reasoningEffort != nil || collectionChangeSpecified
                 {
                     Self.applyFlags(
                         to: &prompt,
@@ -977,6 +1205,27 @@ func refreshMeetingArtifacts(
 }
 
 // MARK: - Helpers
+
+private func promptCollectionRepository(database: String?) throws -> PromptCollectionRepository {
+    let db = try makeDatabaseManager(database: database)
+    return PromptCollectionRepository(dbQueue: db.dbQueue)
+}
+
+private func requirePromptCollection(
+    id: UUID,
+    repository: PromptCollectionRepository
+) throws -> PromptCollection {
+    guard let collection = try repository.fetch(id: id) else {
+        throw PromptCollectionRepositoryError.collectionNotFound(id)
+    }
+    return collection
+}
+
+private struct PromptCollectionDeleteResult: Encodable {
+    let deleted = true
+    let id: UUID
+    let name: String
+}
 
 private func renderBadges(_ p: Prompt) -> String {
     var badges: [String] = []

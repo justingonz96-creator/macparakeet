@@ -2,6 +2,41 @@ import XCTest
 @testable import CLI
 
 final class SpecCommandTests: XCTestCase {
+
+    func testSpecDocumentsPromptCollectionCommandsAndMembership() throws {
+        let payload = try specPayload()
+        let commands = try XCTUnwrap(payload["commands"] as? [[String: Any]])
+
+        for path in [
+            ["prompts", "collections", "list"],
+            ["prompts", "collections", "add"],
+            ["prompts", "collections", "rename"],
+            ["prompts", "collections", "delete"],
+            ["prompts", "collections", "reorder"],
+        ] {
+            XCTAssertNotNil(commands.first { ($0["path"] as? [String]) == path })
+        }
+
+        let reorder = try XCTUnwrap(
+            commands.first { ($0["path"] as? [String]) == ["prompts", "collections", "reorder"] }
+        )
+        let reorderArguments = try XCTUnwrap(reorder["arguments"] as? [[String: Any]])
+        let ids = try XCTUnwrap(reorderArguments.first)
+        XCTAssertEqual(ids["name"] as? String, "ids")
+        XCTAssertEqual(ids["required"] as? Bool, false)
+        XCTAssertTrue((ids["summary"] as? String)?.contains("exactly once") == true)
+
+        let add = try XCTUnwrap(commands.first { ($0["path"] as? [String]) == ["prompts", "add"] })
+        let addOptions = try XCTUnwrap(add["options"] as? [[String: Any]])
+        XCTAssertTrue(addOptions.contains { ($0["name"] as? String) == "--collection" })
+        XCTAssertEqual(add["jsonMode"] as? String, "--json")
+
+        let set = try XCTUnwrap(commands.first { ($0["path"] as? [String]) == ["prompts", "set"] })
+        let setOptions = try XCTUnwrap(set["options"] as? [[String: Any]])
+        XCTAssertTrue(setOptions.contains { ($0["name"] as? String) == "--collection" })
+        XCTAssertTrue(setOptions.contains { ($0["name"] as? String) == "--no-collection" })
+    }
+
     func testSpecCommandIsRegisteredAtTopLevel() {
         XCTAssertTrue(
             CLI.configuration.subcommands.contains { $0 == SpecCommand.self },

@@ -89,6 +89,18 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ## [Unreleased]
 
+### Added
+
+- `prompts collections list|add|rename|delete|reorder` manages the same local
+  prompt collections as the app. Collection mutations use full UUIDs, JSON
+  returns saved collection records, deletion unfiles prompts without deleting
+  their histories, and reorder accepts the complete current UUID order.
+- `prompts add --collection UUID` and `prompts set --collection UUID` /
+  `--no-collection` assign or clear prompt organization. Collection-only
+  changes do not create a prompt version; combined versioned settings commit
+  membership alongside one new version atomically. `prompts add --json` now
+  returns the saved prompt record.
+
 ## [4.0.0] — 2026-09-07
 
 ### Added

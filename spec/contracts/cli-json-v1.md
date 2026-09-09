@@ -92,8 +92,8 @@ with human progress/status kept off stdout.
   (`is_built_in`, `created_at`), which predates this convention; its keys are
   frozen for v1 and would only change at a major boundary. New commands use
   camelCase.
-- `prompts list/show --json` prompt objects, and prompt objects returned by
-  `prompts set --json`, include additive optional `inferenceSettings`. When
+- `prompts add/list/show/set --json` prompt objects include additive optional
+  `inferenceSettings`. When
   present it is an object with optional `temperature`, `topP`, `topK`, and
   `maxTokens`, plus `thinkingMode` (`providerDefault`, `enabled`,
   or `disabled`) and optional `reasoningEffort` (`low`, `medium`, `high`, or
@@ -120,6 +120,19 @@ with human progress/status kept off stdout.
   affected prompt object; restore creates a new version and never rewrites an
   old one. The new version's `createdAt` and the prompt's `updatedAt` record
   the restoration time.
+- `prompts collections list|reorder --json` returns arrays of collection
+  objects; `add|rename --json` returns one collection object. Collection objects
+  have `id`, `name`, optional `colorToken`, `sortOrder`, `createdAt`, and
+  `updatedAt`. Collection UUIDs are full UUIDs on mutation commands.
+  `reorder` accepts the complete, unique ordered UUID list and rejects a stale
+  or incomplete list without changing the saved order. `delete --json` returns
+  `{ "deleted": true, "id", "name" }`; it makes affected prompts unfiled and
+  never deletes a prompt or its version history. `prompts add --collection ID`
+  and `prompts set --collection ID|--no-collection` set organization metadata.
+  Collection-only updates do not create prompt versions; a combined versioned
+  settings update commits membership alongside one new settings version
+  atomically. `--collection` and `--no-collection` are rejected with a
+  source-scoped auto-run update; make those two updates separately.
 - `prompts set --label LABEL --available|--unavailable` updates one active
   label rule. `--all-labels` updates only the fallback for transcriptions with
   no matching explicit label rule, across all sources; it preserves label
@@ -150,8 +163,9 @@ with human progress/status kept off stdout.
   upstream-provider defaults. `llm summarize --json` uses the same generation
   path and may report its resolved baseline settings without loading a saved
   prompt. Chat and Transform commands omit this receipt.
-  The CLI runs settings saved through the prompt editor; `prompts add/set`
-  expose no inference-setting flags. Results do not include requested-settings
+  `prompts set` can create or clear versioned model and inference overrides with
+  `--model|--active-model`, sampling, thinking, and
+  `--provider-default-settings` flags. Results do not include requested-settings
   snapshots or unsupported-field metadata. Transform execution also applies saved version settings, but its command
   output does not expose the prompt-result effective-settings receipt. Invalid numeric settings fail before persistence or generation.
   Optional usage totals are derived from two reported component counts only
@@ -240,12 +254,12 @@ with human progress/status kept off stdout.
   object with `ok: true` plus affected IDs, counts, or model/cache names. Use
   `macparakeet-cli spec --json` for each command's documented JSON mode and
   output summary.
-- Prompt and meeting-classification command names and option shapes are
+- Prompt collection, prompt, and meeting-classification command names and option shapes are
   additive v1 surface: `prompts history`, version-aware `prompts show`,
   `prompts diff`, `prompts restore`, `prompts delete`, `prompts
-  restore-deleted`, `meetings types`, `meetings labels`, `meetings classify`,
-  and meeting list classification filters. Classification names and prompt
-  content are local user data and never become telemetry dimensions.
+  restore-deleted`, `prompts collections`, `meetings types`, `meetings labels`,
+  `meetings classify`, and meeting list classification filters. Classification
+  names and prompt content are local user data and never become telemetry dimensions.
 
 ## Failure Envelope
 
