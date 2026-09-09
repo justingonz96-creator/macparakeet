@@ -195,6 +195,11 @@ public struct SubtitleExportConfig: Sendable, Equatable, Codable {
     /// Echelon class captions: 29.97 fps video, two 65-char lines, held ~1 s
     /// after the last word so cues do not flicker between shouted cues.
     /// Values copied from the production Echo install on 2026-09-08.
+    ///
+    /// AI cue refinement (`useLLMRefinement`) runs in the app and in
+    /// `macparakeet-cli export`; `transcribe --format srt|vtt` and
+    /// `scripts/echelon/caption_folder.sh` produce deterministic cue layout
+    /// without it.
     public static let echelon = SubtitleExportConfig(
         maxWordsPerCue: 12, maxCharsPerLine: 65, maxLinesPerCue: 2, maxDurationMs: 4000,
         gapThresholdMs: 0, breakOnPunctuation: true, minWordsBeforePunctuationBreak: 4,

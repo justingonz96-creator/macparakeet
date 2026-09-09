@@ -136,6 +136,7 @@ struct ExportOptionsPopoverView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .help("29.97 fps, two 65-character lines, 1 s hold, AI refinement on")
+                .disabled(!hasAlignedTimestampsForExport)
 
                 Divider()
                 SubtitleConfigSection(config: $transcriptExportOptions.subtitleConfig)

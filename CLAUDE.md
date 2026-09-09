@@ -37,7 +37,7 @@ git push origin main
 These PRs contain work that is already shipping in this fork. If they get merged upstream, the next sync will be a clean no-op for those files.
 
 **Custom features in this fork (relative to upstream `main`):**
-- `SubtitleExportConfig.echelon` preset (29.97 fps, 65×2, 1 s hold, AI refinement) + "Apply Echelon preset" button in the export popover + `--subtitle-preset default|echelon` on CLI export/transcribe
+- `SubtitleExportConfig.echelon` preset (29.97 fps, 65×2, 1 s hold, AI refinement) + "Apply Echelon preset" button in the export popover + `--subtitle-preset default|echelon` on CLI export/transcribe. AI cue refinement (`useLLMRefinement`) runs in the app and in `macparakeet-cli export`; `transcribe --format srt|vtt` and `scripts/echelon/caption_folder.sh` produce deterministic cue layout without it.
 - `enforceMinDuration` and `enforceMinGap` post-processing passes
 - `WordNumberSplitter` — fixes fused Parakeet tokens like `next30` → `next 30` in both subtitle and text pipeline paths
 - Whisper: VAD chunking (`chunkingStrategy: .vad`) and a Custom-Words glossary prompt (`WhisperEngine.makeVocabularyPrompt`, `vocabularyProvider`) — Tasks 3/4 of docs/superpowers/plans/2026-09-08-echo-accuracy-utility-upgrade.md

@@ -47,6 +47,26 @@ final class ExportCommandTests: XCTestCase {
         XCTAssertNil(command.subtitleConfig.snapToFrameRate)
     }
 
+    func testSubtitlePresetEchelonKeepsLLMRefinementWithoutTheFlag() throws {
+        let command = try ExportCommand.parse([
+            "abcd",
+            "--format", "srt",
+            "--subtitle-preset", "echelon",
+        ])
+
+        XCTAssertTrue(command.subtitleConfig.useLLMRefinement)
+    }
+
+    func testSubtitlePresetDefaultLeavesLLMRefinementOffWithoutTheFlag() throws {
+        let command = try ExportCommand.parse([
+            "abcd",
+            "--format", "srt",
+            "--subtitle-preset", "default",
+        ])
+
+        XCTAssertFalse(command.subtitleConfig.useLLMRefinement)
+    }
+
     func testResolveOutputURLExpandsTilde() throws {
         let command = try ExportCommand.parse([
             "abcd",

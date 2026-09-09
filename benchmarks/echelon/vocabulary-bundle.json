@@ -89,18 +89,6 @@
       "createdAt": null
     },
     {
-      "word": "cadence",
-      "replacement": null,
-      "isEnabled": true,
-      "createdAt": null
-    },
-    {
-      "word": "resistance",
-      "replacement": null,
-      "isEnabled": true,
-      "createdAt": null
-    },
-    {
       "word": "RPM",
       "replacement": null,
       "isEnabled": true,
@@ -108,30 +96,6 @@
     },
     {
       "word": "FTP",
-      "replacement": null,
-      "isEnabled": true,
-      "createdAt": null
-    },
-    {
-      "word": "watts",
-      "replacement": null,
-      "isEnabled": true,
-      "createdAt": null
-    },
-    {
-      "word": "leaderboard",
-      "replacement": null,
-      "isEnabled": true,
-      "createdAt": null
-    },
-    {
-      "word": "warm-up",
-      "replacement": null,
-      "isEnabled": true,
-      "createdAt": null
-    },
-    {
-      "word": "cool-down",
       "replacement": null,
       "isEnabled": true,
       "createdAt": null

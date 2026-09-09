@@ -23,8 +23,8 @@ enum ExportFormat: String, ExpressibleByArgument, CaseIterable {
 }
 
 /// Named `SubtitleExportConfig` starting points for the `--subtitle-preset`
-/// flag on `export` and `transcribe`. There is no preset picker in the GUI
-/// (see `SubtitleExportConfig.echelon`'s doc comment) — this is CLI-only.
+/// flag on `export` and `transcribe`. No GUI picker: the app applies the
+/// preset via the "Apply Echelon preset" button in the export popover.
 enum SubtitlePreset: String, ExpressibleByArgument, CaseIterable {
     case `default`
     case echelon
@@ -73,7 +73,7 @@ struct ExportCommand: AsyncParsableCommand {
     var subtitleConfig: SubtitleExportConfig {
         var c = subtitlePreset.config
         c.normalizeNumbers = normalizeNumbers
-        c.useLLMRefinement = llmRefinement
+        c.useLLMRefinement = llmRefinement || subtitlePreset.config.useLLMRefinement
         return c
     }
 
@@ -166,7 +166,7 @@ struct ExportCommand: AsyncParsableCommand {
                 options: Self.textExportOptions
             )
         case .srt:
-            if llmRefinement {
+            if subtitleConfig.useLLMRefinement {
                 let llmService = buildLLMServiceFromGUIDefaults()
                 try await exportService.exportToSRT(
                     transcription: projection.effectiveTranscription,
@@ -183,7 +183,7 @@ struct ExportCommand: AsyncParsableCommand {
                 )
             }
         case .vtt:
-            if llmRefinement {
+            if subtitleConfig.useLLMRefinement {
                 let llmService = buildLLMServiceFromGUIDefaults()
                 try await exportService.exportToVTT(
                     transcription: projection.effectiveTranscription,

@@ -12,13 +12,7 @@ EX-5
 EX-8
 EX-Pro
 Smart Connect
-cadence
-resistance
 RPM
 FTP
-watts
-leaderboard
-warm-up
-cool-down
 Marc
 Maribel
