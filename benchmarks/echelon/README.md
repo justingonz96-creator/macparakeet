@@ -53,3 +53,7 @@ Paired significance (`paired_delta.py`, 2000-sample bootstrap):
 timestamps, and is statistically significantly better than parakeet-v3; it is not distinguishable
 from whisper-en by the paired test but is nominally faster and already the app's other Parakeet
 build. Cohere is excluded from the decision (it is the reference and has no word timestamps).
+
+## Echelon vocabulary
+
+Two files seed the app's custom vocabulary: `vocabulary.txt` (one term per line) and `vocabulary-bundle.json` (JSON bundle format). Import with `.build/release/macparakeet-cli vocab import --input benchmarks/echelon/vocabulary-bundle.json` (default `--policy skip` merges without replacing existing words). Terms include brand/product names (Echelon, FitPass, Reflect, Connect, Stride, Row, United, EX-3/5/8/Pro, Smart Connect) and class-specific vocabulary (cadence, resistance, RPM, FTP, watts, leaderboard, warm-up, cool-down) plus two instructor first names (Marc, Maribel). Recognition-time boosting (Settings → Vocabulary → Recognition boosting) only applies to Parakeet v2/v3; on Parakeet Unified (Echo's default) these words act as post-transcription corrections, and on Whisper they feed the glossary prompt. Add instructor names and class cues as you meet them.

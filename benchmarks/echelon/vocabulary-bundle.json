@@ -1,0 +1,153 @@
+{
+  "schema": "macparakeet.vocabulary",
+  "version": 1,
+  "exportedAt": "2026-09-09T06:02:09.224182Z",
+  "appVersion": "0.6.7-dev",
+  "customWords": [
+    {
+      "word": "Echelon",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "Echelon Fit",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "Echelon Fitness",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "FitPass",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "Echelon Reflect",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "Echelon Connect",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "Echelon Stride",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "Echelon Row",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "Echelon United",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "EX-3",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "EX-5",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "EX-8",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "EX-Pro",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "Smart Connect",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "cadence",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "resistance",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "RPM",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "FTP",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "watts",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "leaderboard",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "warm-up",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "cool-down",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "Marc",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    },
+    {
+      "word": "Maribel",
+      "replacement": null,
+      "isEnabled": true,
+      "createdAt": null
+    }
+  ],
+  "textSnippets": []
+}
