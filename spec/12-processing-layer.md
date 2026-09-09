@@ -236,8 +236,11 @@ not mutate work already queued. A completed `PromptResult` stores the
 provider/model-filtered effective settings actually sent. Retry reuses its
 queue snapshot, while regenerate reuses the selected result's stored settings
 receipt. The queue captures the selected model; execution resolves the current provider. Requested settings and unsupported-field metadata
-are not persisted on results. The CLI reads, preserves, and runs saved settings
-but adds no inference-setting configuration flags. Transform execution also uses saved settings. Repository writes and
+are not persisted on results. The CLI reads, preserves, and runs saved settings;
+`prompts set` configures or clears overrides through the same immutable-version
+editing service. Collection membership is mutable organization metadata and
+can be managed through `prompts collections` and prompt collection flags
+without creating a version. Transform execution also uses saved settings. Repository writes and
 execution independently reject invalid numeric values. Blank settings inherit
 the current MacParakeet prompt-result and adapter defaults. See
 [spec/14-per-prompt-inference-settings.md](14-per-prompt-inference-settings.md).

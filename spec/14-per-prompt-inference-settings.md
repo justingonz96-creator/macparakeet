@@ -80,9 +80,13 @@ Built-in provenance does not restrict these controls. Built-in and user-created
 prompts use the same validation, version creation, reset, and execution paths.
 Clearing every override means inherit MacParakeet defaults.
 
-Settings are configured in the prompt editor. The CLI preserves and
-displays saved settings and applies them through `prompts run`; `prompts add`
-and `prompts set` have no inference-setting flags. Transform configuration and execution use the same version-owned settings.
+Settings can be configured in the prompt editor or through `prompts set`.
+The CLI exposes model, sampling, token-limit, thinking-mode and reasoning-effort
+overrides, plus `--active-model` and `--provider-default-settings` resets.
+Changed settings create an immutable version; omitted settings are preserved.
+`prompts run` applies the saved settings. Transform configuration and execution
+use the same version-owned settings. See the [CLI contract](contracts/cli-json-v1.md)
+and [agent guide](../integrations/README.md) for exact flags and examples.
 
 ### Generation popover
 
