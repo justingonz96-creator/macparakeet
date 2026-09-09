@@ -321,6 +321,24 @@ final class MeetingsWorkspaceViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.meetingAutoNoteActiveCount, 1)
     }
 
+    func testConfigureWiresPromptCollectionsForMeetingManager() throws {
+        let manager = try DatabaseManager()
+        let promptRepo = MockPromptRepository()
+        let viewModel = makeViewModel()
+
+        viewModel.configure(
+            transcriptionRepo: MockTranscriptionRepository(),
+            promptRepo: promptRepo,
+            promptCollectionRepository: PromptCollectionRepository(dbQueue: manager.dbQueue)
+        )
+
+        viewModel.promptsViewModel.newCollectionName = "Customer meetings"
+        viewModel.promptsViewModel.createCollection()
+
+        XCTAssertEqual(viewModel.promptsViewModel.collections.map(\.name), ["Customer meetings"])
+        XCTAssertNil(viewModel.promptsViewModel.errorMessage)
+    }
+
     func testSetMeetingAutoNoteScopesToMeetingOnly() throws {
         let promptRepo = MockPromptRepository()
         promptRepo.prompts = [

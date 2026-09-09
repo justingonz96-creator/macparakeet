@@ -129,10 +129,14 @@ public final class MeetingsWorkspaceViewModel {
         transcriptionRepo: TranscriptionRepositoryProtocol,
         quickPromptRepo: QuickPromptRepositoryProtocol? = nil,
         promptRepo: PromptRepositoryProtocol? = nil,
+        promptVersionRepository: PromptVersionRepositoryProtocol? = nil,
+        promptCollectionRepository: PromptCollectionRepositoryProtocol? = nil,
+        promptEditingService: PromptEditingServiceProtocol? = nil,
         meetingTypeRepository: (any MeetingTypeRepositoryProtocol)? = nil,
         meetingLabelRepository: (any MeetingLabelRepositoryProtocol)? = nil,
         meetingClassificationService: (any MeetingClassificationServiceProtocol)? = nil,
-        promptMeetingPolicyRepository: (any PromptMeetingPolicyRepositoryProtocol)? = nil
+        promptMeetingPolicyRepository: (any PromptMeetingPolicyRepositoryProtocol)? = nil,
+        promptLabelPolicyRepository: (any PromptLabelPolicyRepositoryProtocol)? = nil
     ) {
         recentMeetingsViewModel.configure(
             transcriptionRepo: transcriptionRepo,
@@ -144,7 +148,14 @@ public final class MeetingsWorkspaceViewModel {
             quickPromptsViewModel.configure(repo: quickPromptRepo)
         }
         if let promptRepo {
-            promptsViewModel.configure(repo: promptRepo)
+            promptsViewModel.configure(
+                repo: promptRepo,
+                versionRepo: promptVersionRepository,
+                collectionRepo: promptCollectionRepository,
+                editingService: promptEditingService,
+                labelRepository: meetingLabelRepository,
+                labelPolicyRepository: promptLabelPolicyRepository
+            )
         }
         self.promptMeetingPolicyRepository = promptMeetingPolicyRepository
     }

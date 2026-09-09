@@ -193,7 +193,10 @@ struct MeetingsView: View {
                     viewModel.refreshAutoNotes()
                 }
             ) {
-                PromptLibraryView(viewModel: viewModel.promptsViewModel)
+                PromptLibraryView(
+                    viewModel: viewModel.promptsViewModel,
+                    presentation: .meetingAutoNotes
+                )
             }
     }
 

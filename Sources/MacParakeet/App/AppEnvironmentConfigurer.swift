@@ -129,10 +129,14 @@ final class AppEnvironmentConfigurer {
             transcriptionRepo: env.transcriptionRepo,
             quickPromptRepo: env.quickPromptRepo,
             promptRepo: env.promptRepo,
+            promptVersionRepository: env.promptVersionRepo,
+            promptCollectionRepository: env.promptCollectionRepo,
+            promptEditingService: env.promptEditingService,
             meetingTypeRepository: env.meetingTypeRepo,
             meetingLabelRepository: env.meetingLabelRepo,
             meetingClassificationService: env.meetingClassificationService,
-            promptMeetingPolicyRepository: env.promptMeetingPolicyRepo
+            promptMeetingPolicyRepository: env.promptMeetingPolicyRepo,
+            promptLabelPolicyRepository: env.promptLabelPolicyRepo
         )
         transcriptionViewModel.onMeetingRenamed = { [weak self] rename in
             self?.libraryViewModel.applyMeetingRename(rename)

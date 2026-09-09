@@ -2,6 +2,31 @@ import SwiftUI
 import MacParakeetCore
 import MacParakeetViewModels
 
+enum PromptLibraryPresentation {
+    case library
+    case meetingAutoNotes
+
+    var includesTransforms: Bool {
+        self == .library
+    }
+
+    var title: String {
+        switch self {
+        case .library: "Prompts"
+        case .meetingAutoNotes: "Meeting Prompts"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .library:
+            "Instructions for your transcripts and selected-text Transforms."
+        case .meetingAutoNotes:
+            "Instructions that generate results from meeting transcripts."
+        }
+    }
+}
+
 struct PromptLibraryView: View {
     private enum ContentMode: String, CaseIterable {
         case edit = "Edit"
@@ -23,6 +48,7 @@ struct PromptLibraryView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var viewModel: PromptsViewModel
     var showsDismissButton = true
+    var presentation: PromptLibraryPresentation = .library
     @State private var editName: String = ""
     @State private var editContent: String = ""
     @State private var newContentMode: ContentMode = .edit
@@ -48,16 +74,16 @@ struct PromptLibraryView: View {
             VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Prompts")
+                        Text(presentation.title)
                             .font(DesignSystem.Typography.heroTitle)
                             .foregroundStyle(DesignSystem.Colors.textPrimary)
-                        Text("Instructions for your transcripts and selected-text Transforms.")
+                        Text(presentation.subtitle)
                             .font(DesignSystem.Typography.body)
                             .foregroundStyle(DesignSystem.Colors.textSecondary)
                     }
                     Spacer()
                     Button {
-                        librarySheet = .create
+                        beginCreatingPrompt()
                     } label: {
                         Label("New prompt", systemImage: "plus")
                     }
@@ -76,13 +102,15 @@ struct PromptLibraryView: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(minWidth: 160, maxWidth: .infinity)
                         .accessibilityLabel("Search prompts")
-                    Picker("Prompt kind", selection: $promptKindFilter) {
-                        ForEach(PromptKindFilter.allCases, id: \.self) { kind in
-                            Text(kind.rawValue).tag(kind)
+                    if presentation.includesTransforms {
+                        Picker("Prompt kind", selection: $promptKindFilter) {
+                            ForEach(PromptKindFilter.allCases, id: \.self) { kind in
+                                Text(kind.rawValue).tag(kind)
+                            }
                         }
+                        .labelsHidden()
+                        .frame(width: 140)
                     }
-                    .labelsHidden()
-                    .frame(width: 140)
                     if !viewModel.collections.isEmpty {
                         Picker("Collection", selection: $collectionFilterID) {
                             Text("All collections").tag(Optional<UUID>.none)
@@ -235,6 +263,13 @@ struct PromptLibraryView: View {
             || collectionFilterID != nil || promptKindFilter != .all
     }
 
+    private func beginCreatingPrompt() {
+        if !presentation.includesTransforms {
+            viewModel.newPromptCategory = .result
+        }
+        librarySheet = .create
+    }
+
     private func librarySheetContent(_ sheet: LibrarySheet) -> some View {
         VStack(spacing: 0) {
             HStack {
@@ -259,7 +294,7 @@ struct PromptLibraryView: View {
                     case .collections:
                         collectionManager
                     case .trash:
-                        if viewModel.deletedPrompts.isEmpty {
+                        if displayedDeletedPrompts.isEmpty {
                             Text("No deleted prompts. Removed prompts can be restored here with their version history.")
                                 .foregroundStyle(DesignSystem.Colors.textSecondary)
                         } else {
@@ -286,6 +321,7 @@ struct PromptLibraryView: View {
     private var filteredPrompts: [Prompt] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         return viewModel.managedPrompts.filter {
+            guard presentation.includesTransforms || $0.category == .result else { return false }
             let matchesCollection = collectionFilterID == nil || $0.collectionId == collectionFilterID
             let matchesKind: Bool
             switch promptKindFilter {
@@ -299,6 +335,10 @@ struct PromptLibraryView: View {
                 || $0.content.localizedCaseInsensitiveContains(query)
             return matchesCollection && matchesKind && matchesQuery
         }
+    }
+
+    private var displayedDeletedPrompts: [Prompt] {
+        viewModel.deletedPrompts.filter { presentation.includesTransforms || $0.category == .result }
     }
 
     private func errorBanner(_ message: String) -> some View {
@@ -317,7 +357,9 @@ struct PromptLibraryView: View {
     private var collectionManager: some View {
         sectionContainer(
             title: "Collections",
-            subtitle: "Organize result prompts and Transforms without changing their version history."
+            subtitle: presentation.includesTransforms
+                ? "Organize result prompts and Transforms without changing their version history."
+                : "Organize result prompts without changing their version history."
         ) {
             cardGroup {
                 VStack(spacing: 0) {
@@ -389,7 +431,7 @@ struct PromptLibraryView: View {
             subtitle: "Restore removed built-in or custom prompts with their complete version history."
         ) {
             cardGroup {
-                ForEach(Array(viewModel.deletedPrompts.enumerated()), id: \.element.id) { index, prompt in
+                ForEach(Array(displayedDeletedPrompts.enumerated()), id: \.element.id) { index, prompt in
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(prompt.name)
@@ -408,7 +450,7 @@ struct PromptLibraryView: View {
                             .parakeetAction(.secondary)
                     }
                     .padding(DesignSystem.Spacing.md)
-                    if index < viewModel.deletedPrompts.count - 1 { Divider() }
+                    if index < displayedDeletedPrompts.count - 1 { Divider() }
                 }
             }
         }
@@ -761,17 +803,19 @@ struct PromptLibraryView: View {
     private var addPromptCard: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
-                VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-                    Text("Type")
-                        .font(DesignSystem.Typography.caption.weight(.medium))
-                        .foregroundStyle(DesignSystem.Colors.textSecondary)
-                    Picker("Type", selection: $viewModel.newPromptCategory) {
-                        Text("Result prompt").tag(Prompt.Category.result)
-                        Text("Transform").tag(Prompt.Category.transform)
+                if presentation.includesTransforms {
+                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                        Text("Type")
+                            .font(DesignSystem.Typography.caption.weight(.medium))
+                            .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        Picker("Type", selection: $viewModel.newPromptCategory) {
+                            Text("Result prompt").tag(Prompt.Category.result)
+                            Text("Transform").tag(Prompt.Category.transform)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 240)
                     }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(width: 240)
                 }
 
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
@@ -857,6 +901,11 @@ struct PromptLibraryView: View {
                 .strokeBorder(DesignSystem.Colors.border, lineWidth: 1)
         )
         .cardShadow(DesignSystem.Shadows.cardRest)
+        .onAppear {
+            if !presentation.includesTransforms {
+                viewModel.newPromptCategory = .result
+            }
+        }
     }
 
     private func editSheet(prompt: Prompt) -> some View {
@@ -1585,8 +1634,6 @@ struct AutoRunBadge: View {
     let isAutoRun: Bool
     let action: () -> Void
 
-    @State private var isHovered = false
-
     var body: some View {
         Button {
             action()
@@ -1607,43 +1654,6 @@ struct AutoRunBadge: View {
             )
         }
         .buttonStyle(.plain)
-        .onHover { hovering in
-            // Use a tiny delay so it doesn't flash if you just mouse over quickly
-            if hovering {
-                withAnimation(.easeOut(duration: 0.15).delay(0.2)) {
-                    isHovered = true
-                }
-            } else {
-                withAnimation(.easeOut(duration: 0.1)) {
-                    isHovered = false
-                }
-            }
-        }
-        .overlay(alignment: .leading) {
-            if isHovered {
-                HStack(spacing: 6) {
-                    Image(systemName: "sparkles")
-                        .foregroundStyle(DesignSystem.Colors.accent)
-                    Text("Runs automatically on new transcripts")
-                        .fixedSize()
-                }
-                .font(DesignSystem.Typography.caption.weight(.medium))
-                .foregroundStyle(DesignSystem.Colors.textPrimary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(
-                    Capsule()
-                        .fill(DesignSystem.Colors.surfaceElevated)
-                        .shadow(color: Color.black.opacity(0.15), radius: 4, x: 0, y: 2)
-                )
-                .overlay(
-                    Capsule().strokeBorder(DesignSystem.Colors.border, lineWidth: 0.5)
-                )
-                .offset(x: 80)  // Place tooltip nicely to the right of the button
-                .zIndex(100)
-                .allowsHitTesting(false)
-                .transition(.opacity.combined(with: .scale(scale: 0.95)))
-            }
-        }
+        .polishedTooltip("Runs automatically on new transcripts")
     }
 }
