@@ -207,6 +207,25 @@ macparakeet-cli config set parakeet-model v2
 macparakeet-cli models status
 ```
 
+Manage the same prompts used by the app, including collections and versioned
+inference settings:
+
+```bash
+macparakeet-cli prompts list --json
+macparakeet-cli prompts collections list --json
+macparakeet-cli prompts collections add --name "Customer meetings" --json
+macparakeet-cli prompts set "Summary" --collection <collection-uuid> --json
+macparakeet-cli prompts set "Summary" --temperature 0.3 --max-tokens 2048 --json
+macparakeet-cli quick-prompts list --json
+macparakeet-cli transforms list --json
+```
+
+Collections organize prompts; recording labels classify recordings and can
+control prompt availability. Live Ask quick prompts ask questions during a
+meeting, transcript prompts generate saved outputs, and Transforms rewrite
+selected text. See the [agent guide](integrations/README.md) for editing,
+version history, collection ordering, and isolated-database examples.
+
 Inspect and update local history, saved meetings, and agent-readable artifacts:
 
 ```bash

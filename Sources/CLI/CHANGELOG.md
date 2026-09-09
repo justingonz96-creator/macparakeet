@@ -89,6 +89,8 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
 
 ## [Unreleased]
 
+## [4.0.0] — 2026-09-07
+
 ### Added
 
 - `prompts collections list|add|rename|delete|reorder` manages the same local
@@ -100,11 +102,6 @@ by checking exit code first: `2` = misuse, `1` = runtime, `0` = success.
   changes do not create a prompt version; combined versioned settings commit
   membership alongside one new version atomically. `prompts add --json` now
   returns the saved prompt record.
-
-## [4.0.0] — 2026-09-07
-
-### Added
-
 - Immutable prompt history, version-aware `prompts show`, source/settings diff,
   restore-as-new-version, recoverable deletion, and optional prompt collections.
   Built-in and custom prompts share the same mutation rights. Prompt JSON adds

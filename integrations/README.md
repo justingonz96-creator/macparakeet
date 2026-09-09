@@ -36,9 +36,10 @@ testing.
   dictations and transcriptions, retrieve cited transcript segments, and
   inspect current knowledge cards from the shared SQLite database. Card
   generation is a separate, provider-backed write.
-- **Prompt and meeting inspection** -- list and run prompt library entries
-  against transcriptions; list, show, transcript, notes append, prompt-result
-  write-back, and export meeting recordings.
+- **Prompt management and meeting inspection** -- manage versioned transcript
+  prompts, their model/inference settings and label availability; manage Live
+  Ask quick prompts and selected-text Transforms; run prompts against saved
+  transcriptions and inspect, annotate, and export meeting recordings.
 - **Headless verification hooks** -- agents can drive deterministic runs (pin
   all flags) or smoke-test GUI-default behavior with the explicit
   `app-default` flag group.
@@ -489,10 +490,21 @@ prompt-result defaults. `prompts run --json` includes additive optional
 provider/model-filtered receipt of settings actually sent, not a copy of the
 unfiltered prompt request. Automations should treat either field as optional
 and must not infer provider support from `inferenceSettings` alone.
-The prompt editor configures these settings; `prompts add/set` expose no
-inference-setting flags. The CLI preserves untouched settings and runs them,
-but does not emit per-result requested-settings or unsupported-field metadata.
-Transforms use their active version settings as well.
+`prompts set` configures these settings through `--temperature`, `--top-p`,
+`--top-k`, `--max-tokens`, `--thinking-mode`, and `--reasoning-effort`. Use
+`--model` for a model override, `--active-model` to clear that override, or
+`--provider-default-settings` to clear all inference overrides. Changed
+content, model, or inference settings create an immutable version; omitted
+settings are preserved. `prompts add` creates the prompt, then `prompts set`
+can configure its generation settings. Transforms use their active version
+settings as well. The CLI does not emit per-result requested-settings or
+unsupported-field metadata.
+
+```bash
+macparakeet-cli prompts set "Summary" --temperature 0.3 --max-tokens 2048 --json
+macparakeet-cli prompts set "Summary" --thinking-mode enabled --reasoning-effort high --json
+macparakeet-cli prompts set "Summary" --active-model --provider-default-settings --json
+```
 
 Prompt history is immutable. Restoring an old version creates and activates a
 new version; it never rewrites history. `prompts delete` is recoverable with
@@ -513,6 +525,36 @@ override to its configured command and rejects it before executing the command.
 `<id-or-prefix>` accepts a full UUID, a UUID prefix (>= 4 chars), or the
 case-insensitive name. Ambiguous prefixes return a `.ambiguous` error so the
 agent can re-prompt the user.
+
+### Organize prompts with collections
+
+Collections group saved transcript prompts and Transforms. Each prompt can
+belong to one collection. They do not change prompt execution, availability,
+or version history. Recording labels are separate: they classify recordings
+and can control which transcript prompts are available.
+
+```bash
+macparakeet-cli prompts collections list --json
+macparakeet-cli prompts collections add --name "Customer meetings" --json
+macparakeet-cli prompts set "Summary" --collection <collection-uuid> --json
+macparakeet-cli prompts collections rename <collection-uuid> --name "Customer calls" --json
+macparakeet-cli prompts collections reorder <first-uuid> <second-uuid> --json
+macparakeet-cli prompts set "Summary" --no-collection --json
+macparakeet-cli prompts collections delete <collection-uuid> --json
+```
+
+Use the full collection UUID returned by `list` or `add`. Reordering requires
+every existing collection exactly once, in the desired order. Deleting a
+collection removes its assignments while retaining all prompts and versions.
+`prompts add --collection <collection-uuid>` assigns a new prompt immediately;
+omitting collection flags when editing preserves its current assignment.
+These commands accept `--database <path>` for an isolated automation database.
+Set source-specific auto-run (`--source`) in a separate command from collection
+assignment; the CLI rejects combining those mutations.
+
+The GUI's meeting-specific prompt manager shows transcript prompts only.
+Transforms remain available in their dedicated GUI destination and CLI
+commands; Live Ask uses the separate quick-prompt commands below.
 
 ### Manage live Ask quick prompts
 
