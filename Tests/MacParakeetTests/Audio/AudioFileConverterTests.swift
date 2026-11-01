@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import MacParakeetCore
 
@@ -73,6 +74,46 @@ final class AudioFileConverterTests: XCTestCase {
         }
         XCTAssertEqual(args[mapIndex + 1], "0:a:1")
         XCTAssertLessThan(mapIndex, try XCTUnwrap(args.firstIndex(of: "-ar")))
+    }
+
+    // Echelon raw classes: 4 channels, mic on 1+2, music on 3+4.
+    func testFourChannelSourceTranscribesMicPairOnly() throws {
+        let args = AudioFileConverter().ffmpegArguments(
+            inputPath: "/tmp/class.mp4",
+            outputPath: "/tmp/output.wav",
+            sourceChannelCount: 4
+        )
+        let filterIndex = try XCTUnwrap(args.firstIndex(of: "-af"))
+        XCTAssertEqual(args[filterIndex + 1], "pan=mono|c0=0.5*c0+0.5*c1")
+        XCTAssertLessThan(filterIndex, try XCTUnwrap(args.firstIndex(of: "-ar")))
+    }
+
+    func testOtherChannelLayoutsKeepThePlainDownmix() {
+        for channels in [nil, 1, 2, 6] as [Int?] {
+            let args = AudioFileConverter().ffmpegArguments(
+                inputPath: "/tmp/in.mp4",
+                outputPath: "/tmp/out.wav",
+                sourceChannelCount: channels
+            )
+            XCTAssertFalse(args.contains("-af"), "channels=\(String(describing: channels))")
+        }
+    }
+
+    func testAudioChannelCountReadsTheFileLayout() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("echo-4ch-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let layout = try XCTUnwrap(AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Quadraphonic))
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channelLayout: layout)
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_800))
+        buffer.frameLength = 4_800
+        try file.write(from: buffer)
+
+        let count = await AudioFileConverter.audioChannelCount(of: url, trackOrdinal: nil)
+        XCTAssertEqual(count, 4)
+        let missing = await AudioFileConverter.audioChannelCount(of: url, trackOrdinal: 3)
+        XCTAssertNil(missing)
     }
 
     func testFFmpegMixArgumentsPreserveStereoForMicAndSystem() {

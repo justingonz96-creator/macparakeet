@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import os
 
@@ -28,6 +29,8 @@ public extension AudioFileConverting {
 
 /// Converts audio/video files to 16kHz mono WAV using FFmpeg subprocess.
 public final class AudioFileConverter: AudioFileConverting, Sendable {
+    private static let logger = Logger(subsystem: "com.macparakeet.core", category: "AudioFileConverter")
+
     public init() {}
 
     /// Supported audio extensions
@@ -133,7 +136,8 @@ public final class AudioFileConverter: AudioFileConverting, Sendable {
     public func ffmpegArguments(
         inputPath: String,
         outputPath: String,
-        audioTrackOrdinal: Int? = nil
+        audioTrackOrdinal: Int? = nil,
+        sourceChannelCount: Int? = nil
     ) -> [String] {
         var arguments = [
             "-nostdin",
@@ -141,6 +145,9 @@ public final class AudioFileConverter: AudioFileConverting, Sendable {
         ]
         if let audioTrackOrdinal {
             arguments.append(contentsOf: ["-map", "0:a:\(audioTrackOrdinal)"])
+        }
+        if let filter = Self.echelonMicOnlyFilter(sourceChannelCount: sourceChannelCount) {
+            arguments.append(contentsOf: ["-af", filter])
         }
         arguments.append(contentsOf: [
             "-ar", "16000",
@@ -151,6 +158,31 @@ public final class AudioFileConverter: AudioFileConverting, Sendable {
             outputPath,
         ])
         return arguments
+    }
+
+    /// Echelon raw class recordings carry one 4-channel track: channels 1+2
+    /// are the instructor mic (mono, duplicated), 3+4 are the music. Mixing
+    /// all four feeds song lyrics into recognition (they ended up in captions,
+    /// profanity included), so transcribe the mic pair only. Any other layout
+    /// keeps the plain downmix.
+    static func echelonMicOnlyFilter(sourceChannelCount: Int?) -> String? {
+        sourceChannelCount == 4 ? "pan=mono|c0=0.5*c0+0.5*c1" : nil
+    }
+
+    /// Channel count of the audio track that will be converted, or nil when
+    /// AVFoundation can't read the container (ffmpeg still converts it).
+    static func audioChannelCount(of url: URL, trackOrdinal: Int?) async -> Int? {
+        let asset = AVURLAsset(url: url)
+        guard let tracks = try? await asset.loadTracks(withMediaType: .audio) else { return nil }
+        let index = trackOrdinal ?? 0
+        guard tracks.indices.contains(index),
+              let descriptions = try? await tracks[index].load(.formatDescriptions),
+              let first = descriptions.first,
+              let basic = CMAudioFormatDescriptionGetStreamBasicDescription(first)
+        else {
+            return nil
+        }
+        return Int(basic.pointee.mChannelsPerFrame)
     }
 
     public func ffmpegMixArguments(
@@ -247,12 +279,18 @@ public final class AudioFileConverter: AudioFileConverting, Sendable {
             }
         }
 
+        let sourceChannelCount = await Self.audioChannelCount(of: inputURL, trackOrdinal: audioTrackOrdinal)
+        if Self.echelonMicOnlyFilter(sourceChannelCount: sourceChannelCount) != nil {
+            Self.logger.info("echelon_mic_only_conversion channels=4")
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ffmpegPath)
         process.arguments = ffmpegArguments(
             inputPath: inputURL.path,
             outputPath: outputURL.path,
-            audioTrackOrdinal: audioTrackOrdinal
+            audioTrackOrdinal: audioTrackOrdinal,
+            sourceChannelCount: sourceChannelCount
         )
 
         // Use temp file for stderr to avoid pipe buffer deadlock on long files.
