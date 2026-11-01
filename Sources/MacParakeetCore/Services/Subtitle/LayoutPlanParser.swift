@@ -297,7 +297,7 @@ enum LayoutPlanParser {
     /// Some models wrap JSON in ```json fences. Strip them if present so the
     /// JSON decoder doesn't choke.
     private static func stripCodeFences(_ text: String) -> String {
-        var t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var t = LLMThinkingTagStripper.strip(text).trimmingCharacters(in: .whitespacesAndNewlines)
         if t.hasPrefix("```") {
             // Drop the first line entirely (handles ```json, ```JSON, etc.)
             if let nl = t.firstIndex(of: "\n") {
@@ -309,6 +309,6 @@ enum LayoutPlanParser {
         if t.hasSuffix("```") {
             t = String(t.dropLast(3))
         }
-        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+        return LLMThinkingTagStripper.firstJSONValue(t)
     }
 }

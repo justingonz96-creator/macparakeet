@@ -455,7 +455,7 @@ public actor NumberLLMRefiner {
     /// pair of wrapping quote characters (straight or curly). Returns "" if
     /// nothing usable remains.
     static func cleanReply(_ reply: String) -> String {
-        var t = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        var t = LLMThinkingTagStripper.strip(reply).trimmingCharacters(in: .whitespacesAndNewlines)
         if t.isEmpty { return t }
 
         // Strip a single matched ``` fence pair.

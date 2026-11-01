@@ -68,6 +68,12 @@ struct ExportCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Use the LLM layout planner for SRT/VTT cue boundaries (reads the same stored LLM provider config as the app).")
     var llmRefinement: Bool = false
 
+    @Option(name: .long, help: "AI provider for --llm-refinement, instead of the app's saved one (e.g. ollama).")
+    var llmProvider: String?
+
+    @Option(name: .long, help: "Model for --llm-provider (e.g. qwen3.8:27b-mlx).")
+    var llmModel: String?
+
     /// SubtitleExportConfig with the CLI flag overlay applied. Used by the
     /// SRT/VTT branches; the other formats ignore it.
     var subtitleConfig: SubtitleExportConfig {
@@ -167,7 +173,7 @@ struct ExportCommand: AsyncParsableCommand {
             )
         case .srt:
             if subtitleConfig.useLLMRefinement {
-                let llmService = buildLLMServiceFromGUIDefaults()
+                let llmService = try await buildLLMService()
                 try await exportService.exportToSRT(
                     transcription: projection.effectiveTranscription,
                     url: url,
@@ -184,7 +190,7 @@ struct ExportCommand: AsyncParsableCommand {
             }
         case .vtt:
             if subtitleConfig.useLLMRefinement {
-                let llmService = buildLLMServiceFromGUIDefaults()
+                let llmService = try await buildLLMService()
                 try await exportService.exportToVTT(
                     transcription: projection.effectiveTranscription,
                     url: url,
@@ -206,12 +212,29 @@ struct ExportCommand: AsyncParsableCommand {
         }
     }
 
-    /// `LLMConfigStore()` opens the app's shared preferences domain
+    /// `--llm-provider` / `--llm-model` pick a provider for this run only.
+    /// Otherwise `LLMConfigStore()` opens the app's shared preferences domain
     /// (`AppPaths.preferencesSuiteName`), so the CLI uses the same AI
     /// provider the Echo app has configured. With none saved, each chunk
     /// throws `notConfigured` and the deterministic layout is used.
-    private func buildLLMServiceFromGUIDefaults() -> LLMService {
-        LLMService(
+    private func buildLLMService() async throws -> LLMService {
+        if let llmProvider {
+            var arguments = ["--provider", llmProvider]
+            if let llmModel { arguments += ["--model", llmModel] }
+            let execution = try LLMInlineOptions.parse(arguments).buildExecutionContext()
+            // The app resolves the model's prompt profile when its AI settings
+            // load; do the same here so the planner uses the matching prompt.
+            let providerConfig = execution.context.providerConfig
+            _ = await ModelProfileService.shared.fetchProfile(
+                modelName: providerConfig.modelName,
+                providerConfig: providerConfig
+            )
+            return LLMService(
+                client: execution.client,
+                contextResolver: StaticLLMExecutionContextResolver(context: execution.context)
+            )
+        }
+        return LLMService(
             client: RoutingLLMClient(),
             contextResolver: StoredLLMExecutionContextResolver(
                 configStore: LLMConfigStore(),

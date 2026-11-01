@@ -411,7 +411,7 @@ struct VocabularyBundleSpec: Encodable {
         let exampleJSON = String(data: exampleData, encoding: .utf8) ?? "{}"
 
         return """
-            MacParakeet Vocabulary Bundle — JSON Schema (v\(VocabularyBundle.currentVersion))
+            Echo Vocabulary Bundle — JSON Schema (v\(VocabularyBundle.currentVersion))
             =====================================================================
 
             File identity

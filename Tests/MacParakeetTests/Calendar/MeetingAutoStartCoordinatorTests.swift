@@ -573,7 +573,9 @@ final class MeetingAutoStartCoordinatorTests: XCTestCase {
         XCTAssertEqual(closeCount, 1, "The assertion must observe a real, closable toast")
     }
 
-    func testSkipThenUnskipDuringHeldFetchRearmsCountdown() async {
+    func testSkipThenUnskipDuringHeldFetchRearmsCountdown() async throws {
+        // Echo gates the calendar feature off; start() returns before polling.
+        try XCTSkipUnless(AppFeatures.calendarEnabled, "Calendar feature is gated off")
         calendarService.stubPermissionStatus = .granted
         let meetingA = event(id: "A", startsIn: 0)
         calendarService.stubEvents = [meetingA]
@@ -603,7 +605,9 @@ final class MeetingAutoStartCoordinatorTests: XCTestCase {
         coordinator.stop()
     }
 
-    func testSkipThenUnskipWithoutActorHopRearmsCountdown() async {
+    func testSkipThenUnskipWithoutActorHopRearmsCountdown() async throws {
+        // Echo gates the calendar feature off; start() returns before polling.
+        try XCTSkipUnless(AppFeatures.calendarEnabled, "Calendar feature is gated off")
         calendarService.stubPermissionStatus = .granted
         seedSettings(mode: .autoStart, reminderMinutes: 0)
         let coordinator = makeCoordinator()
@@ -623,7 +627,9 @@ final class MeetingAutoStartCoordinatorTests: XCTestCase {
         XCTAssertEqual(autoStartConfirmedCount, 0, "Undo must not directly start recording")
     }
 
-    func testSkipFromAnotherSettingsInstanceImmediatelyClosesOwningToast() async {
+    func testSkipFromAnotherSettingsInstanceImmediatelyClosesOwningToast() async throws {
+        // Echo gates the calendar feature off; start() returns before polling.
+        try XCTSkipUnless(AppFeatures.calendarEnabled, "Calendar feature is gated off")
         calendarService.stubPermissionStatus = .granted
         seedSettings(mode: .autoStart, reminderMinutes: 0)
         let toast = MeetingCountdownToastController()
@@ -649,7 +655,9 @@ final class MeetingAutoStartCoordinatorTests: XCTestCase {
         XCTAssertEqual(autoStartConfirmedCount, 0)
     }
 
-    func testModeChangeToNotifyClosesOwningCountdownSuppressionPath() async {
+    func testModeChangeToNotifyClosesOwningCountdownSuppressionPath() async throws {
+        // Echo gates the calendar feature off; start() returns before polling.
+        try XCTSkipUnless(AppFeatures.calendarEnabled, "Calendar feature is gated off")
         calendarService.stubPermissionStatus = .granted
         seedSettings(mode: .autoStart)
 
@@ -669,7 +677,9 @@ final class MeetingAutoStartCoordinatorTests: XCTestCase {
         coordinator.stop()
     }
 
-    func testAuthorizedReminderPostsWhenEventIsNotSkipped() async {
+    func testAuthorizedReminderPostsWhenEventIsNotSkipped() async throws {
+        // Echo gates the calendar feature off; start() returns before polling.
+        try XCTSkipUnless(AppFeatures.calendarEnabled, "Calendar feature is gated off")
         calendarService.stubPermissionStatus = .granted
         let meeting = event(startsIn: 5 * 60)
         calendarService.stubEvents = [meeting]
@@ -687,7 +697,9 @@ final class MeetingAutoStartCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.testHook_isReminded(meeting))
     }
 
-    func testSkipDuringReminderAuthWaitDoesNotPost() async {
+    func testSkipDuringReminderAuthWaitDoesNotPost() async throws {
+        // Echo gates the calendar feature off; start() returns before polling.
+        try XCTSkipUnless(AppFeatures.calendarEnabled, "Calendar feature is gated off")
         calendarService.stubPermissionStatus = .granted
         let meeting = event(startsIn: 5 * 60)
         calendarService.stubEvents = [meeting]

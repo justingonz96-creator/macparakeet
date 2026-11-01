@@ -179,7 +179,7 @@ public enum ReviewActionParser {
     /// Mirrors `LayoutPlanParser.stripCodeFences` (which is private to
     /// that file); kept here to avoid coupling the two parsers.
     private static func stripCodeFences(_ text: String) -> String {
-        var t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var t = LLMThinkingTagStripper.strip(text).trimmingCharacters(in: .whitespacesAndNewlines)
         if t.hasPrefix("```") {
             if let nl = t.firstIndex(of: "\n") {
                 t = String(t[t.index(after: nl)...])
@@ -190,6 +190,6 @@ public enum ReviewActionParser {
         if t.hasSuffix("```") {
             t = String(t.dropLast(3))
         }
-        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+        return LLMThinkingTagStripper.firstJSONValue(t)
     }
 }

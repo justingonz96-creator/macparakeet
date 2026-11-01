@@ -210,9 +210,12 @@ final class ExportServiceTests: XCTestCase {
         )
         XCTAssertEqual(plain, "Alice:\n[0:00] Corrected greeting.\n\nBob:\n[0:02] Goodbye.")
 
+        // Echo's caption pipeline keeps the corrected text and segment start
+        // times but applies its own end-of-cue hold, so ends run a little
+        // past the segment envelope.
         let srt = exportService.formatSRT(transcription: transcription)
-        XCTAssertTrue(srt.contains("00:00:00,000 --> 00:00:00,500\nAlice: Corrected greeting."))
-        XCTAssertTrue(srt.contains("00:00:02,000 --> 00:00:02,500\nBob: Goodbye."))
+        XCTAssertTrue(srt.contains("00:00:00,000 --> 00:00:00,560\nAlice: Corrected greeting."))
+        XCTAssertTrue(srt.contains("00:00:02,000 --> 00:00:02,560\nBob: Goodbye."))
         XCTAssertFalse(srt.contains("Hello."))
 
         let dapt = exportService.formatDAPT(transcription: transcription)

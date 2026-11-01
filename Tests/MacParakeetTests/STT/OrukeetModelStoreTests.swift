@@ -198,7 +198,8 @@ final class OrukeetModelStoreTests: XCTestCase {
         XCTAssertFalse(capabilities.supportsCustomVocabulary)
         XCTAssertEqual(capabilities.modelLifecycle.variantID, "orukeet")
         XCTAssertEqual(capabilities.telemetryIdentity.engineVariant, .fixed("orukeet"))
-        XCTAssertEqual(SpeechEnginePreference.defaultParakeetModelVariant, .v3)
+        // Echo defaults to Unified (2026-09-09 bake-off), not upstream v3.
+        XCTAssertEqual(SpeechEnginePreference.defaultParakeetModelVariant, .unified)
     }
 
     // Opt in with the immutable archive downloaded from the model card. Default CI uses no weights.
