@@ -44,6 +44,7 @@ enum TranscribeParakeetModel: String, ExpressibleByArgument, CaseIterable, Senda
     case v2
     case unified
     case orukeet
+    case ultra
 }
 
 enum TranscribeNemotronModel: String, ExpressibleByArgument, CaseIterable, Sendable {
@@ -335,6 +336,8 @@ struct TranscribeCommand: AsyncParsableCommand, CLITelemetryMetadataProviding {
             return .unified
         case .orukeet:
             return .orukeet
+        case .ultra:
+            return .ultra
         }
     }
 

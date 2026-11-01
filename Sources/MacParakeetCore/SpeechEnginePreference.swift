@@ -489,6 +489,10 @@ public enum ParakeetModelVariant: String, CaseIterable, Codable, Sendable {
     /// of the shared `AsrManager`. It adds punctuation/capitalization and
     /// token-derived word timings through FluidAudio's streaming manager.
     case unified
+    /// FluidAudio's Parakeet Ultra: a post-trained v3 (same TDT runtime and
+    /// languages) that is more accurate on English (LibriSpeech test-other
+    /// 3.81 % vs 4.12 %). Loaded through `AsrModelVersion.ultra`.
+    case ultra
 
     /// Short label for the variant's language posture.
     public var displayName: String {
@@ -497,6 +501,7 @@ public enum ParakeetModelVariant: String, CaseIterable, Codable, Sendable {
         case .v2: "English only"
         case .unified: "English (Unified)"
         case .orukeet: "Orukeet (preview)"
+        case .ultra: "Ultra (multilingual)"
         }
     }
 
@@ -507,6 +512,7 @@ public enum ParakeetModelVariant: String, CaseIterable, Codable, Sendable {
         case .v2: "Parakeet TDT 0.6B v2"
         case .unified: "Parakeet Unified 0.6B"
         case .orukeet: "Orukeet"
+        case .ultra: "Parakeet Ultra 0.6B"
         }
     }
 
@@ -521,6 +527,8 @@ public enum ParakeetModelVariant: String, CaseIterable, Codable, Sendable {
             "Readable English with live preview. Includes word timestamps for exports."
         case .orukeet:
             "Oruk's Parakeet v3 adaptation for 25 languages. Local Core ML preview, licensed CC BY-SA 4.0."
+        case .ultra:
+            "A more accurate post-trained v3 for English and supported European languages. Includes word timestamps."
         }
     }
 
@@ -533,6 +541,7 @@ public enum ParakeetModelVariant: String, CaseIterable, Codable, Sendable {
         case .v3, .v2: "~465 MB"
         case .unified: "~565 MB"
         case .orukeet: "445 MiB"
+        case .ultra: "~595 MB"
         }
     }
 
@@ -550,6 +559,7 @@ public enum ParakeetModelVariant: String, CaseIterable, Codable, Sendable {
         case .v2: .v3
         case .unified: .v2
         case .orukeet: .v3
+        case .ultra: .v3
         }
     }
 }

@@ -122,7 +122,7 @@ struct ConfigCommand: ParsableCommand {
         CLIConfigKeySpec(
             key: "parakeet-model",
             valueSyntax: "v3|v2|unified|orukeet",
-            allowedValues: ["v3", "v2", "unified", "orukeet"],
+            allowedValues: ["v3", "v2", "unified", "orukeet", "ultra"],
             summary: "Default Parakeet build: v3 supported languages, v2 English timestamps, Unified readable English timestamps, or orukeet (multilingual preview)."
         ),
         CLIConfigKeySpec(
@@ -674,8 +674,10 @@ struct ConfigCommand: ParsableCommand {
             return .unified
         case "orukeet":
             return .orukeet
+        case "ultra":
+            return .ultra
         default:
-            throw ValidationError("Invalid value for parakeet-model: '\(value)'. Use v3 (multilingual), v2 (English-only), unified (English-only with punctuation/capitalization), or orukeet (multilingual preview).")
+            throw ValidationError("Invalid value for parakeet-model: '\(value)'. Use v3 (multilingual), v2 (English-only), unified (English-only with punctuation/capitalization), orukeet (multilingual preview), or ultra (more accurate v3).")
         }
     }
 

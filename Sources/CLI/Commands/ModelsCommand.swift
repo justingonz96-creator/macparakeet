@@ -1133,6 +1133,8 @@ private func parseParakeetSelectionVariant(_ lowered: String) -> ParakeetModelVa
         return .unified
     case "orukeet":
         return .orukeet
+    case "ultra":
+        return .ultra
     default:
         return nil
     }

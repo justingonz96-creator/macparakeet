@@ -33,7 +33,7 @@ let packageDependencies: [Package.Dependency] = [
     // 0.17.7 adds the Community-1 fixes for digital silence (FluidAudio #988)
     // and zero-padded zero-vote re-embeds (FluidAudio #982).
     // See ADR-010 and the matched diarization comparison before future bumps.
-    .package(url: "https://github.com/FluidInference/FluidAudio", exact: "0.17.7"),
+    .package(url: "https://github.com/FluidInference/FluidAudio", exact: "0.18.0"),
     // ArgumentParser for CLI
     .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
     // Sparkle for auto-updates (non-App Store distribution)

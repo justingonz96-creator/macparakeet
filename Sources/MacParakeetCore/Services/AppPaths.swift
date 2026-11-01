@@ -233,6 +233,10 @@ public enum AppPaths {
             return .parakeetJa
         case .phonon2:
             return .phonon2
+        case .bark3:
+            return .bark3
+        case .bark3Clean:
+            return .bark3Clean
         }
     }
 

@@ -14,6 +14,7 @@ extension ParakeetModelVariant {
         switch self {
         case .v3: .v3
         case .v2: .v2
+        case .ultra: .ultra
         case .unified, .orukeet: nil
         }
     }
@@ -25,6 +26,7 @@ extension ParakeetModelVariant {
     public init(asrModelVersion: AsrModelVersion) {
         switch asrModelVersion {
         case .v2: self = .v2
+        case .ultra: self = .ultra
         default: self = .v3
         }
     }
