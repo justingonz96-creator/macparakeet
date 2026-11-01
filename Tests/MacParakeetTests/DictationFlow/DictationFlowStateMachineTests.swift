@@ -286,6 +286,20 @@ final class DictationFlowStateMachineTests: XCTestCase {
         XCTAssertTrue(effects.contains(.startDisplayDismissTimer(seconds: 5)))
     }
 
+    func testCheckingEntitlementsStartFailedShowsError() {
+        var m = makeMachine()
+        _ = m.handle(.startRequested(mode: .persistent))
+        let gen = m.generation
+
+        let effects = m.handle(.startFailed(generation: gen, message: "Microphone access required"))
+        XCTAssertEqual(m.state, .finishing(outcome: .error("Microphone access required")))
+        XCTAssertTrue(effects.contains(.showError("Microphone access required")))
+        XCTAssertTrue(effects.contains(.resetHotkeyStateMachine))
+        XCTAssertTrue(effects.contains(.updateMenuBar(.idle)))
+        XCTAssertTrue(effects.contains(.startDisplayDismissTimer(seconds: 5)))
+        XCTAssertFalse(effects.contains(.startRecording(mode: .persistent)))
+    }
+
     func testStartingServiceStopRequested() {
         var m = makeMachine()
         _ = m.handle(.startRequested(mode: .persistent))
@@ -582,6 +596,8 @@ final class DictationFlowStateMachineTests: XCTestCase {
         XCTAssertTrue(effects.contains(.showNoSpeech))
         XCTAssertTrue(effects.contains(.updateMenuBar(.idle)))
         XCTAssertTrue(effects.contains(.startDisplayDismissTimer(seconds: DictationFlowTiming.noSpeechDismissSeconds)))
+        // A pill-stopped take never reset its hotkeys; do it on the way out.
+        XCTAssertTrue(effects.contains(.resetHotkeyStateMachine))
     }
 
     func testProcessingTranscriptionFailed() {
@@ -593,6 +609,7 @@ final class DictationFlowStateMachineTests: XCTestCase {
         XCTAssertTrue(effects.contains(.showError("STT error")))
         XCTAssertTrue(effects.contains(.updateMenuBar(.idle)))
         XCTAssertTrue(effects.contains(.startDisplayDismissTimer(seconds: 5)))
+        XCTAssertTrue(effects.contains(.resetHotkeyStateMachine))
     }
 
     func testProcessingCancelRequested() {
@@ -725,7 +742,10 @@ final class DictationFlowStateMachineTests: XCTestCase {
         XCTAssertEqual(m.generation, gen + 1)
         XCTAssertTrue(effects.contains(.checkEntitlements))
         XCTAssertTrue(effects.contains(.hideIdlePill))
-        XCTAssertTrue(effects.contains(.resetHotkeyStateMachine))
+        // transcriptionCompleted already reset the hotkeys. Resetting again
+        // would return the double-tapping hotkey to idle, so its next tap
+        // would start a gesture instead of stopping this take.
+        XCTAssertFalse(effects.contains(.resetHotkeyStateMachine))
     }
 
     func testFinishingPasteFailed() {
@@ -867,6 +887,9 @@ final class DictationFlowStateMachineTests: XCTestCase {
         XCTAssertTrue(effects.contains(.checkEntitlements))
         XCTAssertTrue(effects.contains(.reloadHistory))
         XCTAssertTrue(effects.contains(.cancelActionTask))
+        // The hotkey that sent this is mid-gesture; resetting it would drop
+        // its held trigger and ignore the release.
+        XCTAssertFalse(effects.contains(.resetHotkeyStateMachine))
     }
 
     func testFinishingSuccessReadyPillRequested() {
@@ -879,7 +902,8 @@ final class DictationFlowStateMachineTests: XCTestCase {
         XCTAssertEqual(m.state, .ready)
         XCTAssertTrue(effects.contains(.showReadyPill))
         XCTAssertTrue(effects.contains(.cancelActionTask))
-        XCTAssertTrue(effects.contains(.resetHotkeyStateMachine))
+        // A reset would forget the first tap of this double-tap.
+        XCTAssertFalse(effects.contains(.resetHotkeyStateMachine))
     }
 
     func testFinishingErrorStartRequested() {

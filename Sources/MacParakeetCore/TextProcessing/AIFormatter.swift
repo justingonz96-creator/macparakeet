@@ -3,15 +3,6 @@ import Foundation
 public enum AIFormatter {
     public static let transcriptPlaceholder = "{{TRANSCRIPT}}"
 
-    /// Upper bound on input length for the file/meeting transcript formatter
-    /// pass. The prompt requires reproducing the full text, so output length
-    /// tracks input length; past this size slow providers can burn the full
-    /// timeout before falling back anyway (hour-long meeting transcripts hit
-    /// the 300s Local CLI timeout in issue #493).
-    /// ~20k chars ≈ 5k output tokens, which completes with headroom even on
-    /// slow CLI providers. Longer transcripts skip straight to standard
-    /// cleanup. Dictation input is orders of magnitude shorter and not gated.
-    public static let maxTranscriptionInputChars = 20_000
     static let legacyDefaultPromptTemplateV1 = """
         You are a transcription cleanup assistant.
 
@@ -54,13 +45,67 @@ public enum AIFormatter {
         {{TRANSCRIPT}}
         """
 
-    public static func normalizedPromptTemplate(_ promptTemplate: String) -> String {
+    /// Built-in dictation prompt: short utterances, not meeting paragraphing.
+    public static let defaultDictationPromptTemplate = """
+        You are a dictation cleanup assistant.
+
+        Convert the following raw dictation into polished, readable text.
+
+        Instructions:
+        1. Add punctuation and capitalization.
+        2. Split the text into proper sentences.
+        3. Fix obvious speech-to-text errors.
+        4. Remove repeated words and filler sounds when unnecessary.
+        5. Keep the original meaning, tone, and wording as close as possible.
+        6. Do not summarize, shorten, or add content.
+        7. Do not explain your edits.
+        8. Output only the final cleaned text.
+
+        Raw transcript:
+        {{TRANSCRIPT}}
+        """
+
+    public static func normalizedPromptTemplate(
+        _ promptTemplate: String,
+        default defaultTemplate: String = defaultPromptTemplate
+    ) -> String {
         let trimmed = promptTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return defaultPromptTemplate }
-        if trimmed == legacyDefaultPromptTemplateV1 {
+        guard !trimmed.isEmpty else { return defaultTemplate }
+        if defaultTemplate == defaultPromptTemplate, trimmed == legacyDefaultPromptTemplateV1 {
             return defaultPromptTemplate
         }
         return trimmed
+    }
+
+    /// True when the shared/transcript prompt is still a built-in default, so a
+    /// missing dictation prompt should not inherit it.
+    public static func isBuiltInSharedPrompt(_ promptTemplate: String) -> Bool {
+        let trimmed = promptTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty
+            || trimmed == defaultPromptTemplate
+            || trimmed == legacyDefaultPromptTemplateV1
+    }
+
+    /// Resolves the dictation prompt: an explicit dictation value wins; otherwise
+    /// a customized pre-split shared prompt is copied; otherwise the dictation
+    /// built-in default.
+    public static func resolvedDictationPrompt(
+        storedDictationPrompt: String?,
+        storedSharedPrompt: String?
+    ) -> String {
+        if let storedDictationPrompt {
+            let trimmed = storedDictationPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return normalizedPromptTemplate(
+                    trimmed,
+                    default: defaultDictationPromptTemplate
+                )
+            }
+        }
+        if let storedSharedPrompt, !isBuiltInSharedPrompt(storedSharedPrompt) {
+            return storedSharedPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return defaultDictationPromptTemplate
     }
 
     public static func renderPrompt(template promptTemplate: String, transcript: String) -> String {

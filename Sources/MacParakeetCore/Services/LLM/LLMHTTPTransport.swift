@@ -37,6 +37,17 @@ extension LLMHTTPAdapter {
     }
 }
 
+enum LLMHTTPRequestTimeout {
+    /// Non-streaming calls receive no body bytes until generation finishes, so
+    /// this is the full wait. Each cleanup section is at most 12,000 characters.
+    /// A 30s wait ended longer rewrites mid-generation (#1253). 300s is the
+    /// budget local providers already use.
+    static let cloudNonStreaming: TimeInterval = 300
+    static let cloudStreamingIdle: TimeInterval = 120
+    static let localNonStreaming: TimeInterval = 300
+    static let localStreamingIdle: TimeInterval = 600
+}
+
 struct LLMHTTPTransport: Sendable {
     private let session: URLSession
 
@@ -48,7 +59,7 @@ struct LLMHTTPTransport: Sendable {
         do {
             return try await session.data(for: request, delegate: OpenCodeRequestHeaders.redirectDelegate(for: request))
         } catch {
-            throw LLMError.connectionFailed(error.localizedDescription)
+            throw Self.mapTransportFailure(error)
         }
     }
 
@@ -57,8 +68,33 @@ struct LLMHTTPTransport: Sendable {
             return try await session.bytes(
                 for: request, delegate: OpenCodeRequestHeaders.redirectDelegate(for: request))
         } catch {
-            throw LLMError.connectionFailed(error.localizedDescription)
+            throw Self.mapTransportFailure(error)
         }
+    }
+
+    static func mapTransportFailure(_ error: Error) -> LLMError {
+        if isRequestTimeout(error) {
+            return .requestTimedOut
+        }
+        return .connectionFailed(error.localizedDescription)
+    }
+
+    /// URLSession reports an idle timeout as `URLError.timedOut` (-1001),
+    /// sometimes wrapped in an underlying `NSError`.
+    private static func isRequestTimeout(_ error: Error, inspectUnderlying: Bool = true) -> Bool {
+        if let urlError = error as? URLError, urlError.code == .timedOut {
+            return true
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain, nsError.code == URLError.Code.timedOut.rawValue {
+            return true
+        }
+        guard inspectUnderlying,
+            let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error
+        else {
+            return false
+        }
+        return isRequestTimeout(underlying, inspectUnderlying: false)
     }
 }
 
@@ -141,7 +177,7 @@ enum LLMHTTPErrorMapper {
             }
             return .providerError(message)
         case 400:
-            if message.lowercased().contains("context") || message.lowercased().contains("token") {
+            if isContextOverflowMessage(message) {
                 return .contextTooLong
             }
             return .providerError(message)
@@ -154,11 +190,7 @@ enum LLMHTTPErrorMapper {
         let message = scrubAPIKeyArtifacts(from: rawMessage)
         let lowered = message.lowercased()
 
-        if lowered.contains("context")
-            || lowered.contains("tokens to keep")
-            || lowered.contains("too many tokens")
-            || lowered.contains("maximum number of tokens")
-        {
+        if isContextOverflowMessage(message) {
             return .contextTooLong
         }
         if lowered.contains("rate limit") || lowered.contains("rate_limit") {
@@ -176,6 +208,33 @@ enum LLMHTTPErrorMapper {
             return .modelNotFound(message)
         }
         return .streamingError(message)
+    }
+
+    /// True context-window failures, not parameter-compatibility errors that
+    /// happen to mention `max_tokens`.
+    static func isContextOverflowMessage(_ message: String) -> Bool {
+        let lowered = message.lowercased()
+        if isUnsupportedTokenParameterMessage(lowered) {
+            return false
+        }
+        return lowered.contains("context length")
+            || lowered.contains("context window")
+            || lowered.contains("context limit")
+            || lowered.contains("maximum context")
+            || lowered.contains("too many tokens")
+            || lowered.contains("tokens to keep")
+            || lowered.contains("maximum number of tokens")
+            || lowered.contains("prompt is too long")
+    }
+
+    private static func isUnsupportedTokenParameterMessage(_ lowered: String) -> Bool {
+        let mentionsTokenParameter =
+            lowered.contains("max_tokens") || lowered.contains("max_completion_tokens")
+        let mentionsUnsupported =
+            lowered.contains("unsupported")
+            || lowered.contains("not supported")
+            || lowered.contains("unknown parameter")
+        return mentionsTokenParameter && mentionsUnsupported
     }
 
     /// Strips obvious API-key artifacts from a provider error message before
@@ -227,16 +286,19 @@ enum LLMHTTPStreamCompletionPolicy {
     /// produce false positives:
     ///
     /// - **Strict**: OpenAI (`[DONE]`), OpenRouter (`[DONE]`, OpenAI-compat
-    ///   aggregator), Anthropic (`message_stop` event).
+    ///   aggregator), Anthropic (`message_stop` event), DeepSeek and Qwen
+    ///   DashScope Chat Completions (documented `data: [DONE]`).
     /// - **Lenient**: Gemini (no `[DONE]` per spec), OpenAI-Compatible
-    ///   (Together/Fireworks/Groq vary), LM Studio (varies), Ollama (uses
+    ///   (Together/Fireworks/Groq vary), Moonshot / Z.AI / MiniMax (not
+    ///   pinned without live evidence), LM Studio (varies), Ollama (uses
     ///   `done:true` field detected separately, not the SSE `[DONE]` line),
     ///   localCLI (subprocess output, not HTTP SSE).
     static func providerEnforcesStreamSentinel(_ id: LLMProviderID) -> Bool {
         switch id {
-        case .openai, .openrouter, .anthropic:
+        case .openai, .openrouter, .anthropic, .deepseek, .qwen:
             return true
-        case .openaiCompatible, .gemini, .ollama, .lmstudio, .localCLI, .inProcessLocal:
+        case .openaiCompatible, .gemini, .moonshot, .zai, .minimax, .ollama, .lmstudio, .localCLI,
+            .inProcessLocal, .appleIntelligence:
             return false
         }
     }
@@ -320,9 +382,9 @@ enum LLMHTTPModelCatalog {
                     return isOpenRouterTextLLMModel(entry)
                 case .gemini:
                     return isGeminiTextLLMModelID(entry.id)
-                case .openaiCompatible, .lmstudio, .ollama:
+                case .openaiCompatible, .moonshot, .deepseek, .qwen, .zai, .minimax, .lmstudio, .ollama:
                     return !isClearlyNonTextModelID(entry.id)
-                case .localCLI, .inProcessLocal:
+                case .localCLI, .inProcessLocal, .appleIntelligence:
                     return false
                 }
             }

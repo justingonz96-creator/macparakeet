@@ -15,14 +15,15 @@ private enum InlineLLMCompatibilityDefaults {
     // move faster as provider model recommendations change.
     static let openAIModel = "gpt-4.1"
     static let geminiModel = "gemini-2.5-flash"
-    static let openRouterModel = "anthropic/claude-sonnet-5"
+    static let openRouterModel = "anthropic/claude-sonnet-5.5"
 }
 
 func validateBaseURL(_ value: String) throws -> URL {
     guard let url = URL(string: value),
-          let scheme = url.scheme?.lowercased(),
-          ["http", "https"].contains(scheme),
-          url.host != nil else {
+        let scheme = url.scheme?.lowercased(),
+        ["http", "https"].contains(scheme),
+        url.host != nil
+    else {
         throw ValidationError("--base-url must be an absolute http:// or https:// URL")
     }
     return url
@@ -67,16 +68,24 @@ func readInput(_ path: String) throws -> String {
 
 /// Shared options for CLI commands that call an LLM provider directly (no Keychain).
 struct LLMInlineOptions: ParsableArguments {
-    @Option(name: .long, help: "Provider: anthropic, openai, openaiCompatible, gemini, openrouter, ollama, lmstudio, cli.")
+    @Option(
+        name: .long,
+        help:
+            "Provider: anthropic, openai, openaiCompatible, gemini, openrouter, moonshot, deepseek, qwen, zai, minimax, ollama, lmstudio, appleIntelligence, cli."
+    )
     var provider: String
 
-    @Option(name: .long, help: "API key literal. Prefer --api-key-env or provider env vars to avoid exposing secrets in process arguments.")
+    @Option(
+        name: .long,
+        help:
+            "API key literal. Prefer --api-key-env or provider env vars to avoid exposing secrets in process arguments."
+    )
     var apiKey: String?
 
     @Option(name: .long, help: "Environment variable name containing the API key.")
     var apiKeyEnv: String?
 
-    @Option(name: .long, help: "Model name (e.g. gpt-4o, claude-sonnet-5, gemini-2.0-flash).")
+    @Option(name: .long, help: "Model name (e.g. gpt-4o, claude-sonnet-5-5, gemini-2.0-flash).")
     var model: String?
 
     @Option(name: .long, help: "Base URL override (e.g. https://us.api.openai.com/v1).")
@@ -84,7 +93,8 @@ struct LLMInlineOptions: ParsableArguments {
 
     @Flag(
         name: .long,
-        help: "Allow non-loopback http:// base URLs for non-local providers. Prompt content and API keys may be sent without TLS."
+        help:
+            "Allow non-loopback http:// base URLs for non-local providers. Prompt content and API keys may be sent without TLS."
     )
     var allowInsecureHTTP: Bool = false
 
@@ -94,7 +104,7 @@ struct LLMInlineOptions: ParsableArguments {
     @Flag(name: .long, help: "Mark provider as local (smaller context budget).")
     var local: Bool = false
 
-    private func providerID() throws -> LLMProviderID {
+    func providerID() throws -> LLMProviderID {
         // Accept simple aliases for provider names used in docs and terminals.
         let normalized: String
         switch provider.lowercased() {
@@ -102,12 +112,20 @@ struct LLMInlineOptions: ParsableArguments {
             normalized = "localCLI"
         case "openaicompatible", "openai-compatible":
             normalized = "openaiCompatible"
+        case "apple", "apple-intelligence", "appleintelligence":
+            normalized = "appleIntelligence"
+        case "kimi", "moonshotai":
+            normalized = "moonshot"
+        case "zhipu", "z.ai", "glm":
+            normalized = "zai"
+        case "alibaba", "dashscope":
+            normalized = "qwen"
         default:
             normalized = provider
         }
         guard let providerID = LLMProviderID(rawValue: normalized) else {
             throw ValidationError(
-                "Unknown provider '\(provider)'. Options: anthropic, openai, openaiCompatible, gemini, openrouter, ollama, lmstudio, cli"
+                "Unknown provider '\(provider)'. Options: anthropic, openai, openaiCompatible, gemini, openrouter, moonshot, deepseek, qwen, zai, minimax, ollama, lmstudio, appleIntelligence, cli"
             )
         }
         if providerID == .inProcessLocal {
@@ -118,23 +136,35 @@ struct LLMInlineOptions: ParsableArguments {
 
     func buildExecutionContext(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        emitWarnings: Bool = true
+        emitWarnings: Bool = true,
+        persistedRouteDefault: Bool = false
     ) throws -> InlineLLMExecutionContext {
         let providerID = try providerID()
-
-        let overrideURL: URL? = if let urlStr = baseURL {
-            try validateBaseURL(
-                urlStr,
-                providerID: providerID,
-                allowInsecureHTTP: allowInsecureHTTP
-            )
-        } else {
-            nil
+        if providerID == .appleIntelligence {
+            try validateAppleIntelligenceFlags()
         }
+
+        let overrideURL: URL? =
+            if let urlStr = baseURL {
+                try validateBaseURL(
+                    urlStr,
+                    providerID: providerID,
+                    allowInsecureHTTP: allowInsecureHTTP
+                )
+            } else {
+                nil
+            }
         let client = RoutingLLMClient()
 
         var providerConfig: LLMProviderConfig
         var localCLIConfig: LocalCLIConfig?
+
+        // Inline one-off commands keep historical model defaults for script
+        // compatibility; a saved app route must match the app's own current
+        // default (LLMProviderDescriptor.defaultModelName) instead.
+        func resolvedDefault(_ inlineCompatibilityDefault: String) -> String {
+            persistedRouteDefault ? providerID.defaultModelName : inlineCompatibilityDefault
+        }
 
         switch providerID {
         case .anthropic:
@@ -152,7 +182,7 @@ struct LLMInlineOptions: ParsableArguments {
             )
             providerConfig = .openai(
                 apiKey: key,
-                model: model ?? InlineLLMCompatibilityDefaults.openAIModel,
+                model: model ?? resolvedDefault(InlineLLMCompatibilityDefaults.openAIModel),
                 baseURL: overrideURL
             )
         case .openaiCompatible:
@@ -173,7 +203,7 @@ struct LLMInlineOptions: ParsableArguments {
             )
             providerConfig = .gemini(
                 apiKey: key,
-                model: model ?? InlineLLMCompatibilityDefaults.geminiModel,
+                model: model ?? resolvedDefault(InlineLLMCompatibilityDefaults.geminiModel),
                 baseURL: overrideURL
             )
         case .openrouter:
@@ -184,14 +214,50 @@ struct LLMInlineOptions: ParsableArguments {
             )
             providerConfig = .openrouter(
                 apiKey: key,
-                model: model ?? InlineLLMCompatibilityDefaults.openRouterModel,
+                model: model ?? resolvedDefault(InlineLLMCompatibilityDefaults.openRouterModel),
                 baseURL: overrideURL
             )
+        case .moonshot:
+            let key = try requiredAPIKey(
+                providerName: providerID.displayName,
+                defaultEnvNames: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
+                environment: environment
+            )
+            providerConfig = .moonshot(apiKey: key, model: model ?? providerID.defaultModelName, baseURL: overrideURL)
+        case .deepseek:
+            let key = try requiredAPIKey(
+                providerName: providerID.displayName,
+                defaultEnvNames: ["DEEPSEEK_API_KEY"],
+                environment: environment
+            )
+            providerConfig = .deepseek(apiKey: key, model: model ?? providerID.defaultModelName, baseURL: overrideURL)
+        case .qwen:
+            let key = try requiredAPIKey(
+                providerName: providerID.displayName,
+                defaultEnvNames: ["DASHSCOPE_API_KEY", "QWEN_API_KEY"],
+                environment: environment
+            )
+            providerConfig = .qwen(apiKey: key, model: model ?? providerID.defaultModelName, baseURL: overrideURL)
+        case .zai:
+            let key = try requiredAPIKey(
+                providerName: providerID.displayName,
+                defaultEnvNames: ["ZAI_API_KEY", "ZHIPU_API_KEY"],
+                environment: environment
+            )
+            providerConfig = .zai(apiKey: key, model: model ?? providerID.defaultModelName, baseURL: overrideURL)
+        case .minimax:
+            let key = try requiredAPIKey(
+                providerName: providerID.displayName,
+                defaultEnvNames: ["MINIMAX_API_KEY"],
+                environment: environment
+            )
+            providerConfig = .minimax(apiKey: key, model: model ?? providerID.defaultModelName, baseURL: overrideURL)
         case .ollama:
             providerConfig = .ollama(model: model ?? providerID.defaultModelName, baseURL: overrideURL)
         case .lmstudio:
             guard let rawModel = model?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !rawModel.isEmpty else {
+                !rawModel.isEmpty
+            else {
                 throw ValidationError("--model is required for LM Studio")
             }
             providerConfig = .lmstudio(
@@ -201,7 +267,8 @@ struct LLMInlineOptions: ParsableArguments {
             )
         case .localCLI:
             guard let rawCommand = command,
-                  !rawCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                !rawCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
                 throw ValidationError("--command is required for cli provider (e.g. 'claude -p')")
             }
             providerConfig = .localCLI()
@@ -210,6 +277,8 @@ struct LLMInlineOptions: ParsableArguments {
             )
         case .inProcessLocal:
             throw ValidationError("The in-process local provider is not exposed through inline CLI configuration yet.")
+        case .appleIntelligence:
+            providerConfig = .appleIntelligence()
         }
 
         if local && !providerConfig.isLocal {
@@ -223,9 +292,10 @@ struct LLMInlineOptions: ParsableArguments {
         }
 
         if emitWarnings,
-           allowInsecureHTTP,
-           let overrideURL,
-           Self.usesNonLoopbackHTTP(overrideURL, providerID: providerID) {
+            allowInsecureHTTP,
+            let overrideURL,
+            Self.usesNonLoopbackHTTP(overrideURL, providerID: providerID)
+        {
             Self.emitInsecureHTTPWarning(url: overrideURL, providerID: providerID)
         }
 
@@ -236,6 +306,23 @@ struct LLMInlineOptions: ParsableArguments {
             ),
             client: client
         )
+    }
+
+    private func validateAppleIntelligenceFlags() throws {
+        if let model {
+            let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, trimmed != LLMProviderID.appleIntelligence.defaultModelName {
+                throw ValidationError(
+                    "Apple Intelligence uses the on-device system model. Omit --model."
+                )
+            }
+        }
+        if baseURL != nil {
+            throw ValidationError("--base-url is not supported for Apple Intelligence.")
+        }
+        if apiKey != nil || apiKeyEnv != nil {
+            throw ValidationError("Apple Intelligence does not use an API key.")
+        }
     }
 
     private func requiredAPIKey(
@@ -292,20 +379,22 @@ struct LLMInlineOptions: ParsableArguments {
 
     static func insecureHTTPWarning(url: URL, providerID: LLMProviderID) -> String {
         """
-            Warning: --allow-insecure-http is sending \(providerID.displayName) LLM traffic to \
-            \(url.absoluteString) without TLS. Prompt content and API keys may be visible on \
-            the network.
+        Warning: --allow-insecure-http is sending \(providerID.displayName) LLM traffic to \
+        \(url.absoluteString) without TLS. Prompt content and API keys may be visible on \
+        the network.
 
-            """
+        """
     }
 
     func buildConfig(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        emitWarnings: Bool = true
+        emitWarnings: Bool = true,
+        persistedRouteDefault: Bool = false
     ) throws -> LLMProviderConfig {
         try buildExecutionContext(
             environment: environment,
-            emitWarnings: emitWarnings
+            emitWarnings: emitWarnings,
+            persistedRouteDefault: persistedRouteDefault
         ).context.providerConfig
     }
 }

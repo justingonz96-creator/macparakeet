@@ -36,6 +36,8 @@ starts no artifact refresh.
 - `MeetingRecordingService`: creates session folders and source audio.
 - `MeetingTranscriptFinalizer` / meeting finalization: completes the DB row and
   final transcript.
+- `MeetingRecordingRecoveryService`: refreshes artifacts from the final recovered
+  row before lock settlement; failed refresh remains retryable without rerunning STT.
 - `MeetingArtifactStore`: materializes `manifest.json`, `meeting.md`,
   `transcript.json`, `notes.md`, `prompt-results.json`, and
   `prompt-results/*.md`.
@@ -60,6 +62,42 @@ starts no artifact refresh.
 
 ## Stable Folder Entries
 
+Selected capture sources start independently. The recording service installs
+the source writer's event consumer before awaiting capture startup; a stuck
+microphone cannot prevent a healthy system source from being written. A missing selected source
+can therefore produce a valid partial meeting. Stop finalizes surviving audio
+through the existing source-alignment, playback and capture-report contract.
+A late source retains its actual offset rather than moving meeting time zero.
+
+The first usable buffer establishes capture, including valid silence. After
+12 seconds, a selected source with no callbacks is shown as unavailable; it may
+join the same live session later. In a combined meeting, a microphone whose
+start failed with a retryable error, or stalled before delivering audio, is
+retried in the background for the rest of the session (#1223; permission denial
+and required-VPIO failures are not retried) and joins with its actual offset when a
+retry delivers its first buffer; it stays unavailable until then, so losing the system source
+still stops capture. With neither source delivering, startup fails and retires
+that session. Native microphone execution itself is not cancelled by this
+deadline. Existing bounded system teardown is additional settlement
+work. No deadline permits deleting captured audio: failed-start cleanup removes
+only proven-empty, finalized attempts; otherwise media and the recovery lock
+remain. Explicit user discard retains its existing deletion authority.
+
+Meeting Stop does not await a stuck microphone's native start/unsubscription.
+The singleton microphone remains leased until both settle; later system-only
+meetings can record, combined meetings report microphone unavailable, and a
+microphone-only request fails with a cleanup-pending error. A combined meeting
+retries the microphone once the earlier lease settles. Retired callbacks
+and late processing reports cannot write into a replacement meeting. This
+contains the impact of native delay; it does not establish or repair its cause.
+
+Quit while capture is still Starting offers End & Transcribe as well as
+Discard, because the writer may already hold a healthy source. Permission
+prompt abort stays discard-only. Explicit discard keeps its deletion
+authority. A missing selected source that later delivers may join the same
+live session; health does not tell the user to restart solely because the
+12-second window expired.
+
 The v1 folder can contain these stable filenames:
 
 - `meeting-playback.m4a`: mixed playback/export audio referenced by
@@ -74,11 +112,16 @@ The v1 folder can contain these stable filenames:
   Absent for single-source meetings, missing/unloaded AEC assets, render
   failures, and when the echo-path probe finds no system-audio bleed to cancel.
   Removed with the other managed audio by retention/detach.
+  Renderer PCM scratch is never a folder entry (see
+  `spec/05-audio-pipeline.md`). Scratch or encode failure preserves raw sources
+  and uses the existing skip/fallback provenance; incomplete derived output is
+  removed on encoding failure or cooperative cancellation.
 - `meeting-recording-metadata.json`: optional source-alignment and speech-route
   sidecar. `speechEngine` is the authoritative final-transcription selection;
   optional additive `previewSpeechEngine` records the live-preview route when
-  one was supported. Missing preview provenance remains valid for legacy
-  folders. It may also include additive `echoSuppression` provenance with
+  live preview was enabled and supported. Missing preview provenance is valid
+  when preview was disabled or unsupported, and for legacy folders. It may
+  also include additive `echoSuppression` provenance with
   `reasonCode` plus optional `modelVersion`, `renderDurationMs`,
   `delayEstimateMs`, and `probeBestCorrelation` fields so shared artifact
   folders can explain cleaned-vs-raw microphone routing without app logs. It
@@ -114,9 +157,19 @@ The v1 folder can contain these stable filenames:
 
 Each `prompt-results.json` record preserves `userNotesSnapshot` and the
 additive Boolean `includeMeetingNotesSnapshot` (false for legacy/imported rows).
-The per-result Markdown view states whether automatic notes context was enabled.
+An edited result also includes `contentEditedAt` as an ISO-8601 timestamp of
+the last in-place user edit. An absent or null key means no in-place edit is
+recorded, including for generated, historical, and imported results; it does
+not establish who wrote the content.
+The per-result Markdown view states whether automatic notes context was enabled
+and whether an in-place edit is recorded (`Content edited:`). It
+also shows the output language policy (`not recorded` when absent).
 It also preserves the remaining prompt-result snapshots,
-including additive optional `inferenceSettingsSnapshot`. When present, this is
+including additive optional `inferenceSettingsSnapshot` and additive nullable
+`outputLanguagePolicySnapshot` (`follow-transcript` or a language code).
+`NULL` or omission means no policy was recorded, including for earlier and
+imported results.
+When present, `inferenceSettingsSnapshot` is
 the normalized effective provider/model-filtered inference receipt stored on
 the canonical database row. Its optional `reasoningEffort` is one of `low`,
 `medium`, `high`, or `xhigh` and appears only with enabled thinking; legacy and
@@ -161,6 +214,7 @@ raw-audio filenames.
 - `calendarEventSnapshot`
 - `meetingCaptureReport`
 - `speakerCorrectionsApplied`
+- `textCorrectionsApplied`
 - `speakerCorrectionRevision`
 
 `manifest.json` keeps:
@@ -172,7 +226,12 @@ raw-audio filenames.
 - `files`
 - `promptResults`
 
-`manifest.meeting.meetingType` is optional; absence means unclassified.
+`manifest.meeting.transcriptTextAlignment` is `automatic`, `segment`, or
+`untimed`. `automatic` requires present automatic word timestamps; `segment`
+means effective rewritten text is aligned only to its segment envelopes;
+`untimed` covers missing word timestamps and legacy whole-text edits.
+`manifest.meeting.meetingType` is optional; absence means
+unclassified.
 `manifest.meeting.meetingLabels` is the complete assigned-label array and may
 be empty. Type and label snapshots carry stable UUID and display name plus
 optional presentation metadata. Archived values remain materialized while a
@@ -241,7 +300,17 @@ remain unchanged. Required fields remain required; the optional playback
 fallback and encoded JSON shape are unchanged. This normalization applies when
 reading stored reports, without rewriting source audio or requiring a migration.
 
-Meeting `durationMs` is the probed duration of the decodable
+A source-only processing row may precede canonical playback. It retains the
+expected `filePath` for recovery identity, with unknown `durationMs` and file
+size. Raw sources and metadata are already durable. The Library distinguishes
+saved sources from missing audio, permits Retry after preparation failure, and
+enables playback/export only when the playback file exists. Final-transcription
+admission replaces unknown duration with the probed result after preflight. If
+preflight fails, duration may remain unknown even with ready playback, so Retry
+conservatively repeats preparation. Elapsed capture time is not a placeholder
+playback duration. No new DB status or artifact schema is required.
+
+Once final transcription is admitted, meeting `durationMs` is the probed duration of the decodable
 `meeting-playback.m4a` artifact. Normal finalization keeps it equal to
 `capturedDurationMs`. Crash recovery refreshes surviving source media facts and
 rebuilds `capturedDurationMs`, while preserving elapsed/interruption history
@@ -268,14 +337,24 @@ available, `speakerLabelsIncluded`, `speakerCorrectionsApplied`,
 order is: title, optional notes, transcript, optional prompt results, and
 artifact paths.
 
-Legacy v1 `MeetingArtifactSnapshot` JSON without speaker correction keys decodes
-with `speakerCorrectionsApplied = false` and `speakerCorrectionRevision = 0`.
+Legacy v1 `MeetingArtifactSnapshot` JSON without correction keys decodes with
+`speakerCorrectionsApplied = false`, `textCorrectionsApplied = false`, and
+`speakerCorrectionRevision = 0`.
+The legacy `speakerCorrectionsApplied` name reports any active entry in the
+shared speaker/transcript correction journal, including text-only corrections;
+it does not assert that a speaker identity changed. Consumers should use
+`textCorrectionsApplied` for the independent timed-text/boundary signal.
 Metadata and speaker refreshes in the transcription view model share a queue
 per meeting and read the current DB row after earlier materializations finish.
 
-`transcript.json` publishes the effective speaker projection and includes
-`speakerCorrectionsApplied` plus `speakerCorrectionRevision`. Each durable
-`transcriptSegments` item may additionally include `speakerSpans`. A span has
+`transcript.json` publishes the effective transcript projection and includes
+`speakerCorrectionsApplied`, `textCorrectionsApplied`,
+`speakerCorrectionRevision`, and `transcriptTextAlignment`. Each durable
+`transcriptSegments` item may additionally include `isTextEdited: true` and
+`speakerSpans`. A structurally changed segment also includes
+`anchorTranscriptSegmentIDs`; a one-to-one text edit retains the durable segment
+ID instead. Omitted `isTextEdited` means the line retains automatic text and
+boundaries. A span has
 `wordRange`, nullable `speakerId`, and `speakerLabel`; multiple spans preserve
 manual splits that cannot be represented by the segment's legacy single
 speaker fields. GUI correction refreshes preserve the resolved projection and
@@ -300,8 +379,13 @@ manifest.
 meeting has durable segments. Each segment keeps `id`, `startMs`, `endMs`,
 `speakerId`, `speakerLabel`, `text`, and a half-open `wordRange`
 (`startIndex`, `endIndexExclusive`) into the same transcript's
-`wordTimestamps` array. Segment IDs are stable for that transcript version;
-meeting retranscription may replace the array with newly minted segment IDs.
+`wordTimestamps` array. Effective text or boundary corrections are represented
+by `isTextEdited: true` and retain only the segment's start/end timing claim.
+The word array preserves the automatic recognized text and timing; it is not a
+per-word alignment for a corrected line. One-to-one edits retain the durable
+segment ID. Structural splits and merges use a deterministic effective ID plus
+`anchorTranscriptSegmentIDs` mapping to the durable source segments. Meeting
+retranscription may replace the array with newly minted segment IDs.
 
 `startContext`, when present, keeps the recording-start snapshot:
 

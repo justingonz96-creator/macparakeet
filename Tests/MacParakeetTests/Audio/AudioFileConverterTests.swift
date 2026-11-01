@@ -3,6 +3,13 @@ import XCTest
 
 final class AudioFileConverterTests: XCTestCase {
 
+    func testSingleInputMeetingNormalizationSelectsFirstAudioAndDisablesVideo() {
+        let args = AudioFileConverter().ffmpegMixArguments(
+            inputPaths: ["/tmp/meeting.mov"], outputPath: "/tmp/system-raw.m4a")
+        XCTAssertTrue(args.contains("-vn"))
+        XCTAssertTrue(zip(args, args.dropFirst()).contains { $0 == "-map" && $1 == "0:a:0" })
+    }
+
     func testSupportedAudioExtensions() {
         XCTAssertTrue(AudioFileConverter.isSupported(extension: "mp3"))
         XCTAssertTrue(AudioFileConverter.isSupported(extension: "wav"))
@@ -184,13 +191,4 @@ final class AudioFileConverterTests: XCTestCase {
         }
     }
 
-    func testAudioProcessorErrorDescriptions() {
-        XCTAssertNotNil(AudioProcessorError.microphonePermissionDenied.errorDescription)
-        XCTAssertNotNil(AudioProcessorError.microphoneNotAvailable.errorDescription)
-        XCTAssertNotNil(AudioProcessorError.recordingFailed("test").errorDescription)
-        XCTAssertNotNil(AudioProcessorError.conversionFailed("test").errorDescription)
-        XCTAssertNotNil(AudioProcessorError.unsupportedFormat("xyz").errorDescription)
-        XCTAssertNotNil(AudioProcessorError.fileTooLarge("test").errorDescription)
-        XCTAssertNotNil(AudioProcessorError.insufficientSamples.errorDescription)
-    }
 }

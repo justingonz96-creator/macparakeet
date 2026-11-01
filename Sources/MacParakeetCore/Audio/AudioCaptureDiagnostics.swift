@@ -6,7 +6,7 @@ import os
 public enum AudioCaptureDiagnostics {
     private static let lock = OSAllocatedUnfairLock(initialState: ())
     private static let logger = Logger(subsystem: "com.macparakeet.core", category: "AudioCaptureDiagnostics")
-    private static let processSession = UUID().uuidString.lowercased()
+    private static let processSession = Observability.processSessionID
     private static let appendQueue = DispatchQueue(
         label: "com.macparakeet.audio-capture-diagnostics.append",
         qos: .utility
@@ -97,31 +97,42 @@ public enum AudioCaptureDiagnostics {
     }
 
     public static func append(_ message: @autoclosure () -> String) {
-        append(message(), timestamp: Date(), uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds)
+        append(
+            message(), timestamp: Date(),
+            uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds,
+            correlation: Observability.currentCaptureCorrelation
+        )
     }
 
-    private static func append(_ message: String, timestamp: Date, uptimeNanoseconds: UInt64) {
-        let data = encodedLogLine(message, timestamp: timestamp, uptimeNanoseconds: uptimeNanoseconds)
+    private static func append(
+        _ message: String, timestamp: Date, uptimeNanoseconds: UInt64,
+        correlation: ObservabilityCaptureCorrelation? = nil
+    ) {
+        let data = encodedLogLine(
+            message, timestamp: timestamp, uptimeNanoseconds: uptimeNanoseconds,
+            correlation: correlation
+        )
         appendEncodedLogLine(data, to: diagnosticLogURL())
     }
 
     static func appendEncodedLogLine(_ data: Data, to logURL: URL) {
         if Thread.isMainThread {
-            let result = lock.withLockIfAvailable {
-                do {
-                    try writeLogLine(data, to: logURL, waitForLock: false, allowRotation: false)
-                    return MainThreadAppendResult.completed
-                } catch LogWriteError.rotationRequiresBackground {
-                    return .deferred(reason: "rotation")
-                } catch {
-                    let code = (error as NSError).code
-                    if (error as NSError).domain == NSPOSIXErrorDomain, code == Int(EWOULDBLOCK) {
-                        return .deferred(reason: "lock_contended")
+            let result =
+                lock.withLockIfAvailable {
+                    do {
+                        try writeLogLine(data, to: logURL, waitForLock: false, allowRotation: false)
+                        return MainThreadAppendResult.completed
+                    } catch LogWriteError.rotationRequiresBackground {
+                        return .deferred(reason: "rotation")
+                    } catch {
+                        let code = (error as NSError).code
+                        if (error as NSError).domain == NSPOSIXErrorDomain, code == Int(EWOULDBLOCK) {
+                            return .deferred(reason: "lock_contended")
+                        }
+                        logger.error("audio_diagnostic_write_failed error_type=\(errorType(error), privacy: .public)")
+                        return .completed
                     }
-                    logger.error("audio_diagnostic_write_failed error_type=\(errorType(error), privacy: .public)")
-                    return .completed
-                }
-            } ?? .deferred(reason: "lock_contended")
+                } ?? .deferred(reason: "lock_contended")
             if case .deferred(let reason) = result {
                 logger.info("audio_diagnostic_write_deferred reason=\(reason, privacy: .public)")
                 // Keep the exact record and its occurrence clocks. Only its
@@ -152,21 +163,39 @@ public enum AudioCaptureDiagnostics {
     /// make a first-buffer event appear to have happened after Stop. The random
     /// process session distinguishes app/CLI runs without a persistent ID.
     public static func appendAsync(_ message: String) {
+        appendAsync(message, correlation: Observability.currentCaptureCorrelation)
+    }
+
+    /// Snapshot records already own their workflow fields. Passing nil avoids
+    /// adding ambient attribution that may have changed before emission.
+    static func appendAsync(_ message: String, correlation: ObservabilityCaptureCorrelation?) {
         let timestamp = Date()
         let uptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
         appendQueue.async {
-            append(message, timestamp: timestamp, uptimeNanoseconds: uptimeNanoseconds)
+            append(
+                message, timestamp: timestamp, uptimeNanoseconds: uptimeNanoseconds,
+                correlation: correlation
+            )
         }
     }
 
-    static func encodedLogLine(_ message: String, timestamp: Date, uptimeNanoseconds: UInt64) -> Data {
+    static func encodedLogLine(
+        _ message: String,
+        timestamp: Date,
+        uptimeNanoseconds: UInt64,
+        correlation: ObservabilityCaptureCorrelation? = nil
+    ) -> Data {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let sanitized = String(sanitizedMessage(message).prefix(maxMessageCharacters))
-        let line =
+        var line =
             "\(formatter.string(from: timestamp)) \(sanitized)"
             + " process_id=\(ProcessInfo.processInfo.processIdentifier)"
-            + " process_session=\(processSession) uptime_ns=\(uptimeNanoseconds)\n"
+            + " process_session=\(processSession) uptime_ns=\(uptimeNanoseconds)"
+        if let correlation, UUID(uuidString: correlation.workflowID) != nil {
+            line += " workflow_id=\(correlation.workflowID) consumer=\(correlation.consumer.rawValue)"
+        }
+        line += "\n"
         return Data(line.utf8)
     }
 

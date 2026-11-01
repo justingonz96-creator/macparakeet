@@ -17,6 +17,9 @@ APP_BUNDLE="$PRODUCT_DIR/Echo-Dev.app"
 LOG_FILE="${TMPDIR:-/tmp}/echo-dev.log"
 BUILD_LOG_FILE="${TMPDIR:-/tmp}/echo-dev-build.log"
 APP_MACOS_BIN="$APP_BUNDLE/Contents/MacOS/MacParakeet"
+# Keep every Dev bundle off the stable app's database and media directories.
+# The override is honored in both Debug and optimized Release configurations.
+APP_STATE_DIR="${MACPARAKEET_DEBUG_APP_STATE_DIR:-$HOME/Library/Application Support/MacParakeet-Dev}"
 
 pick_codesign_identity() {
   local preferred="${MACPARAKEET_CODESIGN_IDENTITY:-}"
@@ -152,7 +155,23 @@ while IFS= read -r -d '' bundle; do
 done < <(find "$PRODUCT_DIR" -maxdepth 1 -type d -name '*.bundle' -print0)
 mkdir -p "$RESOURCES_DIR/Legal"
 cp "$ROOT_DIR/Sources/MacParakeet/Resources/Legal/MarkdownDependencies.txt" "$RESOURCES_DIR/Legal/MarkdownDependencies.txt"
+cp "$ROOT_DIR/Sources/MacParakeet/Resources/Legal/NemotronDiarization.txt" "$RESOURCES_DIR/Legal/NemotronDiarization.txt"
+cp "$ROOT_DIR/Sources/MacParakeet/Resources/Legal/HandySounds.txt" "$RESOURCES_DIR/Legal/HandySounds.txt"
 cp "$ROOT_DIR/THIRD_PARTY_LICENSES.md" "$RESOURCES_DIR/Legal/THIRD_PARTY_LICENSES.md"
+
+# Only opted-in Debug launches need the experimental Ask runtime. Ordinary
+# development must not require Node/npm or reinstall helper dependencies.
+BUILD_ASK_HELPER=false
+if [[ "$CONFIG" == Debug ]]; then
+  for launch_arg in "$@"; do
+    if [[ "$launch_arg" == --enable-ask-workspace ]]; then
+      BUILD_ASK_HELPER=true
+    fi
+  done
+fi
+if [[ "$BUILD_ASK_HELPER" == true ]]; then
+  "$ROOT_DIR/scripts/build_ask_helper.sh" "$RESOURCES_DIR/AskAgentHelper" "$RESOURCES_DIR/node"
+fi
 
 # Copy frameworks into the bundle so dyld loads only bundle-local paths.
 BUNDLE_FW_DIR="$APP_BUNDLE/Contents/Frameworks"
@@ -184,6 +203,14 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'PLIST'
     <string>Echo Dev</string>
     <key>CFBundleExecutable</key>
     <string>MacParakeet</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key><string>com.macparakeet.meeting</string>
+            <key>CFBundleTypeRole</key><string>Editor</string>
+            <key>CFBundleURLSchemes</key><array><string>macparakeet-dev</string></array>
+        </dict>
+    </array>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>
@@ -248,15 +275,17 @@ BUILD_DATE_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BUILD_SOURCE="dev-run-xcodebuild-$(echo "$CONFIG" | tr '[:upper:]' '[:lower:]')"
 
 echo "[4/5] Launching ${CONFIG} app…"
-open -n "$APP_BUNDLE" --env MACPARAKEET_GIT_COMMIT="$GIT_COMMIT" \
+open -n "$APP_BUNDLE" --env MACPARAKEET_DEBUG_APP_STATE_DIR="$APP_STATE_DIR" \
+  --env MACPARAKEET_GIT_COMMIT="$GIT_COMMIT" \
   --env MACPARAKEET_BUILD_DATE_UTC="$BUILD_DATE_UTC" \
-  --env MACPARAKEET_BUILD_SOURCE="$BUILD_SOURCE" >"$LOG_FILE" 2>&1
+  --env MACPARAKEET_BUILD_SOURCE="$BUILD_SOURCE" --args "$@" >"$LOG_FILE" 2>&1
 
 echo "[5/5] Launch requested"
 echo "  bundle: $APP_BUNDLE"
 echo "  source: $BUILD_SOURCE"
 echo "  commit: $GIT_COMMIT"
 echo "  built-at: $BUILD_DATE_UTC"
+echo "  state: $APP_STATE_DIR"
 echo "  codesign: $CODESIGN_IDENTITY"
 echo "  log: $LOG_FILE"
 echo "  build-log: $BUILD_LOG_FILE"

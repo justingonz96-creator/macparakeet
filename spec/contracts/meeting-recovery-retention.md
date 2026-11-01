@@ -51,21 +51,30 @@ Stable lock fields:
 - `finalizationLeaseId`
 - `speechEngine`
 - `notes`
+- `audioRetentionStartedAt`
+- `titleOverride`
 
 Stable states:
 
 - `recording`: capture may still be writing source audio.
-- `awaitingTranscription`: source/mixed audio has been finalized, but final
-  transcription or recovery cleanup has not completed.
+- `awaitingTranscription`: source writers and capture metadata are settled;
+  canonical playback preparation, final transcription, or recovery cleanup may
+  still be pending. Playback need not exist. The lock remains a retention barrier.
 
 `notes` is a backward-compatible additive field. Missing values decode to safe
 defaults, and malformed `notes` does not block recovery of the structural lock
 metadata.
 
+`audioRetentionStartedAt` and `titleOverride` are backward-compatible optional
+import metadata. Missing-row recovery uses `startedAt` for historical chronology,
+the optional retention clock for the managed copy, and a normalized explicit
+title when present. Older locks omit both fields and keep their existing behavior.
+
 `finalizationLeaseId` is a backward-compatible optional ownership token.
-Normal stop-and-queue locks and older locks omit it. Retry and crash-recovery
-flows write a fresh token together with the claiming process PID before they
-touch the transcript row or start STT. A missing token decodes as `nil`. A
+Older normal stop-and-queue locks omit it. Source-only capture admission now
+claims a token before entering the existing queue; retry and crash-recovery
+also claim before processing. A live lease spans playback preparation, final
+transcription, and settlement. No second capture owns that folder. A missing token decodes as `nil`. A
 malformed token or zero-byte file makes `read` return `nil` (the same as
 today's corrupt-JSON path). Reconciliation then treats that row as unowned
 and marks it retryable; claim treats a *present but unreadable* lock as dead
@@ -90,6 +99,15 @@ recording invisible to older recovery, CLI, or retention readers. Readers
 accept supported older versions and reject newer, unknown versions.
 
 ## Safety Predicates
+
+Stop, discard, and failed-start cleanup share one in-process settlement owner.
+Competing settlement calls wait for that owner rather than finalizing or
+deleting the same writer twice. An early-start consumer is drained before
+writer finalization. Failed-start cleanup may delete a folder only when no
+capture frames were written and no finalizer remains pending; otherwise the
+existing lock and media remain for recovery. Such a retained recording lock
+still follows the PID/lease discovery rules below; retaining it does not claim
+that same-process recovery or a library row has already completed.
 
 Use the narrow predicate that matches the operation:
 
@@ -144,6 +162,28 @@ pre-claim lock, so repeated fail/retry cycles cannot restore an abandoned lease
 or wedge the next retry. A relinquished token is not a live owner and remains
 visible to recovery discovery even while its former process PID is alive.
 
+## Recovery Artifact Settlement
+
+Recovery saves its final `recoveredFromCrash` and notes metadata, then refreshes
+meeting artifacts before deleting `recording.lock`. The configured artifact store
+retains effective speaker corrections/classification, and refresh reads existing
+prompt results rather than replacing them with an empty list. A refresh failure
+leaves the completed row and lock available for recovery. A retry refreshes the
+existing completed row and settles its lock without another audio mix or STT run.
+An existing row's notes are canonical, including explicit nil or empty clears;
+older notes in a retained lock or a recovered `MeetingRecordingOutput` must not
+repopulate the row or its notes artifact. This holds for the finalize and
+recovery paths covered by this contract: `TranscriptionService.finalizeMeetingTranscription`
+on a queued/processing/error row, and recovery's completed-row paths (both the direct
+`awaitingTranscription` refresh and `completeRecovery` for a completed row found
+under a non-`awaitingTranscription` lock). Only a genuinely new row (a fresh
+stub with no prior DB state) takes its initial notes from the lock/recording.
+`TranscriptionService.retranscribeArchivedMeeting` (explicit user-triggered
+re-run) is outside this contract's recovery/finalize scope and still falls
+back to `recording.userNotes` when the row's notes are nil.
+A stale descriptor for an already settled session is refused with `missingLock`;
+rediscovery is empty and does not recreate rows or audio.
+
 ## Source Writer Finalization Ownership
 
 The release-readiness candidate gives source-writer finalization one aggregate
@@ -180,7 +220,40 @@ and playback fallback remain partial. Decodable repaired files alone do not
 prove healthy capture; see the
 [capture-report contract](meeting-artifacts-v1.md#stable-json-fields).
 
+## Stop Source Inspection
+
+After writer finalization, Stop inspects every settled source in microphone,
+then system order. Usable decoded frames, including silence, remain valid audio.
+Only an absent, zero-byte, or decoded zero-frame source with confirmed zero
+written frames is empty. Missing size attributes, audio-open failures, and any
+absence or emptiness contradicting writer evidence fail Stop recoverably.
+An uncertain source preserves the entire folder and `recording.lock`, including
+its healthy sibling; it is never silently omitted from successful output.
+
+Inspection failure finishes the live session, releases its speech-engine lease,
+and clears recording state before returning a storage error, allowing another
+recording to start. The retained marker does not guarantee immediate same-process
+recovery. Pending writers remain excluded from inspection and retain their
+existing ownership protection; genuinely empty sessions are deleted only when
+no writer finalization remains pending.
+
 ## Retention Rule
+
+Scheduled retention selects completed meetings by
+`COALESCE(audioRetentionStartedAt, createdAt)` and uses the same effective date
+for in-memory policy decisions. Split eligibility uses that clock as well.
+External imports retain their historical `createdAt` while a fresh
+`audioRetentionStartedAt` starts the owned copy's retention window. A nullable
+additive migration leaves legacy rows unchanged. Whole-row completion merges
+preserve the stored clock; retranscription and rename do not restart it.
+The [import contract](meeting-import-v1.md) defines source ownership and
+interrupted-import recovery through this existing lifecycle.
+
+Only the current, uncancelled scheduled sweep may update the last-success
+timestamp. A failed sweep leaves cleanup due for the next existing trigger.
+Replacing a sweep or disabling automatic retention invalidates its completion;
+synchronous cleanup that finishes later must not overwrite newer retry state.
+Its cleanup result is still logged for auditability.
 
 Automatic retention-like deletion must skip a meeting folder whenever
 `recording.lock` exists. That includes:
@@ -241,6 +314,83 @@ not final-transcription completion:
   when missing-lock restoration fails, so a failed release still relinquishes
   the exact lease for a later same-process retry.
 
+## Meeting Media Mutation Lease
+
+`MeetingMediaMutationLease` is a second, independent advisory lock from
+`recording.lock`. It protects a different race: saved-meeting audio
+deletion/bulk cleanup running concurrently with a future split's media
+export/materialize/publish over the same recordings root. It is not a
+capture/finalization ownership mechanism and must not be confused with, or
+substituted for, `recording.lock`.
+
+- One hidden, regular file per recordings root: `.meeting-media-mutation.lock`,
+  written directly in the root (never inside a per-meeting session folder), so
+  the lock's identity is stable even after a meeting's session folder is
+  deleted, and deleting that folder can never take the lock file with it.
+- Acquisition is `flock(LOCK_EX | LOCK_NB)`: nonblocking. A caller is never
+  blocked; it either acquires immediately or observes a clear busy error
+  (`MeetingMediaMutationLease.AcquisitionError.busy`) to surface and retry.
+- The lock file is opened with `O_NOFOLLOW` and then `fstat`-checked as a
+  regular file; a symlink or non-regular file (FIFO, device) planted at the
+  lock path is refused (`ioFailure`/`unexpectedLockFileType`) rather than
+  followed or trusted, so the lease's root identity cannot be redirected.
+- Roots passed to `acquire(roots:)` are canonicalized (symlinks resolved),
+  deduped, and sorted before locking, so multi-root acquisitions (a future
+  split's source and destination roots) always lock in the same order and
+  cannot deadlock each other. A failure partway through releases every
+  descriptor already acquired by that call before the error is thrown.
+- There is deliberately no PID-staleness logic, no reuse of `recording.lock`,
+  and no generic reusable lock framework: `flock` is released by the kernel
+  the instant the holding process exits (including a forced, uncooperative
+  death) or closes the descriptor, so a crashed holder can never leave a root
+  permanently locked, and this lease's scope (media mutation ordering) is
+  narrower than `recording.lock`'s (capture/finalization ownership).
+- Each `acquire()` call opens its own file descriptor. `flock` locks are
+  scoped to the open file description, not the owning process, so two
+  independent acquisitions of the same root conflict even from the same
+  process -- this is intentional: two callers in one process (for example a
+  bulk clear and a per-meeting delete racing on the same root) must still be
+  serialized.
+- `TranscriptionAssetCleanup.deleteTranscription(_:repository:)` and
+  `.clearManagedMeetingAudio(under:repository:)` hold the lease across BOTH
+  the file-removal phase and the repository/DB phase (delete row; detach
+  stored audio paths) so the two phases cannot be observed torn apart by a
+  concurrent split. `detachOwnedMeetingAudio` already held both of its phases
+  together and now acquires this lease around its whole body. The lower-level
+  `removeOwnedAssets` / `removeOwnedMeetingAudio` / `removeManagedMeetingAudioFiles`
+  remain individually safe to call alone (each acquires its own lease
+  internally via private unlocked helpers, not a public bypass flag) for
+  callers that only need the file-removal half.
+- Per-meeting operations acquire the meeting's session folder's *parent*
+  (stable even if that specific session folder is deleted mid-operation);
+  bulk operations acquire the exact recordings-root directory passed in.
+  Non-meeting sources and meeting rows with no resolvable folder have no
+  shared root to protect and run unlocked, matching their existing
+  non-racing removal paths.
+- `recording.lock` barriers are unchanged: `assertMeetingFolderUnlocked` still
+  refuses a locked session folder regardless of this lease's state, and this
+  lease never substitutes for that check.
+- Production GUI and CLI full-row deletion paths use
+  `TranscriptionDeletionCoordinator.delete`, which holds this lease across
+  asset removal and row deletion. Settings and CLI `history
+  clear-meeting-audio` both use `clearManagedMeetingAudio`, which holds one
+  lease across bulk file removal and stored-path detachment. The narrow
+  `TranscriptionDeletionCleanup` adapter remains file-removal-only by design;
+  it is not a production full-row deletion sequence.
+- Split children add a second, narrower `MeetingSplitChildProcessingLease`
+  keyed by child ID under the stable recordings root. Full deletion acquires
+  this media-root lease first and then the child lease. Split completion
+  automation acquires only the child lease across provider work, so a provider
+  cannot start from a stale cached transcript after deletion succeeds and a
+  successful deletion cannot overlap in-flight provider work. Non-split rows
+  never acquire the child lease.
+- Older MacParakeet builds that predate this lease do not create or respect
+  `.meeting-media-mutation.lock`. A split running only on a build with this
+  lease is protected against *this build's* mutators; it offers no
+  protection against an older, unpatched binary mutating the same root
+  concurrently. This is an accepted limitation, not a bug to route around
+  here.
+
 ## Non-Stable Fields
 
 - PID liveness is process-local and time-sensitive. `kill(pid, 0)` cannot
@@ -274,6 +424,8 @@ retention barrier.
 - `MeetingAudioRetentionPolicyTests`
 - `MeetingAudioRetentionSweeperTests`
 - `MeetingRecordingServiceTests`
+- `MeetingMediaMutationLeaseTests`
+- `TranscriptionAssetCleanupMutationLeaseTests`
 
 Focused coverage pins dead-PID `awaitingTranscription` reads, serialized
 single-owner retry/recovery admission, live-owner processing-row protection
@@ -286,8 +438,72 @@ refusal for missing or non-completed rows, rethrown delete I/O failure
 success/failure lock behavior, and crash-point convergence for awaiting locks
 with no row, processing rows, and completed rows whose lock is still present.
 
+`MeetingMediaMutationLeaseTests` pins nonblocking same-process acquisition
+conflicts (including two independent acquisitions of the same root from one
+process), a real second-process conflicting acquisition over `flock` (a
+Python helper process), release and forced (`SIGKILL`) process-death both
+permitting reacquisition, independent roots never conflicting, alias/symlink
+roots sharing one lock key, a deterministic partial multi-root acquire fully
+unwinding on conflict, and a symlinked or non-regular (FIFO) lock path being
+refused rather than followed or trusted. `TranscriptionAssetCleanupMutationLeaseTests`
+pins that an externally held lease blocks `deleteTranscription`,
+`detachOwnedMeetingAudio`, and `clearManagedMeetingAudio` from starting either
+phase (and that all three succeed once released), that `clearManagedMeetingAudio`
+actually runs both its file and row phases together, that the pre-existing
+`recording.lock` barrier still refuses a locked folder independent of this
+lease, and that a non-meeting delete never needs or touches an unrelated
+meeting root's lease.
+`MeetingSplitChildProcessingLeaseTests` pin same-child exclusion, independent
+child concurrency, symlink refusal, real cross-process exclusion and release
+after forced holder-process death. The split service integration coverage pins
+that deletion reports busy during a child's prompt and knowledge-card provider
+calls and succeeds after that work settles.
+
 ## When this changes
 
 Update this file, ADR-019, `spec/05-audio-pipeline.md`, CLI changelog notes for
 clear-audio behavior, and the focused lock/recovery/retention tests in the same
-PR.
+PR. Changes to `MeetingMediaMutationLease`'s root-key resolution, lock file
+name, or acquisition semantics must also update this file's Meeting Media
+Mutation Lease section and `MeetingMediaMutationLeaseTests`. Migrating a GUI
+or CLI call site to `deleteTranscription`/`clearManagedMeetingAudio` should
+update the call-site bullet above rather than leave it stale.
+
+## Source-only capture handoff (#1291)
+
+The recorder releases shared capture state after finalized sources, alignment,
+notes, and the awaiting-transcription lock are durable. The coordinator persists
+one processing row under the expected canonical playback path and admits it to
+the existing queue before advertising idle. Its duration/size are unknown until
+playback preparation succeeds. Recovery already rebuilds playback from source
+files and matches that canonical path to reuse an existing row.
+
+A failed row save or queue admission explicitly relinquishes an unleased,
+awaiting-transcription lock belonging to the same session/process: under the
+ownership mutex it first marks a still-processing row retryable, then writes a
+dead owner PID (0) and a fresh token. No row mutation follows that release. This makes
+Pending Recovery discover it without restarting. It never revokes an active
+lease, a recording-state lock, or pending writer finalization. If relinquishing
+also fails, source data stays retained and restart recovery remains available.
+A failed prepared job restores its previous ownership and marks its existing
+row retryable. Retry rebuilds absent/undecodable playback before STT.
+
+The meeting detail offers the same finalization Retry as the Library when an
+error/cancelled row retains source audio but has no playback. It reuses the
+canonical row, rather than starting a generic Retranscribe run. An accepted
+detail retry stays visibly processing until the queue reports completion or
+failure, including time spent behind another meeting. Admission errors are
+shown for the initiating meeting; completion clears its pending state even
+when another detail is selected. Processing copy covers playback preparation
+and transcription without implying that either has already started. Pending
+detail retries disable transcript editing, speaker renames, and generic
+retranscription, including saving a draft opened before admission. Their completion refreshes the same
+meeting quietly without switching to it after the user navigates elsewhere.
+
+Cleaned-microphone rendering starts only when final STT consumes its readiness
+handle, after entitlement preflight and row persistence, under queue ownership.
+Capture settlement and playback preparation snapshot its dependencies without
+starting a writer. Copies of the handle share one render and its published result.
+An early finalization failure therefore leaves no renderer for Retry to overlap. Unknown row duration remains an incomplete-preparation
+signal even when a failed attempt installed a decodable playback file; Retry
+repeats preparation to commit fallback/source truth before accepting that file.

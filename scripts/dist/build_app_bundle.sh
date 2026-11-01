@@ -24,6 +24,7 @@ set -euo pipefail
 #   SKIP_BUILD          (default: 0) reuse existing Release binary if 1
 #   BUILD_SYSTEM        (default: xcodebuild) app distribution requires xcodebuild
 #   XCODE_DERIVED_DATA  (default: .build/xcode-dist) derived data path for xcodebuild
+#   XCODE_BUILD_LOG     (default: /dev/null) append Xcode output and build timings here
 #   FFMPEG_PATH         (default: auto-download static build) source ffmpeg binary to bundle
 #   FFMPEG_VERSION      (default: release) 'release' or 'snapshot' from ffmpeg.martin-riedl.de
 #   ALLOW_NON_PORTABLE_FFMPEG (default: 0) allow bundling ffmpeg with non-system dylib deps
@@ -41,6 +42,9 @@ set -euo pipefail
 #   MACPARAKEET_MEETING_ECHO_MODEL source GGUF model for meeting echo suppression
 #   MACPARAKEET_MEETING_ECHO_MODEL_NAME optional bundled GGUF filename (default: source basename)
 #   MACPARAKEET_MEETING_ECHO_MODEL_SHA256 optional expected model SHA256
+#   MIN_MACOS_VERSION is the ceiling for the auto-prepared LocalVQE runtime's
+#   CMAKE_OSX_DEPLOYMENT_TARGET; bundled dylib slices with a higher minimum OS
+#   version load command than MIN_MACOS_VERSION fail verification
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -53,7 +57,7 @@ VERSION="${VERSION:-0.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(date -u +%Y%m%d%H%M%S)}"
 BUILD_GIT_COMMIT="${BUILD_GIT_COMMIT:-$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)}"
 BUILD_DATE_UTC="${BUILD_DATE_UTC:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-MIN_MACOS_VERSION="${MIN_MACOS_VERSION:-14.2}"
+MIN_MACOS_VERSION="${MIN_MACOS_VERSION:-$DEFAULT_MEETING_ECHO_MIN_MACOS_VERSION}"
 UNIVERSAL="${UNIVERSAL:-0}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 BUILD_SYSTEM="${BUILD_SYSTEM:-xcodebuild}"
@@ -63,6 +67,7 @@ if [[ "$BUILD_SYSTEM" != "xcodebuild" ]]; then
 fi
 BUILD_SOURCE="${BUILD_SOURCE:-dist-${BUILD_SYSTEM}-release}"
 XCODE_DERIVED_DATA="${XCODE_DERIVED_DATA:-$ROOT_DIR/.build/xcode-dist}"
+XCODE_BUILD_LOG="${XCODE_BUILD_LOG:-/dev/null}"
 
 APP_DIR="$DIST_DIR/${APP_NAME}.app"
 CONTENTS_DIR="$APP_DIR/Contents"
@@ -81,16 +86,17 @@ if [[ "$VERSION" == "0.0.0" ]]; then
   echo "Set VERSION=X.Y.Z for release builds so Sparkle and release metadata are correct." >&2
 fi
 
-build_cli_swiftpm() {
+build_swiftpm_helper() {
+  local product="$1"
   if [[ "$SKIP_BUILD" == "1" ]]; then
     return 0
   fi
 
   pushd "$ROOT_DIR" >/dev/null
   if [[ "$UNIVERSAL" == "1" ]]; then
-    swift build -c release --arch arm64 --arch x86_64 --product macparakeet-cli
+    swift build -c release --arch arm64 --arch x86_64 --product "$product"
   else
-    swift build -c release --product macparakeet-cli
+    swift build -c release --product "$product"
   fi
   popd >/dev/null
 }
@@ -123,6 +129,14 @@ prepare_xcode_git_submodule_support() {
   exit 1
 }
 
+run_xcodebuild() {
+  # Append stdout to XCODE_BUILD_LOG (quiet on the console, matching historical
+  # behavior when it defaults to /dev/null) while duplicating stderr to both
+  # the log and the console, so the configured log is complete and build
+  # failures stay visible in job output either way.
+  xcodebuild "$@" >>"$XCODE_BUILD_LOG" 2> >(tee -a "$XCODE_BUILD_LOG" >&2)
+}
+
 build_xcodebuild() {
   # Xcode compiles assets and generates resource accessors for a relocatable app bundle.
   if [[ "$SKIP_BUILD" == "1" ]]; then
@@ -137,10 +151,10 @@ build_xcodebuild() {
 
     if [[ "$SKIP_BUILD" != "1" ]]; then
       echo "[1/4] Building via xcodebuild (universal Release)…"
-      xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=arm64" \
-        -derivedDataPath "$dd_arm" -skipMacroValidation CODE_SIGNING_ALLOWED=NO >/dev/null
-      xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=x86_64" \
-        -derivedDataPath "$dd_x86" -skipMacroValidation CODE_SIGNING_ALLOWED=NO >/dev/null
+      run_xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=arm64" \
+        -derivedDataPath "$dd_arm" -skipMacroValidation -showBuildTimingSummary CODE_SIGNING_ALLOWED=NO
+      run_xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=x86_64" \
+        -derivedDataPath "$dd_x86" -skipMacroValidation -showBuildTimingSummary CODE_SIGNING_ALLOWED=NO
     fi
 
     local bin_arm="$dd_arm/Build/Products/Release/MacParakeet"
@@ -161,8 +175,8 @@ build_xcodebuild() {
     if [[ "$SKIP_BUILD" != "1" ]]; then
       echo "[1/4] Building via xcodebuild (Release)…"
       # Apple Silicon is the supported shipping target; lock to arm64 to avoid ambiguous destinations.
-      xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=arm64" \
-        -derivedDataPath "$dd" -skipMacroValidation CODE_SIGNING_ALLOWED=NO >/dev/null
+      run_xcodebuild build -scheme MacParakeet -configuration Release -destination "platform=OS X,arch=arm64" \
+        -derivedDataPath "$dd" -skipMacroValidation -showBuildTimingSummary CODE_SIGNING_ALLOWED=NO
     fi
 
     local product_dir="$dd/Build/Products/Release"
@@ -203,7 +217,7 @@ swiftpm_release_bin_dir() {
 }
 
 copy_cli_binary() {
-  build_cli_swiftpm
+  build_swiftpm_helper macparakeet-cli
 
   local cli_bin_dir
   cli_bin_dir="$(swiftpm_release_bin_dir macparakeet-cli)"
@@ -392,6 +406,8 @@ if [[ "$BUNDLE_NODE" == "1" ]]; then
       exit 1
     fi
     install -m 0755 "$node_bin" "$out"
+    mkdir -p "$RESOURCES_DIR/Legal/Node"
+    tar -xOzf "$tarball" "${asset%.tar.gz}/LICENSE" > "$RESOURCES_DIR/Legal/Node/LICENSE"
   }
 
   if [[ "$UNIVERSAL" == "1" ]]; then
@@ -411,6 +427,9 @@ if [[ "$BUNDLE_NODE" == "1" ]]; then
 else
   echo "Skipping Node bundling (BUNDLE_NODE=0)"
 fi
+
+# The private Pi helper is bundled JavaScript; npm is needed only on the build host.
+"$ROOT_DIR/scripts/build_ask_helper.sh" "$RESOURCES_DIR/AskAgentHelper"
 
 bundle_meeting_echo_assets() {
   local should_bundle="${BUNDLE_MEETING_ECHO_ASSETS:-}"
@@ -459,6 +478,7 @@ bundle_meeting_echo_assets() {
       MACPARAKEET_MEETING_ECHO_MODEL_NAME="$prepared_model_name" \
       MACPARAKEET_MEETING_ECHO_MODEL_SHA256="$prepared_model_sha" \
       MACPARAKEET_MEETING_ECHO_UNIVERSAL="${MACPARAKEET_MEETING_ECHO_UNIVERSAL:-$UNIVERSAL}" \
+      MACPARAKEET_MEETING_ECHO_APP_MIN_MACOS_VERSION="$MIN_MACOS_VERSION" \
       "$ROOT_DIR/scripts/dist/prepare_meeting_echo_assets.sh"
 
     library_src="$prepared_assets_dir/lib/liblocalvqe.dylib"
@@ -530,8 +550,12 @@ bundle_meeting_echo_assets() {
   echo "Bundled meeting echo runtime: $FRAMEWORKS_DIR/liblocalvqe.dylib"
   echo "Bundled meeting echo model: $RESOURCES_DIR/MeetingEchoSuppression/$model_name"
 
+  # Info.plist (and its LSMinimumSystemVersion) is not written until later in
+  # this script, so pass the app minimum explicitly rather than letting the
+  # verifier fall back to reading a not-yet-existing plist.
   MACPARAKEET_MEETING_ECHO_MODEL_NAME="$model_name" \
     MACPARAKEET_MEETING_ECHO_MODEL_SHA256="$expected_model_sha" \
+    MACPARAKEET_MEETING_ECHO_MIN_MACOS_VERSION="$MIN_MACOS_VERSION" \
     "$ROOT_DIR/scripts/dist/verify_meeting_echo_assets.sh" "$APP_DIR"
 }
 
@@ -598,6 +622,8 @@ if [[ -f "$ROOT_DIR/THIRD_PARTY_LICENSES.md" ]]; then
   cp "$ROOT_DIR/THIRD_PARTY_LICENSES.md" "$LEGAL_DIR/THIRD_PARTY_LICENSES.md"
 fi
 cp "$ROOT_DIR/Sources/MacParakeet/Resources/Legal/MarkdownDependencies.txt" "$LEGAL_DIR/MarkdownDependencies.txt"
+cp "$ROOT_DIR/Sources/MacParakeet/Resources/Legal/NemotronDiarization.txt" "$LEGAL_DIR/NemotronDiarization.txt"
+cp "$ROOT_DIR/Sources/MacParakeet/Resources/Legal/HandySounds.txt" "$LEGAL_DIR/HandySounds.txt"
 echo "Bundled legal notices: $LEGAL_DIR"
 
 echo "[3/4] Writing Info.plist…"
@@ -647,6 +673,14 @@ cat >"$INFO_PLIST" <<EOF
   <string>6.0</string>
   <key>CFBundleName</key>
   <string>${APP_NAME}</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>com.macparakeet.meeting</string>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+      <key>CFBundleURLSchemes</key><array><string>macparakeet</string></array>
+    </dict>
+  </array>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

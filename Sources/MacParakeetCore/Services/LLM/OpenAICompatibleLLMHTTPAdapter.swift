@@ -159,9 +159,10 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
                                 usage = LLMUsage(
                                     promptTokens: value.prompt_tokens,
                                     completionTokens: value.completion_tokens,
-                                    totalTokens: value.total_tokens ?? LLMUsage.derivedTotal(
-                                        promptTokens: value.prompt_tokens, completionTokens: value.completion_tokens
-                                    )
+                                    totalTokens: value.total_tokens
+                                        ?? LLMUsage.derivedTotal(
+                                            promptTokens: value.prompt_tokens, completionTokens: value.completion_tokens
+                                        )
                                 )
                             }
                         }
@@ -221,7 +222,8 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
         // Models that use reasoning tokens (o1/o3/o4, gpt-5.x) need more budget since
         // max_completion_tokens covers both reasoning and visible output.
         // 128 is enough for a minimal response. Older models can use 1 to minimize cost.
-        let needsMoreTokens = config.id == .openai && Self.openAIRequiresMaxCompletionTokens(config.modelName)
+        let needsMoreTokens =
+            config.id != .lmstudio && Self.openAIRequiresMaxCompletionTokens(config.modelName)
         let options = ChatCompletionOptions(maxTokens: needsMoreTokens ? 128 : 1)
         _ = try await chatCompletion(messages: messages, config: config, options: options)
     }
@@ -278,13 +280,15 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
         let url = config.baseURL.appendingPathComponent("chat/completions")
 
         // Local models need longer timeouts for cold starts (model loading from disk).
-        // Ollama cloud models are not local but still go through the local daemon,
-        // so they keep the same generous timeout they had before.
+        // Cloud non-streaming calls wait for the whole body; streaming resets
+        // the idle timer as tokens arrive. Ollama cloud models are not local but
+        // still go through the local daemon, so they keep the local timeouts.
         let timeout: TimeInterval
         if config.isLocal || config.id == .ollama {
-            timeout = stream ? 600 : 300
+            timeout = stream ? LLMHTTPRequestTimeout.localStreamingIdle : LLMHTTPRequestTimeout.localNonStreaming
         } else {
-            timeout = stream ? 120 : 30
+            timeout =
+                stream ? LLMHTTPRequestTimeout.cloudStreamingIdle : LLMHTTPRequestTimeout.cloudNonStreaming
         }
 
         var request = URLRequest(url: url, timeoutInterval: timeout)
@@ -308,23 +312,39 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
 
         // OpenAI reasoning models reject max_tokens. Explicit temperature
         // support varies by model and reasoning effort, so omit it for the
-        // GPT-5.x reasoning tier (gpt-5.5, gpt-5.4-mini, ...); its "-chat"
-        // variants still accept explicit values. Newer models also require
-        // max_completion_tokens instead of max_tokens.
-        let shouldOmitSampling = config.id == .openai && Self.openAIShouldOmitTemperature(config.modelName)
-        let needsNewTokenParam = config.id == .openai && Self.openAIRequiresMaxCompletionTokens(config.modelName)
+        // GPT-5.x reasoning tier (gpt-5.5, gpt-5.4-mini, gpt-5.6-luna, ...);
+        // "-chat" variants still accept explicit values. Apply this from the
+        // model ID, including gateway prefixes such as `openai/gpt-5.6-sol`,
+        // rather than only the native OpenAI provider. Newer models also
+        // require max_completion_tokens instead of max_tokens. LM Studio's
+        // documented chat-completions contract still uses max_tokens and
+        // temperature even when a loaded model ID happens to look like GPT-5.
+        // Kimi K2.5+ / K3 also omit sampling: those models fix temperature.
+        let appliesLabWirePolicy = config.id != .lmstudio
+        let shouldOmitSampling =
+            appliesLabWirePolicy && ChatCompletionsModelPolicy.shouldOmitSampling(model: config.modelName)
+        let needsNewTokenParam =
+            appliesLabWirePolicy && Self.openAIRequiresMaxCompletionTokens(config.modelName)
         let temperature = shouldOmitSampling ? nil : options.temperature
         let topP: Double?
         switch config.id {
-        case .openai:
+        case .openai, .openaiCompatible:
             topP = shouldOmitSampling ? nil : options.topP
-        case .openaiCompatible:
-            topP = options.topP
-        case .anthropic, .gemini, .openrouter, .ollama, .lmstudio, .localCLI, .inProcessLocal:
+        case .anthropic, .gemini, .openrouter, .moonshot, .deepseek, .qwen, .zai, .minimax, .ollama, .lmstudio,
+            .localCLI, .inProcessLocal, .appleIntelligence:
             topP = nil
         }
+        let thinkingEncoding = ChatCompletionsModelPolicy.thinkingEncoding(
+            provider: config.id,
+            model: config.modelName,
+            thinkingMode: options.thinkingMode,
+            reasoningEffort: options.reasoningEffort,
+            usesPromptInferenceSettings: options.usesPromptInferenceSettings
+        )
         let supportsCustomOpenAICompatibleOptions =
-            config.id == .openaiCompatible && options.usesPromptInferenceSettings
+            config.id == .openaiCompatible
+            && options.usesPromptInferenceSettings
+            && !needsNewTokenParam
         let maxTokens = needsNewTokenParam ? nil : options.maxTokens
         let maxCompletionTokens = needsNewTokenParam ? options.maxTokens : nil
 
@@ -337,6 +357,28 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
             ollamaOptions = nil
         }
 
+        let thinking: OpenAIThinkingOptions?
+        let enableThinking: Bool?
+        let chatTemplateKwargs: OpenAIChatTemplateKwargs?
+        switch thinkingEncoding {
+        case .omit:
+            thinking = nil
+            enableThinking = nil
+            chatTemplateKwargs = nil
+        case .thinkingType(let type):
+            thinking = OpenAIThinkingOptions(type: type)
+            enableThinking = nil
+            chatTemplateKwargs = nil
+        case .enableThinking(let enabled):
+            thinking = nil
+            enableThinking = enabled
+            chatTemplateKwargs = nil
+        case .llamaCpp(let enable, let effort):
+            thinking = nil
+            enableThinking = nil
+            chatTemplateKwargs = OpenAIChatTemplateKwargs(enable_thinking: enable, reasoning_effort: effort)
+        }
+
         let body = OpenAIRequestBody(
             model: config.modelName,
             messages: messages.map { OpenAIMessage(role: $0.role.rawValue, content: $0.content) },
@@ -347,12 +389,9 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
             top_k: supportsCustomOpenAICompatibleOptions ? options.topK : nil,
             max_tokens: maxTokens,
             max_completion_tokens: maxCompletionTokens,
-            chat_template_kwargs: supportsCustomOpenAICompatibleOptions
-                ? Self.chatTemplateKwargs(
-                    for: options.thinkingMode,
-                    reasoningEffort: options.reasoningEffort
-                )
-                : nil,
+            thinking: thinking,
+            enable_thinking: enableThinking,
+            chat_template_kwargs: chatTemplateKwargs,
             response_format: Self.responseFormat(from: options.responseFormat),
             options: ollamaOptions
         )
@@ -363,48 +402,35 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
 
     /// OpenAI reasoning models that reject temperature and max_tokens parameters.
     static func isOpenAIReasoningModel(_ model: String) -> Bool {
-        isOpenAIReasoningModelID(model.lowercased())
+        OpenAIModelPolicy.isReasoningModelID(model)
     }
 
     /// OpenAI models for which MacParakeet omits explicit `temperature`: the
-    /// o-series and GPT-5.x+ reasoning tier. Chat-tier variants
-    /// (gpt-5.3-chat-latest) and pre-5.x models keep the caller's value.
+    /// o-series and GPT-5.x+ reasoning tier, plus Kimi K2.5+ / K3. Chat-tier
+    /// variants (gpt-5.3-chat-latest) and pre-5.x models keep the caller's
+    /// value. Provider prefixes (`openai/gpt-5.6-luna`, `moonshotai/kimi-k2.6`)
+    /// are stripped first.
     static func openAIShouldOmitTemperature(_ model: String) -> Bool {
-        OpenAIModelPolicy.shouldOmitSampling(model: model)
+        ChatCompletionsModelPolicy.shouldOmitSampling(model: model)
     }
 
     /// Major version of a "gpt-<n>..." model ID ("gpt-5.5" → 5, "gpt-10" → 10),
     /// or nil for IDs without a gpt- numeric prefix. Reads all leading digits so
-    /// future multi-digit major versions compare correctly.
+    /// future multi-digit major versions compare correctly. Accepts gateway
+    /// prefixes such as `openai/gpt-5.6-sol`.
     static func gptMajorVersion(_ loweredModel: String) -> Int? {
-        guard loweredModel.hasPrefix("gpt-") else { return nil }
-        let digits = loweredModel.dropFirst(4).prefix(while: { $0.isNumber })
-        return Int(digits)
+        OpenAIModelPolicy.gptMajorVersion(loweredModel)
     }
 
     /// OpenAI models that require max_completion_tokens instead of max_tokens.
-    /// Includes reasoning models and newer GPT models (5.x+).
+    /// Includes reasoning models and newer GPT models (5.x+), including
+    /// gateway IDs such as `openai/gpt-5.6-luna`.
     static func openAIRequiresMaxCompletionTokens(_ model: String) -> Bool {
-        let lowered = model.lowercased()
-        if isOpenAIReasoningModel(lowered) { return true }
-        // GPT-5.x and beyond reject max_tokens
-        if let version = gptMajorVersion(lowered), version >= 5 {
-            return true
-        }
-        return false
+        OpenAIModelPolicy.requiresMaxCompletionTokens(model: model)
     }
 
     static func isOpenAIReasoningModelID(_ model: String) -> Bool {
-        guard model.hasPrefix("o") else { return false }
-        let suffix = model.dropFirst()
-        guard let generation = suffix.first, generation.isNumber else { return false }
-        return hasOpenAIModelPrefix(model, prefix: "o\(generation)")
-    }
-
-    static func hasOpenAIModelPrefix(_ model: String, prefix: String) -> Bool {
-        guard model.hasPrefix(prefix) else { return false }
-        let boundary = model.dropFirst(prefix.count).first
-        return boundary == nil || boundary == "-"
+        OpenAIModelPolicy.isReasoningModelID(model)
     }
 
     static func responseFormat(from format: ChatResponseFormat?) -> OpenAIResponseFormat? {
@@ -419,23 +445,6 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
                     schema: schema
                 )
             )
-        }
-    }
-
-    private static func chatTemplateKwargs(
-        for thinkingMode: PromptInferenceSettings.ThinkingMode,
-        reasoningEffort: PromptInferenceSettings.ReasoningEffort?
-    ) -> OpenAIChatTemplateKwargs? {
-        switch thinkingMode {
-        case .providerDefault:
-            return nil
-        case .enabled:
-            return OpenAIChatTemplateKwargs(
-                enable_thinking: true,
-                reasoning_effort: reasoningEffort?.rawValue
-            )
-        case .disabled:
-            return OpenAIChatTemplateKwargs(enable_thinking: false, reasoning_effort: nil)
         }
     }
 
@@ -539,9 +548,15 @@ struct OpenAIRequestBody: Encodable {
     let top_k: Int?
     let max_tokens: Int?
     let max_completion_tokens: Int?
+    let thinking: OpenAIThinkingOptions?
+    let enable_thinking: Bool?
     let chat_template_kwargs: OpenAIChatTemplateKwargs?
     let response_format: OpenAIResponseFormat?
     let options: OllamaRequestOptions?  // Ollama-specific: num_ctx etc.
+}
+
+struct OpenAIThinkingOptions: Encodable {
+    let type: String
 }
 
 struct OpenAIStreamOptions: Encodable {

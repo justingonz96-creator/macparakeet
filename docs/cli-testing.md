@@ -1,5 +1,17 @@
 # CLI Testing Guide
 
+For saved-meeting splitting, run `swift test --filter 'MeetingSplit|SpecCommandTests'`.
+For external meeting import, run
+`swift test --filter 'MeetingImport|AudioFileConverterTests|SpecCommandTests'`.
+The tests use synthetic temporary audio and databases, not personal recordings.
+Check `meetings split --help`, `meetings import --help`, and `spec --json` for
+discovery. Split preview and `create --dry-run` must not initialize models,
+migrate the database, or write preferences. A split `committed` operation means
+audio was published; inspect each child's progress and exit status for processing
+success. Import progress belongs on stderr; stdout carries one final result.
+`partial` is usable and exits zero, while `needsRetry` prints the saved meeting
+before exiting one so verification does not create a duplicate by importing again.
+
 > Status: **ACTIVE** - CLI testing guide for core services
 
 Use `macparakeet-cli` for fast, repeatable testing of core transcription and text-processing flows.
@@ -40,9 +52,9 @@ workflows; [`cli-json-v1`](../spec/contracts/cli-json-v1.md) defines the stable
 automation contract. The examples below are focused verification scenarios, not
 an exhaustive option list.
 
-`flow` is a deprecated compatibility alias for `vocab` and remains accepted in
-CLI 3.x. Use `vocab` in new scripts; removal requires a future major-version
-contract change and a matching changelog entry.
+`flow` is a deprecated compatibility alias for `vocab` and remains accepted
+until the next major CLI version. Use `vocab` in new scripts; removal requires
+a major-version contract change and a matching changelog entry.
 
 > **JSON output convention**: any query command marked `[--json]` emits a single
 > JSON document on stdout (ISO-8601 dates, sorted keys, pretty-printed). Pipe to
@@ -118,10 +130,16 @@ the STT input.
 
 Parakeet remains the no-flag default for semver stability and ignores
 `--language`. Within Parakeet, v3 covers English plus supported European
-languages, v2 is the English timestamped build, and Unified is readable English
-with word timestamps. Use `--parakeet-model app-default|v3|v2|unified` for
-a single run, or `config set parakeet-model unified` /
-`models select parakeet-unified` to persist it.
+languages, v2 is the English timestamped build, Unified is readable English
+with word timestamps, and Orukeet is an optional multilingual preview that
+stays a Parakeet variant. Use
+`--parakeet-model app-default|v3|v2|unified|orukeet` for a single run, or
+`config set parakeet-model unified` / `models select parakeet-unified` to
+persist a build. Orukeet is explicit:
+`models download parakeet-orukeet`, then `config set parakeet-model orukeet`
+or `transcribe --parakeet-model orukeet`. It has no native streaming,
+tail-window preview, or recognition-time vocabulary boosting, and the default
+remains v3.
 Use `--engine app-default` when you want the CLI to follow the GUI's saved
 speech engine, Parakeet model, and Nemotron/Cohere/Whisper language defaults.
 Nemotron is an opt-in Beta engine with two builds: the multilingual build
@@ -244,6 +262,7 @@ swift run macparakeet-cli config set whisper-language ko
 swift run macparakeet-cli config set speaker-detection off
 swift run macparakeet-cli config set meeting-speaker-detection off
 swift run macparakeet-cli config set auto-meeting-titles on
+swift run macparakeet-cli config set meeting-ai-output-language en
 swift run macparakeet-cli config set save-transcription-audio off
 swift run macparakeet-cli config set meeting-audio-retention keep-forever
 swift run macparakeet-cli config set meeting-audio-source microphone-and-system
@@ -254,13 +273,14 @@ swift run macparakeet-cli config set voice-return-enabled on
 swift run macparakeet-cli config set voice-return-triggers "hey parakeet|okay parakeet"
 ```
 
-Supported keys: `telemetry`, `processing-mode`, `speech-engine`,
+Supported keys: `telemetry`, `processing-mode`, `spoken-punctuation`, `remove-um-filler`, `speech-engine`,
 `parakeet-model`, `nemotron-model`, `nemotron-language`, `whisper-language`,
 `cohere-language`, `speaker-detection`, `meeting-speaker-detection`,
-`auto-meeting-titles`, `save-transcription-audio`, `meeting-audio-retention`,
-`meeting-audio-source`, `save-meeting-audio`, `youtube-audio-quality`,
+`auto-meeting-titles`, `meeting-ai-output-language`, `save-transcription-audio`, `meeting-audio-retention`,
+`meeting-audio-source`, `start-meetings-muted`, `save-meeting-audio`, `youtube-audio-quality`,
 `meeting-artifacts-folder`, `meeting-hook-enabled`, `meeting-hook-path`,
-`meeting-hook-timeout`, `voice-return-enabled`, `voice-return-triggers`.
+`meeting-hook-timeout`, `voice-return-enabled`, `voice-return-triggers`,
+`play-dictation-capture-sounds`, `escape-cancels-dictation`, `preserve-discarded-dictations`.
 Underscore aliases such as `youtube_audio_quality` are accepted on input; JSON
 output uses canonical hyphenated keys.
 
@@ -300,10 +320,12 @@ media URLs and podcast search/URL inputs.
 `rawTranscript`. Status and progress messages stay on stderr, so stdout can be
 piped directly into `pbcopy`, `grep`, `tee`, or a local LLM command.
 
-`--format dapt` uses the shared DAPT renderer. Aligned word timing and speaker
-IDs become timed script events and character agents; current display labels are
-used when available, otherwise the stored anonymous ID remains the alias.
-Missing diarization or timing is omitted rather than synthesized.
+`--format dapt` uses the shared DAPT renderer. Automatic aligned word timing and
+speaker IDs become timed script events and character agents. A corrected line
+becomes one event for its preserved segment envelope; its rewritten words do
+not inherit automatic per-word timing. Current display labels are used when
+available, otherwise the stored anonymous ID remains the alias. Missing honest
+alignment or diarization is omitted rather than synthesized.
 
 `--no-history` uses the same transcription pipeline without retaining a completed
 history row. For media URL inputs, downloaded audio is temporary regardless of
@@ -316,6 +338,8 @@ swift run macparakeet-cli models list
 swift run macparakeet-cli models list --json
 swift run macparakeet-cli models select parakeet-v3
 swift run macparakeet-cli models select parakeet-v2
+swift run macparakeet-cli models download parakeet-orukeet
+swift run macparakeet-cli models select parakeet-orukeet
 swift run macparakeet-cli models download parakeet-v2
 swift run macparakeet-cli models download nemotron-multilingual-1120ms
 swift run macparakeet-cli models select nemotron-multilingual-1120ms
@@ -326,8 +350,9 @@ swift run macparakeet-cli models select cohere-transcribe
 swift run macparakeet-cli models select whisper-large-v3-v20240930-turbo-632MB
 ```
 
-`models list` reports the selectable speech engines MacParakeet exposes today:
-Parakeet v3, Parakeet v2, the two Nemotron Beta builds (multilingual and
+`models list` reports the selectable speech models MacParakeet exposes today:
+Parakeet v3, Parakeet v2, Parakeet Unified, the optional Orukeet preview
+(`parakeet-orukeet`), the two Nemotron Beta builds (multilingual and
 English-only), Cohere Transcribe, and the configured WhisperKit variant.
 `models select` writes
 the same shared default used by the GUI and `transcribe --engine app-default`;
@@ -367,7 +392,10 @@ swift run macparakeet-cli export <ID> --format srt --stdout
 swift run macparakeet-cli export <ID> --format dapt --stdout
 ```
 
-If `--output` is omitted, the file is written to the current directory with an auto-generated name. DAPT uses the compound `.dapt.xml` extension. It carries aligned timing and optional speaker characters when present, and remains valid without either.
+If `--output` is omitted, the file is written to the current directory with an
+auto-generated name. DAPT uses the compound `.dapt.xml` extension. It carries
+automatic word timing or corrected segment-envelope timing and optional speaker
+characters when present, and remains valid without either.
 
 **Note:** PDF and DOCX export require AppKit and are only available in the GUI.
 
@@ -417,8 +445,9 @@ Pass `--json` to get a machine-readable success object with the affected ID(s) i
 
 ```bash
 swift run macparakeet-cli history favorites
-swift run macparakeet-cli history favorite <ID>
-swift run macparakeet-cli history unfavorite <ID>
+swift run macparakeet-cli history favorite <ID> --json
+swift run macparakeet-cli history unfavorite <ID> --json
+swift run macparakeet-cli history rename <ID> --title "New title" --json
 ```
 
 ## Health Check
@@ -485,6 +514,11 @@ swift run macparakeet-cli meetings export <meeting> --format md --stdout
 
 Calendar commands inspect the same EventKit pipeline used by hidden calendar auto-start/reminder code. The v0.6 app surfaces are hidden behind `AppFeatures.calendarEnabled = false`, so this CLI surface is mainly for headless verification. Calendar permission must already be granted through a build with the GUI calendar permission surface enabled, a previous grant, or macOS Settings.
 
+`--json` is a flat array of event objects. Additive fields are `skipped`
+(boolean) and `skipScope` (`"occurrence"`, `"event"`, or `null`). Recurrence
+is not exposed. List membership, `--filter`, and declined-fetch behavior are
+unchanged.
+
 ```bash
 swift run macparakeet-cli calendar upcoming --days 1 --filter link
 swift run macparakeet-cli calendar upcoming --days 7 --filter all --json
@@ -499,6 +533,7 @@ swift run macparakeet-cli models status
 # Explicit Parakeet / Nemotron / Cohere / Whisper downloads
 swift run macparakeet-cli models download parakeet-v3
 swift run macparakeet-cli models download parakeet-v2
+swift run macparakeet-cli models download parakeet-orukeet
 swift run macparakeet-cli models download nemotron-multilingual-1120ms
 swift run macparakeet-cli models download cohere-transcribe
 swift run macparakeet-cli models download whisper-large-v3-v20240930-turbo-632MB
@@ -528,7 +563,7 @@ Parakeet build, the Nemotron Beta model, Cohere Transcribe, or the Whisper
 variant - and protects the active model plus Parakeet's configured build unless `--force` is passed;
 `models clear` still wipes everything.
 
-When running DEBUG builds with `MACPARAKEET_DEBUG_APP_STATE_DIR` set, CLI state
+When running with `MACPARAKEET_DEBUG_APP_STATE_DIR` set, CLI state
 is scoped to that throwaway directory. This includes MacParakeet's app support
 files and FluidAudio's speech/speaker model cache, so destructive model commands
 such as `models delete` and `models clear` do not touch the real user cache.
@@ -596,11 +631,11 @@ when its server-side authentication is enabled.
 
 | Provider | Default Model | API Key Required |
 |----------|--------------|-----------------|
-| `anthropic` | claude-sonnet-5 | Yes |
+| `anthropic` | claude-sonnet-5-5 | Yes |
 | `openai` | gpt-4.1 | Yes |
 | `openai-compatible` | user-selected endpoint/model | Optional |
 | `gemini` | gemini-2.5-flash | Yes |
-| `openrouter` | anthropic/claude-sonnet-5 | Yes |
+| `openrouter` | anthropic/claude-sonnet-5.5 | Yes |
 | `ollama` | qwen3.5:4b | No (local) |
 | `lmstudio` | user-selected in LM Studio | Optional (local) |
 | `cli` | N/A (tool decides) | No (tool manages auth) |

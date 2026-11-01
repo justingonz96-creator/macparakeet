@@ -35,11 +35,29 @@ Each contract document should include:
 
 ## Current Contracts
 
+Planned contracts are listed separately below; they do not describe available payloads.
+
+- [Credential Access](credential-access.md) — noninteractive Keychain access and preservation of saved AI settings
+- [Dictation URL control v1](dictation-url-control-v1.md) — opt-in hands-free start/stop/toggle that preserves active work
+- [Meeting URL control v1](meeting-url-control-v1.md) — opt-in GUI recording commands and creation titles
+- [Voice Control](voice-control.md) — gated shared speech, consent, foreground ownership and revocable execution
+- [Dictation Shortcuts](dictation-shortcuts.md) — primary and additional push-to-talk/hands-free pairs, collision reservations, held-trigger ownership and Escape/Undo with multiple listeners
+- [Meeting Import v1](meeting-import-v1.md) — one-file app/CLI import, managed-media ownership, recovery, and durable results
+- [Split and Transcribe](meeting-splitting.md) — implemented shared Core, native app, and public CLI lifecycle
+- [Saved-Audio Auto-Prompt Completion](saved-audio-auto-prompt-completion.md)
+
 - [Meeting Artifacts v1](meeting-artifacts-v1.md)
 - [Meeting Recovery and Retention Safety](meeting-recovery-retention.md)
 - [CLI JSON v1](cli-json-v1.md)
 - [DAPT Export v1](dapt-export-v1.md)
 - [File Transcription Audio Tracks](file-transcription-audio-tracks.md)
+- [YouTube Video Playback](youtube-video-playback.md)
 - [Custom Word Deletion](custom-word-deletion.md)
-- [Speaker Correction Submission](speaker-correction-view-model.md)
+- [Transcript Correction Submission](speaker-correction-view-model.md)
 - [Telemetry and Diagnostic Evidence](telemetry-v1.md)
+- [Share Link and Bundle v1](share-link-bundle-v1.md)
+- [Share Service v1](share-service-v1.md)
+
+## Planned Contracts
+
+- [Audio Speaker Timeline v1](audio-speaker-timeline-v1.md) — #836, independent detected audio turns for untimed transcripts; implementation and enforcement tests pending.

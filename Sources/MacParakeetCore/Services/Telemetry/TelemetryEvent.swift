@@ -15,6 +15,8 @@ public enum TelemetryEventName: String, Sendable, CaseIterable {
     case dictationEmpty = "dictation_empty"
     case dictationFailed = "dictation_failed"
     case dictationOperation = "dictation_operation"
+    /// Latency breadcrumb after a successful Cmd+V post. Not a second outcome.
+    case dictationInsert = "dictation_insert"
     case dictationFirstLoadCaptionShown = "dictation_first_load_caption_shown"
     case dictationFirstLoadCaptionDuration = "dictation_first_load_caption_duration"
     case transcriptionStarted = "transcription_started"
@@ -114,6 +116,7 @@ public enum TelemetryEventName: String, Sendable, CaseIterable {
     case meetingAutoStopConfirmed = "meeting_auto_stop_confirmed"
     case meetingAutoStopVetoed = "meeting_auto_stop_vetoed"
     case micStallDetected = "mic_stall_detected"
+    case audioEngineLifecycle = "audio_engine_lifecycle"
     /// Universal launch-time Silero VAD model prep for VAD-guided meeting live
     /// chunking (`plans/completed/2026-05-meeting-vad-guided-live-chunking.md` §6).
     /// Confirms the installed base actually acquires the model once the feature
@@ -142,6 +145,7 @@ public enum TelemetryDictationTrigger: String, Sendable, Equatable {
     case hotkey
     case pillClick = "pill_click"
     case menuBar = "menu_bar"
+    case urlControl = "url_control"
 }
 
 public enum TelemetryDictationMode: String, Sendable, Equatable {
@@ -508,6 +512,12 @@ public enum TelemetryOnboardingAction: String, Sendable, Equatable {
     case dismissed
     case engineReady = "engine_ready"
     case engineFailed = "engine_failed"
+    /// Continue after a dictation key lit on the Try It card.
+    case hotkeyConfirmed = "hotkey_confirmed"
+    /// The first practice dictation delivered text into the Try It box.
+    case practiceSucceeded = "practice_succeeded"
+    /// Skip on the Try It step.
+    case practiceSkipped = "practice_skipped"
 }
 
 /// Which capture surface a hotkey customization applies to. Lets us answer
@@ -520,6 +530,7 @@ public enum TelemetryHotkeySurface: String, Sendable, Equatable {
     case meeting
     case fileTranscription = "file_transcription"
     case youtubeTranscription = "youtube_transcription"
+    case dictationAIPolish = "dictation_ai_polish"
 }
 
 /// Mirrors `HotkeyTrigger.Kind` for telemetry. Kept separate so changes to the
@@ -544,12 +555,16 @@ public enum TelemetrySettingName: String, Sendable, Equatable {
     case menuBarOnly = "menu_bar_only"
     case menuBarIcon = "menu_bar_icon"
     case hidePill = "hide_pill"
+    case overlayPlacement = "overlay_placement"
     case saveTranscriptionAudio = "save_transcription_audio"
     case saveMeetingAudio = "save_meeting_audio"
     case meetingAudioRetention = "meeting_audio_retention"
     case youtubeAudioQuality = "youtube_audio_quality"
     case speakerDiarization = "speaker_diarization"
     case meetingSpeakerDiarization = "meeting_speaker_diarization"
+    case meetingLiveTranscriptionEnabled = "meeting_live_transcription_enabled"
+    /// Whether the preference is on. Never a profile, a name, or a distance.
+    case rememberSpeakers = "remember_speakers"
     case parakeetModelVariant = "parakeet_model_variant"
     case nemotronModelVariant = "nemotron_model_variant"
     case transcriptionSpeechEngine = "transcription_speech_engine"
@@ -563,20 +578,27 @@ public enum TelemetrySettingName: String, Sendable, Equatable {
     case youtubeTranscriptionHotkey = "youtube_transcription_hotkey"
     case microphoneSelection = "microphone_selection"
     case meetingAudioSourceMode = "meeting_audio_source_mode"
+    case startMeetingsMuted = "start_meetings_muted"
     case meetingRecordingPill = "meeting_recording_pill"
     case meetingAutoStop = "meeting_auto_stop"
     case openAppAfterMeetingEnd = "open_app_after_meeting_end"
     case notifyOnMeetingEnd = "notify_on_meeting_end"
     case pauseMediaDuringDictation = "pause_media_during_dictation"
+    case playDictationCaptureSounds = "play_dictation_capture_sounds"
+    case escapeCancelsDictation = "escape_cancels_dictation"
+    case preserveDiscardedDictations = "preserve_discarded_dictations"
     case instantDictation = "instant_dictation"
     case liveDictationPreview = "live_dictation_preview"
     case dictationUndoCountdown = "dictation_undo_countdown"
     case dictationInsertionStyle = "dictation_insertion_style"
+    case spokenPunctuation = "spoken_punctuation"
+    case removeUmFiller = "remove_um_filler"
     case transcriptionCompletionNotification = "transcription_completion_notification"
 
     case launchAtLogin = "launch_at_login"
     case silenceAutoStop = "silence_auto_stop"
     case keepDictationOnClipboard = "keep_dictation_on_clipboard"
+    case streamingCursor = "streaming_cursor"
     case voiceReturn = "voice_return"
     case numberRefinementMode = "number_refinement_mode"
 
@@ -585,6 +607,7 @@ public enum TelemetrySettingName: String, Sendable, Equatable {
     case calendarReminderMinutes = "calendar_reminder_minutes"
     case calendarTriggerFilter = "calendar_trigger_filter"
     case calendarIncludedCalendars = "calendar_included_calendars"
+    case calendarEventSkip = "calendar_event_skip"
 }
 
 /// Free-form error details, descriptions and crash reasons are accepted for
@@ -628,7 +651,18 @@ public enum TelemetryEventSpec: Sendable {
         engineVariant: String? = nil,
         language: String? = nil,
         appCategory: TelemetryAppCategory? = nil,
-        device: RecordingDeviceInfo? = nil
+        device: RecordingDeviceInfo? = nil,
+        captureMs: Int? = nil,
+        transcribeMs: Int? = nil
+    )
+    /// Stop request → Cmd+V posted. `e2eMs` is the phase sum and excludes the
+    /// success-overlay pause. Emitted only after a successful paste.
+    case dictationInsert(
+        operationID: String? = nil,
+        captureMs: Int,
+        transcribeMs: Int,
+        pasteMs: Int,
+        e2eMs: Int
     )
     case dictationFirstLoadCaptionShown(firstInstall: Bool)
     case dictationFirstLoadCaptionDuration(durationMs: Int, outcome: String)
@@ -924,7 +958,9 @@ public enum TelemetryEventSpec: Sendable {
         systemTrackPresent: Bool?,
         notesUsed: Bool?,
         notesLengthBucket: String?,
-        errorType: String?
+        errorType: String?,
+        captureStartCompleted: Bool? = nil,
+        captureDiagnostics: MeetingCaptureDiagnostics? = nil
     )
     case meetingRecoveryDiscovered(
         count: Int, source: TelemetryMeetingRecoverySource, phases: [MeetingRecordingLockState])
@@ -976,6 +1012,9 @@ public enum TelemetryEventSpec: Sendable {
     /// - `state_busy` — recording flow was non-idle (back-to-back meeting)
     /// - `service_threw` — `MeetingRecordingService.startRecording` errored
     case calendarAutoStartFailed(reason: String)
+    // Shared microphone lifecycle checkpoints and terminal diagnostics.
+    // Separate from product operation outcomes and their failure denominators.
+    case audioEngineLifecycle(AudioEngineLifecycleSnapshot)
     // STT runtime observability. Fires when an STT runtime call (cancel-drain,
     // model-cache clear, shutdown, engine swap) exceeds the watchdog timeout.
     // Detection-only; the caller continues to await as today.
@@ -987,7 +1026,9 @@ public enum TelemetryEventSpec: Sendable {
         crashType: String, signal: String, name: String,
         crashTimestamp: String, crashAppVer: String,
         crashOsVer: String, uuid: String,
-        slide: String, reason: String?, stackTrace: String
+        slide: String, reason: String?, stackTrace: String,
+        siCode: String? = nil, pc: String? = nil, faultAddr: String? = nil,
+        diagnosticMetadata: CrashDiagnosticMetadata? = nil
     )
     case cliOperation(
         operationID: String,
@@ -1025,6 +1066,7 @@ extension TelemetryEventSpec {
         case .dictationEmpty: return .dictationEmpty
         case .dictationFailed: return .dictationFailed
         case .dictationOperation: return .dictationOperation
+        case .dictationInsert: return .dictationInsert
         case .dictationFirstLoadCaptionShown: return .dictationFirstLoadCaptionShown
         case .dictationFirstLoadCaptionDuration: return .dictationFirstLoadCaptionDuration
         case .transcriptionStarted: return .transcriptionStarted
@@ -1110,6 +1152,7 @@ extension TelemetryEventSpec {
         case .meetingAutoStopConfirmed: return .meetingAutoStopConfirmed
         case .meetingAutoStopVetoed: return .meetingAutoStopVetoed
         case .micStallDetected: return .micStallDetected
+        case .audioEngineLifecycle: return .audioEngineLifecycle
         case .vadModelPrep: return .vadModelPrep
         case .calendarReminderShown: return .calendarReminderShown
         case .calendarAutoStartTriggered: return .calendarAutoStartTriggered
@@ -1210,7 +1253,9 @@ extension TelemetryEventSpec {
             let engineVariant,
             let language,
             let appCategory,
-            let device
+            let device,
+            let captureMs,
+            let transcribeMs
         ):
             return Self.mergeDevice(
                 Self.compactProps(
@@ -1227,8 +1272,18 @@ extension TelemetryEventSpec {
                     ("language", Self.safeLanguageCode(language)),
                     ("app_category", appCategory?.rawValue),
                     ("error_type", errorType),
-                    ("cancel_reason", cancelReason?.rawValue)
+                    ("cancel_reason", cancelReason?.rawValue),
+                    ("capture_ms", Self.formatNonNegativeMilliseconds(captureMs)),
+                    ("transcribe_ms", Self.formatNonNegativeMilliseconds(transcribeMs))
                 ), device)
+        case .dictationInsert(let operationID, let captureMs, let transcribeMs, let pasteMs, let e2eMs):
+            return Self.compactProps(
+                ("operation_id", operationID),
+                ("capture_ms", Self.formatNonNegativeMilliseconds(captureMs)),
+                ("transcribe_ms", Self.formatNonNegativeMilliseconds(transcribeMs)),
+                ("paste_ms", Self.formatNonNegativeMilliseconds(pasteMs)),
+                ("e2e_ms", Self.formatNonNegativeMilliseconds(e2eMs))
+            )
         case .dictationFirstLoadCaptionShown(let firstInstall):
             return ["first_install": Self.boolString(firstInstall)]
         case .dictationFirstLoadCaptionDuration(let durationMs, let outcome):
@@ -1669,7 +1724,9 @@ extension TelemetryEventSpec {
             let systemTrackPresent,
             let notesUsed,
             let notesLengthBucket,
-            let errorType
+            let errorType,
+            let captureStartCompleted,
+            let captureDiagnostics
         ):
             return Self.compactProps(
                 ("operation_id", operationID),
@@ -1685,7 +1742,14 @@ extension TelemetryEventSpec {
                 ("system_track_present", systemTrackPresent.map(Self.boolString)),
                 ("notes_used", notesUsed.map(Self.boolString)),
                 ("notes_length_bucket", notesLengthBucket),
-                ("error_type", errorType)
+                ("error_type", errorType),
+                (
+                    "capture_start_completed",
+                    (captureDiagnostics?.captureStartCompleted ?? captureStartCompleted).map(Self.boolString)
+                ),
+                ("capture_source_mode", captureDiagnostics?.sourceMode?.rawValue),
+                ("microphone_frames", captureDiagnostics.map { String($0.microphoneFrames) }),
+                ("system_frames", captureDiagnostics.map { String($0.systemFrames) })
             )
         case .meetingRecoveryDiscovered(let count, let source, let phases):
             return [
@@ -1748,6 +1812,8 @@ extension TelemetryEventSpec {
             return ["reason": reason]
         case .calendarAutoStartFailed(let reason):
             return ["reason": reason]
+        case .audioEngineLifecycle(let snapshot):
+            return snapshot.props
         case .sttRuntimeUnhealthy(let reason):
             return ["reason": reason]
         case .errorOccurred(let domain, let code, _):
@@ -1757,8 +1823,8 @@ extension TelemetryEventSpec {
         case .crashOccurred(
             let crashType, let signal, let name, let crashTimestamp,
             let crashAppVer, let crashOsVer, let uuid, let slide,
-            _, let stackTrace):
-            return Self.compactProps(
+            _, let stackTrace, let siCode, let pc, let faultAddr, let diagnosticMetadata):
+            var props = Self.compactProps(
                 ("crash_type", crashType),
                 ("signal", signal),
                 ("name", name),
@@ -1767,8 +1833,13 @@ extension TelemetryEventSpec {
                 ("crash_os_ver", crashOsVer),
                 ("uuid", uuid),
                 ("slide", slide),
-                ("stack_trace", String(stackTrace.prefix(Self.maxCrashStackTraceCharacters)))
-            )
+                ("stack_trace", String(stackTrace.prefix(Self.maxCrashStackTraceCharacters))),
+                ("si_code", siCode),
+                ("pc", pc),
+                ("fault_addr", faultAddr)
+            ) ?? [:]
+            for (key, value) in diagnosticMetadata?.props ?? [:] { props[key] = value }
+            return props
         case .cliOperation(
             let operationID,
             let operationContext,
@@ -1823,6 +1894,11 @@ extension TelemetryEventSpec {
 
     private static func format(_ value: Double) -> String {
         String(format: "%.1f", value)
+    }
+
+    private static func formatNonNegativeMilliseconds(_ value: Int?) -> String? {
+        guard let value, value >= 0 else { return nil }
+        return "\(value)"
     }
 
     private static func boolString(_ value: Bool) -> String {
@@ -1883,6 +1959,7 @@ public enum TelemetryImplementedContract {
         .dictationEmpty: [],
         .dictationFailed: ["error_type"],
         .dictationOperation: ["operation_id", "outcome"],
+        .dictationInsert: ["capture_ms", "transcribe_ms", "paste_ms", "e2e_ms"],
         .dictationFirstLoadCaptionShown: ["first_install"],
         .dictationFirstLoadCaptionDuration: ["duration_ms", "outcome"],
         .transcriptionStarted: ["source"],
@@ -1980,6 +2057,10 @@ public enum TelemetryImplementedContract {
         .meetingAutoStopConfirmed: ["reason"],
         .meetingAutoStopVetoed: ["reason"],
         .micStallDetected: ["stall_count"],
+        .audioEngineLifecycle: [
+            "attempt_id", "operation", "outcome", "phase", "elapsed_ms", "phase_ms", "attempt_count",
+            "prepared", "vpio", "buffer_size", "route_source", "transport", "was_slow",
+        ],
         .vadModelPrep: ["outcome"],
         .calendarReminderShown: ["mode", "lead_minutes", "has_meet_url"],
         .calendarAutoStartTriggered: ["lead_seconds", "has_meet_url"],
@@ -2018,11 +2099,16 @@ public struct TelemetryEvent: Sendable, Encodable {
         chip: String,
         session: String,
         surface: String = "gui",
-        ts: Date = Date()
+        ts: Date = Date(),
+        gitCommit: String? = nil,
+        buildNumber: String? = nil
     ) {
         self.eventId = UUID().uuidString
         self.event = spec.name.rawValue
-        self.props = spec.props
+        var props = spec.props ?? [:]
+        if let gitCommit { props["git_commit"] = gitCommit }
+        if let buildNumber { props["build_number"] = buildNumber }
+        self.props = props.isEmpty ? nil : props
         self.appVer = appVer
         self.osVer = osVer
         self.locale = locale

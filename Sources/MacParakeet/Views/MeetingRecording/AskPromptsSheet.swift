@@ -137,10 +137,10 @@ struct AskPromptsSheet: View {
     private var header: some View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Ask Prompts")
+                Text("Live Ask")
                     .font(DesignSystem.Typography.heroTitle)
                     .foregroundStyle(DesignSystem.Colors.textPrimary)
-                Text("Reusable questions for live meetings. Pin the ones you reach for most to keep them front and center — the rest stay in your library, ready when you need them.")
+                Text("Reusable questions for a live meeting. Pin the ones you reach for most to keep them easy to reach in Ask.")
                     .font(DesignSystem.Typography.body)
                     .foregroundStyle(DesignSystem.Colors.textSecondary)
             }

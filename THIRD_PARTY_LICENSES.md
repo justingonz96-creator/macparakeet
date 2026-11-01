@@ -29,9 +29,41 @@ does not claim their compiler executables are redistributed in the app.
 
 ## Node.js
 
-- License: MIT License
+- Version: 24.13.1 (the official Node.js distribution; build-time override supported)
+- License: Node.js license and the notices distributed with the official runtime
 - Source: <https://nodejs.org/>
-- Used for: Bundled runtime for yt-dlp JavaScript extractors
+- Used for: yt-dlp JavaScript extractors and the private Ask agent helper
+- Notice location: the complete upstream `LICENSE` is copied beside the bundled
+  runtime in app and standalone CLI distributions; see `docs/distribution.md`.
+
+## Ask agent helper and bundled npm packages
+
+Ask packages a private, app-supplied helper bundle built from the pinned
+`Sources/AskAgentHelper/package-lock.json`. It uses Pi agent core and Pi AI
+0.87.1; it does not bundle or run the Pi coding-agent CLI. Build output includes
+`AskAgentHelper/Legal/dependencies.json` (generated from the esbuild metafile)
+and the license/notice files found for each package under
+`AskAgentHelper/Legal/Dependencies/`. Keep that generated per-package manifest
+and all listed notices with both app and CLI bundles; this summary is not a
+replacement for those package notices.
+
+The current helper bundle includes these nine npm packages:
+
+| Package | Version | License |
+| --- | --- | --- |
+| `@earendil-works/chord` | 0.87.1 | MIT |
+| `@earendil-works/pi-agent-core` | 0.87.1 | MIT |
+| `@earendil-works/pi-ai` | 0.87.1 | MIT |
+| `@earendil-works/pi-telemetry` | 0.87.1 | MIT |
+| `diff` | As recorded in generated manifest | BSD-3-Clause |
+| `ignore` | As recorded in generated manifest | MIT |
+| `partial-json` | As recorded in generated manifest | MIT |
+| `typebox` | As recorded in generated manifest | MIT |
+| `yaml` | As recorded in generated manifest | ISC |
+
+Pi's four package license files are from the pinned published source tree's
+MIT license. Build-time packaging records each package's resolved version,
+declared license, and included license filenames in the generated manifest.
 
 ## LocalVQE
 
@@ -55,8 +87,17 @@ does not claim their compiler executables are redistributed in the app.
 
 ### FluidAudio
 
-- License: MIT License
-- Source/notes: Speech recognition SDK
+- License: Apache License 2.0
+- Source: <https://github.com/FluidInference/FluidAudio>
+- Used for: Local speech recognition and speaker diarization
+
+### NVIDIA Nemotron 3 Diarization
+
+- License: OpenMDW License Agreement, version 1.1
+- Model source: <https://huggingface.co/nvidia/Nemotron-3-Diarization>
+- CoreML conversion: <https://huggingface.co/FluidInference/nemotron-3-diarization-coreml>, by Fluid Inference
+- Used for: Local speaker activity detection, up to eight speakers per analyzed source
+- Model files download separately. Attribution and the license text are included in [`NemotronDiarization.txt`](Sources/MacParakeet/Resources/Legal/NemotronDiarization.txt), copied into app bundles under `Contents/Resources/Legal/`.
 
 ### WhisperKit
 
@@ -205,3 +246,15 @@ does not claim their compiler executables are redistributed in the app.
 - Pinned revision: `88033de44951ebedb96e0adb68cc037443aab93a`
 - Bundling status: Not bundled in the app; downloaded from Hugging Face at setup time by the developer-gated Local MLX setup flow, verified against MacParakeet's SHA-256 manifest, and run locally afterward
 - Used for: Default model for the developer-gated in-process Local MLX provider
+
+## Orukeet optional model weights
+
+Orukeet is an optional download from [oruk/orukeet](https://huggingface.co/oruk/orukeet), an Oruk adaptation of NVIDIA Parakeet v3. The model weights are licensed under [Creative Commons Attribution-ShareAlike 4.0](https://huggingface.co/oruk/orukeet/blob/main/LICENSE). They are not bundled with this application.
+
+## Handy dictation sounds
+
+- Source: <https://github.com/cjpais/Handy>
+- Revision: `93c9ee05efe294cf2a56bd534b77ea1079f21b77`
+- License: MIT; copyright (c) 2025 CJ Pais
+- Used for: optional Pop and Marimba start/stop presets (four unmodified WAV files)
+- Complete notice: `Sources/MacParakeet/Resources/Legal/HandySounds.txt`, included in the app's SwiftPM resource bundle.

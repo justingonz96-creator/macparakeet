@@ -86,6 +86,18 @@ public struct SpeakerSplitBoundary: Codable, Hashable, Sendable {
     }
 }
 
+public enum TranscriptTextChange: Hashable, Sendable, Codable {
+    case replace(target: SpeakerCorrectionTarget, text: String)
+    case omit(target: SpeakerCorrectionTarget)
+
+    public var target: SpeakerCorrectionTarget {
+        switch self {
+        case .replace(let target, _), .omit(let target):
+            target
+        }
+    }
+}
+
 public enum SpeakerCorrectionCommand: Hashable, Sendable {
     case rename(speakerID: String, label: String)
     case add(speaker: ManualSpeaker, assigning: [SpeakerCorrectionTarget])
@@ -94,6 +106,10 @@ public enum SpeakerCorrectionCommand: Hashable, Sendable {
     case removeSplit(boundary: SpeakerSplitBoundary, joinedAssignment: SpeakerAssignment?)
     case merge(sourceSpeakerID: String, targetSpeakerID: String)
     case remove(speakerID: String, reassignTo: SpeakerAssignment?)
+    case editText(target: SpeakerCorrectionTarget, text: String)
+    case mergeSegments(targets: [SpeakerCorrectionTarget])
+    /// One reading-session save. Undo restores every passage in the session.
+    case reviseText(changes: [TranscriptTextChange])
     case reset
 
     public var operation: SpeakerCorrectionOperation {
@@ -105,7 +121,17 @@ public enum SpeakerCorrectionCommand: Hashable, Sendable {
         case .removeSplit: .unsplit
         case .merge: .merge
         case .remove: .remove
+        case .editText: .editText
+        case .mergeSegments: .mergeSegments
+        case .reviseText: .reviseText
         case .reset: .reset
+        }
+    }
+
+    public var isTimedTextCorrection: Bool {
+        switch self {
+        case .editText, .mergeSegments, .reviseText: true
+        default: false
         }
     }
 }
@@ -114,26 +140,42 @@ extension SpeakerCorrectionCommand: Codable {
     private enum CodingKeys: String, CodingKey {
         case version, kind, speakerID, label, speaker, assigning, targets, assignment
         case target, atWordIndex, boundary, joinedAssignment, sourceSpeakerID
-        case targetSpeakerID, reassignTo
+        case targetSpeakerID, reassignTo, text, changes
     }
 
     private enum Kind: String, Codable {
-        case rename, add, assign, split, unsplit, merge, remove, reset
+        case rename, add, assign, split, unsplit, merge, remove, editText, mergeSegments, reviseText, reset
     }
 
-    private static let payloadVersion = 1
+    private static let payloadVersion = 2
+    private static let reviseTextPayloadVersion = 3
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let version = try container.decode(Int.self, forKey: .version)
-        guard version == Self.payloadVersion else {
+        guard version == 1 || version == Self.payloadVersion || version == Self.reviseTextPayloadVersion else {
             throw DecodingError.dataCorruptedError(
                 forKey: .version,
                 in: container,
                 debugDescription: "Unsupported speaker correction payload version \(version)"
             )
         }
-        switch try container.decode(Kind.self, forKey: .kind) {
+        let kind = try container.decode(Kind.self, forKey: .kind)
+        if version == 1, kind == .editText || kind == .mergeSegments || kind == .reviseText {
+            throw DecodingError.dataCorruptedError(
+                forKey: .kind,
+                in: container,
+                debugDescription: "Timed-text corrections require payload version 2"
+            )
+        }
+        if version < Self.reviseTextPayloadVersion, kind == .reviseText {
+            throw DecodingError.dataCorruptedError(
+                forKey: .kind,
+                in: container,
+                debugDescription: "Reading-transcript corrections require payload version 3"
+            )
+        }
+        switch kind {
         case .rename:
             self = .rename(
                 speakerID: try container.decode(String.self, forKey: .speakerID),
@@ -172,6 +214,19 @@ extension SpeakerCorrectionCommand: Codable {
                 speakerID: try container.decode(String.self, forKey: .speakerID),
                 reassignTo: try container.decodeIfPresent(SpeakerAssignment.self, forKey: .reassignTo)
             )
+        case .editText:
+            self = .editText(
+                target: try container.decode(SpeakerCorrectionTarget.self, forKey: .target),
+                text: try container.decode(String.self, forKey: .text)
+            )
+        case .mergeSegments:
+            self = .mergeSegments(
+                targets: try container.decode([SpeakerCorrectionTarget].self, forKey: .targets)
+            )
+        case .reviseText:
+            self = .reviseText(
+                changes: try container.decode([TranscriptTextChange].self, forKey: .changes)
+            )
         case .reset:
             self = .reset
         }
@@ -179,7 +234,13 @@ extension SpeakerCorrectionCommand: Codable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(Self.payloadVersion, forKey: .version)
+        let version =
+            if case .reviseText = self {
+                Self.reviseTextPayloadVersion
+            } else {
+                Self.payloadVersion
+            }
+        try container.encode(version, forKey: .version)
         switch self {
         case .rename(let speakerID, let label):
             try container.encode(Kind.rename, forKey: .kind)
@@ -209,6 +270,16 @@ extension SpeakerCorrectionCommand: Codable {
             try container.encode(Kind.remove, forKey: .kind)
             try container.encode(speakerID, forKey: .speakerID)
             try container.encodeIfPresent(reassignTo, forKey: .reassignTo)
+        case .editText(let target, let text):
+            try container.encode(Kind.editText, forKey: .kind)
+            try container.encode(target, forKey: .target)
+            try container.encode(text, forKey: .text)
+        case .mergeSegments(let targets):
+            try container.encode(Kind.mergeSegments, forKey: .kind)
+            try container.encode(targets, forKey: .targets)
+        case .reviseText(let changes):
+            try container.encode(Kind.reviseText, forKey: .kind)
+            try container.encode(changes, forKey: .changes)
         case .reset:
             try container.encode(Kind.reset, forKey: .kind)
         }
@@ -216,7 +287,7 @@ extension SpeakerCorrectionCommand: Codable {
 }
 
 public enum SpeakerCorrectionOperation: String, Codable, Sendable {
-    case rename, add, assign, split, unsplit, merge, remove, reset
+    case rename, add, assign, split, unsplit, merge, remove, editText, mergeSegments, reviseText, reset
 }
 
 public enum SpeakerCorrectionBranchState: String, Codable, Sendable {

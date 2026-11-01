@@ -83,6 +83,30 @@ final class MeetingCleanedMicRendererTests: XCTestCase {
                 + "(aligned \(aligned) dB vs ignoring-offset \(misaligned) dB)")
     }
 
+    func testAlignAndConditionCancelsEchoThatLeadsTheRecordedReference() throws {
+        // #920: the recorded host-time offset places the system reference 8 ms
+        // after its echo in the mic. A causal estimator/filter reading the
+        // reference at the recorded offset can never reach a negative lag; the
+        // renderer's lookahead turns it into a positive one it can recover.
+        // White noise, unlike the tonal voiceLike fixture, cannot be predicted
+        // from its own past, so only a correctly ordered reference cancels it.
+        var rng = MeetingAecRandom(seed: 0x0920)
+        let far = (0..<48_000).map { _ in 0.1 * rng.nextSymmetric() }
+        let mic = MeetingAecEchoPath(taps: [(delay: 0, gain: 0.6)]).apply(to: far)
+        let suppressor = StreamingMeetingEchoSuppressor(
+            processor: MeetingAecNLMSProcessor(),
+            estimator: MeetingEchoDelayEstimator(),
+            reestimateIntervalSamples: 8_000)
+        let result = try MeetingCleanedMicRenderer.alignAndCondition(
+            microphone: mic, system: far,
+            microphoneStartOffsetMs: 0, systemStartOffsetMs: 8,
+            sampleRate: 16_000, conditioner: suppressor)
+
+        let erle = MeetingAecMetrics.erleDB(
+            mic: mic, output: result.output, over: (mic.count / 2)..<(mic.count - 256))
+        XCTAssertGreaterThan(erle, 8, "an echo leading the recorded reference is still cancelled (ERLE \(erle) dB)")
+    }
+
     // MARK: I/O round-trip
 
     func testRenderProducesDecodableCleanedFile() async throws {
@@ -234,7 +258,7 @@ final class MeetingCleanedMicRendererTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: outURL.path))
     }
 
-    func testEchoProbeCatchesLateEchoWindow() {
+    func testEchoProbeCatchesLateEchoWindow() throws {
         let sampleRate = 16_000
         let sampleCount = sampleRate * 40
         let tailStart = sampleRate * 30
@@ -252,7 +276,7 @@ final class MeetingCleanedMicRendererTests: XCTestCase {
         }
         let mic = echoPath.apply(to: system)
 
-        let probe = MeetingCleanedMicRenderer.probeEchoPath(
+        let probe = try MeetingCleanedMicRenderer.probeEchoPath(
             microphone: mic,
             system: system,
             microphoneStartOffsetMs: 0,
@@ -297,6 +321,50 @@ final class MeetingCleanedMicRendererTests: XCTestCase {
                 processor: MeetingAecNLMSProcessor(), referenceDelaySamples: 120))
 
         XCTAssertEqual(outcome, .skipped(.missingSystemReference))
+    }
+
+    func testCancellationAfterEncodingStartsRemovesDerivedFileAndPreservesSources() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (micURL, sysURL) = try await writeSourcePair(in: dir)
+        let originalMic = try Data(contentsOf: micURL)
+        let originalSystem = try Data(contentsOf: sysURL)
+        let output = dir.appendingPathComponent("cancelled.m4a")
+        let conditioner = CancellingRenderConditioner()
+        let task = Task {
+            try await MeetingCleanedMicRenderer().render(
+                microphoneURL: micURL, systemURL: sysURL,
+                sourceAlignment: MeetingSourceAlignment(meetingOriginHostTime: nil, microphone: nil, system: nil),
+                outputURL: output, conditioner: conditioner)
+        }
+        do {
+            _ = try await task.value
+            XCTFail("expected cancellation after first encoded block")
+        } catch is CancellationError {}
+        XCTAssertEqual(conditioner.calls, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+        XCTAssertEqual(try Data(contentsOf: micURL), originalMic)
+        XCTAssertEqual(try Data(contentsOf: sysURL), originalSystem)
+    }
+
+    func testWriterCreationFailureFallsBackWithoutChangingSources() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (micURL, sysURL) = try await writeSourcePair(in: dir)
+        let originalMic = try Data(contentsOf: micURL)
+        let originalSystem = try Data(contentsOf: sysURL)
+        let output = dir.appendingPathComponent("missing/cleaned.m4a")
+        let result = try await MeetingCleanedMicRenderer().render(
+            microphoneURL: micURL, systemURL: sysURL,
+            sourceAlignment: equalAlignment(), outputURL: output,
+            conditioner: StreamingMeetingEchoSuppressor(
+                processor: MeetingAecNLMSProcessor(), referenceDelaySamples: 120))
+        guard case .skipped(.renderFailed) = result else {
+            return XCTFail("expected raw fallback, got \(result)")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+        XCTAssertEqual(try Data(contentsOf: micURL), originalMic)
+        XCTAssertEqual(try Data(contentsOf: sysURL), originalSystem)
     }
 
     // MARK: Helpers
@@ -355,5 +423,17 @@ private final class RendererConditionerFactoryProbe: @unchecked Sendable {
             count += 1
         }
         return factory()
+    }
+}
+
+private final class CancellingRenderConditioner: MicConditioning, @unchecked Sendable {
+    private(set) var calls = 0
+    var diagnostics: MeetingEchoSuppressionDiagnostics { .passthrough() }
+    func reset() { calls = 0 }
+    func condition(microphone: [Float], speaker: [Float], hasSpeakerReference: Bool) -> [Float] {
+        calls += 1
+        // The encoder requests the second chunk only after appending the first.
+        if calls == 2 { withUnsafeCurrentTask { $0?.cancel() } }
+        return microphone
     }
 }

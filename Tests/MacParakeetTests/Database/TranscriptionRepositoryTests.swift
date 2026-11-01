@@ -12,6 +12,67 @@ final class TranscriptionRepositoryTests: XCTestCase {
         repo = TranscriptionRepository(dbQueue: manager.dbQueue)
     }
 
+    func testMeetingRenameRecordsExplicitTitleIntent() throws {
+        let meeting = Transcription(fileName: "Original", sourceType: .meeting)
+        try repo.save(meeting)
+        let saved = try XCTUnwrap(repo.updateFileName(id: meeting.id, fileName: "  Chosen title  "))
+        XCTAssertEqual(saved.titleOverride, "Chosen title")
+        XCTAssertEqual(try repo.fetch(id: meeting.id)?.titleOverride, "Chosen title")
+    }
+
+    func testCompletionPreservesExplicitMeetingTitleFromBeforeProcessing() throws {
+        let meeting = Transcription(fileName: "Chosen title", sourceType: .meeting, titleOverride: "Chosen title")
+        try repo.save(meeting)
+        var completed = meeting
+        completed.fileName = "Automatic title"
+        completed.derivedTitle = "Automatic title"
+        completed.status = .completed
+        let saved = try repo.savePreservingUserMetadata(completed, originalFileName: meeting.fileName)
+        XCTAssertEqual(saved.fileName, "Chosen title")
+        XCTAssertEqual(saved.titleOverride, "Chosen title")
+    }
+
+    func testRetentionUsesManagedAudioClockWithLegacyFallbackInSQLAndAdapters() throws {
+        let now = Date(timeIntervalSince1970: 1_000_000_000)
+        let cutoff = now.addingTimeInterval(-30 * 86_400)
+        let historical = now.addingTimeInterval(-3650 * 86_400)
+        let legacy = Transcription(createdAt: historical, fileName: "Legacy", filePath: "/managed/legacy.m4a",
+                                   status: .completed, sourceType: .meeting)
+        var imported = Transcription(createdAt: historical, fileName: "Imported", filePath: "/managed/imported.m4a",
+                                     status: .completed, sourceType: .meeting)
+        imported.audioRetentionStartedAt = now
+        var expired = imported
+        expired.id = UUID()
+        expired.createdAt = now
+        expired.audioRetentionStartedAt = cutoff
+        let adapter = MockTranscriptionRepository()
+        for row in [legacy, imported, expired] {
+            try repo.save(row)
+            try adapter.save(row)
+        }
+        for repository in [repo!, adapter] as [TranscriptionRepositoryProtocol] {
+            XCTAssertEqual(Set(try repository.fetchMeetingAudioRetentionCandidates(createdAtOrBefore: cutoff).map(\.id)),
+                           Set([legacy.id, expired.id]))
+        }
+        XCTAssertEqual(try repo.fetch(id: imported.id)?.audioRetentionStartedAt, now)
+        XCTAssertEqual(try repo.fetch(id: imported.id)?.createdAt, historical)
+    }
+
+    func testCompletionPreservesCurrentRetentionClockIncludingNil() throws {
+        for currentClock in [nil, Date(timeIntervalSince1970: 1_000_000_000)] as [Date?] {
+            var current = Transcription(fileName: "Meeting", sourceType: .meeting)
+            current.audioRetentionStartedAt = currentClock
+            try repo.save(current)
+            var completed = current
+            completed.audioRetentionStartedAt = Date(timeIntervalSince1970: 50)
+            completed.status = .completed
+            let saved = try repo.savePreservingUserMetadata(completed, originalFileName: current.fileName)
+            XCTAssertEqual(saved.audioRetentionStartedAt, currentClock)
+            try repo.savePreservingMeetingClassification(completed)
+            XCTAssertEqual(try repo.fetch(id: current.id)?.audioRetentionStartedAt, currentClock)
+        }
+    }
+
     // MARK: - CRUD
 
     func testSaveAndFetch() throws {
@@ -680,6 +741,86 @@ final class TranscriptionRepositoryTests: XCTestCase {
             ))
 
         XCTAssertEqual(page.items.map(\.id), [meetingFavorite.id])
+    }
+
+    func testSummaryLibraryPageOmitsTimingJSONAndKeepsEverythingElse() throws {
+        let stored = timedLibraryTranscription()
+        try repo.save(stored)
+
+        let summary = try XCTUnwrap(
+            repo.fetchLibraryPage(query: TranscriptionLibraryQuery(limit: 10, payload: .summary)).items.first
+        )
+
+        XCTAssertNil(summary.wordTimestamps)
+        XCTAssertNil(summary.transcriptSegments)
+        XCTAssertNil(summary.diarizationSegments)
+        var expected = stored
+        expected.wordTimestamps = nil
+        expected.transcriptSegments = nil
+        expected.diarizationSegments = nil
+        XCTAssertEqual(try canonicalJSON(summary), try canonicalJSON(expected))
+    }
+
+    func testFullLibraryPageRemainsTheDefaultAndReturnsCompleteRows() throws {
+        let stored = timedLibraryTranscription()
+        try repo.save(stored)
+
+        let page = try repo.fetchLibraryPage(query: TranscriptionLibraryQuery(limit: 10))
+
+        XCTAssertEqual(try page.items.map(canonicalJSON), [try canonicalJSON(stored)])
+    }
+
+    func testSummaryLibraryPageSearchStillMatchesTranscriptText() throws {
+        try repo.save(timedLibraryTranscription())
+        try repo.save(Transcription(fileName: "other.mp3", rawTranscript: "Unrelated", status: .completed))
+
+        let page = try repo.fetchLibraryPage(
+            query: TranscriptionLibraryQuery(searchText: "roadmap", limit: 10, payload: .summary)
+        )
+
+        XCTAssertEqual(page.items.map(\.fileName), ["timed.m4a"])
+        XCTAssertNil(page.items.first?.wordTimestamps)
+    }
+
+    private func canonicalJSON(_ transcription: Transcription) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(transcription), as: UTF8.self)
+    }
+
+    private func timedLibraryTranscription() -> Transcription {
+        let words = [
+            WordTimestamp(word: "Roadmap", startMs: 0, endMs: 300, confidence: 1, speakerId: "S1"),
+            WordTimestamp(word: "review.", startMs: 320, endMs: 700, confidence: 1, speakerId: "S1"),
+        ]
+        return Transcription(
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            fileName: "timed.m4a",
+            durationMs: 700,
+            rawTranscript: "Roadmap review.",
+            cleanTranscript: "Roadmap review.",
+            wordTimestamps: words,
+            speakerCount: 1,
+            speakers: [SpeakerInfo(id: "S1", label: "Speaker 1")],
+            diarizationSegments: [DiarizationSegmentRecord(speakerId: "S1", startMs: 0, endMs: 700)],
+            transcriptSegments: [
+                TranscriptSegmentRecord(
+                    startMs: 0,
+                    endMs: 700,
+                    speakerId: "S1",
+                    speakerLabel: "Speaker 1",
+                    text: "Roadmap review.",
+                    wordRange: .init(startIndex: 0, endIndexExclusive: 2)
+                )
+            ],
+            status: .completed,
+            sourceURL: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            thumbnailURL: "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
+            channelName: "Planning Channel",
+            isFavorite: true,
+            sourceType: .youtube,
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
     }
 
     func testFetchLibraryPageSearchesTitleTranscriptAndChannelName() throws {

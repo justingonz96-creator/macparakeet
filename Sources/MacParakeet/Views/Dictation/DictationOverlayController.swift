@@ -52,6 +52,26 @@ protocol DictationOverlayControlling: AnyObject {
     func show()
     func hide()
     func resignKeyWindow()
+    func reposition()
+}
+
+extension DictationOverlayControlling {
+    func reposition() {}
+}
+
+extension NSPanel {
+    /// Centers the panel on the user's chosen dictation edge of the main screen.
+    func moveToDictationOverlayPosition(placement: DictationOverlayPlacement) {
+        guard let screen = NSScreen.main else { return }
+        let usable = DictationOverlayLayout.usableFrame(
+            screenFrame: screen.frame,
+            visibleFrame: screen.visibleFrame,
+            topInset: max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
+        )
+        setFrameOrigin(
+            DictationOverlayLayout.origin(in: usable, panelSize: frame.size, placement: placement)
+        )
+    }
 }
 
 // MARK: - Overlay Controller
@@ -73,6 +93,8 @@ final class DictationOverlayController: DictationOverlayControlling {
     func show() {
         if panel != nil { return }
 
+        let placement = DictationOverlayPlacement.current()
+        overlayViewModel.anchorsToTop = placement.anchorsToTop
         let view = DictationOverlayView(viewModel: overlayViewModel)
         // No `.tint(...)` here — the overlay's controls are all custom-drawn,
         // so cascading the brand accent has no visible effect, and the typed
@@ -112,13 +134,7 @@ final class DictationOverlayController: DictationOverlayControlling {
         hosting.addSubview(tracker)
         trackingView = tracker
 
-        // Position at bottom-center, just above the Dock
-        if let screen = NSScreen.main {
-            let screenFrame = screen.visibleFrame
-            let x = screenFrame.midX - panelWidth / 2
-            let y = screenFrame.origin.y + 12
-            panel.setFrameOrigin(NSPoint(x: x, y: y))
-        }
+        panel.moveToDictationOverlayPosition(placement: placement)
 
         panel.orderFront(nil)
         self.panel = panel
@@ -130,6 +146,13 @@ final class DictationOverlayController: DictationOverlayControlling {
         panel = nil
         hostingView = nil
         trackingView = nil
+    }
+
+    func reposition() {
+        guard let panel else { return }
+        let placement = DictationOverlayPlacement.current()
+        overlayViewModel.anchorsToTop = placement.anchorsToTop
+        panel.moveToDictationOverlayPosition(placement: placement)
     }
 
     /// Resign key window so CGEvent paste targets the user's app, not the overlay panel.
@@ -149,14 +172,20 @@ final class DictationOverlayController: DictationOverlayControlling {
         }
 
         let panelWidth = bounds.width
-        let pillWidth: CGFloat = 210 // approximate pill content width
+        // Dictation persistent recording: 7pt side inset + 22 cancel + 12 + 36
+        // timer + 12 + 64 waveform + 12 + 23 stop + 7 ≈ 195. Must stay in sync
+        // with `DictationOverlayView` recording padding or hover zones drift.
+        // Command persistent recording is a wider text card; this 195/36 math
+        // is the same pre-existing approximation (was 210/45) and is not
+        // claimed to fit that layout.
+        let pillWidth: CGFloat = 195
         let pillLeft = (panelWidth - pillWidth) / 2
         let pillRight = pillLeft + pillWidth
 
         let x = point.x
-        if x >= pillLeft && x < pillLeft + 45 {
+        if x >= pillLeft && x < pillLeft + 36 {
             overlayViewModel.hoverTooltip = "Cancel (Esc)"
-        } else if x > pillRight - 45 && x <= pillRight {
+        } else if x > pillRight - 36 && x <= pillRight {
             if overlayViewModel.sessionKind == .command {
                 overlayViewModel.hoverTooltip = "Stop & apply (Fn+Control)"
             } else {
@@ -168,15 +197,6 @@ final class DictationOverlayController: DictationOverlayControlling {
         } else {
             overlayViewModel.hoverTooltip = nil
         }
-    }
-
-    func updateSize(width: CGFloat) {
-        guard let panel else { return }
-        var frame = panel.frame
-        let oldWidth = frame.width
-        frame.size.width = width
-        frame.origin.x += (oldWidth - width) / 2
-        panel.setFrame(frame, display: true, animate: true)
     }
 }
 
@@ -227,6 +247,7 @@ final class DictationOverlayViewModel {
     var processingLoadCaption: ProcessingLoadCaption?
     var liveTranscript: String = ""
     var previewTextSize: DictationPreviewTextSize = .medium
+    var anchorsToTop: Bool = false
     var commandPromptText: String = "Speak your command..."
     var commandSelectedText: String = ""
 

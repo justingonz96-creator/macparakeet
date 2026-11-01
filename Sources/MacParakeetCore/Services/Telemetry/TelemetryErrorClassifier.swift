@@ -20,15 +20,27 @@ public enum TelemetryErrorClassifier {
     ]
 
     public static func classify(_ error: Error) -> String {
+        if let meetingError = error as? MeetingAudioError {
+            switch meetingError {
+            case .captureStartupTimedOut: return "MeetingAudioError.captureStartupTimedOut"
+            case .microphoneCleanupPending: return "MeetingAudioError.microphoneCleanupPending"
+            default: break
+            }
+        }
         // URLError: include the code name for network diagnosis
         if let urlError = error as? URLError {
             return "URLError.\(urlErrorCodeName(urlError.code))"
         }
 
-        if let audioError = error as? AudioProcessorError,
-            case .recordingFailed("interrupted during subscribe") = audioError
-        {
-            return "AudioProcessorError.recordingFailed.interrupted_subscribe"
+        if let audioError = error as? AudioProcessorError {
+            if case .recordingFailed("interrupted during subscribe") = audioError {
+                return "AudioProcessorError.recordingFailed.interrupted_subscribe"
+            }
+            // AudioCaptureProblem raw values are a closed identifier set, not
+            // associated user text. Mirror only keeps the enum case name.
+            if case .inputUnavailable(let problem) = audioError {
+                return "AudioProcessorError.inputUnavailable.\(problem.rawValue)"
+            }
         }
 
         // SharedMicrophoneStream currently crosses its queue boundary with the
@@ -114,7 +126,8 @@ public enum TelemetryErrorClassifier {
             options: .regularExpression
         )
         sanitized = sanitized.replacingOccurrences(
-            of: #"(?i)\b(?:api[_-]?key|access[_-]?token|token|authorization)\s*[:=]\s*(?:\"(?:\\[^\r\n]|[^\"\\\r\n])*\\?(?:\"|(?=[\r\n]|$))|'(?:\\[^\r\n]|[^'\\\r\n])*\\?(?:'|(?=[\r\n]|$))|[^\s\"',;<>]+)"#,
+            of:
+                #"(?i)\b(?:api[_-]?key|access[_-]?token|token|authorization)\s*[:=]\s*(?:\"(?:\\[^\r\n]|[^\"\\\r\n])*\\?(?:\"|(?=[\r\n]|$))|'(?:\\[^\r\n]|[^'\\\r\n])*\\?(?:'|(?=[\r\n]|$))|[^\s\"',;<>]+)"#,
             with: "credential=<redacted>",
             options: .regularExpression
         )

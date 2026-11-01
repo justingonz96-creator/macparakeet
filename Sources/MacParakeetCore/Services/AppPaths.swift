@@ -7,21 +7,33 @@ public enum AppPaths {
     /// `com.macparakeet.MacParakeet` domain belongs to the original app.
     public static let preferencesSuiteName = "com.echelonfit.echo"
     public static let meetingArtifactsFolderKey = "meetingArtifactsFolder"
-    #if DEBUG
     public static let debugAppStateDirEnvironmentKey = "MACPARAKEET_DEBUG_APP_STATE_DIR"
-    #endif
+    /// Bundle ID of the `scripts/dev/run_app.sh` build (`MacParakeet-Dev.app`).
+    public static let developmentBundleIdentifier = "com.macparakeet.dev"
+
+    /// Matches the `run_app.sh` default for `MACPARAKEET_DEBUG_APP_STATE_DIR`.
+    static var defaultDevelopmentAppStateDir: String {
+        let base =
+            FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .path
+            ?? (NSHomeDirectory() + "/Library/Application Support")
+        return base + "/MacParakeet-Dev"
+    }
 
     /// Application Support directory
     public static var appSupportDir: String {
         resolvedAppSupportDir(environment: ProcessInfo.processInfo.environment)
     }
 
-    static func resolvedAppSupportDir(environment: [String: String]) -> String {
-        #if DEBUG
-        if let override = debugAppStateDir(environment: environment) {
+    static func resolvedAppSupportDir(
+        environment: [String: String],
+        bundleIdentifier: String? = Bundle.main.bundleIdentifier
+    ) -> String {
+        if let override = debugAppStateDir(environment: environment, bundleIdentifier: bundleIdentifier) {
             return override
         }
-        #endif
         let path =
             FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -71,11 +83,9 @@ public enum AppPaths {
         defaults: UserDefaults = .standard,
         environment: [String: String]
     ) -> String {
-        #if DEBUG
         if debugAppStateDir(environment: environment) != nil {
             return defaultMeetingRecordingsDir(environment: environment)
         }
-        #endif
         if let raw = defaults.string(forKey: meetingArtifactsFolderKey),
             let path = normalizedMeetingArtifactsFolder(raw)
         {
@@ -122,11 +132,9 @@ public enum AppPaths {
 
     /// Local diagnostic logs directory.
     public static var logsDir: String {
-        #if DEBUG
         if let override = debugAppStateDir(environment: ProcessInfo.processInfo.environment) {
             return "\(override)/logs"
         }
-        #endif
         let path =
             FileManager.default
             .urls(for: .libraryDirectory, in: .userDomainMask)
@@ -134,6 +142,11 @@ public enum AppPaths {
             .path
             ?? (NSHomeDirectory() + "/Library")
         return path + "/Logs/MacParakeet"
+    }
+
+    /// Voice Control session traces. Stays on this Mac; never uploaded.
+    public static var voiceControlLogsDir: String {
+        "\(logsDir)/voice-control"
     }
 
     /// Directory for managed helper binaries (e.g. yt-dlp).
@@ -149,7 +162,7 @@ public enum AppPaths {
     /// FluidAudio model cache base.
     ///
     /// Production intentionally delegates to FluidAudio's own default resolver.
-    /// Debug/test runs with `MACPARAKEET_DEBUG_APP_STATE_DIR` keep FluidAudio
+    /// Developer/test runs with `MACPARAKEET_DEBUG_APP_STATE_DIR` keep FluidAudio
     /// models inside the same throwaway state root as the rest of MacParakeet.
     public static var fluidAudioModelsDir: String {
         fluidAudioModelsDirURL.path
@@ -164,11 +177,7 @@ public enum AppPaths {
     }
 
     static func hasDebugAppStateDirOverride(environment: [String: String]) -> Bool {
-        #if DEBUG
         debugAppStateDir(environment: environment) != nil
-        #else
-        false
-        #endif
     }
 
     static var fluidAudioBaseDirURL: URL {
@@ -184,14 +193,12 @@ public enum AppPaths {
     }
 
     static func resolvedFluidAudioModelsDir(environment: [String: String]) -> URL {
-        #if DEBUG
         if let override = debugAppStateDir(environment: environment) {
             return URL(fileURLWithPath: override, isDirectory: true)
                 .appendingPathComponent("FluidAudio", isDirectory: true)
                 .appendingPathComponent("Models", isDirectory: true)
                 .standardizedFileURL
         }
-        #endif
         return MLModelConfigurationUtils.defaultModelsDirectory()
     }
 
@@ -216,10 +223,16 @@ public enum AppPaths {
             return .parakeetV2
         case .v3:
             return .parakeetV3
+        case .redux:
+            return .parakeetRedux
+        case .ultra:
+            return .parakeetUltra
         case .tdtCtc110m:
             return .parakeetTdtCtc110m
         case .tdtJa:
             return .parakeetJa
+        case .phonon2:
+            return .phonon2
         }
     }
 
@@ -282,14 +295,20 @@ public enum AppPaths {
         return FileManager.default.isExecutableFile(atPath: ffmpegPath) ? ffmpegPath : nil
     }
 
-    #if DEBUG
-    private static func debugAppStateDir(environment: [String: String]) -> String? {
+    private static func debugAppStateDir(
+        environment: [String: String],
+        bundleIdentifier: String? = Bundle.main.bundleIdentifier
+    ) -> String? {
         guard
             let raw = environment[debugAppStateDirEnvironmentKey]?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
             !raw.isEmpty
         else {
-            return nil
+            // A Dev bundle launched without run_app.sh (Finder, `open`, a
+            // relaunch) must use the same Dev root run_app.sh passes, never
+            // the stable app's database and media.
+            guard bundleIdentifier == developmentBundleIdentifier else { return nil }
+            return defaultDevelopmentAppStateDir
         }
         let expanded = (raw as NSString).expandingTildeInPath
         guard (expanded as NSString).isAbsolutePath else {
@@ -297,5 +316,4 @@ public enum AppPaths {
         }
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }
-    #endif
 }

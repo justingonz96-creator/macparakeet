@@ -17,7 +17,7 @@ public final class MeetingRecordingPanelViewModel {
         case preparingSpeechModel(message: String?)
         case listening
         case live
-        case previewUnsupported(engine: SpeechEnginePreference)
+        case previewOff
         case previewUnavailable
     }
 
@@ -49,6 +49,11 @@ public final class MeetingRecordingPanelViewModel {
     /// Meeting-local mic mute. Unlike pause, system audio keeps recording.
     public var isMicrophoneMuted: Bool = false
     public var canToggleMicrophoneMute: Bool = false
+    /// Keep the muted mic control visible during `.starting` even though the
+    /// toggle stays disabled until the microphone is ready.
+    public var showsMicrophoneMuteControl: Bool {
+        canToggleMicrophoneMute || isMicrophoneMuted
+    }
     public var previewLines: [MeetingRecordingPreviewLine] = []
     public var isTranscriptionLagging: Bool = false
     public private(set) var liveTranscriptStatus: LiveTranscriptStatus = .listening
@@ -269,7 +274,7 @@ public final class MeetingRecordingPanelViewModel {
 
     public var compactErrorRecoveryMessage: String? {
         guard case .error = state else { return nil }
-        return "Meeting interrupted. Open Library to retry transcription or export captured audio."
+        return "Meeting interrupted. If audio was captured, open Library to retry transcription or export it."
     }
 
     public var showsLaggingIndicator: Bool {
@@ -344,8 +349,7 @@ public final class MeetingRecordingPanelViewModel {
                 + "Final transcript: \(Self.describe(plan.final)) after recording ends"
         } else if plan.preview == nil, live != plan.final {
             speechRouteAttribution =
-                "Live preview: Off (\(Self.describe(live))) · "
-                + "Final transcript: \(Self.describe(plan.final)) after recording ends"
+                "Final transcript: \(Self.describe(plan.final)) after recording ends"
         } else {
             speechRouteAttribution = nil
         }
@@ -363,8 +367,8 @@ public final class MeetingRecordingPanelViewModel {
             return "Preparing speech model..."
         case .listening, .live:
             return canStop ? "Listening..." : "Transcription in progress..."
-        case .previewUnsupported(let engine):
-            return "Live preview off for \(engine.displayName)"
+        case .previewOff:
+            return "Live transcription is off"
         case .previewUnavailable:
             return "Live preview unavailable"
         }
@@ -382,7 +386,7 @@ public final class MeetingRecordingPanelViewModel {
             return Self.cleanWarmUpMessage(message) ?? "Recording continues while local transcription starts."
         case .listening, .live:
             return nil
-        case .previewUnsupported:
+        case .previewOff:
             return "Audio will be transcribed after you stop recording."
         case .previewUnavailable:
             return
@@ -390,10 +394,18 @@ public final class MeetingRecordingPanelViewModel {
         }
     }
 
+    /// Transcript empty-state seed-of-life sits still and faded when live
+    /// preview is off. Pause is a different "held breath" freeze that keeps
+    /// full color and the current animation frame. Notes keeps the living
+    /// rosette because the meeting is still recording.
+    public var isTranscriptRosetteQuiet: Bool {
+        liveTranscriptStatus == .previewOff
+    }
+
     private var livePreviewStatusMessage: String? {
         switch liveTranscriptStatus {
-        case .previewUnsupported(let engine):
-            return "Live preview is off for \(engine.displayName). Audio is still recording for final transcription."
+        case .previewOff:
+            return "Audio is recording. Your transcript will be ready after you stop."
         case .previewUnavailable:
             return "Audio is still recording. Live preview may stay off until the final transcript is ready."
         case .startingAudio, .preparingSpeechModel, .listening, .live:

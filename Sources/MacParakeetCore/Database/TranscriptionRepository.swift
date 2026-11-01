@@ -9,8 +9,46 @@ public enum TranscriptionCompletionError: Error, Equatable, LocalizedError {
     }
 }
 
+public enum TranscriptEditError: Error, LocalizedError {
+    case deleted, changed, timed, unsupported
+
+    public var errorDescription: String? {
+        switch self {
+        case .deleted: "This recording was deleted. Your draft has not been saved."
+        case .changed: "The transcript changed. Copy your draft, then reopen the recording before editing again."
+        case .timed: "Edit timed transcripts one line at a time."
+        case .unsupported: "Transcript editing is unavailable."
+        }
+    }
+}
+
+/// Immutable source identity captured when a whole-text draft is opened.
+/// Metadata and updatedAt deliberately do not participate in conflict detection.
+public struct TranscriptEditSnapshot: Sendable {
+    public let transcription: Transcription
+    public let correctionState: SpeakerCorrectionState?
+
+    public init(transcription: Transcription, correctionState: SpeakerCorrectionState? = nil) {
+        self.transcription = transcription
+        self.correctionState = correctionState
+    }
+
+    public func matches(_ current: Transcription) -> Bool {
+        let expected = transcription
+        return current.id == expected.id && current.status == expected.status
+            && current.rawTranscript == expected.rawTranscript
+            && current.cleanTranscript == expected.cleanTranscript
+            && current.isTranscriptEdited == expected.isTranscriptEdited
+            && current.wordTimestamps == expected.wordTimestamps
+            && current.transcriptSegments == expected.transcriptSegments
+            && current.diarizationSegments == expected.diarizationSegments
+    }
+}
+
 public protocol TranscriptionRepositoryProtocol: Sendable {
     func save(_ transcription: Transcription) throws
+    func transcriptEditSnapshot(for expected: Transcription) throws -> TranscriptEditSnapshot
+    func updateTranscriptText(_ text: String?, expected: TranscriptEditSnapshot) throws -> Transcription
     /// Persists a meeting transcription completed from a potentially stale
     /// pre-STT snapshot while retaining classification changed during the
     /// long-running transcription work.
@@ -20,12 +58,16 @@ public protocol TranscriptionRepositoryProtocol: Sendable {
     func fetch(id: UUID) throws -> Transcription?
     func fetchAll(limit: Int?) throws -> [Transcription]
     func fetchLibraryPage(query: TranscriptionLibraryQuery) throws -> TranscriptionLibraryPage
+    func fetchLibraryItem(id: UUID) throws -> TranscriptionLibraryItem?
     func fetchByFilePath(_ filePath: String, sourceType: Transcription.SourceType?) throws -> [Transcription]
     func fetchMeetings(withStatus status: Transcription.TranscriptionStatus) throws -> [Transcription]
     func fetchMeetingAudioRetentionCandidates(createdAtOrBefore cutoff: Date) throws -> [Transcription]
     func fetchCompletedByVideoID(_ videoID: String) throws -> Transcription?
     func count() throws -> Int
     func search(query: String, limit: Int?) throws -> [Transcription]
+    /// Durably detach shares and queue permanent stop before deleting owned files.
+    /// Returns opaque remote IDs whose local content keys must be removed.
+    func prepareForDeletion(id: UUID) throws -> [String]
     func delete(id: UUID) throws -> Bool
     func deleteAll() throws
     func updateStatus(id: UUID, status: Transcription.TranscriptionStatus, errorMessage: String?) throws
@@ -47,6 +89,18 @@ public protocol TranscriptionRepositoryProtocol: Sendable {
 }
 
 extension TranscriptionRepositoryProtocol {
+    // Adapters must implement atomic edit semantics explicitly; never emulate
+    // them with a fetch followed by an upsert.
+    public func transcriptEditSnapshot(for expected: Transcription) throws -> TranscriptEditSnapshot {
+        throw TranscriptEditError.unsupported
+    }
+    public func updateTranscriptText(_ text: String?, expected: TranscriptEditSnapshot) throws -> Transcription {
+        throw TranscriptEditError.unsupported
+    }
+
+    /// Non-SQL adapters with no sharing ledger need no preparation. The concrete
+    /// GRDB repository always implements the transactional sharing invariant.
+    public func prepareForDeletion(id: UUID) throws -> [String] { [] }
     public func savePreservingMeetingClassification(_ transcription: Transcription) throws {
         try save(transcription)
     }
@@ -66,7 +120,7 @@ extension TranscriptionRepositoryProtocol {
             $0.sourceType == .meeting
                 && !($0.filePath?.isEmpty ?? true)
                 && $0.status == .completed
-                && $0.createdAt <= cutoff
+                && ($0.audioRetentionStartedAt ?? $0.createdAt) <= cutoff
         }
     }
 
@@ -79,6 +133,11 @@ extension TranscriptionRepositoryProtocol {
     public func fetchCompletedByVideoID(_ videoID: String) throws -> Transcription? { nil }
     public func count() throws -> Int { try fetchAll(limit: nil).count }
     public func search(query: String, limit: Int?) throws -> [Transcription] { [] }
+    public func fetchLibraryItem(id: UUID) throws -> TranscriptionLibraryItem? {
+        try fetch(id: id).map {
+            TranscriptionLibraryItem(transcription: $0, effectiveTranscriptText: nil)
+        }
+    }
     public func fetchLibraryPage(query: TranscriptionLibraryQuery) throws -> TranscriptionLibraryPage {
         var results = try fetchAll(limit: nil)
 
@@ -173,6 +232,7 @@ extension TranscriptionRepositoryProtocol {
 // advertise Swift Sendable conformance.
 public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @unchecked Sendable {
     private let dbQueue: DatabaseQueue
+    private let notifyShareStopQueued: @Sendable () -> Void
     private static let libraryDisplayTitleExpression = effectiveDisplayTitleExpression()
 
     static func effectiveDisplayTitleExpression(tableAlias: String? = nil) -> String {
@@ -197,6 +257,56 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
 
     public init(dbQueue: DatabaseQueue) {
         self.dbQueue = dbQueue
+        let isInMemory = dbQueue.path == ":memory:" || dbQueue.path.contains("mode=memory")
+        self.notifyShareStopQueued = {
+            // Synthetic in-memory libraries must not wake a running app's outbox.
+            guard !isInMemory else { return }
+            DistributedNotificationCenter.default().postNotificationName(
+                .macParakeetShareStopQueued, object: nil, userInfo: nil, deliverImmediately: true)
+        }
+    }
+
+    init(dbQueue: DatabaseQueue, notifyShareStopQueued: @escaping @Sendable () -> Void) {
+        self.dbQueue = dbQueue
+        self.notifyShareStopQueued = notifyShareStopQueued
+    }
+
+    public func transcriptEditSnapshot(for expected: Transcription) throws -> TranscriptEditSnapshot {
+        try dbQueue.read { db in
+            guard let current = try Transcription.fetchOne(db, key: expected.id) else {
+                throw TranscriptEditError.deleted
+            }
+            guard TranscriptEditSnapshot(transcription: expected).matches(current), current.status != .processing else {
+                throw TranscriptEditError.changed
+            }
+            return TranscriptEditSnapshot(
+                transcription: current,
+                correctionState: try SpeakerCorrectionRepository.fetchState(transcriptionId: current.id, in: db)
+            )
+        }
+    }
+
+    public func updateTranscriptText(_ text: String?, expected: TranscriptEditSnapshot) throws -> Transcription {
+        try dbQueue.write { db in
+            guard var current = try Transcription.fetchOne(db, key: expected.transcription.id) else {
+                throw TranscriptEditError.deleted
+            }
+            let state = try SpeakerCorrectionRepository.fetchState(transcriptionId: current.id, in: db)
+            guard expected.matches(current), state == expected.correctionState, current.status != .processing else {
+                throw TranscriptEditError.changed
+            }
+            guard !current.hasWordTimestamps || current.isTranscriptEdited else {
+                throw TranscriptEditError.timed
+            }
+            current.cleanTranscript = text == current.rawTranscript ? nil : text
+            current.isTranscriptEdited = current.cleanTranscript != nil
+            current.updatedAt = max(current.updatedAt, Date())
+            try current.update(db)
+            let segments = try SegmentRepository.deriveResolvedSegments(for: current, in: db)
+            try KnowledgeLayerMutationService.replaceSegmentsAndInvalidateCard(
+                segments, transcriptionId: current.id, in: db)
+            return current
+        }
     }
 
     public func save(_ transcription: Transcription) throws {
@@ -298,11 +408,12 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
                     normalizedQuery: UnicodeSearch.makeKey(searchText),
                     sortOrder: query.sortOrder,
                     limit: limit,
-                    offset: offset
+                    offset: offset,
+                    payload: query.payload
                 )
             }
 
-            var sql = "SELECT * FROM transcriptions"
+            var sql = "SELECT \(try Self.librarySelection(for: query.payload, in: db)) FROM transcriptions"
             if !whereClauses.isEmpty {
                 sql += " WHERE " + whereClauses.joined(separator: " AND ")
             }
@@ -316,9 +427,30 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
                 sql: sql,
                 arguments: StatementArguments(arguments)
             )
+            let items = limit == 0 ? [] : Array(fetched.prefix(limit))
             return TranscriptionLibraryPage(
-                items: limit == 0 ? [] : Array(fetched.prefix(limit)),
-                hasMore: fetched.count > limit
+                items: items,
+                hasMore: fetched.count > limit,
+                effectiveTranscriptTextByID: try Self.effectiveLibraryTranscriptTexts(
+                    for: items,
+                    payload: query.payload,
+                    in: db
+                )
+            )
+        }
+    }
+
+    public func fetchLibraryItem(id: UUID) throws -> TranscriptionLibraryItem? {
+        try dbQueue.read { db in
+            guard let transcription = try Transcription.fetchOne(db, key: id) else { return nil }
+            let effectiveTranscriptText = try Self.effectiveLibraryTranscriptText(
+                for: transcription,
+                activeTextCorrectionIDs: Self.activeTextCorrectionTranscriptionIDs(in: db),
+                in: db
+            )
+            return TranscriptionLibraryItem(
+                transcription: transcription,
+                effectiveTranscriptText: effectiveTranscriptText
             )
         }
     }
@@ -330,9 +462,10 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
         normalizedQuery: String,
         sortOrder: TranscriptionLibrarySortOrder,
         limit: Int,
-        offset: Int
+        offset: Int,
+        payload: TranscriptionLibraryPayload
     ) throws -> TranscriptionLibraryPage {
-        var sql = "SELECT * FROM transcriptions"
+        var sql = "SELECT \(try librarySelection(for: payload, in: db)) FROM transcriptions"
         if !whereClauses.isEmpty {
             sql += " WHERE " + whereClauses.joined(separator: " AND ")
         }
@@ -343,10 +476,22 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
             sql: sql,
             arguments: StatementArguments(arguments)
         )
+        let activeTextCorrectionIDs = try activeTextCorrectionTranscriptionIDs(in: db)
         var skipped = 0
         var items: [Transcription] = []
+        var effectiveTranscriptTextByID: [UUID: String] = [:]
         while let transcription = try cursor.next() {
-            guard transcriptionMatchesLibrarySearch(transcription, normalizedQuery: normalizedQuery) else {
+            let effectiveTranscriptText = try effectiveLibraryTranscriptText(
+                for: transcription,
+                payload: payload,
+                activeTextCorrectionIDs: activeTextCorrectionIDs,
+                in: db
+            )
+            guard transcriptionMatchesLibrarySearch(
+                transcription,
+                normalizedQuery: normalizedQuery,
+                effectiveTranscriptText: effectiveTranscriptText
+            ) else {
                 continue
             }
             if skipped < offset {
@@ -354,11 +499,20 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
                 continue
             }
             guard items.count < limit else {
-                return TranscriptionLibraryPage(items: items, hasMore: true)
+                return TranscriptionLibraryPage(
+                    items: items,
+                    hasMore: true,
+                    effectiveTranscriptTextByID: effectiveTranscriptTextByID
+                )
             }
             items.append(transcription)
+            effectiveTranscriptTextByID[transcription.id] = effectiveTranscriptText
         }
-        return TranscriptionLibraryPage(items: items, hasMore: false)
+        return TranscriptionLibraryPage(
+            items: items,
+            hasMore: false,
+            effectiveTranscriptTextByID: effectiveTranscriptTextByID
+        )
     }
 
     public func fetchBySourceType(_ sourceType: Transcription.SourceType, limit: Int? = nil) throws -> [Transcription] {
@@ -473,8 +627,8 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
                 .filter(Transcription.Columns.filePath != nil)
                 .filter(Transcription.Columns.filePath != "")
                 .filter(Transcription.Columns.status == Transcription.TranscriptionStatus.completed.rawValue)
-                .filter(Transcription.Columns.createdAt <= cutoff)
-                .order(Transcription.Columns.createdAt.asc)
+                .filter(sql: "COALESCE(audioRetentionStartedAt, createdAt) <= ?", arguments: [cutoff])
+                .order(sql: "COALESCE(audioRetentionStartedAt, createdAt) ASC")
                 .fetchAll(db)
         }
     }
@@ -495,10 +649,20 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
                 try Transcription
                 .order(Transcription.Columns.createdAt.desc)
                 .fetchCursor(db)
+            let activeTextCorrectionIDs = try Self.activeTextCorrectionTranscriptionIDs(in: db)
 
             var results: [Transcription] = []
             while let transcription = try cursor.next() {
-                guard transcriptionMatchesLibrarySearch(transcription, normalizedQuery: normalizedQuery) else {
+                let effectiveTranscriptText = try Self.effectiveLibraryTranscriptText(
+                    for: transcription,
+                    activeTextCorrectionIDs: activeTextCorrectionIDs,
+                    in: db
+                )
+                guard transcriptionMatchesLibrarySearch(
+                    transcription,
+                    normalizedQuery: normalizedQuery,
+                    effectiveTranscriptText: effectiveTranscriptText
+                ) else {
                     continue
                 }
 
@@ -531,16 +695,35 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
         }
     }
 
-    public func delete(id: UUID) throws -> Bool {
-        try dbQueue.write { db in
-            try Transcription.deleteOne(db, key: id)
+    public func prepareForDeletion(id: UUID) throws -> [String] {
+        let shareIds = try dbQueue.write { db in
+            try SharePublicationRepository.detachAndEnqueueTerminalOperations(transcriptionId: id, in: db)
+                .map(\.remoteShareId)
         }
+        if !shareIds.isEmpty { notifyShareStopQueued() }
+        return shareIds
+    }
+
+    public func delete(id: UUID) throws -> Bool {
+        let (deleted, hasShares) = try dbQueue.write { db in
+            let shares = try SharePublicationRepository.detachAndEnqueueTerminalOperations(transcriptionId: id, in: db)
+            return (try Transcription.deleteOne(db, key: id), !shares.isEmpty)
+        }
+        if hasShares { notifyShareStopQueued() }
+        return deleted
     }
 
     public func deleteAll() throws {
-        try dbQueue.write { db in
+        let hasShares = try dbQueue.write { db in
+            var hasShares = false
+            for id in try UUID.fetchAll(db, sql: "SELECT id FROM transcriptions") {
+                let shares = try SharePublicationRepository.detachAndEnqueueTerminalOperations(transcriptionId: id, in: db)
+                hasShares = hasShares || !shares.isEmpty
+            }
             _ = try Transcription.deleteAll(db)
+            return hasShares
         }
+        if hasShares { notifyShareStopQueued() }
     }
 
     public func updateStatus(
@@ -583,6 +766,9 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
         try dbQueue.write { db in
             guard var transcription = try Transcription.fetchOne(db, key: id) else { return nil }
             transcription.fileName = fileName
+            if transcription.sourceType == .meeting {
+                transcription.titleOverride = Transcription.normalizedTitleOverride(from: fileName)
+            }
             // A user-driven rename (meetings only) is the source of truth for
             // the meeting's name. The Library rows already read `fileName` for
             // meetings, but `derivedTitle` still feeds the "Save Audio As…"
@@ -768,6 +954,106 @@ public final class TranscriptionRepository: TranscriptionRepositoryProtocol, @un
             return "\(libraryDisplayTitleExpression) COLLATE NOCASE ASC, createdAt DESC"
         }
     }
+
+    /// The column list for a Library page. `.summary` keeps every column
+    /// but selects the timing JSON as `NULL`, so rows still decode as
+    /// `Transcription` and columns added later are included automatically.
+    private static func librarySelection(for payload: TranscriptionLibraryPayload, in db: Database) throws -> String {
+        switch payload {
+        case .full:
+            return "*"
+        case .summary:
+            return try db.columns(in: Transcription.databaseTableName)
+                .map { column in
+                    let name = column.name.quotedDatabaseIdentifier
+                    return TranscriptionLibraryPayload.summaryOmittedColumns.contains(column.name)
+                        ? "NULL AS \(name)" : name
+                }
+                .joined(separator: ", ")
+        }
+    }
+
+    private static func effectiveLibraryTranscriptTexts(
+        for transcriptions: [Transcription],
+        payload: TranscriptionLibraryPayload,
+        in db: Database
+    ) throws -> [UUID: String] {
+        let activeTextCorrectionIDs = try activeTextCorrectionTranscriptionIDs(in: db)
+        return try transcriptions.reduce(into: [:]) { result, transcription in
+            result[transcription.id] = try effectiveLibraryTranscriptText(
+                for: transcription,
+                payload: payload,
+                activeTextCorrectionIDs: activeTextCorrectionIDs,
+                in: db
+            )
+        }
+    }
+
+    private static func activeTextCorrectionTranscriptionIDs(in db: Database) throws -> Set<UUID> {
+        try Set(
+            UUID.fetchAll(
+                db,
+                sql: """
+                    SELECT DISTINCT state.transcriptionId
+                    FROM speaker_correction_states AS state
+                    JOIN speaker_corrections AS head
+                      ON head.id = state.headId
+                     AND head.transcriptionId = state.transcriptionId
+                     AND head.transcriptFingerprint = state.transcriptFingerprint
+                    JOIN speaker_corrections AS edit
+                      ON edit.transcriptionId = state.transcriptionId
+                     AND edit.transcriptFingerprint = state.transcriptFingerprint
+                    WHERE state.headId IS NOT NULL
+                      AND edit.branchState = ?
+                      AND edit.operation IN (?, ?, ?)
+                      AND edit.sequence <= head.sequence
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM speaker_corrections AS reset
+                        WHERE reset.transcriptionId = edit.transcriptionId
+                          AND reset.transcriptFingerprint = edit.transcriptFingerprint
+                          AND reset.branchState = ?
+                          AND reset.operation = ?
+                          AND reset.sequence > edit.sequence
+                          AND reset.sequence <= head.sequence
+                      )
+                    """,
+                arguments: [
+                    SpeakerCorrectionBranchState.current.rawValue,
+                    SpeakerCorrectionOperation.editText.rawValue,
+                    SpeakerCorrectionOperation.mergeSegments.rawValue,
+                    SpeakerCorrectionOperation.reviseText.rawValue,
+                    SpeakerCorrectionBranchState.current.rawValue,
+                    SpeakerCorrectionOperation.reset.rawValue,
+                ]
+            )
+        )
+    }
+
+    private static func effectiveLibraryTranscriptText(
+        for transcription: Transcription,
+        payload: TranscriptionLibraryPayload = .full,
+        activeTextCorrectionIDs: Set<UUID>,
+        in db: Database
+    ) throws -> String? {
+        guard activeTextCorrectionIDs.contains(transcription.id) else { return nil }
+        // Corrections resolve against timing evidence, which a summary row
+        // omits. Only corrected rows pay for loading it.
+        let stored =
+            payload == .summary
+            ? try Transcription.fetchOne(db, key: transcription.id) ?? transcription
+            : transcription
+        let projection = try SpeakerAttributionReadService.resolve(
+            transcription: stored,
+            in: db
+        )
+        guard projection.attribution.hasTextCorrections else { return nil }
+        // An omitted transcript is empty on purpose. Nil would fall back to the
+        // automatic text and put the removed passage back into library search.
+        return projection.effectiveTranscription.cleanTranscript?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ) ?? ""
+    }
 }
 
 private func escapedLikePattern(_ value: String) -> String {
@@ -779,13 +1065,28 @@ private func escapedLikePattern(_ value: String) -> String {
 
 private func transcriptionMatchesLibrarySearch(
     _ transcription: Transcription,
-    normalizedQuery: String
+    normalizedQuery: String,
+    effectiveTranscriptText: String? = nil
 ) -> Bool {
-    UnicodeSearch.contains(transcription.effectiveDisplayTitle, normalizedQuery: normalizedQuery)
+    let matchesTranscript: Bool
+    if let effectiveTranscriptText {
+        matchesTranscript = UnicodeSearch.contains(
+            effectiveTranscriptText,
+            normalizedQuery: normalizedQuery
+        )
+    } else {
+        matchesTranscript =
+            (transcription.rawTranscript.map {
+                UnicodeSearch.contains($0, normalizedQuery: normalizedQuery)
+            } ?? false)
+            || (transcription.cleanTranscript.map {
+                UnicodeSearch.contains($0, normalizedQuery: normalizedQuery)
+            } ?? false)
+    }
+    return UnicodeSearch.contains(transcription.effectiveDisplayTitle, normalizedQuery: normalizedQuery)
         || UnicodeSearch.contains(transcription.fileName, normalizedQuery: normalizedQuery)
         || (transcription.derivedTitle.map { UnicodeSearch.contains($0, normalizedQuery: normalizedQuery) } ?? false)
-        || (transcription.rawTranscript.map { UnicodeSearch.contains($0, normalizedQuery: normalizedQuery) } ?? false)
-        || (transcription.cleanTranscript.map { UnicodeSearch.contains($0, normalizedQuery: normalizedQuery) } ?? false)
+        || matchesTranscript
         || (transcription.channelName.map { UnicodeSearch.contains($0, normalizedQuery: normalizedQuery) } ?? false)
 }
 
@@ -798,12 +1099,15 @@ private extension Transcription {
         merged.meetingTypeId = current.meetingTypeId
         merged.isFavorite = current.isFavorite
         merged.titleOverride = current.titleOverride
+        merged.audioRetentionStartedAt = current.audioRetentionStartedAt
         merged.chatMessages = current.chatMessages
         merged.meetingArtifactFolderPath = current.meetingArtifactFolderPath
         merged.filePath = current.filePath
-        // Allow an automatically generated meeting title only if the user has
-        // not renamed the row since the processing snapshot was captured.
-        if current.fileName != originalFileName {
+        // Explicit meeting names survive generation even when chosen before STT.
+        // A concurrent rename also wins over the processing snapshot.
+        if current.fileName != originalFileName
+            || (current.sourceType == .meeting && current.normalizedTitleOverride != nil)
+        {
             merged.fileName = current.fileName
             if current.sourceType == .meeting {
                 merged.derivedTitle = current.derivedTitle

@@ -5,6 +5,8 @@ import MacParakeetViewModels
 
 struct MeetingsView: View {
     @Bindable var viewModel: MeetingsWorkspaceViewModel
+    var meetingSplitViewModel: MeetingSplitViewModel? = nil
+    var meetingImportViewModel: MeetingImportViewModel? = nil
 
     var onRecordMeeting: () -> Void
     var onPauseToggleMeeting: (() -> Void)?
@@ -16,13 +18,16 @@ struct MeetingsView: View {
     @State private var audioSaveErrorMessage: String?
     @State private var pendingDeleteAudio: Transcription?
     @State private var pendingDeleteMeeting: Transcription?
+    @State private var splitTarget: Transcription?
+    @State private var splitOperationId: UUID?
     @State private var classificationTarget: Transcription?
     @State private var showingAskPromptsSheet = false
     @State private var showingPromptLibrary = false
+    @State private var showingMeetingImport = false
     @FocusState private var recentMeetingsSelectionFocused: Bool
 
-    private static let rightRailWidth: CGFloat = 280
-    private static let twoColumnMinimumWidth: CGFloat = 1_100
+    private static let rightRailWidth: CGFloat = 300
+    private static let twoColumnMinimumWidth: CGFloat = 960
 
     var body: some View {
         sheetContent
@@ -31,20 +36,20 @@ struct MeetingsView: View {
     private var layoutContent: some View {
         GeometryReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
+                VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
                     header
                     recordingSurface
                     contentColumns(
                         usesTwoColumnLayout: proxy.size.width >= Self.twoColumnMinimumWidth
                     )
                 }
-                .padding(.horizontal, DesignSystem.Spacing.lg)
-                .padding(.top, DesignSystem.Spacing.lg)
+                .padding(.horizontal, 20)
+                .padding(.top, DesignSystem.Spacing.md)
                 .padding(.bottom, DesignSystem.Spacing.xl)
-                .frame(maxWidth: 1180, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            // Center the width-capped content column so extra window width
-            // becomes even margins instead of piling up on the right.
+            // Use the available workspace width; the utility rail stays fixed
+            // while the meeting list receives the extra space.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(DesignSystem.Colors.contentBackground)
         }
@@ -198,6 +203,26 @@ struct MeetingsView: View {
                     presentation: .meetingAutoNotes
                 )
             }
+            .sheet(item: $splitTarget) { transcription in
+                if let meetingSplitViewModel {
+                    MeetingSplitSheetView(
+                        transcription: transcription,
+                        viewModel: meetingSplitViewModel,
+                        onDismiss: { splitTarget = nil },
+                        onOpenRecording: onSelectMeeting,
+                        initialOperationId: splitOperationId
+                    )
+                }
+            }
+            .sheet(isPresented: $showingMeetingImport) {
+                if let meetingImportViewModel {
+                    MeetingImportSheetView(
+                        viewModel: meetingImportViewModel,
+                        onDismiss: { showingMeetingImport = false },
+                        onOpenMeeting: onSelectMeeting
+                    )
+                }
+            }
     }
 
     private var header: some View {
@@ -212,6 +237,19 @@ struct MeetingsView: View {
             }
 
             Spacer(minLength: DesignSystem.Spacing.lg)
+
+            if let meetingImportViewModel {
+                Button {
+                    if meetingImportViewModel.isProcessing || meetingImportViewModel.terminalResult != nil {
+                        showingMeetingImport = true
+                    } else {
+                        chooseMeetingImportSource(using: meetingImportViewModel)
+                    }
+                } label: {
+                    Label(importButtonTitle(for: meetingImportViewModel), systemImage: "tray.and.arrow.down")
+                }
+                .parakeetAction(.secondary)
+            }
 
             if viewModel.recordingStatus != .ready {
                 // Isolated into its own View so the per-second elapsed-time
@@ -228,10 +266,23 @@ struct MeetingsView: View {
         }
     }
 
+    private func importButtonTitle(for viewModel: MeetingImportViewModel) -> String {
+        if viewModel.isProcessing { return "View Import…" }
+        if viewModel.terminalResult != nil { return "View Import Result…" }
+        return "Import Recording…"
+    }
+
+    private func chooseMeetingImportSource(using viewModel: MeetingImportViewModel) {
+        guard let sourceURL = MeetingImportSourcePicker.chooseURL() else { return }
+        _ = viewModel.select(sourceURL: sourceURL)
+        showingMeetingImport = true
+    }
+
     private var recordingSurface: some View {
         MeetingRecordingTile(
             viewModel: viewModel.meetingPillViewModel,
             permissionState: meetingPermissionState,
+            isCompact: true,
             onTap: onRecordMeeting,
             onPauseToggle: onPauseToggleMeeting
         )
@@ -248,14 +299,14 @@ struct MeetingsView: View {
     }
 
     private var twoColumnContent: some View {
-        HStack(alignment: .top, spacing: DesignSystem.Spacing.lg) {
-            VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
+        HStack(alignment: .top, spacing: DesignSystem.Spacing.md) {
+            VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
                 upcomingSection
                 recentMeetingsSection
             }
             .frame(minWidth: 480, maxWidth: .infinity, alignment: .topLeading)
 
-            VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
+            VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
                 attentionSection
                 intelligenceSection
                 autoNotesSection
@@ -266,7 +317,7 @@ struct MeetingsView: View {
     }
 
     private var oneColumnContent: some View {
-        VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
             upcomingSection
             attentionSection
             recentMeetingsSection
@@ -284,20 +335,17 @@ struct MeetingsView: View {
                     settingsViewModel: viewModel.settingsViewModel,
                     onOpenCalendarSettings: onOpenCalendarSettings
                 )
-                MeetingsHairline()
+                if viewModel.calendarStatus != .off {
+                    MeetingsHairline()
+                }
 
                 switch viewModel.calendarStatus {
                 case .unavailable:
                     unavailableCalendarState
                 case .off:
-                    MeetingsInlineState(
-                        icon: "calendar",
-                        title: "Calendar reminders are off",
-                        detail: calendarOffDetail,
-                        actionTitle: nil,
-                        actionIcon: nil,
-                        action: nil
-                    )
+                    // Off is explained by the controls above, including what
+                    // connecting Calendar enables before access is granted.
+                    EmptyView()
                 case .permissionNeeded:
                     // The controls row above owns the permission CTA (inline
                     // "Connect Calendar"), so this is context-only — no second
@@ -343,7 +391,15 @@ struct MeetingsView: View {
                     } else {
                         VStack(spacing: 0) {
                             ForEach(viewModel.upcomingEvents) { event in
-                                CalendarEventRow(event: event)
+                                CalendarEventRow(
+                                    event: event,
+                                    skipScope: viewModel.skipScope(for: event),
+                                    isNotifyOnly: viewModel.settingsViewModel.calendarAutoStartMode == .notify,
+                                    onSkipThisMeeting: { viewModel.skipThisMeeting(event) },
+                                    onSkipThisRepeatingMeeting: { viewModel.skipThisRepeatingMeeting(event) },
+                                    onUnskipThisMeeting: { viewModel.unskipThisMeeting(event) },
+                                    onUnskipThisRepeatingMeeting: { viewModel.unskipThisRepeatingMeeting(event) }
+                                )
                                 if event.id != viewModel.upcomingEvents.last?.id {
                                     MeetingsHairline()
                                 }
@@ -441,7 +497,7 @@ struct MeetingsView: View {
                     .foregroundStyle(DesignSystem.Colors.accent)
                     .frame(width: 22)
 
-                Text("Written automatically when a meeting ends. Click a note to turn it on or off.")
+                Text("Choose notes to generate after each meeting. Click a note to turn it on or off.")
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(DesignSystem.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -449,7 +505,12 @@ struct MeetingsView: View {
                 Spacer(minLength: DesignSystem.Spacing.sm)
             }
 
-            if viewModel.meetingAutoNotePrompts.isEmpty {
+            if let errorMessage = viewModel.meetingPolicyErrorMessage {
+                Text(errorMessage)
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if viewModel.meetingAutoNotePrompts.isEmpty {
                 Text("No note types yet. Add one in Manage.")
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(DesignSystem.Colors.textTertiary)
@@ -506,20 +567,10 @@ struct MeetingsView: View {
     private var recentMeetingsSection: some View {
         MeetingsSection(title: "Recent Meetings", icon: "clock.arrow.circlepath") {
             VStack(alignment: .leading, spacing: 0) {
-                MeetingClassificationFilterBar(
-                    libraryViewModel: viewModel.recentMeetingsViewModel
-                )
-                .padding(.horizontal, DesignSystem.Spacing.md)
-                .padding(.vertical, DesignSystem.Spacing.sm)
-
-                if shouldShowRecentMeetingSearch {
-                    recentMeetingSearchField
-                }
+                recentMeetingsToolbar
 
                 if viewModel.recentMeetingsViewModel.isBulkSelectionModeEnabled {
                     recentMeetingsSelectionBar
-                } else if showsRecentMeetingsSelectManyButton {
-                    recentMeetingsSelectManyRow
                 }
 
                 if viewModel.recentMeetingsViewModel.isLoading
@@ -572,6 +623,9 @@ struct MeetingsView: View {
                             for: transcription.id
                         ),
                         searchText: viewModel.recentMeetingsViewModel.searchText,
+                        effectiveTranscriptText: viewModel.recentMeetingsViewModel.effectiveTranscriptText(
+                            for: transcription
+                        ),
                         isSelected: viewModel.recentMeetingsViewModel.isTranscriptionSelected(transcription),
                         showsSelectionControls: viewModel.recentMeetingsViewModel.isBulkSelectionModeEnabled,
                         isRetrying: viewModel.recentMeetingsViewModel.isRetryingMeetingTranscription(transcription),
@@ -630,6 +684,27 @@ struct MeetingsView: View {
         let audioRemovable = MeetingAudioFile.isRemovable(for: transcription, state: audioState)
         let artifactAvailable = MeetingArtifactActions.folderURL(for: transcription) != nil
 
+        if meetingSplitViewModel != nil, let provenance = transcription.splitProvenance {
+            Button {
+                splitOperationId = provenance.operationId
+                splitTarget = transcription
+            } label: {
+                Label("View split progress…", systemImage: "list.bullet.clipboard")
+            }
+            .parakeetAction(.secondary)
+        }
+
+        if meetingSplitViewModel != nil, MeetingSplitEligibility.isEligible(transcription) {
+            Divider()
+            Button {
+                splitOperationId = nil
+                splitTarget = transcription
+            } label: {
+                Label("Split and Transcribe…", systemImage: "square.split.2x1")
+            }
+            .parakeetAction(.secondary)
+        }
+
         Divider()
 
         if transcription.status == .error || transcription.status == .cancelled {
@@ -639,7 +714,8 @@ struct MeetingsView: View {
                 Label("Retry Transcription", systemImage: "arrow.clockwise")
             }
             .disabled(
-                viewModel.recentMeetingsViewModel.isRetryingMeetingTranscription(transcription) || audioState != .saved)
+                viewModel.recentMeetingsViewModel.isRetryingMeetingTranscription(transcription)
+                    || !MeetingAudioFile.canRetryFinalization(for: transcription))
 
             Divider()
         }
@@ -720,21 +796,37 @@ struct MeetingsView: View {
         )
     }
 
-    private var recentMeetingsSelectManyRow: some View {
-        HStack {
-            Spacer()
-            Button {
-                viewModel.recentMeetingsViewModel.beginBulkSelection()
-            } label: {
-                Label("Select Many", systemImage: "checklist")
+    private var recentMeetingsToolbar: some View {
+        RecentMeetingsToolbarLayout(spacing: DesignSystem.Spacing.sm, searchMinimumWidth: 120) {
+            if shouldShowRecentMeetingSearch {
+                recentMeetingSearchField
+                    .frame(minWidth: 120)
             }
-            .parakeetAction(.secondary)
-            .help("Select multiple recent meetings")
-            .accessibilityHint("Shows selection controls for bulk cleanup")
+            recentMeetingsFilterActions
         }
-        .padding(.horizontal, DesignSystem.Spacing.lg)
-        .padding(.vertical, DesignSystem.Spacing.sm)
+        .padding(12)
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var recentMeetingsFilterActions: some View {
+        HStack(spacing: DesignSystem.Spacing.sm) {
+            MeetingClassificationFilterBar(
+                libraryViewModel: viewModel.recentMeetingsViewModel,
+                fillsAvailableWidth: false
+            )
+
+            if showsRecentMeetingsSelectManyButton {
+                Button {
+                    viewModel.recentMeetingsViewModel.beginBulkSelection()
+                } label: {
+                    Label("Select Many", systemImage: "checklist")
+                }
+                .parakeetAction(.secondary)
+                .fixedSize()
+                .help("Select multiple recent meetings")
+                .accessibilityHint("Shows selection controls for bulk cleanup")
+            }
+        }
     }
 
     private var recentMeetingSearchField: some View {
@@ -766,7 +858,7 @@ struct MeetingsView: View {
             }
         }
         .padding(.horizontal, DesignSystem.Spacing.md)
-        .padding(.vertical, 10)
+        .padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(DesignSystem.Colors.surfaceElevated.opacity(0.55))
@@ -775,9 +867,6 @@ struct MeetingsView: View {
                         .strokeBorder(DesignSystem.Colors.border.opacity(0.55), lineWidth: 0.5)
                 )
         )
-        .padding(.horizontal, DesignSystem.Spacing.md)
-        .padding(.top, DesignSystem.Spacing.md)
-        .padding(.bottom, DesignSystem.Spacing.sm)
     }
 
     private var meetingPermissionState: MeetingRecordingTile.PermissionState {
@@ -826,7 +915,8 @@ struct MeetingsView: View {
     }
 
     private var showsRecentMeetingsSelectManyButton: Bool {
-        !viewModel.recentMeetingsViewModel.filteredTranscriptions.isEmpty
+        !viewModel.recentMeetingsViewModel.isBulkSelectionModeEnabled
+            && !viewModel.recentMeetingsViewModel.filteredTranscriptions.isEmpty
     }
 
     private var recentMeetingsBulkOperationTitle: String {
@@ -886,17 +976,6 @@ struct MeetingsView: View {
         }
     }
 
-    private var calendarOffDetail: String {
-        switch viewModel.settingsViewModel.calendarPermissionStatus {
-        case .granted:
-            return "Turn on Reminders or Auto-start above to preview matching calendar events."
-        case .notDetermined:
-            return "Connect Calendar above to enable reminders and auto-start."
-        case .denied:
-            return "Re-enable Calendar access in System Settings to use reminders and auto-start."
-        }
-    }
-
     private func performAttentionAction(_ action: MeetingsWorkspaceViewModel.AttentionAction) {
         switch action {
         case .recordMeeting:
@@ -926,6 +1005,141 @@ struct MeetingsView: View {
                 audioSaveErrorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+/// Keeps search and filter controls as one view tree. When the row is too
+/// narrow for the search field's minimum plus the filters, the search field
+/// takes the next line instead of clipping Select Many.
+private struct RecentMeetingsToolbarLayout: Layout {
+    var spacing: CGFloat = 8
+    var searchMinimumWidth: CGFloat = 120
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let arrangement = arrange(subviews: subviews, availableWidth: proposal.width)
+        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? arrangement.contentWidth
+        return CGSize(width: width, height: arrangement.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let availableWidth = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? bounds.width
+        let arrangement = arrange(subviews: subviews, availableWidth: availableWidth)
+        for placement in arrangement.placements {
+            subviews[placement.index].place(
+                at: CGPoint(x: bounds.minX + placement.x, y: bounds.minY + placement.y),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: placement.width, height: placement.height)
+            )
+        }
+    }
+
+    private struct Placement {
+        var index: Int
+        var x: CGFloat
+        var y: CGFloat
+        var width: CGFloat
+        var height: CGFloat
+    }
+
+    private struct Arrangement {
+        var placements: [Placement]
+        var contentWidth: CGFloat
+        var height: CGFloat
+    }
+
+    private func arrange(subviews: Subviews, availableWidth: CGFloat?) -> Arrangement {
+        let ideals = subviews.enumerated().map { index, subview in
+            let ideal = finiteSize(subview.sizeThatFits(.unspecified))
+            // The search field is flexible. Measure the width it can actually
+            // shrink to; its unspecified width is often the placeholder, which
+            // would wrap the toolbar while the field still fits.
+            guard index == 0, subviews.count > 1 else { return ideal }
+            let minimum = finiteSize(subview.sizeThatFits(ProposedViewSize(width: 0, height: nil)))
+            return CGSize(width: max(minimum.width, searchMinimumWidth), height: ideal.height)
+        }
+        guard !ideals.isEmpty else {
+            return Arrangement(placements: [], contentWidth: 0, height: 0)
+        }
+
+        let width = availableWidth.flatMap { $0.isFinite ? $0 : nil }
+        if ideals.count == 1 || width == nil || fitsOnOneRow(ideals: ideals, width: width ?? 0) {
+            return singleRow(ideals: ideals, width: width, stretchSearch: ideals.count > 1 && width != nil)
+        }
+        return stacked(ideals: ideals, width: width ?? 0)
+    }
+
+    private func finiteSize(_ size: CGSize) -> CGSize {
+        CGSize(
+            width: size.width.isFinite ? size.width : 0,
+            height: size.height.isFinite ? size.height : 0
+        )
+    }
+
+    private func fitsOnOneRow(ideals: [CGSize], width: CGFloat) -> Bool {
+        rowWidth(of: ideals) <= width
+    }
+
+    private func rowWidth(of sizes: [CGSize]) -> CGFloat {
+        sizes.map(\.width).reduce(0, +) + CGFloat(max(sizes.count - 1, 0)) * spacing
+    }
+
+    private func singleRow(ideals: [CGSize], width: CGFloat?, stretchSearch: Bool) -> Arrangement {
+        let rowHeight = ideals.map(\.height).max() ?? 0
+        let trailingWidth = rowWidth(of: Array(ideals.dropFirst()))
+        let searchWidth: CGFloat
+        if stretchSearch, let width {
+            searchWidth = max(ideals[0].width, width - trailingWidth - spacing)
+        } else {
+            searchWidth = ideals[0].width
+        }
+
+        var placements: [Placement] = []
+        var x: CGFloat = 0
+        for (index, ideal) in ideals.enumerated() {
+            let itemWidth = index == 0 ? searchWidth : ideal.width
+            placements.append(
+                Placement(
+                    index: index,
+                    x: x,
+                    y: (rowHeight - ideal.height) / 2,
+                    width: itemWidth,
+                    height: ideal.height
+                )
+            )
+            x += itemWidth
+            if index < ideals.count - 1 {
+                x += spacing
+            }
+        }
+        return Arrangement(placements: placements, contentWidth: x, height: rowHeight)
+    }
+
+    private func stacked(ideals: [CGSize], width: CGFloat) -> Arrangement {
+        let searchHeight = ideals[0].height
+        var placements: [Placement] = [
+            Placement(index: 0, x: 0, y: 0, width: width, height: searchHeight)
+        ]
+        var x: CGFloat = 0
+        let y = searchHeight + spacing
+        var filterRowHeight: CGFloat = 0
+        for (offset, ideal) in ideals.dropFirst().enumerated() {
+            placements.append(
+                Placement(
+                    index: offset + 1,
+                    x: x,
+                    y: y,
+                    width: ideal.width,
+                    height: ideal.height
+                )
+            )
+            x += ideal.width + spacing
+            filterRowHeight = max(filterRowHeight, ideal.height)
+        }
+        return Arrangement(
+            placements: placements,
+            contentWidth: max(width, x),
+            height: searchHeight + spacing + filterRowHeight
+        )
     }
 }
 
@@ -1061,14 +1275,16 @@ private struct CalendarInlineControlsRow: View {
         // branch only ever sees `.notDetermined` / `.denied`.
         guard controlsEnabled else {
             if settingsViewModel.calendarPermissionStatus == .denied {
-                return "Calendar access is blocked. Re-enable it in System Settings to use reminders."
+                return
+                    "Calendar access is blocked. Re-enable it in System Settings to use reminders and auto-start."
             }
-            return "Connect your macOS Calendar to preview meetings and enable reminders."
+            return
+                "Connect Calendar to enable reminders and auto-start. Microsoft 365 and Exchange accounts added in System Settings are included."
         }
 
         switch settingsViewModel.calendarAutoStartMode {
         case .off:
-            return "Turn on calendar matching without leaving Meetings."
+            return "Choose Reminders or Auto-start to see upcoming meetings."
         case .notify:
             return "Preview matching events and remind before they start."
         case .autoStart:
@@ -1324,6 +1540,12 @@ private struct MeetingsLoadingRow: View {
 
 private struct CalendarEventRow: View {
     let event: CalendarEvent
+    let skipScope: CalendarSkipScope?
+    let isNotifyOnly: Bool
+    var onSkipThisMeeting: () -> Void
+    var onSkipThisRepeatingMeeting: () -> Void
+    var onUnskipThisMeeting: () -> Void
+    var onUnskipThisRepeatingMeeting: () -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: DesignSystem.Spacing.md) {
@@ -1348,10 +1570,62 @@ private struct CalendarEventRow: View {
                 .font(DesignSystem.Typography.caption)
                 .foregroundStyle(DesignSystem.Colors.textSecondary)
                 .lineLimit(1)
+                if let caption = skipCaption {
+                    Text(caption)
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        .lineLimit(2)
+                }
             }
         }
         .padding(DesignSystem.Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .opacity(skipScope == nil ? 1 : 0.55)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+        .contextMenu {
+            skipMenuItems
+        }
+    }
+
+    @ViewBuilder
+    private var skipMenuItems: some View {
+        switch skipScope {
+        case nil:
+            Button("Don't auto-record this meeting", action: onSkipThisMeeting)
+            if event.isRecurring {
+                Button("Don't auto-record this repeating meeting", action: onSkipThisRepeatingMeeting)
+            }
+        case .event where event.isRecurring:
+            Button("Auto-record this repeating meeting again", action: onUnskipThisRepeatingMeeting)
+        default:
+            Button("Auto-record again", action: onUnskipThisMeeting)
+            if event.isRecurring, skipScope == .occurrence {
+                Button("Don't auto-record this repeating meeting", action: onSkipThisRepeatingMeeting)
+            }
+        }
+    }
+
+    private var skipCaption: String? {
+        guard skipScope != nil else { return nil }
+        if isNotifyOnly {
+            return "Echo won't remind you or start recording."
+        }
+        if skipScope == .occurrence, event.isRecurring {
+            return "Won't auto-record this time."
+        }
+        if skipScope == .event, event.isRecurring {
+            return "Won't auto-record this series."
+        }
+        return "Won't auto-record."
+    }
+
+    private var accessibilityLabel: String {
+        var parts = [event.title, eventDateText, event.formattedTimeRange]
+        if let caption = skipCaption {
+            parts.append(caption)
+        }
+        return parts.joined(separator: ", ")
     }
 
     private var peopleCountText: String {
@@ -1432,7 +1706,7 @@ private struct IntelligenceReadyRow: View {
     var onOpenSettings: () -> Void
 
     var body: some View {
-        // The Intelligence card lives in the fixed 280pt right rail (see
+        // The Intelligence card lives in the fixed 300pt right rail (see
         // `rightRailWidth`). A provider badge ("Google Gemini · External ☁")
         // and an "AI Settings" button cannot fit side by side at that width —
         // the squeeze previously collapsed the unconstrained "External" label
@@ -1532,7 +1806,7 @@ private struct LiveAskPromptRow: View {
                         }
                     }
 
-                    Text("Quick prompts available while a meeting is live.")
+                    Text("Pinned questions for live meetings.")
                         .font(DesignSystem.Typography.caption)
                         .foregroundStyle(DesignSystem.Colors.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)

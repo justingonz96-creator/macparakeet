@@ -33,7 +33,9 @@ public struct TextRefinementService: Sendable {
         customWords: [CustomWord],
         snippets: [TextSnippet],
         normalizeNumbers: Bool = false,
-        insertionStyle: DictationInsertionStyle = .sentence
+        insertionStyle: DictationInsertionStyle = .sentence,
+        spokenPunctuationEnabled: Bool = true,
+        removeUmFiller: Bool = true
     ) async -> TextRefinementResult {
         guard mode.usesDeterministicPipeline else {
             // Raw mode: skip full pipeline but still extract trailing action (Voice Return)
@@ -64,7 +66,9 @@ public struct TextRefinementService: Sendable {
             customWords: customWords,
             snippets: snippets,
             normalizeNumbers: normalizeNumbers,
-            insertionStyle: insertionStyle
+            insertionStyle: insertionStyle,
+            spokenPunctuationEnabled: spokenPunctuationEnabled,
+            removeUmFiller: removeUmFiller
         )
 
         return TextRefinementResult(

@@ -43,15 +43,23 @@ The current implementation supports these provider/runtime types through one sha
 | OpenAI (GPT) | Cloud | `https://api.openai.com/v1` | API key (`Authorization: Bearer`) |
 | Google (Gemini) | Cloud | `https://generativelanguage.googleapis.com/v1beta/openai` | API key (`Authorization: Bearer`) |
 | OpenRouter | Cloud | `https://openrouter.ai/api/v1` | API key (`Authorization: Bearer`) |
+| Moonshot (Kimi) | Cloud | `https://api.moonshot.ai/v1` | API key (`Authorization: Bearer`) |
+| DeepSeek | Cloud | `https://api.deepseek.com/v1` | API key (`Authorization: Bearer`) |
+| Qwen | Cloud | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | API key (`Authorization: Bearer`) |
+| Z.AI | Cloud | `https://api.z.ai/api/paas/v4` | API key (`Authorization: Bearer`) |
+| MiniMax | Cloud | `https://api.minimax.io/v1` | API key (`Authorization: Bearer`) |
 | OpenAI-Compatible | Custom | User-configured `/v1` endpoint | Provider-specific API token or none |
 | Ollama | Local | `http://localhost:11434/v1` | `apiKey: nil` in config; client injects `Bearer ollama` |
 | LM Studio | Local | `http://localhost:1234/v1` | Optional API token (`Authorization: Bearer`) |
 | Local CLI | CLI | N/A (subprocess) | N/A (tool manages its own auth) |
 | Local MLX | In-process local, developer-gated | `inprocess://local` | N/A |
+| Apple Intelligence | On-device OS model, macOS 26+ | `appleintelligence://system` | N/A |
 
 **Amendment (2026-04-03): Local CLI provider.** Users with Claude Code or Codex subscriptions can use their CLI tools (`claude -p`, `codex exec`, or any custom command) for summaries, chat, and transforms — no separate API key needed. The CLI tool runs as a subprocess via `posix_spawn` with process group management. Prompts are delivered via stdin and `MACPARAKEET_*` environment variables. This extends the provider model without changing the `LLMClientProtocol` — a `RoutingLLMClient` dispatches `.localCLI` contexts to `LocalCLILLMClient` and everything else to the HTTP `LLMClient`. See PR #47.
 
 **Implementation note (2026-04-04):** Anthropic now uses the native Messages API and Ollama uses its native `/api/chat` endpoint. OpenAI, Gemini, OpenRouter, and LM Studio use OpenAI-compatible chat completions. The shared abstraction is the service/client interface, not a single wire protocol.
+
+**Amendment (2026-09-17): China-lab first-class providers.** Moonshot (Kimi), DeepSeek, Qwen, Z.AI, and MiniMax are first-class cloud providers that reuse the OpenAI-compatible adapter. Kimi temperature omit is keyed by canonical model ID, so OpenRouter prefixes and custom OpenAI-compatible endpoints get the same omit as native Moonshot. Lab thinking objects stay on the first-class lab providers. International base URLs are the defaults; regional China endpoints remain a base-URL override. Doubao and Hunyuan stay custom OpenAI-Compatible. This does not add a hosted proxy or change the BYO-key privacy posture.
 
 ### Locked Decisions
 
@@ -65,6 +73,12 @@ The current implementation supports these provider/runtime types through one sha
 
 **Amendment (2026-07-05): developer-gated Local MLX foundation.** The provider seam, gated MLX runtime wiring, verified model downloader, and one-click Settings card may exist in `main` as non-public infrastructure. `AppFeatures.inProcessLocalLLMEnabled` stays `false`; developers expose the option with `MacParakeetEnableInProcessLocalLLM` or `--enable-local-ai`. Public one-click setup remains blocked by runtime capability gating, setup UX, release readiness, and Phase 0 quality evidence. The first plausible public scope is single-transcript cleanup/summarization/Q&A; cross-meeting or whole-library analysis remains future-gated. The app still never bundles a model, never downloads one automatically, and never recommends Local MLX over cloud/frontier quality until surface-specific evidence justifies that change.
 
+**Amendment (2026-09-14): per-task selection, if split.** The current runtime still stores one `LLMProviderConfig` and resolves it for every LLM call. If model selection is later split, it follows [ADR-032](032-llm-task-group-routing.md): a few tasks with inherit / general-LLM route / specialist recipe, not a picker per AI feature. Specialists are task-bound recipes, not default-list model IDs. That ADR does not change this ADR's provider, privacy, or shared-client decisions, and it does not schedule the work.
+
+**Amendment (2026-09-16): Apple Intelligence short-task provider.** Eligible macOS 26+ Macs may select Apple's on-device Foundation Models as an explicit LLM provider (`LLMProviderID.appleIntelligence`). It is not auto-selected, not a bundled MacParakeet model, and not a fallback for other providers. The OS owns the ~3B weights and the ~4096-token window; MacParakeet uses a dedicated ~12k-character English-calibrated budget for short answers and ~6k for rewrite-shaped work, and maps overflow/guardrail failures instead of silently stitching chunks. Long English transcripts are middle-truncated with the same marker as other providers. The app floor stays macOS 14.2; the tile is hidden when the device is ineligible or the OS is older. See issue #1062.
+
+**Amendment (2026-09-27): Apple Intelligence serves dictation cleanup only.** The ~4096-token window holds input and answer together. Measured with `SystemLanguageModel.tokenCount`, the timestamped, speaker-labeled transcripts the app sends run about 2.8-3.2 characters per token, so a 25-minute video's Chapter Breakdown overflowed the window, and fitting it would have kept only about a fifth of the transcript's head and tail. Apple Intelligence is therefore offered only for the cleanup route, not as Default AI or for analysis; saved routes that break this rule are cleared at launch. This restriction also applies to explicit inline CLI requests through the shared generation service. Revisit when Apple ships a larger window.
+
 ### Features Enabled
 
 | Feature | Description | Scope |
@@ -75,7 +89,7 @@ The current implementation supports these provider/runtime types through one sha
 | **Transforms** | System-wide selected-text rewrites through saved prompts/hotkeys | User-selected text in other apps |
 | **Custom Prompts** | User-defined transcript prompt outputs | File, URL, and meeting transcriptions |
 
-LLM features stay explicit and provider-backed. The app still ships no bundled/default LLM and no voice Command Mode. AI Formatter runs only after local STT has produced text; it is optional, can be disabled, and never changes the fact that audio stays local.
+LLM features stay explicit and provider-backed. The app still ships no bundled/default LLM. The separately enabled Voice Control surface is authorized for implementation by [ADR-033](033-explicit-voice-control.md); its Jev decision context and consent are distinct from writing-provider configuration. AI Formatter runs only after local STT has produced text; it is optional, can be disabled, and never changes the fact that audio stays local.
 
 ## Rationale
 
@@ -92,6 +106,7 @@ No GPU memory, model downloads, or ANE contention in the public/default product 
 | Provider | Audio leaves device? | Transcript text leaves device? |
 |----------|---------------------|-------------------------------|
 | None (default) | No | No |
+| Apple Intelligence | No | No (on-device) |
 | Ollama | No | No (localhost) |
 | Local CLI | No | Depends on the CLI tool |
 | Cloud API | No | **Yes (user action or enabled automation, text only)** |
@@ -149,6 +164,7 @@ Users who want local-only LLM can install Ollama (`brew install ollama && ollama
 │  │ RoutingLLMClient │───▶│  LLMExecutionContext      │   │
 │  │                  │    │  - providerConfig          │   │
 │  │  .inProcessLocal ──▶ InProcessLLMClient (gated)    │   │
+│  │  .appleIntelligence ──▶ AppleIntelligenceLLMClient │   │
 │  │  .localCLI ──▶ LocalCLILLMClient                  │   │
 │  │  .other ────▶ LLMClient (HTTP)                    │   │
 │  └──────────────────┘    └──────────────────────────┘   │
@@ -182,9 +198,13 @@ public struct LLMProviderConfig: Codable, Sendable, Equatable {
 }
 
 public enum LLMProviderID: String, Codable, Sendable, CaseIterable {
-    case anthropic, openai, openaiCompatible, gemini, openrouter, ollama, lmstudio, localCLI, inProcessLocal
+    case anthropic, openai, openaiCompatible, gemini, openrouter
+    case moonshot, deepseek, qwen, zai, minimax
+    case ollama, lmstudio, localCLI, inProcessLocal, appleIntelligence
+    // moonshot/deepseek/qwen/zai/minimax are OpenAI-compatible lab endpoints.
     // localCLI runs CLI tools (claude -p, codex exec) as subprocesses — no HTTP, no API key.
     // inProcessLocal is developer-gated Local MLX — no HTTP, no API key.
+    // appleIntelligence is macOS 26+ on-device Foundation Models — no HTTP, no API key.
 }
 
 /// Client — routes provider-specific HTTP or CLI transport behind one interface
@@ -249,6 +269,7 @@ Historical note: this alternative has since been implemented. Anthropic now uses
 
 - ADR-002: Local-first processing (updated with LLM provider exception)
 - ADR-008: Previous local LLM approach (HISTORICAL)
+- ADR-032: Per-task LLM selection and specialist recipes if model selection is split (accepted direction; not implemented)
 - `spec/11-llm-integration.md`: Current provider integration spec
 - Char (fastrepl/char): Meeting app with cloud + local-provider LLM support
 - Cursor, Raycast, Continue: Precedent for "bring your own API key" in developer tools

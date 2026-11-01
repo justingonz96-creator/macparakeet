@@ -80,11 +80,13 @@ public final class MeetingsWorkspaceViewModel {
     public var calendarLookAheadDays = 7
     public var upcomingEventLimit = 4
     /// User-selected type for the next or active meeting. The recording
-    /// coordinator snapshots this value onto the durable transcription stub
-    /// before enqueue so prompt routing stays deterministic.
+    /// coordinator persists the current selection into the active recording;
+    /// its capture snapshot carries that type into final transcription.
     public var recordingMeetingTypeID: UUID?
     public private(set) var promptPoliciesByPromptID: [UUID: [PromptMeetingPolicy]] = [:]
-    public var meetingPolicyErrorMessage: String?
+    public var meetingPolicyErrorMessage: String? {
+        promptLabelPolicyErrorMessage ?? promptMeetingPolicyErrorMessage
+    }
 
     public var meetingClassificationViewModel: MeetingClassificationViewModel {
         recentMeetingsViewModel.meetingClassificationViewModel
@@ -92,6 +94,11 @@ public final class MeetingsWorkspaceViewModel {
 
     @ObservationIgnored private let calendarService: any CalendarServicing
     @ObservationIgnored private var promptMeetingPolicyRepository: (any PromptMeetingPolicyRepositoryProtocol)?
+    @ObservationIgnored private var promptLabelPolicyRepository: (any PromptLabelPolicyRepositoryProtocol)?
+    @ObservationIgnored private var promptLabelPoliciesByPromptID: [UUID: [PromptLabelPolicy]] = [:]
+    private var hasLoadedPromptLabelPolicies = false
+    private var promptLabelPolicyErrorMessage: String?
+    private var promptMeetingPolicyErrorMessage: String?
     @ObservationIgnored private var upcomingEventsTask: Task<Void, Never>?
     @ObservationIgnored private var upcomingEventsGeneration = 0
     @ObservationIgnored private var promptPolicyLoadTask: Task<Void, Never>?
@@ -158,6 +165,8 @@ public final class MeetingsWorkspaceViewModel {
             )
         }
         self.promptMeetingPolicyRepository = promptMeetingPolicyRepository
+        self.promptLabelPolicyRepository = promptLabelPolicyRepository
+        reloadPromptLabelPolicies()
     }
 
     public func refresh() {
@@ -169,8 +178,11 @@ public final class MeetingsWorkspaceViewModel {
     }
 
     public func refreshIfNeeded() {
-        guard !hasLoadedInitialState else { return }
-        refresh()
+        if !hasLoadedInitialState {
+            refresh()
+            return
+        }
+        refreshAutoNotes()
     }
 
     @discardableResult
@@ -203,7 +215,10 @@ public final class MeetingsWorkspaceViewModel {
                 let events = try await calendarService.fetchUpcomingEvents(days: lookAheadDays)
                 guard let self, !Task.isCancelled, self.upcomingEventsGeneration == generation else { return }
                 self.upcomingEvents = Self.collapseRecurringOccurrences(
-                    events.filter { event in self.shouldShowCalendarEvent(event) },
+                    MeetingMonitor.candidates(
+                        events: events,
+                        config: self.calendarMonitorConfig()
+                    ).map(\.event),
                     limit: eventLimit
                 )
                 self.isLoadingUpcomingEvents = false
@@ -235,22 +250,27 @@ public final class MeetingsWorkspaceViewModel {
     @discardableResult
     public func refreshAutoNotes() -> Task<Void, Never> {
         promptsViewModel.loadPrompts()
+        reloadPromptLabelPolicies()
         return loadPromptMeetingPolicies()
     }
 
     /// Visible result prompts the user can toggle as meeting auto-notes.
     /// Hidden prompts can't auto-run, so they're excluded from the card.
-    /// (`promptsViewModel.prompts` is already `.result`-only.)
+    /// Label targeting uses the same availability rules as post-meeting
+    /// execution for an unlabeled recording. (`promptsViewModel.prompts` is
+    /// already `.result`-only.) While label policies have never loaded, the
+    /// card stays empty instead of treating missing rules as unrestricted.
     public var meetingAutoNotePrompts: [Prompt] {
-        promptsViewModel.prompts.filter {
-            meetingPolicyResolution(for: $0, meetingTypeID: recordingMeetingTypeID).isAvailable
+        guard areMeetingAutoNotePoliciesReady else { return [] }
+        return promptsViewModel.prompts.filter {
+            meetingAutoNoteResolution(for: $0).isAvailable
         }
     }
 
     /// Prompts that will actually auto-run after a meeting finishes.
     public var meetingAutoNoteActivePrompts: [Prompt] {
         meetingAutoNotePrompts.filter {
-            meetingPolicyResolution(for: $0, meetingTypeID: recordingMeetingTypeID).isAutoRun
+            meetingAutoNoteResolution(for: $0).isAutoRun
         }
     }
 
@@ -259,21 +279,15 @@ public final class MeetingsWorkspaceViewModel {
     }
 
     public func isMeetingAutoNote(_ prompt: Prompt) -> Bool {
-        meetingPolicyResolution(for: prompt, meetingTypeID: recordingMeetingTypeID).isAutoRun
+        meetingAutoNoteResolution(for: prompt).isAutoRun
     }
 
+    /// Toggles source-scoped auto-run for `.meeting` on the prompt itself.
+    /// Label availability is not stored here; execution still consults
+    /// `prompt_label_policies` for the completed recording.
     public func setMeetingAutoNote(_ prompt: Prompt, enabled: Bool) {
-        guard promptMeetingPolicyRepository != nil else {
-            promptsViewModel.setAutoRun(prompt, source: .meeting, enabled: enabled)
-            return
-        }
-        let current = meetingPolicyResolution(for: prompt, meetingTypeID: recordingMeetingTypeID)
-        setMeetingPolicy(
-            prompt: prompt,
-            meetingTypeID: recordingMeetingTypeID,
-            isAvailable: current.isAvailable,
-            isAutoRun: enabled
-        )
+        guard areMeetingAutoNotePoliciesReady else { return }
+        promptsViewModel.setAutoRun(prompt, source: .meeting, enabled: enabled)
     }
 
     public func meetingPolicyResolution(
@@ -351,6 +365,47 @@ public final class MeetingsWorkspaceViewModel {
         }
     }
 
+    private var areMeetingAutoNotePoliciesReady: Bool {
+        promptLabelPolicyRepository == nil || hasLoadedPromptLabelPolicies
+    }
+
+    private func meetingAutoNoteResolution(for prompt: Prompt) -> PromptLabelApplicabilityResolution {
+        guard areMeetingAutoNotePoliciesReady else {
+            return PromptLabelApplicabilityResolution(
+                isAvailable: false,
+                isAutoRun: false,
+                reason: .noMatchingLabelPolicy
+            )
+        }
+        return PromptLabelApplicabilityResolver.resolve(
+            prompt: prompt,
+            sourceType: .meeting,
+            transcriptionLabelIDs: [],
+            policies: promptLabelPoliciesByPromptID[prompt.id] ?? []
+        )
+    }
+
+    private func reloadPromptLabelPolicies() {
+        guard let promptLabelPolicyRepository else {
+            promptLabelPoliciesByPromptID = [:]
+            hasLoadedPromptLabelPolicies = true
+            promptLabelPolicyErrorMessage = nil
+            return
+        }
+        let promptIDs = Set(promptsViewModel.prompts.map(\.id))
+        do {
+            promptLabelPoliciesByPromptID = Dictionary(
+                grouping: try promptLabelPolicyRepository.fetchPolicies(promptIds: promptIDs),
+                by: \.promptId
+            )
+            hasLoadedPromptLabelPolicies = true
+            promptLabelPolicyErrorMessage = nil
+        } catch {
+            promptLabelPolicyErrorMessage =
+                "Unable to load prompt availability: \(error.localizedDescription)"
+        }
+    }
+
     @discardableResult
     func loadPromptMeetingPolicies() -> Task<Void, Never> {
         guard let promptMeetingPolicyRepository else { return Task {} }
@@ -371,7 +426,7 @@ public final class MeetingsWorkspaceViewModel {
                     self.promptPolicyCompletedMutationGeneration == mutationGeneration
                 else { return }
                 self.promptPoliciesByPromptID = Dictionary(grouping: policies, by: \.promptId)
-                self.meetingPolicyErrorMessage = nil
+                self.promptMeetingPolicyErrorMessage = nil
             } catch is CancellationError {
                 return
             } catch {
@@ -381,7 +436,8 @@ public final class MeetingsWorkspaceViewModel {
                     self.promptPolicyMutationGeneration == mutationGeneration,
                     self.promptPolicyCompletedMutationGeneration == mutationGeneration
                 else { return }
-                self.meetingPolicyErrorMessage = "Unable to load prompt availability: \(error.localizedDescription)"
+                self.promptMeetingPolicyErrorMessage =
+                    "Unable to load prompt availability: \(error.localizedDescription)"
             }
         }
         promptPolicyLoadTask = task
@@ -410,7 +466,7 @@ public final class MeetingsWorkspaceViewModel {
                     mutationGeneration
                 )
                 if self.promptPolicyMutationGeneration == mutationGeneration {
-                    self.meetingPolicyErrorMessage = nil
+                    self.promptMeetingPolicyErrorMessage = nil
                     await self.loadPromptMeetingPolicies().value
                 }
             } catch is CancellationError {
@@ -422,7 +478,8 @@ public final class MeetingsWorkspaceViewModel {
                     mutationGeneration
                 )
                 guard self.promptPolicyMutationGeneration == mutationGeneration else { return }
-                self.meetingPolicyErrorMessage = "Unable to update prompt availability: \(error.localizedDescription)"
+                self.promptMeetingPolicyErrorMessage =
+                    "Unable to update prompt availability: \(error.localizedDescription)"
                 await self.loadPromptMeetingPolicies().value
             }
         }
@@ -583,40 +640,48 @@ public final class MeetingsWorkspaceViewModel {
             && settingsViewModel.calendarPermissionStatus == .granted
     }
 
-    /// Decides which fetched events appear in the "Upcoming" preview.
-    ///
-    /// This mirrors the *candidate* set MacParakeet acts on, so the preview
-    /// never promises behavior the coordinator won't deliver. It matches the
-    /// candidate filter of `MeetingAutoStartCoordinator` + `MeetingMonitor.evaluate`:
-    ///   - exclude all-day and RSVP-declined events (`MeetingMonitor` candidate filter),
-    ///   - exclude calendars the user opted out of (`filterByIncludedCalendars`),
-    ///   - apply the trigger filter (`MeetingMonitor.passesFilter`).
-    /// RSVP is deliberately NOT mode-gated here: every candidate gets a reminder
-    /// in any non-`.off` mode, and `.pending`/`.tentative` differ only in whether
-    /// they additionally auto-*record* (`MeetingMonitor.shouldAutoStart`) — a
-    /// per-event nuance, not list membership. Hiding `.pending` in `.autoStart`
-    /// would make the app remind about an event missing from this list.
-    /// The only candidate-filter input not mirrored is `MeetingMonitor`'s
-    /// runtime `dismissedEventIds` (coordinator-private session state); a
-    /// dismissed event reappears here until it passes or the mode changes.
-    /// If the candidate rules change in `MeetingMonitor`, update this in lockstep.
-    private func shouldShowCalendarEvent(_ event: CalendarEvent) -> Bool {
-        guard !event.isAllDay, !event.userDeclined else { return false }
+    /// Shared candidate filter with the auto-start coordinator.
+    private func calendarMonitorConfig() -> MeetingMonitor.Config {
+        MeetingMonitor.Config(
+            mode: settingsViewModel.calendarAutoStartMode,
+            reminderMinutes: settingsViewModel.calendarReminderMinutes,
+            triggerFilter: settingsViewModel.meetingTriggerFilter,
+            excludedCalendarIdentifiers: settingsViewModel.calendarExcludedIdentifiers,
+            skippedOccurrences: settingsViewModel.calendarSkippedOccurrences,
+            skippedEvents: settingsViewModel.calendarSkippedEvents
+        )
+    }
 
-        if let calendarIdentifier = event.calendarIdentifier,
-            settingsViewModel.calendarExcludedIdentifiers.contains(calendarIdentifier)
-        {
-            return false
-        }
+    public func skipScope(for event: CalendarEvent) -> CalendarSkipScope? {
+        CalendarSkip.matches(
+            event,
+            occurrences: settingsViewModel.calendarSkippedOccurrences,
+            events: settingsViewModel.calendarSkippedEvents
+        )
+    }
 
-        switch settingsViewModel.meetingTriggerFilter {
-        case .withLink:
-            return event.meetUrl != nil
-        case .withParticipants:
-            return !event.participants.isEmpty
-        case .allEvents:
-            return true
+    public func skipThisMeeting(_ event: CalendarEvent) {
+        if event.isRecurring {
+            settingsViewModel.skipOccurrence(event)
+        } else {
+            settingsViewModel.skipEvent(event)
         }
+    }
+
+    public func skipThisRepeatingMeeting(_ event: CalendarEvent) {
+        settingsViewModel.skipEvent(event)
+    }
+
+    public func unskipThisMeeting(_ event: CalendarEvent) {
+        if skipScope(for: event) == .event {
+            settingsViewModel.unskipEvent(event)
+        } else {
+            settingsViewModel.unskipOccurrence(event)
+        }
+    }
+
+    public func unskipThisRepeatingMeeting(_ event: CalendarEvent) {
+        settingsViewModel.unskipEvent(event)
     }
 
     /// Collapses occurrences of a recurring series down to its soonest

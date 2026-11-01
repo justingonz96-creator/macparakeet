@@ -3,6 +3,14 @@ import XCTest
 @testable import MacParakeetViewModels
 
 final class SettingsSearchIndexTests: XCTestCase {
+    func testAutomationQueriesFindDictationURLControl() {
+        for query in ["url", "Stream Deck", "StreamDeck", "Raycast", "Keyboard Maestro", "Shortcuts"] {
+            let entry = SettingsSearchIndex.matches(query).first { $0.id == "dictation.url.control" }
+            XCTAssertEqual(entry?.cardAnchor, "dictation", query)
+            XCTAssertEqual(entry?.tab, .capture, query)
+        }
+    }
+
     func testEmptyQueryReturnsNoResults() {
         XCTAssertTrue(SettingsSearchIndex.matches("").isEmpty)
     }
@@ -45,6 +53,32 @@ final class SettingsSearchIndexTests: XCTestCase {
         )
     }
 
+    func testStreamingCursorQueryFindsDictationToggle() {
+        let results = SettingsSearchIndex.matches("typewriter")
+        XCTAssertTrue(
+            results.contains(where: { $0.id == "dictation.streaming.cursor" }),
+            "Streaming cursor should match typewriter keyword"
+        )
+    }
+
+    func testIgnoreEscapeQueryFindsDictationEscapeSetting() {
+        let results = SettingsSearchIndex.matches("ignore escape")
+
+        XCTAssertTrue(
+            results.contains(where: { $0.id == "dictation.escape.cancel" }),
+            "Ignore Escape should land on the Escape cancels dictation setting"
+        )
+    }
+
+    func testPreserveDiscardedQueryFindsDictationToggle() {
+        let results = SettingsSearchIndex.matches("accidental cancel")
+
+        XCTAssertTrue(
+            results.contains(where: { $0.id == "dictation.preserve.discarded" }),
+            "Accidental cancel recovery should find the preserve discarded setting"
+        )
+    }
+
     func testLivePreviewQueryFindsDictationPreviewSetting() {
         let results = SettingsSearchIndex.matches("live preview")
 
@@ -52,6 +86,23 @@ final class SettingsSearchIndexTests: XCTestCase {
             results.contains(where: { $0.id == "dictation.live.preview" }),
             "Live preview should land on the dictation preview setting"
         )
+    }
+
+    func testPillPositionQueriesFindDictationPlacementSetting() {
+        for query in ["pill position", "overlay position", "top of screen", "move pill"] {
+            let ids = Set(SettingsSearchIndex.matches(query).map(\.id))
+            XCTAssertTrue(ids.contains("dictation.overlay.position"), "Query \(query) should find pill position")
+        }
+    }
+
+    func testCaptureSoundQueriesFindDictationToggle() {
+        for query in ["start sound", "stop sound", "tink", "handy", "marimba", "custom sound", "import sound"] {
+            let results = SettingsSearchIndex.matches(query)
+            XCTAssertTrue(
+                results.contains(where: { $0.id == "dictation.capture.sounds" }),
+                "Query \(query) should find dictation capture sounds"
+            )
+        }
     }
 
     func testDarkModeQueryFindsAppearanceSetting() {
@@ -94,7 +145,7 @@ final class SettingsSearchIndexTests: XCTestCase {
 
         for query in [
             "recordings", "files engine", "accuracy", "slower",
-            "separate engine", "final transcript", "same as live", "advanced"
+            "separate engine", "final transcript", "same as live", "advanced",
         ] {
             let results = SettingsSearchIndex.matches(query)
             XCTAssertTrue(
@@ -130,7 +181,7 @@ final class SettingsSearchIndexTests: XCTestCase {
             for query in [
                 "meeting hotkey", "meeting shortcut", "change hotkey",
                 "remove shortcut", "disable hotkey", "CMD+Shift+M",
-                "Command Shift M", "⌘⇧M"
+                "Command Shift M", "⌘⇧M",
             ] {
                 let ids = Set(SettingsSearchIndex.matches(query).map(\.id))
                 XCTAssertTrue(ids.contains("meeting.hotkey"), "Query \(query) should find the meeting hotkey")
@@ -153,7 +204,10 @@ final class SettingsSearchIndexTests: XCTestCase {
     }
 
     func testCalendarQueriesHonorCalendarFeatureFlag() {
-        for query in ["calendar", "auto-start", "auto start", "reminders"] {
+        for query in [
+            "calendar", "auto-start", "auto start", "reminders",
+            "Outlook", "Microsoft 365", "Exchange", "Internet Accounts",
+        ] {
             let results = SettingsSearchIndex.matches(query)
             let ids = Set(results.map(\.id))
 
@@ -161,7 +215,8 @@ final class SettingsSearchIndexTests: XCTestCase {
                 XCTAssertTrue(ids.contains("meeting.calendar"), "Query \(query) should find the calendar row")
             } else {
                 XCTAssertFalse(ids.contains("meeting"), "Query \(query) should not reveal the hidden meeting card")
-                XCTAssertFalse(ids.contains("meeting.calendar"), "Query \(query) should not reveal the hidden calendar row")
+                XCTAssertFalse(
+                    ids.contains("meeting.calendar"), "Query \(query) should not reveal the hidden calendar row")
             }
         }
     }
@@ -169,7 +224,7 @@ final class SettingsSearchIndexTests: XCTestCase {
     func testMeetingPillQueriesFindFloatingControlsSetting() {
         let queries = [
             "floating", "pill", "meeting controls", "floating controls",
-            "meeting pill", "hide meeting", "recording ui"
+            "meeting pill", "hide meeting", "recording ui",
         ]
 
         for query in queries {
@@ -177,7 +232,9 @@ final class SettingsSearchIndexTests: XCTestCase {
             if AppFeatures.meetingRecordingEnabled {
                 XCTAssertTrue(ids.contains("meeting.floatingControls"), "Query \(query) should find floating controls")
             } else {
-                XCTAssertFalse(ids.contains("meeting.floatingControls"), "Query \(query) should not reveal hidden meeting settings")
+                XCTAssertFalse(
+                    ids.contains("meeting.floatingControls"), "Query \(query) should not reveal hidden meeting settings"
+                )
             }
         }
     }
@@ -189,7 +246,8 @@ final class SettingsSearchIndexTests: XCTestCase {
             if AppFeatures.meetingRecordingEnabled {
                 XCTAssertTrue(ids.contains("meeting.openAppAfterEnd"), "Query \(query) should find open-app toggle")
             } else {
-                XCTAssertFalse(ids.contains("meeting.openAppAfterEnd"), "Query \(query) should not reveal hidden meeting settings")
+                XCTAssertFalse(
+                    ids.contains("meeting.openAppAfterEnd"), "Query \(query) should not reveal hidden meeting settings")
             }
         }
 
@@ -199,7 +257,8 @@ final class SettingsSearchIndexTests: XCTestCase {
             if AppFeatures.meetingRecordingEnabled {
                 XCTAssertTrue(ids.contains("meeting.notifyOnEnd"), "Query \(query) should find notify toggle")
             } else {
-                XCTAssertFalse(ids.contains("meeting.notifyOnEnd"), "Query \(query) should not reveal hidden meeting settings")
+                XCTAssertFalse(
+                    ids.contains("meeting.notifyOnEnd"), "Query \(query) should not reveal hidden meeting settings")
             }
         }
     }
@@ -220,15 +279,54 @@ final class SettingsSearchIndexTests: XCTestCase {
         }
     }
 
+    func testLiveTranscriptionQueriesFindMeetingToggle() {
+        for query in ["live transcription", "live captions", "battery", "just record"] {
+            let entry = SettingsSearchIndex.matches(query).first { $0.id == "meeting.liveTranscription" }
+            if AppFeatures.meetingRecordingEnabled {
+                XCTAssertEqual(entry?.tab, .capture, "Query \(query) should find the meeting toggle")
+                XCTAssertEqual(entry?.cardAnchor, "meeting")
+            } else {
+                XCTAssertNil(entry)
+            }
+        }
+    }
+
+    func testStartMeetingsMutedQueriesFindMeetingToggle() {
+        for query in ["start muted", "join muted", "mic off"] {
+            let entry = SettingsSearchIndex.matches(query).first { $0.id == "meeting.startMuted" }
+            if AppFeatures.meetingRecordingEnabled {
+                XCTAssertEqual(entry?.tab, .capture, "Query \(query) should find start meetings muted")
+                XCTAssertEqual(entry?.cardAnchor, "meeting")
+            } else {
+                XCTAssertNil(entry)
+            }
+        }
+    }
+
+    func testMeetingURLControlQueriesFindConsentToggle() {
+        for query in ["links", "url", "automation", "recording control"] {
+            let entry = SettingsSearchIndex.matches(query).first { $0.id == "meeting.urlControl" }
+            if AppFeatures.meetingRecordingEnabled {
+                XCTAssertEqual(entry?.tab, .capture, "Query \(query) should find the link control consent toggle")
+                XCTAssertEqual(entry?.cardAnchor, "meeting")
+            } else {
+                XCTAssertNil(entry)
+            }
+        }
+    }
+
     func testMeetingSpeakerDetectionQueriesFindMeetingSetting() {
         let queries = ["system audio", "participants", "others", "speaker labels"]
 
         for query in queries {
             let ids = Set(SettingsSearchIndex.matches(query).map(\.id))
             if AppFeatures.meetingRecordingEnabled {
-                XCTAssertTrue(ids.contains("meeting.speakerDetection"), "Query \(query) should find meeting speaker detection")
+                XCTAssertTrue(
+                    ids.contains("meeting.speakerDetection"), "Query \(query) should find meeting speaker detection")
             } else {
-                XCTAssertFalse(ids.contains("meeting.speakerDetection"), "Query \(query) should not reveal hidden meeting settings")
+                XCTAssertFalse(
+                    ids.contains("meeting.speakerDetection"), "Query \(query) should not reveal hidden meeting settings"
+                )
             }
         }
     }
@@ -284,6 +382,19 @@ final class SettingsSearchIndexTests: XCTestCase {
         }
     }
 
+    func testMeetingAILanguageQueriesFindMeetingLanguageEntry() throws {
+        let entry = try XCTUnwrap(SettingsSearchIndex.entries.first { $0.id == "ai.meetingLanguage" })
+        XCTAssertEqual(entry.cardAnchor, "ai.meetingLanguage")
+
+        for query in [
+            "ai result language", "meeting ai language", "follow transcript", "summary language", "output language",
+            "korean",
+        ] {
+            let ids = Set(SettingsSearchIndex.matches(query).map(\.id))
+            XCTAssertTrue(ids.contains("ai.meetingLanguage"), "Query \(query) should find Language of AI Results")
+        }
+    }
+
     func testMeetingTitleQueriesFindMeetingTitlesEntry() throws {
         let entry = try XCTUnwrap(SettingsSearchIndex.entries.first { $0.id == "ai.meetingTitles" })
         XCTAssertEqual(entry.cardAnchor, "ai.meetingTitles")
@@ -308,7 +419,8 @@ final class SettingsSearchIndexTests: XCTestCase {
             if AppFeatures.aiFormatterProfilesEnabled {
                 XCTAssertTrue(ids.contains("ai.formatter"), "Query \(query) should find AI Formatter")
             } else {
-                XCTAssertFalse(ids.contains("ai.formatter"), "Query \(query) should not reveal hidden AI Formatter profiles")
+                XCTAssertFalse(
+                    ids.contains("ai.formatter"), "Query \(query) should not reveal hidden AI Formatter profiles")
             }
         }
     }
@@ -342,9 +454,12 @@ final class SettingsSearchIndexTests: XCTestCase {
             "meeting.openAppAfterEnd",
             "meeting.notifyOnEnd",
             "meeting.speakerDetection",
+            "meeting.liveTranscription",
+            "meeting.startMuted",
+            "meeting.urlControl",
             "meeting.autoStop",
             "meeting.calendar",
-            "system.permissions.screen"
+            "system.permissions.screen",
         ]
         let calendarGatedIds: Set<String> = ["meeting.calendar"]
         let autoStopGatedIds: Set<String> = ["meeting.autoStop"]
@@ -354,10 +469,12 @@ final class SettingsSearchIndexTests: XCTestCase {
         if AppFeatures.meetingRecordingEnabled {
             // Calendar entry drops out independently when calendarEnabled
             // is off, and auto-stop drops out independently while staged.
-            let expected = AppFeatures.calendarEnabled
+            let expected =
+                AppFeatures.calendarEnabled
                 ? meetingGatedIds
                 : meetingGatedIds.subtracting(calendarGatedIds)
-            let expectedWithAutoStop = AppFeatures.meetingAutoStopEnabled
+            let expectedWithAutoStop =
+                AppFeatures.meetingAutoStopEnabled
                 ? expected
                 : expected.subtracting(autoStopGatedIds)
             XCTAssertEqual(
@@ -394,4 +511,142 @@ final class SettingsSearchIndexTests: XCTestCase {
         let resultsInIndexOrder = results.map(\.id).map { id in indexOrder.firstIndex(of: id)! }
         XCTAssertEqual(resultsInIndexOrder, resultsInIndexOrder.sorted())
     }
+
+    func testPauseMediaQueriesFindDictationToggle() {
+        for query in ["pause", "media", "music"] {
+            let ids = SettingsSearchIndex.matches(query).map(\.id)
+            XCTAssertTrue(
+                ids.contains("dictation.pause.media"),
+                "Query \(query) should find the Pause media while dictating setting"
+            )
+        }
+        XCTAssertEqual(
+            SettingsSearchIndex.matches("pause").first?.id,
+            "dictation.pause.media",
+            "The pause toggle should lead the results for 'pause'"
+        )
+    }
+
+    func testPauseMediaEntryPointsAtDictationCard() throws {
+        let entry = try XCTUnwrap(
+            SettingsSearchIndex.entries.first { $0.id == "dictation.pause.media" }
+        )
+        XCTAssertEqual(entry.title, "Pause media while dictating")
+        XCTAssertEqual(entry.tab, .capture)
+        XCTAssertEqual(entry.cardAnchor, "dictation")
+    }
+
+    func testVoiceProfileRowsFollowFeatureFlag() {
+        let ids = Set(SettingsSearchIndex.entries.map(\.id))
+        for id in ["meeting.rememberSpeakers", "meeting.voiceProfiles"] {
+            XCTAssertEqual(
+                ids.contains(id),
+                AppFeatures.isVoiceProfilesAvailable(),
+                "\(id) should be indexed only when voice profiles are available"
+            )
+        }
+        XCTAssertTrue(
+            ids.contains("system.reset.voiceProfiles"),
+            "The Reset voice-profiles row is never flag-gated in the view"
+        )
+    }
+
+    func testStoredVoicesRemainDiscoverableWithEnrollmentDisabled() throws {
+        for speakerDetectionEnabled in [false, true] {
+            let entries = SettingsSearchIndex.visibleEntries(
+                hasEnrolledVoices: true,
+                speakerDetectionEnabled: speakerDetectionEnabled,
+                voiceProfilesAvailable: false
+            )
+            let management = entries.first { $0.id == "meeting.voiceProfiles" }
+            if AppFeatures.meetingRecordingEnabled {
+                let entry = try XCTUnwrap(management)
+                XCTAssertTrue(entry.matches("manage voices"))
+                XCTAssertEqual(entry.cardAnchor, "meeting")
+                XCTAssertEqual(entry.tab, .capture)
+            } else {
+                XCTAssertNil(management)
+            }
+            XCTAssertFalse(entries.contains { $0.id == "meeting.rememberSpeakers" })
+            XCTAssertTrue(entries.contains { $0.id == "system.reset.voiceProfiles" })
+        }
+        let results = SettingsSearchIndex.matches("manage voices", hasEnrolledVoices: true)
+        XCTAssertEqual(
+            results.contains { $0.id == "meeting.voiceProfiles" },
+            AppFeatures.meetingRecordingEnabled
+        )
+    }
+
+    func testVoiceProfileSearchTracksStoredVoicesAndSpeakerDetection() {
+        for available in [false, true] {
+            for stored in [false, true] {
+                for detection in [false, true] {
+                    let ids = Set(
+                        SettingsSearchIndex.visibleEntries(
+                            hasEnrolledVoices: stored,
+                            speakerDetectionEnabled: detection,
+                            voiceProfilesAvailable: available
+                        ).map(\.id))
+                    XCTAssertEqual(
+                        ids.contains("meeting.voiceProfiles"),
+                        AppFeatures.meetingRecordingEnabled && (available || stored)
+                    )
+                    XCTAssertEqual(
+                        ids.contains("meeting.rememberSpeakers"),
+                        AppFeatures.meetingRecordingEnabled && available && detection
+                    )
+                }
+            }
+        }
+    }
+
+    /// Three entries were retitled to the text their rows show today. The
+    /// earlier wording stays searchable as a keyword.
+    func testRetitledRowsKeepTheirEarlierWordingSearchable() throws {
+        let retitled = [
+            (
+                id: "dictation.idle.pill", title: "Show dictation pill at all times",
+                earlier: "Show idle pill at all times"
+            ),
+            (id: "meeting.autoStop", title: "Stop recording automatically", earlier: "auto-stop meetings"),
+            (
+                id: "system.permissions.screen", title: "Screen & System Audio",
+                earlier: "Screen & System Audio Recording"
+            ),
+        ]
+        for row in retitled {
+            let entry = try XCTUnwrap(SettingsSearchIndex.allEntries.first { $0.id == row.id })
+            XCTAssertEqual(entry.title, row.title)
+            XCTAssertTrue(entry.matches(row.earlier), "\(row.earlier) should still find \(row.id)")
+        }
+    }
+
+    func testAdditionalShortcutRowsAreSearchable() {
+        let ids = SettingsSearchIndex.matches("additional shortcuts").map(\.id)
+        XCTAssertEqual(
+            ids,
+            [
+                "dictation.additional.shortcuts",
+                "dictation.additional.push.to.talk",
+                "dictation.additional.hands.free",
+            ]
+        )
+        XCTAssertTrue(
+            SettingsSearchIndex.matches("external keyboard").contains { $0.id == "dictation.additional.shortcuts" }
+        )
+    }
+
+    /// Rows that share a title must stay apart in the result list, which
+    /// shows only the title and the subtitle.
+    func testEntriesSharingATitleHaveDistinctSubtitles() {
+        var seen: [String: String] = [:]
+        for entry in SettingsSearchIndex.allEntries {
+            let key = "\(entry.title)\n\(entry.subtitle)"
+            if let other = seen[key] {
+                XCTFail("\(entry.id) and \(other) would render as the same search result")
+            }
+            seen[key] = entry.id
+        }
+    }
+
 }

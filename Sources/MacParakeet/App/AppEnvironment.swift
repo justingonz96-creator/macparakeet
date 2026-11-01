@@ -11,6 +11,7 @@ import OSLog
 @MainActor
 final class AppEnvironment {
     let databaseManager: DatabaseManager
+    let shareCoordinator: ShareCoordinator?
     let dictationRepo: DictationRepository
     let transcriptionRepo: TranscriptionRepository
     let meetingTypeRepo: MeetingTypeRepository
@@ -22,6 +23,11 @@ final class AppEnvironment {
     let knowledgeLayerMutator: KnowledgeLayerMutationService
     let speakerAttributionReader: SpeakerAttributionReadService
     let speakerCorrectionService: SpeakerCorrectionService
+    let speakerProfileRepo: SpeakerProfileRepository
+    let speakerEmbeddingCandidateRepo: SpeakerEmbeddingCandidateRepository
+    let speakerMatchJournalRepo: SpeakerMatchJournalRepository
+    let speakerVoiceprintService: SpeakerVoiceprintService
+    private let speakerVoiceprintRetention: SpeakerVoiceprintRetention
     let customWordRepo: CustomWordRepository
     let snippetRepo: TextSnippetRepository
     let chatConversationRepo: ChatConversationRepository
@@ -33,6 +39,9 @@ final class AppEnvironment {
     let promptEditingService: PromptEditingService
     let promptResultRepo: PromptResultRepository
     let meetingArtifactStore: MeetingArtifactStore
+    let meetingSplitRepo: MeetingSplitRepository
+    let meetingSplitService: MeetingSplitService
+    let meetingImportService: MeetingImportService
     let llmRunRepo: LLMRunRepository
     let aiFormatterProfileRepo: AIFormatterProfileRepository
     let transformHistoryRepo: TransformHistoryRepository
@@ -48,7 +57,7 @@ final class AppEnvironment {
     let dictationService: DictationService
     let transcriptionService: TranscriptionService
     let youtubeDownloader: YouTubeDownloader
-    let diarizationService: DiarizationService
+    let diarizationService: any DiarizationServiceProtocol
     /// Stateless; fetches the Silero VAD model for VAD-guided meeting live
     /// chunking. Consumed by `AppDelegate.scheduleDeferredSpeechPreWarm` on every
     /// launch (gated on `AppFeatures.meetingVadLiveChunkingEnabled`) so the
@@ -68,6 +77,7 @@ final class AppEnvironment {
     let llmClient: RoutingLLMClient
     let llmConfigStore: LLMConfigStore
     let llmService: LLMService
+    let askWorkspaceService: AskWorkspaceService?
     let cardGenerationService: CardGenerationService
     let runtimePreferences: AppRuntimePreferencesProtocol
     let derivedFieldsBackfill: DerivedFieldsBackfillService
@@ -75,6 +85,9 @@ final class AppEnvironment {
     init(databaseManager: DatabaseManager) throws {
         SpeechEnginePreference.migrateMaterializedFinalTranscriptionOverrideIfNeeded()
         self.databaseManager = databaseManager
+        shareCoordinator =
+            AppFeatures.isShareLinksAvailable()
+            ? ShareCoordinator(dbQueue: databaseManager.dbQueue, origin: .production) : nil
 
         // Repositories
         dictationRepo = DictationRepository(dbQueue: databaseManager.dbQueue)
@@ -87,6 +100,21 @@ final class AppEnvironment {
         knowledgeLayerMutator = KnowledgeLayerMutationService(dbQueue: databaseManager.dbQueue)
         speakerAttributionReader = SpeakerAttributionReadService(dbQueue: databaseManager.dbQueue)
         speakerCorrectionService = SpeakerCorrectionService(dbQueue: databaseManager.dbQueue)
+        speakerProfileRepo = SpeakerProfileRepository(dbQueue: databaseManager.dbQueue)
+        speakerEmbeddingCandidateRepo = SpeakerEmbeddingCandidateRepository(
+            dbQueue: databaseManager.dbQueue
+        )
+        speakerMatchJournalRepo = SpeakerMatchJournalRepository(dbQueue: databaseManager.dbQueue)
+        speakerVoiceprintService = SpeakerVoiceprintService(
+            profiles: speakerProfileRepo,
+            candidates: speakerEmbeddingCandidateRepo,
+            journal: speakerMatchJournalRepo,
+            isEnabled: { UserDefaultsAppRuntimePreferences.rememberSpeakersEnabled() }
+        )
+        speakerVoiceprintRetention = SpeakerVoiceprintRetention(
+            candidates: speakerEmbeddingCandidateRepo,
+            journal: speakerMatchJournalRepo
+        )
         customWordRepo = CustomWordRepository(dbQueue: databaseManager.dbQueue)
         snippetRepo = TextSnippetRepository(dbQueue: databaseManager.dbQueue)
         chatConversationRepo = ChatConversationRepository(dbQueue: databaseManager.dbQueue)
@@ -97,6 +125,7 @@ final class AppEnvironment {
         promptCollectionRepo = PromptCollectionRepository(dbQueue: databaseManager.dbQueue)
         promptEditingService = PromptEditingService(dbQueue: databaseManager.dbQueue)
         promptResultRepo = PromptResultRepository(dbQueue: databaseManager.dbQueue)
+        meetingSplitRepo = MeetingSplitRepository(dbQueue: databaseManager.dbQueue)
         meetingArtifactStore = MeetingArtifactStore(
             speakerAttributionReader: speakerAttributionReader,
             classificationProvider: { [databaseManager] transcriptionID in
@@ -209,7 +238,9 @@ final class AppEnvironment {
             finalSpeechEngineSelection: { SpeechEngineSelection.finalTranscription() },
             // Wire the real feature flag here (the service defaults to fixed
             // chunking so tests stay deterministic regardless of the flag).
-            isVadLiveChunkingEnabled: { AppFeatures.meetingVadLiveChunkingEnabled }
+            isVadLiveChunkingEnabled: { AppFeatures.meetingVadLiveChunkingEnabled },
+            isLiveTranscriptionEnabled: { [runtimePreferences] in runtimePreferences.meetingLiveTranscriptionEnabled },
+            startMicrophoneMuted: { [runtimePreferences] in runtimePreferences.startMeetingsMuted }
         )
         meetingRecordingSettlement = MeetingRecordingSettlement(
             lockFileStore: meetingRecordingLockFileStore,
@@ -267,8 +298,16 @@ final class AppEnvironment {
             runtimePreferences.processingMode
         }
 
+        let spokenPunctuationEnabledClosure: @Sendable () -> Bool = { [runtimePreferences] in
+            runtimePreferences.spokenPunctuationEnabled
+        }
+
         let dictationInsertionStyleClosure: @Sendable () -> DictationInsertionStyle = { [runtimePreferences] in
             runtimePreferences.dictationInsertionStyle
+        }
+
+        let removeUmFillerClosure: @Sendable () -> Bool = { [runtimePreferences] in
+            runtimePreferences.removeUmFiller
         }
 
         let binaryBootstrap = BinaryBootstrap()
@@ -279,7 +318,7 @@ final class AppEnvironment {
         Task.detached(priority: .utility) {
             await binaryBootstrap.autoUpdateYtDlpIfNeeded()
         }
-        diarizationService = DiarizationService()
+        diarizationService = DiarizationServiceFactory.live.make(speakerConstraint: nil)
 
         let voiceReturnTriggersClosure: @Sendable () -> [String] = { [runtimePreferences] in
             runtimePreferences.voiceReturnTriggers
@@ -302,18 +341,21 @@ final class AppEnvironment {
             runtimePreferences.aiFormatterEnabled && runtimePreferences.aiFormatterEnabledForDictation
         }
 
-        let aiFormatterPromptClosure: @Sendable () -> String = { [runtimePreferences] in
+        let aiFormatterTranscriptPromptClosure: @Sendable () -> String = { [runtimePreferences] in
             runtimePreferences.aiFormatterPrompt
+        }
+        let aiFormatterDictationPromptClosure: @Sendable () -> String = { [runtimePreferences] in
+            runtimePreferences.aiFormatterDictationPrompt
         }
         let meetingTitleGenerationEnabledClosure: @Sendable () -> Bool = { [runtimePreferences, llmConfigStore] in
             guard runtimePreferences.shouldAutoGenerateMeetingTitles else { return false }
-            return (try? llmConfigStore.loadConfig()) != nil
+            return (try? llmConfigStore.loadRouteMetadata(for: .analysis)) != nil
         }
         let aiFormatterPromptResolver: any AIFormatterPromptResolving
         if AppFeatures.aiFormatterProfilesEnabled {
             aiFormatterPromptResolver = AIFormatterProfilePromptResolver(
                 profileRepository: aiFormatterProfileRepo,
-                globalPromptTemplate: aiFormatterPromptClosure,
+                globalPromptTemplate: aiFormatterDictationPromptClosure,
                 smartDefaultsPolicy: { AIFormatterSmartDefaultsPolicy.current() },
                 onFetchError: { error in
                     // A failed profile fetch degrades to the fallback prompt by
@@ -327,7 +369,7 @@ final class AppEnvironment {
             )
         } else {
             aiFormatterPromptResolver = AIFormatterGlobalPromptResolver(
-                promptTemplate: aiFormatterPromptClosure
+                promptTemplate: aiFormatterDictationPromptClosure
             )
         }
 
@@ -352,6 +394,18 @@ final class AppEnvironment {
         )
         let numberLLMRefiner = NumberLLMRefiner(llmService: llmService)
 
+        if AppFeatures.isAskWorkspaceAvailable() {
+            askWorkspaceService = AskWorkspaceService(
+                databaseManager: databaseManager,
+                client: llmClient,
+                contextResolver: StoredLLMExecutionContextResolver(
+                    configStore: llmConfigStore,
+                    cliConfigStore: LocalCLIConfigStore()
+                )
+            )
+        } else {
+            askWorkspaceService = nil
+        }
         cardGenerationService = CardGenerationService(
             transcriptionRepository: transcriptionRepo,
             segmentRepository: segmentRepo,
@@ -366,15 +420,21 @@ final class AppEnvironment {
             dictationRepo: dictationRepo,
             shouldSaveAudio: { [runtimePreferences] in runtimePreferences.shouldSaveAudioRecordings },
             shouldSaveDictationHistory: { [runtimePreferences] in runtimePreferences.shouldSaveDictationHistory },
+            shouldPreserveDiscardedDictations: { [runtimePreferences] in
+                runtimePreferences.preserveDiscardedDictations
+            },
             entitlements: entitlementsService,
             customWordRepo: customWordRepo,
             snippetRepo: snippetRepo,
             voiceReturnTriggers: voiceReturnTriggersClosure,
             processingMode: processingModeClosure,
+            spokenPunctuationEnabled: spokenPunctuationEnabledClosure,
             dictationInsertionStyle: dictationInsertionStyleClosure,
+            removeUmFiller: removeUmFillerClosure,
             llmService: llmService,
             llmRunRepo: llmRunRepo,
             shouldUseAIFormatter: dictationAIFormatterEnabledClosure,
+            isAIFormatterEnabled: { [runtimePreferences] in runtimePreferences.aiFormatterEnabled },
             numberRefinementMode: numberRefinementModeClosure,
             aiFormatterPromptResolver: aiFormatterPromptResolver,
             shouldAttemptLiveDictationTranscription: {
@@ -399,7 +459,8 @@ final class AppEnvironment {
                     .firstDictationCompleted(
                         activationWindow: TelemetryActivationWindow(secondsSinceOnboarding: secondsSinceOnboarding)
                     ))
-            }
+            },
+            failedDictationAudioDirectory: URL(fileURLWithPath: AppPaths.dictationsDir, isDirectory: true)
         )
 
         let telemetry = TelemetryService()
@@ -421,10 +482,11 @@ final class AppEnvironment {
             customWordRepo: customWordRepo,
             snippetRepo: snippetRepo,
             processingMode: processingModeClosure,
+            removeUmFiller: removeUmFillerClosure,
             llmService: llmService,
             llmRunRepo: llmRunRepo,
             shouldUseAIFormatter: transcriptionAIFormatterEnabledClosure,
-            aiFormatterPromptTemplate: aiFormatterPromptClosure,
+            aiFormatterPromptTemplate: aiFormatterTranscriptPromptClosure,
             numberRefinementMode: numberRefinementModeClosure,
             numberLLMRefiner: numberLLMRefiner,
             shouldAutoGenerateMeetingTitles: meetingTitleGenerationEnabledClosure,
@@ -437,13 +499,48 @@ final class AppEnvironment {
             podcastSearchResolver: PodcastQueryResolver(),
             podcastAudioFetcher: PodcastAudioDownloader(),
             diarizationService: diarizationService,
-            meetingArtifactStore: meetingArtifactStore
+            meetingArtifactStore: meetingArtifactStore,
+            speakerVoiceprints: AppFeatures.isVoiceProfilesAvailable() ? speakerVoiceprintService : nil
         )
 
         meetingRecordingRecoveryService = MeetingRecordingRecoveryService(
             lockFileStore: meetingRecordingLockFileStore,
             transcriptionService: transcriptionService,
-            transcriptionRepo: transcriptionRepo
+            transcriptionRepo: transcriptionRepo,
+            meetingArtifactStore: meetingArtifactStore,
+            promptResultRepo: promptResultRepo
+        )
+
+        let savedAudioCompletionService = SavedAudioAutoPromptCompletionService(
+            promptRepo: promptRepo,
+            promptResultRepo: promptResultRepo,
+            llmService: llmService,
+            promptLabelPolicyRepository: promptLabelPolicyRepo,
+            transcriptionLabelRepository: transcriptionMeetingLabelRepo,
+            speakerAttributionReader: speakerAttributionReader,
+            meetingArtifactStore: meetingArtifactStore,
+            cardGenerator: cardGenerationService,
+            outputLanguagePolicyProvider: { [runtimePreferences] in
+                runtimePreferences.meetingAIOutputLanguagePolicy
+            }
+        )
+        meetingSplitService = MeetingSplitService(
+            transcriptionRepo: transcriptionRepo,
+            splitRepo: meetingSplitRepo,
+            transcriptionService: transcriptionService,
+            completionService: savedAudioCompletionService,
+            retentionConfig: { UserDefaultsAppRuntimePreferences.meetingAudioRetention(persistMigration: false) },
+            speechEngineSelection: { SpeechEngineSelection.finalTranscription() }
+        )
+        meetingImportService = MeetingImportService(
+            transcriptionService: transcriptionService,
+            transcriptionRepo: transcriptionRepo,
+            completionService: savedAudioCompletionService,
+            recordingsRoot: {
+                URL(fileURLWithPath: AppPaths.meetingRecordingsDir, isDirectory: true)
+            },
+            lockFileStore: meetingRecordingLockFileStore,
+            retentionConfig: { [runtimePreferences] in runtimePreferences.meetingAudioRetention }
         )
 
         derivedFieldsBackfill = DerivedFieldsBackfillService(dbQueue: databaseManager.dbQueue)
@@ -531,7 +628,7 @@ final class AppEnvironment {
     ) {
         let config: LLMProviderConfig?
         do {
-            config = try configStore.loadConfig()
+            config = try configStore.loadRouteMetadata(for: .cleanup)?.config
         } catch {
             return
         }

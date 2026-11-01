@@ -6,6 +6,12 @@ import XCTest
 @testable import CLI
 
 final class ModelLifecycleCommandTests: XCTestCase {
+    func testOrukeetSelectorsResolveWithoutStockVersionFallback() throws {
+        XCTAssertEqual(parakeetDownloadVariant(from: "parakeet-orukeet"), .orukeet)
+        XCTAssertEqual(try ConfigCommand.parseParakeetModelVariant("orukeet"), .orukeet)
+        XCTAssertEqual(TranscribeCommand.resolveParakeetModelVariant(.orukeet, storedVariant: .v2), .orukeet)
+    }
+
     func testValidatedAttemptsRejectsZero() {
         XCTAssertThrowsError(try validatedAttempts(0)) { error in
             XCTAssertTrue(error is ValidationError)
@@ -36,7 +42,12 @@ final class ModelLifecycleCommandTests: XCTestCase {
         let dbURL = temporaryDatabaseURL()
         defer { try? FileManager.default.removeItem(at: dbURL) }
         let db = try DatabaseManager(path: dbURL.path)
-        try db.recordAppliedMigrationIdentifierForTesting("v99.0-future-app-migration")
+        try db.dbQueue.write { database in
+            try database.execute(
+                sql: "INSERT INTO grdb_migrations (identifier) VALUES (?)",
+                arguments: ["v99.0-future-app-migration"]
+            )
+        }
 
         let report = probeHealthDatabase(at: dbURL.path)
 
@@ -104,10 +115,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testLoadSelectableSpeechModelsReflectsSharedDefaults() throws {
-        let suiteName = "com.macparakeet.tests.cli.models.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.models.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         SpeechEnginePreference.whisper.save(to: defaults)
         SpeechEnginePreference.saveWhisperDefaultLanguage("KO_kr", defaults: defaults)
@@ -124,7 +134,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
             isCohereModelDownloaded: { false }
         )
 
-        XCTAssertEqual(models.count, 7)
+        XCTAssertEqual(models.count, 8)
         XCTAssertEqual(
             models[0],
             SelectableSpeechModel(
@@ -152,6 +162,18 @@ final class ModelLifecycleCommandTests: XCTestCase {
         XCTAssertEqual(
             models[2],
             SelectableSpeechModel(
+                id: "parakeet-orukeet",
+                name: "Orukeet (preview)",
+                engine: "parakeet",
+                variant: "orukeet",
+                size: "445 MiB",
+                installed: false,
+                selected: false,
+                language: nil
+            ))
+        XCTAssertEqual(
+            models[3],
+            SelectableSpeechModel(
                 id: "parakeet-unified",
                 name: "Parakeet Unified 0.6B (English (Unified))",
                 engine: "parakeet",
@@ -162,7 +184,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
                 language: "en"
             ))
         XCTAssertEqual(
-            models[3],
+            models[4],
             SelectableSpeechModel(
                 id: "nemotron-multilingual-1120ms",
                 name: "Nemotron 3.5 ASR Streaming 0.6B (Multilingual Beta)",
@@ -174,7 +196,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
                 language: "auto"
             ))
         XCTAssertEqual(
-            models[4],
+            models[5],
             SelectableSpeechModel(
                 id: "nemotron-english-1120ms",
                 name: "Nemotron Speech Streaming EN 0.6B (English Beta)",
@@ -186,7 +208,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
                 language: "en"
             ))
         XCTAssertEqual(
-            models[5],
+            models[6],
             SelectableSpeechModel(
                 id: "cohere-transcribe",
                 name: "Cohere Transcribe",
@@ -198,7 +220,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
                 language: "en"
             ))
         XCTAssertEqual(
-            models[6],
+            models[7],
             SelectableSpeechModel(
                 id: "whisper-large-v3-v20240930-turbo-632MB",
                 name: "Whisper Large v3 Turbo",
@@ -212,10 +234,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testLoadSelectableSpeechModelsReadsDisplayMetadataFromCapabilityRegistry() throws {
-        let suiteName = "com.macparakeet.tests.cli.models-registry.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.models-registry.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let models = loadSelectableSpeechModels(defaults: defaults)
         let modelsByID = Dictionary(uniqueKeysWithValues: models.map { ($0.id, $0) })
@@ -223,7 +244,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
         for variant in ParakeetModelVariant.allCases {
             let lifecycle = SpeechEngineCapabilityRegistry.capabilities(for: .parakeet(variant)).modelLifecycle
             let model = try XCTUnwrap(modelsByID[parakeetModelID(for: variant)])
-            XCTAssertEqual(model.name, "\(lifecycle.modelName) (\(variant.displayName))")
+            XCTAssertEqual(model.name, variant == .orukeet ? variant.displayName : "\(lifecycle.modelName) (\(variant.displayName))")
             XCTAssertEqual(model.variant, lifecycle.variantID)
             XCTAssertEqual(model.size, lifecycle.approximateDownloadSize)
         }
@@ -252,10 +273,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testLoadSelectableSpeechModelsMarksSelectedParakeetVariant() throws {
-        let suiteName = "com.macparakeet.tests.cli.model-list-parakeet.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.model-list-parakeet.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         SpeechEnginePreference.parakeet.save(to: defaults)
         SpeechEnginePreference.saveParakeetModelVariant(.v2, defaults: defaults)
@@ -275,10 +295,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testLoadSelectableSpeechModelsMarksSelectedNemotronVariant() throws {
-        let suiteName = "com.macparakeet.tests.cli.model-list-nemotron.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.model-list-nemotron.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         SpeechEnginePreference.nemotron.save(to: defaults)
         SpeechEnginePreference.saveNemotronModelVariant(.english1120, defaults: defaults)
@@ -299,10 +318,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testResolveSelectableSpeechModelAcceptsEngineAndWhisperIDs() throws {
-        let suiteName = "com.macparakeet.tests.cli.model-select.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.model-select.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.saveWhisperModelVariant(
             "large-v3-v20240930_turbo_632MB",
             defaults: defaults
@@ -418,10 +436,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testParakeetDownloadVariantRecognizesParakeetIDs() throws {
-        let suiteName = "com.macparakeet.tests.cli.parakeet-download.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.parakeet-download.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         XCTAssertEqual(parakeetDownloadVariant(from: "parakeet-v2", defaults: defaults), .v2)
         XCTAssertEqual(parakeetDownloadVariant(from: "parakeet:v3", defaults: defaults), .v3)
@@ -442,10 +459,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testNemotronDownloadVariantRecognizesNemotronIDs() throws {
-        let suiteName = "com.macparakeet.tests.cli.nemotron-download.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.nemotron-download.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         XCTAssertEqual(
             nemotronDownloadVariant(from: "nemotron-multilingual-1120ms", defaults: defaults), .multilingual1120)
@@ -550,10 +566,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testValidateSelectableSpeechModelDownloadRejectsMissingNemotron() throws {
-        let suiteName = "com.macparakeet.tests.cli.model-select-nemotron-missing.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.model-select-nemotron-missing.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         SpeechEnginePreference.saveNemotronDefaultLanguage("en_US", defaults: defaults)
         var checkedVariant: NemotronModelVariant?
@@ -586,10 +601,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testValidateSelectableSpeechModelDownloadAllowsDownloadedNemotron() throws {
-        let suiteName = "com.macparakeet.tests.cli.model-select-nemotron-downloaded.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.model-select-nemotron-downloaded.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let selection = SelectableSpeechModelSelection(
             engine: .nemotron,
@@ -613,10 +627,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testValidateSelectableSpeechModelDownloadRejectsMissingCohere() throws {
-        let suiteName = "com.macparakeet.tests.cli.model-select-cohere-missing.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.model-select-cohere-missing.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let selection = SelectableSpeechModelSelection(engine: .cohere, whisperVariant: nil)
 
@@ -636,10 +649,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testValidateSelectableSpeechModelDownloadRejectsCohereBelowMemoryFloor() throws {
-        let suiteName = "com.macparakeet.tests.cli.model-select-cohere-memory.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.model-select-cohere-memory.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         XCTAssertThrowsError(
             try validateSelectableSpeechModelDownload(
@@ -657,10 +669,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testValidateSelectableSpeechModelDownloadAllowsDownloadedCohere() throws {
-        let suiteName = "com.macparakeet.tests.cli.model-select-cohere-downloaded.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.model-select-cohere-downloaded.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         XCTAssertNoThrow(
             try validateSelectableSpeechModelDownload(
@@ -677,15 +688,14 @@ final class ModelLifecycleCommandTests: XCTestCase {
     // MARK: - models delete
 
     private func makeDeleteDefaults() throws -> (UserDefaults, String) {
-        let suite = "test.ModelsDelete.\(UUID().uuidString)"
+        let suite = makeIsolatedDefaultsSuite("test.ModelsDelete.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
         return (defaults, suite)
     }
 
     func testResolveModelDeletionTargetMapsParakeetAndWhisperIDs() throws {
-        let (defaults, suite) = try makeDeleteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let (defaults, _) = try makeDeleteDefaults()
 
         XCTAssertEqual(
             try resolveModelDeletionTarget("parakeet-v2", defaults: defaults).kind,
@@ -714,8 +724,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testResolveModelDeletionTargetRejectsUnknownID() throws {
-        let (defaults, suite) = try makeDeleteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let (defaults, _) = try makeDeleteDefaults()
 
         XCTAssertThrowsError(try resolveModelDeletionTarget("tiny", defaults: defaults)) { error in
             XCTAssertTrue(error is ValidationError)
@@ -723,8 +732,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testIsModelInUseProtectsConfiguredParakeetBuild() throws {
-        let (defaults, suite) = try makeDeleteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let (defaults, _) = try makeDeleteDefaults()
 
         SpeechEnginePreference.parakeet.save(to: defaults)
         SpeechEnginePreference.saveParakeetModelVariant(.v3, defaults: defaults)
@@ -744,8 +752,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testIsModelInUseProtectsWhisperAndConfiguredParakeetWhenWhisperActive() throws {
-        let (defaults, suite) = try makeDeleteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let (defaults, _) = try makeDeleteDefaults()
 
         SpeechEnginePreference.whisper.save(to: defaults)
         SpeechEnginePreference.saveParakeetModelVariant(.v3, defaults: defaults)
@@ -761,8 +768,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testIsModelInUseProtectsNemotronWhenNemotronActive() throws {
-        let (defaults, suite) = try makeDeleteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let (defaults, _) = try makeDeleteDefaults()
 
         SpeechEnginePreference.nemotron.save(to: defaults)
 
@@ -781,8 +787,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testIsModelInUseProtectsCohereWhenCohereActive() throws {
-        let (defaults, suite) = try makeDeleteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let (defaults, _) = try makeDeleteDefaults()
 
         SpeechEnginePreference.cohere.save(to: defaults)
 
@@ -801,8 +806,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testIsModelInUseProtectsConfiguredNemotronBuildWhenNemotronActive() throws {
-        let (defaults, suite) = try makeDeleteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let (defaults, _) = try makeDeleteDefaults()
 
         SpeechEnginePreference.nemotron.save(to: defaults)
         SpeechEnginePreference.saveNemotronModelVariant(.english1120, defaults: defaults)
@@ -911,10 +915,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
         // Isolated suite: without it the status reads the live app's
         // preferences, so the test result depends on whichever speech
         // engine the developer's MacParakeet install has selected.
-        let suiteName = "com.macparakeet.tests.cli.models.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.models.")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let status = await loadSpeechStackStatus(
             sttClient: stt,
@@ -1074,10 +1077,9 @@ final class ModelLifecycleCommandTests: XCTestCase {
     }
 
     func testLoadAudioInputDiagnosticsUsesInjectedDefaultsAndProviders() {
-        let suiteName = "com.macparakeet.tests.cli.audio.\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("com.macparakeet.tests.cli.audio.")
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         defaults.set("usb-mic", forKey: UserDefaultsAppRuntimePreferences.selectedMicrophoneDeviceUIDKey)
 

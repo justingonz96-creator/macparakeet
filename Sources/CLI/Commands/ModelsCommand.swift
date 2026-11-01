@@ -111,7 +111,7 @@ extension ModelsCommand {
                         Task { await sttClient.shutdown() }
                     }
                 }
-                let diarizationService = DiarizationService()
+                let diarizationService = DiarizationServiceFactory.live.make(speakerConstraint: nil)
                 let status = await loadSpeechStackStatus(
                     sttClient: sttClient,
                     diarizationService: diarizationService,
@@ -136,7 +136,7 @@ extension ModelsCommand {
 
         @Argument(
             help:
-                "Model identifier from `models list`, e.g. parakeet-v2, parakeet-v3, parakeet-unified, nemotron-multilingual-1120ms, nemotron-english-1120ms, cohere-transcribe, or whisper-large-v3-v20240930-turbo-632MB."
+                "Model identifier from `models list`, e.g. parakeet-v2, parakeet-v3, parakeet-unified, parakeet-orukeet, nemotron-multilingual-1120ms, nemotron-english-1120ms, cohere-transcribe, or whisper-large-v3-v20240930-turbo-632MB."
         )
         var variant: String
 
@@ -230,7 +230,7 @@ extension ModelsCommand {
                     Task { await sttClient.shutdown() }
                 }
             }
-            let diarizationService = DiarizationService()
+            let diarizationService = DiarizationServiceFactory.live.make(speakerConstraint: nil)
             try await prepareSpeechStack(
                 attempts: attempts,
                 sttClient: sttClient,
@@ -262,7 +262,7 @@ extension ModelsCommand {
                     Task { await sttClient.shutdown() }
                 }
             }
-            let diarizationService = DiarizationService()
+            let diarizationService = DiarizationServiceFactory.live.make(speakerConstraint: nil)
             try await prepareSpeechStack(
                 attempts: attempts,
                 sttClient: sttClient,
@@ -292,7 +292,7 @@ extension ModelsCommand {
 
         @Argument(
             help:
-                "Model identifier from `models list`, e.g. parakeet-v2, parakeet-v3, parakeet-unified, nemotron-multilingual-1120ms, nemotron-english-1120ms, cohere-transcribe, or whisper-large-v3-v20240930-turbo-632MB."
+                "Model identifier from `models list`, e.g. parakeet-v2, parakeet-v3, parakeet-unified, parakeet-orukeet, nemotron-multilingual-1120ms, nemotron-english-1120ms, cohere-transcribe, or whisper-large-v3-v20240930-turbo-632MB."
         )
         var id: String
 
@@ -462,7 +462,7 @@ struct ModelCacheClearError: Error, LocalizedError {
 func clearModelCachesForCLI(
     json: Bool,
     sttClient: STTClientProtocol = makeParakeetSTTClient(),
-    clearSpeakerCache: @Sendable () -> Void = { DiarizationService.clearModelCache() },
+    clearSpeakerCache: @Sendable () -> Void = { DiarizationServiceFactory.clearModelCaches() },
     clearWhisperModels: @Sendable () throws -> Void = {
         do {
             try FileManager.default.removeItem(atPath: AppPaths.whisperModelsDir)
@@ -509,6 +509,7 @@ func parakeetDownloadVariant(
 /// build to ``ParakeetUnifiedEngine`` (it has no `AsrModelVersion`); the TDT
 /// builds use the shared `AsrManager` cache.
 func isParakeetVariantCached(_ variant: ParakeetModelVariant) -> Bool {
+    if variant == .orukeet { return OrukeetModelStore.isInstalled }
     if variant.usesUnifiedEngine {
         return ParakeetUnifiedEngine.isModelCached()
     }
@@ -519,6 +520,7 @@ func isParakeetVariantCached(_ variant: ParakeetModelVariant) -> Bool {
 /// Deletes the on-disk model for `variant`, dispatching Unified to its own engine.
 @discardableResult
 func deleteParakeetVariant(_ variant: ParakeetModelVariant) -> Bool {
+    if variant == .orukeet { return OrukeetModelStore.delete() }
     if variant.usesUnifiedEngine {
         return ParakeetUnifiedEngine.deleteModel()
     }
@@ -531,6 +533,10 @@ func downloadParakeetVariant(
     _ variant: ParakeetModelVariant,
     onProgress: @escaping @Sendable (String) -> Void
 ) async throws {
+    if variant == .orukeet {
+        try await OrukeetModelStore.download(onProgress: onProgress)
+        return
+    }
     if variant.usesUnifiedEngine {
         _ = try await ParakeetUnifiedEngine.downloadModel(onProgress: onProgress)
         return
@@ -589,7 +595,7 @@ func resolveWhisperDownloadModel(_ variant: String) throws -> String {
     }
     guard normalizedInput.lowercased().hasPrefix("whisper-") else {
         throw ValidationError(
-            "Unsupported model identifier '\(variant)'. Use a parakeet-v2, parakeet-v3, parakeet-unified, nemotron-multilingual-1120ms, nemotron-english-1120ms, cohere-transcribe, or whisper-* id from `models list`."
+            "Unsupported model identifier '\(variant)'. Use a parakeet-v2, parakeet-v3, parakeet-unified, parakeet-orukeet, nemotron-multilingual-1120ms, nemotron-english-1120ms, cohere-transcribe, or whisper-* id from `models list`."
         )
     }
     guard let whisperVariant = WhisperModelVariant.normalize(normalizedInput) else {
@@ -823,7 +829,7 @@ func loadSelectableSpeechModels(
         let lifecycle = capabilities.modelLifecycle
         return SelectableSpeechModel(
             id: parakeetModelID(for: variant),
-            name: "\(lifecycle.modelName) (\(variant.displayName))",
+            name: variant == .orukeet ? variant.displayName : "\(lifecycle.modelName) (\(variant.displayName))",
             engine: SpeechEnginePreference.parakeet.rawValue,
             variant: lifecycle.variantID ?? variant.rawValue,
             size: lifecycle.approximateDownloadSize,
@@ -1056,7 +1062,7 @@ func resolveModelDeletionTarget(
         let lifecycle = speechModelLifecycle(for: .parakeet(parakeetVariant))
         return ModelDeletionTarget(
             kind: .parakeet(parakeetVariant),
-            displayName: "\(lifecycle.modelName) (\(parakeetVariant.displayName))"
+            displayName: parakeetVariant == .orukeet ? parakeetVariant.displayName : "\(lifecycle.modelName) (\(parakeetVariant.displayName))"
         )
     }
     if let nemotronVariant = selection.nemotronVariant {
@@ -1125,6 +1131,8 @@ private func parseParakeetSelectionVariant(_ lowered: String) -> ParakeetModelVa
         return .v2
     case "unified", "english-unified", "unified-offline":
         return .unified
+    case "orukeet":
+        return .orukeet
     default:
         return nil
     }

@@ -142,8 +142,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     override func setUp() {
-        mockService = MockTranscriptionService()
         mockRepo = MockTranscriptionRepository()
+        mockService = MockTranscriptionService(retranscriptionRepository: mockRepo)
         mockPromptResultRepo = MockPromptResultRepository()
         viewModel = TranscriptionViewModel()
     }
@@ -193,6 +193,117 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.progress, "")
         XCTAssertNotNil(viewModel.currentTranscription)
         XCTAssertEqual(viewModel.currentTranscription?.rawTranscript, "Transcribed text")
+    }
+
+    func testExactNextRunSpeakerCountAppliesToOneFileThenResetsToAuto() async throws {
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.set(true, forKey: UserDefaultsAppRuntimePreferences.speakerDiarizationKey)
+        viewModel = TranscriptionViewModel(defaults: defaults)
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+
+        viewModel.nextRunSpeakerSelection = .exact(2)
+        viewModel.transcribeFile(url: URL(fileURLWithPath: "/tmp/interview.wav"))
+        XCTAssertEqual(viewModel.nextRunSpeakerSelection, .automatic)
+        try await waitUntil { !self.viewModel.isTranscribing }
+
+        viewModel.transcribeFile(url: URL(fileURLWithPath: "/tmp/later.wav"))
+        try await waitUntil { !self.viewModel.isTranscribing }
+
+        let selections = await mockService.transcriptionSpeakerSelections
+        let callCount = await mockService.transcribeCallCount
+        XCTAssertEqual(selections, [.exact(2)], "Only the first run carries the count")
+        XCTAssertEqual(callCount, 2)
+    }
+
+    func testNextRunSpeakerCountIsIgnoredWhenSpeakerDetectionIsOff() async throws {
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.set(false, forKey: UserDefaultsAppRuntimePreferences.speakerDiarizationKey)
+        viewModel = TranscriptionViewModel(defaults: defaults)
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+
+        viewModel.nextRunSpeakerSelection = .exact(3)
+        viewModel.transcribeFile(url: URL(fileURLWithPath: "/tmp/interview.wav"))
+        try await waitUntil { !self.viewModel.isTranscribing }
+
+        let selections = await mockService.transcriptionSpeakerSelections
+        let callCount = await mockService.transcribeCallCount
+        XCTAssertTrue(selections.isEmpty, "A hidden count must not turn speaker detection back on")
+        XCTAssertEqual(callCount, 1)
+        XCTAssertEqual(viewModel.nextRunSpeakerSelection, .automatic)
+    }
+
+    func testAutomaticNextRunSpeakerCountUsesPlainTranscription() async throws {
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+
+        viewModel.transcribeFile(url: URL(fileURLWithPath: "/tmp/interview.wav"))
+        try await waitUntil { !self.viewModel.isTranscribing }
+
+        let selections = await mockService.transcriptionSpeakerSelections
+        let callCount = await mockService.transcribeCallCount
+        XCTAssertTrue(selections.isEmpty)
+        XCTAssertEqual(callCount, 1)
+    }
+
+    func testExactNextRunSpeakerCountAppliesToMediaLink() async throws {
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
+        let defaults = UserDefaults(suiteName: suiteName)!
+        viewModel = TranscriptionViewModel(defaults: defaults)
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.urlInput = "https://youtu.be/dQw4w9WgXcQ"
+
+        viewModel.nextRunSpeakerSelection = .exact(4)
+        viewModel.transcribeURL()
+        XCTAssertEqual(viewModel.nextRunSpeakerSelection, .automatic)
+        try await waitUntil { !self.viewModel.isTranscribing }
+
+        let selections = await mockService.transcriptionSpeakerSelections
+        let urlCallCount = await mockService.transcribeURLCallCount
+        XCTAssertEqual(selections, [.exact(4)])
+        XCTAssertEqual(urlCallCount, 1)
+    }
+
+    func testExactNextRunSpeakerCountBypassesSavedVideoAndRunsFresh() async throws {
+        let saved = Transcription(
+            fileName: "Saved video",
+            rawTranscript: "Old",
+            status: .completed,
+            sourceURL: "https://youtu.be/dQw4w9WgXcQ"
+        )
+        mockRepo.transcriptions = [saved]
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
+        viewModel = TranscriptionViewModel(defaults: UserDefaults(suiteName: suiteName)!)
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.urlInput = "https://youtu.be/dQw4w9WgXcQ"
+
+        viewModel.nextRunSpeakerSelection = .exact(2)
+        viewModel.transcribeURL()
+        XCTAssertEqual(viewModel.nextRunSpeakerSelection, .automatic)
+        try await waitUntil { !self.viewModel.isTranscribing }
+
+        let selections = await mockService.transcriptionSpeakerSelections
+        let urlCallCount = await mockService.transcribeURLCallCount
+        XCTAssertEqual(selections, [.exact(2)])
+        XCTAssertEqual(urlCallCount, 1)
+    }
+
+    func testAutomaticSpeakerCountStillReusesSavedVideo() async throws {
+        let saved = Transcription(
+            fileName: "Saved video",
+            rawTranscript: "Old",
+            status: .completed,
+            sourceURL: "https://youtu.be/dQw4w9WgXcQ"
+        )
+        mockRepo.transcriptions = [saved]
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.urlInput = "https://youtu.be/dQw4w9WgXcQ"
+
+        viewModel.transcribeURL()
+
+        let urlCallCount = await mockService.transcribeURLCallCount
+        XCTAssertEqual(urlCallCount, 0)
+        XCTAssertEqual(viewModel.currentTranscription?.id, saved.id)
     }
 
     func testTranscribeFileErrorHandling() async throws {
@@ -313,7 +424,8 @@ final class TranscriptionViewModelTests: XCTestCase {
         // only errorMessage) must NOT leave the stale URL diagnostic behind, or the
         // copy button would copy the previous link under an unrelated error.
         let accepted = viewModel.transcribeFiles(urls: [URL(fileURLWithPath: "/tmp/note.xyz")])
-        XCTAssertFalse(accepted, "Unsupported type is rejected")
+        XCTAssertTrue(accepted, "Discovery is admitted before checking supported types")
+        try await waitUntil { !self.viewModel.isDiscoveringFiles }
         XCTAssertNotNil(viewModel.errorMessage, "Unsupported-drop headline is shown")
         XCTAssertNil(viewModel.errorDetail, "Stale URL diagnostic must be cleared")
     }
@@ -328,9 +440,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testTranscribeFileProgressSublineUsesFinalEngineSnapshot() async throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.parakeet.save(to: defaults)
         SpeechEnginePreference.saveFinalTranscriptionOverride(.whisper, defaults: defaults)
         SpeechEnginePreference.saveWhisperModelVariant(
@@ -354,9 +465,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testTranscribeFileShowsIndeterminateWhisperModelPreparation() async throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.whisper.save(to: defaults)
         viewModel = TranscriptionViewModel(defaults: defaults)
         await mockService.configureProgress(phases: [.preparingSpeechModel(message: nil)])
@@ -379,9 +489,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testTranscribeFileProgressSublineUsesNemotronVariantSnapshot() async throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.nemotron.save(to: defaults)
         SpeechEnginePreference.saveNemotronModelVariant(.english1120, defaults: defaults)
         viewModel = TranscriptionViewModel(defaults: defaults)
@@ -452,37 +561,19 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.currentTranscription)
     }
 
-    func testStartingNewTranscriptionCancelsInFlightRequest() async throws {
-        let firstResult = Transcription(
-            fileName: "first.mp3",
-            rawTranscript: "First result",
-            status: .completed
-        )
-        let secondResult = Transcription(
-            fileName: "second.mp3",
-            rawTranscript: "Second result",
-            status: .completed
-        )
-
+    func testStartingNewTranscriptionDoesNotReplaceInFlightRequest() async throws {
+        let firstResult = Transcription(fileName: "first.mp3", rawTranscript: "First result", status: .completed)
         await mockService.configure(result: firstResult)
-        await mockService.configureDelay(milliseconds: 500)
         viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
-
+        // Both admissions happen in the same MainActor turn, before the first
+        // service task can finish; no timing assumption is needed.
         viewModel.transcribeFile(url: URL(fileURLWithPath: "/tmp/first.mp3"))
-        try await Task.sleep(for: .milliseconds(50))
-
-        await mockService.configure(result: secondResult)
-        await mockService.configureDelay(milliseconds: 0)
         viewModel.transcribeFile(url: URL(fileURLWithPath: "/tmp/second.mp3"))
-
-        try await Task.sleep(for: .milliseconds(200))
-
-        XCTAssertFalse(viewModel.isTranscribing)
-        XCTAssertEqual(viewModel.currentTranscription?.rawTranscript, "Second result")
-        XCTAssertNil(viewModel.errorMessage)
-
+        XCTAssertTrue(viewModel.isTranscribing)
+        try await waitUntil { !self.viewModel.isTranscribing }
         let callCount = await mockService.transcribeCallCount
-        XCTAssertEqual(callCount, 2)
+        XCTAssertEqual(callCount, 1)
+        XCTAssertEqual(viewModel.currentTranscription?.fileName, "first.mp3")
     }
 
     // MARK: - Transcribe URL
@@ -575,7 +666,7 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(lastURL, "https://vimeo.com/76979871")
     }
 
-    func testTranscribeAudioFirstAndUnknownPlaceholders() {
+    func testTranscribeAudioFirstAndUnknownPlaceholders() async throws {
         viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
 
         // Audio-first recognized host → "<Platform> audio".
@@ -584,6 +675,7 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.transcribingFileName, "SoundCloud audio")
         viewModel.cancelTranscription()
 
+        try await waitUntil { !self.viewModel.isTranscribing }
         // Unrecognized but downloadable URL → generic "Video".
         viewModel.urlInput = "https://example.com/talk.mp4"
         viewModel.transcribeURL()
@@ -894,16 +986,12 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testPresentCompletedMeetingDeletesAudioWhenRetentionIsOff() throws {
-        let suite = "transcription-vm-meeting-audio-\(UUID().uuidString)"
+        let suite = makeIsolatedDefaultsSuite("transcription-vm-meeting-audio-")
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(false, forKey: UserDefaultsAppRuntimePreferences.saveMeetingAudioKey)
         viewModel = TranscriptionViewModel(defaults: defaults)
 
-        try AppPaths.ensureDirectories()
-        let folder = URL(fileURLWithPath: AppPaths.meetingRecordingsDir, isDirectory: true)
-            .appendingPathComponent("vm-meeting-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let folder = try makeTemporaryManagedMeetingFolder()
         let audioURL = folder.appendingPathComponent("meeting-playback.m4a")
         let notesURL = folder.appendingPathComponent("notes.md")
         XCTAssertTrue(FileManager.default.createFile(atPath: audioURL.path, contents: Data("audio".utf8)))
@@ -934,9 +1022,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testPresentCompletedMeetingSurfacesUnavailableAutoSaveFolder() throws {
-        let suite = "transcription-vm-meeting-auto-save-\(UUID().uuidString)"
+        let suite = makeIsolatedDefaultsSuite("transcription-vm-meeting-auto-save-")
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("meeting-auto-save-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -967,9 +1054,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testPresentCompletedMeetingComposesExistingErrorWithUnavailableAutoSaveFolderWarning() throws {
-        let suite = "transcription-vm-meeting-auto-save-existing-error-\(UUID().uuidString)"
+        let suite = makeIsolatedDefaultsSuite("transcription-vm-meeting-auto-save-existing-error-")
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("meeting-auto-save-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -1001,16 +1087,12 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testPresentRecoveredMeetingKeepsAudioEvenWhenRetentionIsOff() throws {
-        let suite = "transcription-vm-meeting-recovery-\(UUID().uuidString)"
+        let suite = makeIsolatedDefaultsSuite("transcription-vm-meeting-recovery-")
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(false, forKey: UserDefaultsAppRuntimePreferences.saveMeetingAudioKey)
         viewModel = TranscriptionViewModel(defaults: defaults)
 
-        try AppPaths.ensureDirectories()
-        let folder = URL(fileURLWithPath: AppPaths.meetingRecordingsDir, isDirectory: true)
-            .appendingPathComponent("vm-recovered-meeting-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let folder = try makeTemporaryManagedMeetingFolder()
         let audioURL = folder.appendingPathComponent("meeting-playback.m4a")
         XCTAssertTrue(FileManager.default.createFile(atPath: audioURL.path, contents: Data("audio".utf8)))
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -1319,9 +1401,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testUnselectedMeetingCompletionStillExportsRefreshesAndRunsAutoPrompts() async throws {
-        let suite = "test.quiet-meeting-completion.\(UUID().uuidString)"
+        let suite = makeIsolatedDefaultsSuite("test.quiet-meeting-completion.")
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("quiet-meeting-export-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -1600,6 +1681,59 @@ final class TranscriptionViewModelTests: XCTestCase {
 
         XCTAssertFalse(saved)
         XCTAssertNil(viewModel.currentTranscription?.cleanTranscript)
+    }
+
+    func testUpdateCurrentTranscriptTextRejectsTimedCorrectionProjection() {
+        let words = [
+            WordTimestamp(word: "Original", startMs: 0, endMs: 400, confidence: 0.99),
+            WordTimestamp(word: "words", startMs: 450, endMs: 800, confidence: 0.98),
+        ]
+        let segment = TranscriptSegmentRecord(
+            startMs: 0,
+            endMs: 800,
+            speakerId: nil,
+            speakerLabel: "Unassigned",
+            text: "Corrected line",
+            wordRange: .init(startIndex: 0, endIndexExclusive: 2),
+            isTextEdited: true
+        )
+        let transcription = Transcription(
+            fileName: "timed.mp3",
+            rawTranscript: "Original words",
+            cleanTranscript: "Corrected line",
+            wordTimestamps: words,
+            transcriptSegments: [segment],
+            status: .completed
+        )
+        mockRepo.transcriptions = [transcription]
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.currentTranscription = transcription
+
+        XCTAssertFalse(viewModel.updateCurrentTranscriptText(to: "Competing whole-text edit"))
+        XCTAssertEqual(viewModel.currentTranscription?.cleanTranscript, "Corrected line")
+        XCTAssertFalse(viewModel.currentTranscription?.isTranscriptEdited ?? true)
+        XCTAssertEqual(try? mockRepo.fetch(id: transcription.id)?.cleanTranscript, "Corrected line")
+    }
+
+    func testUpdateCurrentTranscriptTextAllowsExistingLegacyTimedEdit() {
+        let transcription = Transcription(
+            fileName: "legacy-timed.mp3",
+            rawTranscript: "Original words",
+            cleanTranscript: "Earlier whole-text edit",
+            wordTimestamps: [
+                WordTimestamp(word: "Original", startMs: 0, endMs: 400, confidence: 0.99),
+                WordTimestamp(word: "words", startMs: 450, endMs: 800, confidence: 0.98),
+            ],
+            status: .completed,
+            isTranscriptEdited: true
+        )
+        mockRepo.transcriptions = [transcription]
+        viewModel.configure(transcriptionService: mockService, transcriptionRepo: mockRepo)
+        viewModel.currentTranscription = transcription
+
+        XCTAssertTrue(viewModel.updateCurrentTranscriptText(to: "Updated legacy edit"))
+        XCTAssertEqual(viewModel.currentTranscription?.cleanTranscript, "Updated legacy edit")
+        XCTAssertTrue(viewModel.currentTranscription?.isTranscriptEdited ?? false)
     }
 
     func testUpdateCurrentTranscriptTextKeepsStateWhenSaveFails() {
@@ -3585,9 +3719,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testRetranscribeProgressSublineUsesSpeechEngineOverride() async throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.parakeet.save(to: defaults)
         SpeechEnginePreference.saveWhisperModelVariant(
             SpeechEnginePreference.defaultWhisperModelVariant, defaults: defaults)
@@ -3669,10 +3802,55 @@ final class TranscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(option.title, "Retranscribe with speech engine")
     }
 
+    func testRetranscriptionEngineOptionMemoizesArchivedEnginePerTranscriptionRevision() throws {
+        let archivedMeeting = try makeArchivedMeetingRecording(
+            speechEngine: SpeechEngineSelection(engine: .whisper, language: "ko")
+        )
+        defer { try? FileManager.default.removeItem(at: archivedMeeting.folderURL) }
+
+        viewModel = TranscriptionViewModel(
+            isWhisperModelDownloaded: { true },
+            isNemotronModelDownloaded: { true }
+        )
+        var original = Transcription(
+            id: UUID(),
+            fileName: "Memoized Meeting",
+            filePath: archivedMeeting.mixedURL.path,
+            durationMs: 2_000,
+            rawTranscript: "Old meeting transcript",
+            status: .completed,
+            sourceType: .meeting,
+            updatedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(viewModel.retranscriptionEngineOption(for: original)).primaryEngine.engine,
+            .whisper
+        )
+
+        // View bodies re-evaluate this repeatedly; an unchanged revision must
+        // not re-read the archive.
+        try MeetingRecordingMetadataStore.save(
+            MeetingRecordingMetadata(
+                sourceAlignment: MeetingSourceAlignment(meetingOriginHostTime: nil, microphone: nil, system: nil),
+                speechEngine: SpeechEngineSelection(engine: .nemotron)
+            ),
+            folderURL: archivedMeeting.folderURL
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(viewModel.retranscriptionEngineOption(for: original)).primaryEngine.engine,
+            .whisper
+        )
+
+        original.updatedAt = Date(timeIntervalSince1970: 2_000)
+        XCTAssertEqual(
+            try XCTUnwrap(viewModel.retranscriptionEngineOption(for: original)).primaryEngine.engine,
+            .nemotron
+        )
+    }
+
     func testRetranscriptionEngineOptionUsesCurrentSettingsForLegacyMeetingMetadata() throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.whisper.save(to: defaults)
         SpeechEnginePreference.saveWhisperDefaultLanguage("ja", defaults: defaults)
         SpeechEnginePreference.saveNemotronModelVariant(.english1120, defaults: defaults)
@@ -3710,9 +3888,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testRetranscriptionEngineOptionUsesRecordedEngineForFileTranscript() throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         // Current default is Parakeet — deliberately different from the engine
         // that produced this file, so a leak of the current default would fail.
         SpeechEnginePreference.parakeet.save(to: defaults)
@@ -3750,9 +3927,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testRetranscriptionEngineOptionKeepsCurrentVariantForRecordedParakeet() throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.parakeet.save(to: defaults)
         // The transcript was made with the Unified build, but the user's current
         // Parakeet build is v2. A rerun resolves the *persisted* variant at run
@@ -3791,9 +3967,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testRetranscriptionEngineOptionFirstTimestampCapableChoiceUsesParakeetTDT() throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.saveParakeetModelVariant(.v3, defaults: defaults)
         viewModel = TranscriptionViewModel(
             defaults: defaults,
@@ -3834,9 +4009,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testRetranscriptionEngineOptionFirstTimestampCapableChoiceCanUseParakeetUnified() throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.saveParakeetModelVariant(.unified, defaults: defaults)
         viewModel = TranscriptionViewModel(
             defaults: defaults,
@@ -3889,9 +4063,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testRetranscriptionEngineOptionChoicesCarryRegistryTimestampCapabilities() throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.saveParakeetModelVariant(.unified, defaults: defaults)
         SpeechEnginePreference.saveNemotronModelVariant(.english1120, defaults: defaults)
         SpeechEnginePreference.saveWhisperModelVariant(
@@ -3971,9 +4144,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     func testRetranscriptionEngineOptionFirstTimestampCapableChoiceUsesUnifiedWhenOtherTimestampEnginesAreUnavailable()
         throws
     {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.saveParakeetModelVariant(.unified, defaults: defaults)
         viewModel = TranscriptionViewModel(
             defaults: defaults,
@@ -4020,9 +4192,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testRetranscriptionEngineOptionFallsBackToFinalRouteForLegacyFileTranscript() throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.parakeet.save(to: defaults)
         SpeechEnginePreference.saveFinalTranscriptionOverride(.whisper, defaults: defaults)
         SpeechEnginePreference.saveWhisperDefaultLanguage("ko", defaults: defaults)
@@ -4118,9 +4289,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testRetranscriptionEngineOptionAdvisesColdWhisperSwitch() throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.parakeet.save(to: defaults)
         SpeechEnginePreference.saveWhisperModelVariant(
             SpeechEnginePreference.defaultWhisperModelVariant,
@@ -4193,9 +4363,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testRetranscriptionEngineOptionAvailableForYouTubeSource() throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.parakeet.save(to: defaults)
         SpeechEnginePreference.saveNemotronDefaultLanguage("en_US", defaults: defaults)
         viewModel = TranscriptionViewModel(
@@ -4232,9 +4401,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testRetranscriptionEngineOptionAvailableForFileSource() throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.whisper.save(to: defaults)
         SpeechEnginePreference.saveWhisperDefaultLanguage("ko", defaults: defaults)
         viewModel = TranscriptionViewModel(
@@ -4273,9 +4441,8 @@ final class TranscriptionViewModelTests: XCTestCase {
         // Cohere has no auto-detect and the engine defaults to English, so the
         // retranscription choice must carry the persisted picker language —
         // otherwise a non-English Cohere user gets silently English output.
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.parakeet.save(to: defaults)
         SpeechEnginePreference.saveCohereDefaultLanguage("fr", defaults: defaults)
         viewModel = TranscriptionViewModel(
@@ -4307,9 +4474,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testRetranscriptionEngineOptionDisablesMissingCohereModel() throws {
-        let suiteName = "TranscriptionViewModelTests-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("TranscriptionViewModelTests-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         SpeechEnginePreference.parakeet.save(to: defaults)
         viewModel = TranscriptionViewModel(
             defaults: defaults,
@@ -4584,9 +4750,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testAutoRunPromptsUseRichTranscriptContextByDefault() {
-        let suite = "test.transcription.context.\(UUID().uuidString)"
+        let suite = makeIsolatedDefaultsSuite("test.transcription.context.")
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
         viewModel = TranscriptionViewModel(defaults: defaults)
 
         let llm = MockLLMService()
@@ -4685,9 +4850,8 @@ final class TranscriptionViewModelTests: XCTestCase {
     }
 
     func testAutoRunPromptsUsePlainTranscriptContextWhenConfigured() {
-        let suite = "test.transcription.context.\(UUID().uuidString)"
+        let suite = makeIsolatedDefaultsSuite("test.transcription.context.")
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(
             TranscriptAIContextMode.plainTranscript.rawValue,
             forKey: UserDefaultsAppRuntimePreferences.transcriptAIContextModeKey

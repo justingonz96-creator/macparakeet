@@ -36,7 +36,7 @@ public enum SpeakerMerger {
             while s < sortedSegments.count {
                 let seg = sortedSegments[s]
                 if seg.startMs >= word.endMs {
-                    break // No more segments can overlap this word
+                    break  // No more segments can overlap this word
                 }
 
                 let overlapStart = max(word.startMs, seg.startMs)
@@ -57,6 +57,36 @@ public enum SpeakerMerger {
             }
         }
 
+        return fillUnassignedGaps(result)
+    }
+
+    /// Gives unassigned words the speaker of both neighboring runs when they agree.
+    ///
+    /// A one-word run of another speaker is kept. On AMI with the app's ASR
+    /// words, merging it into its neighbors got 8 of the 81 Nemotron words it
+    /// changed right, against 73 when kept (Community-1: 14 against 39 of 67)
+    /// (#1046). A gap between two different speakers stays unassigned.
+    private static func fillUnassignedGaps(_ words: [WordTimestamp]) -> [WordTimestamp] {
+        guard words.count >= 3 else { return words }
+
+        var result = words
+        var index = 0
+        while index < words.count {
+            let runID = words[index].speakerId
+            var end = index + 1
+            while end < words.count && words[end].speakerId == runID {
+                end += 1
+            }
+
+            let previous = index > 0 ? words[index - 1].speakerId : nil
+            let next = end < words.count ? words[end].speakerId : nil
+            if runID == nil, let fill = previous, previous == next {
+                for wordIndex in index..<end {
+                    result[wordIndex].speakerId = fill
+                }
+            }
+            index = end
+        }
         return result
     }
 }

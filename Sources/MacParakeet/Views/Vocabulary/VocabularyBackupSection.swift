@@ -4,42 +4,29 @@ import MacParakeetCore
 import MacParakeetViewModels
 import UniformTypeIdentifiers
 
-/// "Backup & Restore" card that lives at the bottom of the Vocabulary panel.
+/// Backup and restore stays accessible independently of processing mode.
 /// Surfaces export / import in plain sight — issue #67.
 struct VocabularyBackupSection: View {
     @Bindable var viewModel: VocabularyBackupViewModel
-    let wordCount: Int
-    let snippetCount: Int
 
     @State private var hovered = false
-    @State private var hoveredButton: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
             header
 
             HStack(spacing: DesignSystem.Spacing.sm) {
-                actionButton(
-                    title: "Export…",
-                    systemImage: "square.and.arrow.up",
-                    isPrimary: true,
-                    isDisabled: !canExport,
-                    action: presentExportPanel
-                )
-                actionButton(
-                    title: "Import…",
-                    systemImage: "square.and.arrow.down",
-                    isPrimary: false,
-                    isDisabled: false,
-                    action: presentImportPanel
-                )
-                Spacer(minLength: 0)
-                if !canExport {
-                    Text("Add a custom word or snippet to enable export.")
-                        .font(DesignSystem.Typography.micro)
-                        .foregroundStyle(.tertiary)
+                Button(action: presentExportPanel) {
+                    Label("Export…", systemImage: "square.and.arrow.up")
                 }
+                .parakeetAction(.secondary)
+                Button(action: presentImportPanel) {
+                    Label("Import…", systemImage: "square.and.arrow.down")
+                }
+                .parakeetAction(.secondary)
+                Spacer(minLength: 0)
             }
+            .disabled(!viewModel.canStartOperation)
 
             statusLine
         }
@@ -62,10 +49,12 @@ struct VocabularyBackupSection: View {
                 hovered = hovering
             }
         }
-        .sheet(isPresented: Binding(
-            get: { viewModel.isPresentingImportSheet },
-            set: { if !$0, viewModel.pendingImport != nil { viewModel.cancelImport() } }
-        )) {
+        .sheet(
+            isPresented: Binding(
+                get: { viewModel.isPresentingImportSheet },
+                set: { if !$0, viewModel.pendingImport != nil { viewModel.cancelImport() } }
+            )
+        ) {
             if let preview = viewModel.pendingImport {
                 VocabularyImportPreviewSheet(
                     viewModel: viewModel,
@@ -110,7 +99,8 @@ struct VocabularyBackupSection: View {
             statusRow(
                 icon: "checkmark.circle.fill",
                 tint: DesignSystem.Colors.successGreen,
-                text: "Exported \(pluralize(words, "word", "words")) and \(pluralize(snippets, "snippet", "snippets")) to \(filename.isEmpty ? "your chosen file" : filename)."
+                text:
+                    "Exported \(pluralize(words, "word", "words")) and \(pluralize(snippets, "snippet", "snippets")) to \(filename.isEmpty ? "your chosen file" : filename)."
             )
         case let .imported(result):
             statusRow(
@@ -159,7 +149,9 @@ struct VocabularyBackupSection: View {
         let totalReplaced = r.wordsReplaced + r.snippetsReplaced
         let totalSkipped = r.wordsSkipped + r.snippetsSkipped
         if totalAdded > 0 {
-            parts.append("Added \(pluralize(r.wordsAdded, "word", "words")) and \(pluralize(r.snippetsAdded, "snippet", "snippets"))")
+            parts.append(
+                "Added \(pluralize(r.wordsAdded, "word", "words")) and \(pluralize(r.snippetsAdded, "snippet", "snippets"))"
+            )
         }
         if totalReplaced > 0 {
             parts.append("replaced \(totalReplaced)")
@@ -167,91 +159,38 @@ struct VocabularyBackupSection: View {
         if totalSkipped > 0 {
             parts.append("skipped \(totalSkipped) duplicate\(totalSkipped == 1 ? "" : "s")")
         }
+        let totalRemoved = r.wordsRemoved + r.snippetsRemoved
+        if totalRemoved > 0 {
+            parts.append(
+                "removed \(pluralize(r.wordsRemoved, "word", "words")) and \(pluralize(r.snippetsRemoved, "snippet", "snippets"))"
+            )
+        }
         if parts.isEmpty {
             return "Nothing to import — the file matched your existing vocabulary."
         }
         return parts.joined(separator: ", ") + "."
     }
 
-    // MARK: - Buttons
-
-    private var canExport: Bool { wordCount + snippetCount > 0 }
-
-    private func actionButton(
-        title: String,
-        systemImage: String,
-        isPrimary: Bool,
-        isDisabled: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        let isHovered = hoveredButton == title
-        return Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 11, weight: .semibold))
-                Text(title)
-                    .font(DesignSystem.Typography.caption.weight(.semibold))
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(
-                        isPrimary
-                            ? DesignSystem.Colors.accent.opacity(isDisabled ? 0.4 : (isHovered ? 1.0 : 0.92))
-                            : DesignSystem.Colors.surfaceElevated.opacity(isHovered ? 1.0 : 0.7)
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 7)
-                    .strokeBorder(
-                        isPrimary
-                            ? Color.clear
-                            : DesignSystem.Colors.border,
-                        lineWidth: 0.5
-                    )
-            )
-            .foregroundStyle(isPrimary ? Color.white : Color.primary)
-        }
-        .buttonStyle(.plain)
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.55 : 1.0)
-        .onHover { hovering in
-            withAnimation(DesignSystem.Animation.hoverTransition) {
-                hoveredButton = hovering ? title : nil
-            }
-        }
-    }
-
     // MARK: - Actions
 
     private func presentExportPanel() {
         Task { @MainActor in
-            guard let export = await viewModel.makeExportPayload() else { return }
-            let panel = NSSavePanel()
-            panel.title = "Export Vocabulary"
-            panel.message = "Save your custom words and text snippets to a JSON file."
-            panel.nameFieldStringValue = viewModel.suggestedFilename()
-            if let json = UTType(filenameExtension: "json") {
-                panel.allowedContentTypes = [json]
-            }
-            panel.canCreateDirectories = true
-            panel.isExtensionHidden = false
+            await viewModel.exportVocabulary { export in
+                let panel = NSSavePanel()
+                panel.title = "Export Vocabulary"
+                panel.message = "Save your custom words and text snippets to a JSON file."
+                panel.nameFieldStringValue = viewModel.suggestedFilename()
+                if let json = UTType(filenameExtension: "json") {
+                    panel.allowedContentTypes = [json]
+                }
+                panel.canCreateDirectories = true
+                panel.isExtensionHidden = false
 
-            let response = panel.runModal()
-            guard response == .OK, let url = panel.url else { return }
-            do {
+                guard panel.runModal() == .OK, let url = panel.url else { return nil }
                 try await Task.detached(priority: .userInitiated) {
                     try export.data.write(to: url, options: .atomic)
                 }.value
-                viewModel.confirmExportSucceeded(
-                    filename: url.lastPathComponent,
-                    wordsCount: export.wordsCount,
-                    snippetsCount: export.snippetsCount
-                )
-            } catch {
-                // Reuse failed status for write errors.
-                viewModel.status = .failed("Couldn't write the file: \(error.localizedDescription)")
+                return url.lastPathComponent
             }
         }
     }

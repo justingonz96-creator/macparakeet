@@ -60,6 +60,7 @@ public final class HotkeyGestureController {
             return false
         }
     }
+
     private var suppressedUntilReset = false
 
     public init(
@@ -255,6 +256,19 @@ public final class HotkeyGestureController {
         var results: [Output] = [.cancelStartupDebounce, .cancelHoldWindow]
         results.append(contentsOf: outputs(for: action))
         return results
+    }
+
+    /// Escape seen by a controller that does not own the current take. Clears a
+    /// pending first press and leaves live-take and cancel-window state alone.
+    public func escapePressedWithoutOwnership() -> [Output] {
+        guard !suppressedUntilReset, hasPendingTriggerPress else { return [] }
+
+        if mode == .holdOnly {
+            holdOnlyState = .idle
+        } else {
+            stateMachine.reset()
+        }
+        return [.cancelStartupDebounce, .cancelHoldWindow]
     }
 
     public func startupDebounceElapsed() -> [Output] {

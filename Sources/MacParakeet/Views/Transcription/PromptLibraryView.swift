@@ -6,24 +6,26 @@ enum PromptLibraryPresentation {
     case library
     case meetingAutoNotes
 
-    var includesTransforms: Bool {
-        self == .library
-    }
-
     var title: String {
         switch self {
-        case .library: "Prompts"
-        case .meetingAutoNotes: "Meeting Prompts"
+        case .library: "Transcript prompts"
+        case .meetingAutoNotes: "Meeting prompts"
         }
     }
 
     var subtitle: String {
         switch self {
         case .library:
-            "Instructions for your transcripts and selected-text Transforms."
+            "Instructions that run on completed transcripts."
         case .meetingAutoNotes:
-            "Instructions that generate results from meeting transcripts."
+            "Instructions that generate notes from completed meetings."
         }
+    }
+
+    var creationCategory: Prompt.Category { .result }
+
+    func includes(category: Prompt.Category) -> Bool {
+        category == .result
     }
 }
 
@@ -31,12 +33,6 @@ struct PromptLibraryView: View {
     private enum ContentMode: String, CaseIterable {
         case edit = "Edit"
         case preview = "Preview"
-    }
-
-    private enum PromptKindFilter: String, CaseIterable {
-        case all = "All prompts"
-        case results = "Results"
-        case transforms = "Transforms"
     }
 
     private enum LibrarySheet: String, Identifiable {
@@ -47,7 +43,6 @@ struct PromptLibraryView: View {
     @State private var librarySheet: LibrarySheet?
     @Environment(\.dismiss) private var dismiss
     @Bindable var viewModel: PromptsViewModel
-    var showsDismissButton = true
     var presentation: PromptLibraryPresentation = .library
     @State private var editName: String = ""
     @State private var editContent: String = ""
@@ -58,7 +53,6 @@ struct PromptLibraryView: View {
     @State private var diffToVersionID: UUID?
     @State private var versionDiff = PromptVersionDiffViewModel()
     @State private var collectionFilterID: UUID?
-    @State private var promptKindFilter: PromptKindFilter = .all
     @State private var collectionDraftNames: [UUID: String] = [:]
     @State private var hoveredPromptId: UUID?
     @State private var expandedPromptIds: Set<UUID> = []
@@ -68,6 +62,13 @@ struct PromptLibraryView: View {
     /// gets the same icon brightening + AutoRunBadge reveal that a mouse
     /// user gets on hover.
     @FocusState private var focusedPromptId: UUID?
+
+    private var editingTranscriptPrompt: Prompt? {
+        guard let prompt = viewModel.editingPrompt, presentation.includes(category: prompt.category) else {
+            return nil
+        }
+        return prompt
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -89,12 +90,10 @@ struct PromptLibraryView: View {
                     }
                     .parakeetAction(.primaryProminent)
                     .controlSize(.large)
-                    if showsDismissButton {
-                        Button("Done") { dismiss() }
-                            .parakeetAction(.secondary)
-                            .controlSize(.large)
-                            .keyboardShortcut(.cancelAction)
-                    }
+                    Button("Done") { dismiss() }
+                        .parakeetAction(.secondary)
+                        .controlSize(.large)
+                        .keyboardShortcut(.cancelAction)
                 }
 
                 HStack(spacing: DesignSystem.Spacing.md) {
@@ -102,15 +101,6 @@ struct PromptLibraryView: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(minWidth: 160, maxWidth: .infinity)
                         .accessibilityLabel("Search prompts")
-                    if presentation.includesTransforms {
-                        Picker("Prompt kind", selection: $promptKindFilter) {
-                            ForEach(PromptKindFilter.allCases, id: \.self) { kind in
-                                Text(kind.rawValue).tag(kind)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 140)
-                    }
                     if !viewModel.collections.isEmpty {
                         Picker("Collection", selection: $collectionFilterID) {
                             Text("All collections").tag(Optional<UUID>.none)
@@ -123,7 +113,7 @@ struct PromptLibraryView: View {
                     }
                     Menu {
                         Button("Manage collections…") { librarySheet = .collections }
-                        Button("Trash (\(viewModel.deletedPrompts.count))…") { librarySheet = .trash }
+                        Button("Trash (\(displayedDeletedPrompts.count))…") { librarySheet = .trash }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -139,17 +129,19 @@ struct PromptLibraryView: View {
             Divider()
 
             ScrollView {
+                let prompts = filteredPrompts
+
                 VStack(spacing: DesignSystem.Spacing.lg) {
                     if let errorMessage = viewModel.errorMessage {
                         errorBanner(errorMessage)
                     }
-                    if filteredPrompts.isEmpty {
+                    if prompts.isEmpty {
                         emptyStateView
                     } else {
                         cardGroup {
-                            ForEach(Array(filteredPrompts.enumerated()), id: \.element.id) { index, prompt in
+                            ForEach(Array(prompts.enumerated()), id: \.element.id) { index, prompt in
                                 promptRow(prompt)
-                                if index < filteredPrompts.count - 1 { Divider().padding(.leading, 16) }
+                                if index < prompts.count - 1 { Divider().padding(.leading, 16) }
                             }
                         }
                     }
@@ -174,7 +166,7 @@ struct PromptLibraryView: View {
             }
             .ignoresSafeArea()
         }
-        .frame(minWidth: 720, minHeight: 560)
+        .frame(minWidth: Self.sheetMinWidth, minHeight: Self.sheetMinHeight)
         .onAppear { viewModel.refresh() }
         .onChange(of: viewModel.collections.map(\.id)) { _, ids in
             if let collectionFilterID, !ids.contains(collectionFilterID) {
@@ -202,7 +194,7 @@ struct PromptLibraryView: View {
         }
         .sheet(
             isPresented: Binding(
-                get: { viewModel.editingPrompt != nil },
+                get: { editingTranscriptPrompt != nil },
                 set: { if !$0 { viewModel.editingPrompt = nil } }
             ),
             onDismiss: {
@@ -212,7 +204,7 @@ struct PromptLibraryView: View {
                 viewModel.cancelEditing()
             }
         ) {
-            if let prompt = viewModel.editingPrompt {
+            if let prompt = editingTranscriptPrompt {
                 editSheet(prompt: prompt)
                     .alert("Discard changes?", isPresented: $showingDiscardConfirm) {
                         Button("Discard", role: .destructive) {
@@ -260,13 +252,12 @@ struct PromptLibraryView: View {
 
     private var hasActiveFilters: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || collectionFilterID != nil || promptKindFilter != .all
+            || collectionFilterID != nil
     }
 
     private func beginCreatingPrompt() {
-        if !presentation.includesTransforms {
-            viewModel.newPromptCategory = .result
-        }
+        viewModel.newPromptCategory = presentation.creationCategory
+        viewModel.refreshGenerationSettingsContext()
         librarySheet = .create
     }
 
@@ -321,24 +312,18 @@ struct PromptLibraryView: View {
     private var filteredPrompts: [Prompt] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         return viewModel.managedPrompts.filter {
-            guard presentation.includesTransforms || $0.category == .result else { return false }
+            guard presentation.includes(category: $0.category) else { return false }
             let matchesCollection = collectionFilterID == nil || $0.collectionId == collectionFilterID
-            let matchesKind: Bool
-            switch promptKindFilter {
-            case .all: matchesKind = true
-            case .results: matchesKind = $0.category == .result
-            case .transforms: matchesKind = $0.category == .transform
-            }
             let matchesQuery =
                 query.isEmpty
                 || $0.name.localizedCaseInsensitiveContains(query)
                 || $0.content.localizedCaseInsensitiveContains(query)
-            return matchesCollection && matchesKind && matchesQuery
+            return matchesCollection && matchesQuery
         }
     }
 
     private var displayedDeletedPrompts: [Prompt] {
-        viewModel.deletedPrompts.filter { presentation.includesTransforms || $0.category == .result }
+        viewModel.deletedPrompts.filter { presentation.includes(category: $0.category) }
     }
 
     private func errorBanner(_ message: String) -> some View {
@@ -357,9 +342,7 @@ struct PromptLibraryView: View {
     private var collectionManager: some View {
         sectionContainer(
             title: "Collections",
-            subtitle: presentation.includesTransforms
-                ? "Organize result prompts and Transforms without changing their version history."
-                : "Organize result prompts without changing their version history."
+            subtitle: "Organize your prompts into collections."
         ) {
             cardGroup {
                 VStack(spacing: 0) {
@@ -436,7 +419,7 @@ struct PromptLibraryView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(prompt.name)
                                 .font(DesignSystem.Typography.body.weight(.semibold))
-                            Text(prompt.category == .transform ? "Transform" : "Result prompt")
+                            Text("Transcript prompt")
                                 .font(DesignSystem.Typography.caption)
                                 .foregroundStyle(DesignSystem.Colors.textSecondary)
                         }
@@ -536,14 +519,6 @@ struct PromptLibraryView: View {
                             .background(DesignSystem.Colors.surfaceElevated)
                             .clipShape(Capsule())
                     }
-
-                    Text(prompt.category == .transform ? "Transform" : "Result")
-                        .font(DesignSystem.Typography.caption)
-                        .foregroundStyle(DesignSystem.Colors.textSecondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(DesignSystem.Colors.surfaceElevated)
-                        .clipShape(Capsule())
 
                     if prompt.inferenceSettings?.normalized != nil || prompt.modelOverride != nil {
                         Text("Custom settings")
@@ -784,7 +759,6 @@ struct PromptLibraryView: View {
                 Button("Clear filters") {
                     searchText = ""
                     collectionFilterID = nil
-                    promptKindFilter = .all
                 }
                 .parakeetAction(.secondary)
             }
@@ -803,21 +777,6 @@ struct PromptLibraryView: View {
     private var addPromptCard: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
-                if presentation.includesTransforms {
-                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-                        Text("Type")
-                            .font(DesignSystem.Typography.caption.weight(.medium))
-                            .foregroundStyle(DesignSystem.Colors.textSecondary)
-                        Picker("Type", selection: $viewModel.newPromptCategory) {
-                            Text("Result prompt").tag(Prompt.Category.result)
-                            Text("Transform").tag(Prompt.Category.transform)
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .frame(width: 240)
-                    }
-                }
-
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
                     Text("Name")
                         .font(DesignSystem.Typography.caption.weight(.medium))
@@ -843,23 +802,20 @@ struct PromptLibraryView: View {
 
                 collectionPicker(selection: $viewModel.newCollectionID)
 
-                if viewModel.newPromptCategory == .result {
-                    promptLabelTargeting(selection: $viewModel.newTargetLabelIDs)
-                }
+                promptLabelTargeting(selection: $viewModel.newTargetLabelIDs)
 
                 GenerationSettingsEditor(
                     draft: $viewModel.newInferenceSettings,
                     modelOverride: $viewModel.newModelOverride,
                     errors: viewModel.newInferenceValidationErrors,
+                    viewModel: viewModel,
                     onReset: {
                         viewModel.resetNewInferenceSettings()
                         viewModel.newModelOverride = ""
                     }
                 )
 
-                if viewModel.newPromptCategory == .result {
-                    meetingNotesContextToggle(isOn: $viewModel.newIncludeMeetingNotes)
-                }
+                meetingNotesContextToggle(isOn: $viewModel.newIncludeMeetingNotes)
             }
             .padding(DesignSystem.Spacing.lg)
 
@@ -872,7 +828,6 @@ struct PromptLibraryView: View {
                     if viewModel.newName.isEmpty && viewModel.newContent.isEmpty {
                         searchText = ""
                         collectionFilterID = nil
-                        promptKindFilter = .all
                         librarySheet = nil
                     }
                 } label: {
@@ -902,9 +857,7 @@ struct PromptLibraryView: View {
         )
         .cardShadow(DesignSystem.Shadows.cardRest)
         .onAppear {
-            if !presentation.includesTransforms {
-                viewModel.newPromptCategory = .result
-            }
+            viewModel.newPromptCategory = presentation.creationCategory
         }
     }
 
@@ -951,29 +904,26 @@ struct PromptLibraryView: View {
 
                     collectionPicker(selection: $viewModel.editingCollectionID)
 
-                    if prompt.category == .result {
-                        promptLabelTargeting(
-                            selection: Binding(
-                                get: { viewModel.editingTargetLabelIDs },
-                                set: { viewModel.setEditingTargetLabels($0) }
-                            ),
-                            hasCustomRules: viewModel.editingHasCustomTargetingRules
-                        )
-                    }
+                    promptLabelTargeting(
+                        selection: Binding(
+                            get: { viewModel.editingTargetLabelIDs },
+                            set: { viewModel.setEditingTargetLabels($0) }
+                        ),
+                        hasCustomRules: viewModel.editingHasCustomTargetingRules
+                    )
 
                     GenerationSettingsEditor(
                         draft: $viewModel.editingInferenceSettings,
                         modelOverride: $viewModel.editingModelOverride,
                         errors: viewModel.editingInferenceValidationErrors,
+                        viewModel: viewModel,
                         onReset: {
                             viewModel.resetEditingInferenceSettings()
                             viewModel.editingModelOverride = ""
                         }
                     )
 
-                    if prompt.category == .result {
-                        meetingNotesContextToggle(isOn: $viewModel.editingIncludeMeetingNotes)
-                    }
+                    meetingNotesContextToggle(isOn: $viewModel.editingIncludeMeetingNotes)
                     versionHistory(prompt: prompt)
                 }
                 .padding(DesignSystem.Spacing.xl)
@@ -1023,8 +973,8 @@ struct PromptLibraryView: View {
                     "Adds user-authored notes when this prompt runs on a meeting."
                 )
             Text(
-                "When this prompt runs on a meeting with notes, use those notes as additional context. "
-                    + "The transcript remains the source of truth."
+                "Send your meeting notes to the selected AI provider as context, including spelling corrections and reference URLs. "
+                    + "Linked pages are not fetched. Changes apply to new results; Regenerate keeps the original setting."
             )
             .font(DesignSystem.Typography.caption)
             .foregroundStyle(DesignSystem.Colors.textSecondary)
@@ -1051,9 +1001,11 @@ struct PromptLibraryView: View {
             if hasCustomRules {
                 Label("Custom availability rules", systemImage: "slider.horizontal.3")
                     .font(DesignSystem.Typography.body.weight(.medium))
-                Text("Existing exceptions stay unchanged. Choose All transcriptions or labels below to replace them when you save.")
-                    .font(DesignSystem.Typography.caption)
-                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+                Text(
+                    "Existing exceptions stay unchanged. Choose All transcriptions or labels below to replace them when you save."
+                )
+                .font(DesignSystem.Typography.caption)
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
             }
 
             FlowLayout(spacing: 7) {
@@ -1455,105 +1407,86 @@ struct PromptLibraryView: View {
     }
 }
 
+extension PromptLibraryView {
+    /// Comfortable minimum size for the sheet presentations.
+    static let sheetMinWidth: CGFloat = 720
+    static let sheetMinHeight: CGFloat = 560
+}
+
 private struct GenerationSettingsEditor: View {
+    private static let fieldOrder: [PromptInferenceSettings.Field] = [
+        .temperature, .topP, .topK, .maxTokens, .thinkingMode, .reasoningEffort,
+    ]
+
     @Binding var draft: PromptsViewModel.InferenceSettingsDraft
     @Binding var modelOverride: String
     let errors: PromptsViewModel.InferenceValidationErrors
+    let viewModel: PromptsViewModel
     let onReset: () -> Void
 
     @State private var isExpanded = false
+    @State private var customizingFields: Set<PromptInferenceSettings.Field> = []
+    @State private var modelSelection = PromptsViewModel.GenerationModelSelection()
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
-                Text("Blank fields inherit Echo's current defaults for the selected provider and model.")
+                if presentation == nil {
+                    Text(
+                        "Set up AI in Settings to see which options this prompt will use. Saved values stay as entered."
+                    )
                     .font(DesignSystem.Typography.caption)
                     .foregroundStyle(DesignSystem.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Model override")
-                        .font(DesignSystem.Typography.caption.weight(.medium))
-                        .foregroundStyle(DesignSystem.Colors.textSecondary)
-                    TextField("Current provider model", text: $modelOverride)
-                        .textFieldStyle(.roundedBorder)
-                        .accessibilityLabel("Model override")
-                    Text("Use a model identifier supported by the active provider, or leave blank to inherit it.")
-                        .font(DesignSystem.Typography.caption)
-                        .foregroundStyle(DesignSystem.Colors.textTertiary)
+                } else {
+                    providerSummary
                 }
 
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(), spacing: DesignSystem.Spacing.md),
-                        GridItem(.flexible(), spacing: DesignSystem.Spacing.md),
-                    ],
-                    alignment: .leading,
-                    spacing: DesignSystem.Spacing.md
-                ) {
-                    numberField(
-                        title: "Temperature",
-                        placeholder: "Default (0–2)",
-                        text: $draft.temperature,
-                        field: .temperature
-                    )
-                    numberField(
-                        title: "Top P",
-                        placeholder: "Default (0–1)",
-                        text: $draft.topP,
-                        field: .topP
-                    )
-                    numberField(
-                        title: "Top K",
-                        placeholder: "Default (0–1000)",
-                        text: $draft.topK,
-                        field: .topK
-                    )
-                    numberField(
-                        title: "Maximum output tokens",
-                        placeholder: "Default (1–131072)",
-                        text: $draft.maxTokens,
-                        field: .maxTokens
-                    )
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Thinking")
-                            .font(DesignSystem.Typography.caption.weight(.medium))
-                            .foregroundStyle(DesignSystem.Colors.textSecondary)
-                        Picker("Thinking", selection: $draft.thinkingMode) {
-                            Text("Default").tag(PromptInferenceSettings.ThinkingMode.providerDefault)
-                            Text("Enabled").tag(PromptInferenceSettings.ThinkingMode.enabled)
-                            Text("Disabled").tag(PromptInferenceSettings.ThinkingMode.disabled)
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .onChange(of: draft.thinkingMode) { _, mode in
-                            if mode != .enabled {
-                                draft.reasoningEffort = nil
-                            }
-                        }
-                    }
+                modelSection
 
-                    if draft.thinkingMode == .enabled {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("Reasoning effort")
-                                .font(DesignSystem.Typography.caption.weight(.medium))
-                                .foregroundStyle(DesignSystem.Colors.textSecondary)
-                            Picker("Reasoning effort", selection: $draft.reasoningEffort) {
-                                Text("Default").tag(PromptInferenceSettings.ReasoningEffort?.none)
-                                ForEach(PromptInferenceSettings.ReasoningEffort.allCases, id: \.self) { effort in
-                                    Text(PromptsViewModel.displayName(for: effort)).tag(Optional(effort))
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            Text("Available levels depend on the endpoint and model template.")
-                                .font(DesignSystem.Typography.micro)
-                                .foregroundStyle(DesignSystem.Colors.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                if let warning = overrideWarning {
+                    Text(warning)
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.warningAmber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let combinationNote = combinationNote {
+                    Text(combinationNote)
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let unverifiedNote = unverifiedSectionNote {
+                    Text(unverifiedNote)
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                    ForEach(editableFields, id: \.self) { field in
+                        settingRow(for: field)
+                    }
+                }
+
+                if !inactiveFields.isEmpty {
+                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                        Text("Not sent with this provider or model")
+                            .font(DesignSystem.Typography.caption.weight(.semibold))
+                            .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        Text(
+                            "These saved values are kept until you remove them. They are not sent with the current provider and model."
+                        )
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        ForEach(inactiveFields, id: \.self) { field in
+                            inactiveRow(for: field)
                         }
                     }
+                    .padding(.top, DesignSystem.Spacing.xs)
                 }
 
                 HStack {
@@ -1564,10 +1497,8 @@ private struct GenerationSettingsEditor: View {
                             .lineLimit(2)
                     }
                     Spacer()
-                    Button("Reset to defaults", action: onReset)
-                        .buttonStyle(.plain)
-                        .font(DesignSystem.Typography.caption.weight(.medium))
-                        .foregroundStyle(DesignSystem.Colors.accent)
+                    Button("Reset to defaults", action: resetAll)
+                        .parakeetAction(.subtle)
                         .disabled(
                             !PromptsViewModel.hasCustomGenerationSettings(
                                 draft: draft,
@@ -1578,55 +1509,502 @@ private struct GenerationSettingsEditor: View {
             }
             .padding(.top, DesignSystem.Spacing.md)
         } label: {
-            HStack(spacing: DesignSystem.Spacing.sm) {
-                Label("Generation settings", systemImage: "slider.horizontal.3")
-                    .font(DesignSystem.Typography.body.weight(.semibold))
-                Spacer()
-                if PromptsViewModel.hasCustomGenerationSettings(
-                    draft: draft,
-                    modelOverride: modelOverride
-                ) {
-                    Text("Custom")
-                        .font(DesignSystem.Typography.micro.weight(.bold))
-                        .foregroundStyle(DesignSystem.Colors.accentDark)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(DesignSystem.Colors.accentLight)
-                        .clipShape(Capsule())
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: DesignSystem.Spacing.sm) {
+                    Label("Generation settings", systemImage: "slider.horizontal.3")
+                        .font(DesignSystem.Typography.body.weight(.semibold))
+                    Spacer()
+                    if PromptsViewModel.hasCustomGenerationSettings(
+                        draft: draft,
+                        modelOverride: modelOverride
+                    ) {
+                        Text("Custom")
+                            .font(DesignSystem.Typography.micro.weight(.bold))
+                            .foregroundStyle(DesignSystem.Colors.accentDark)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(DesignSystem.Colors.accentLight)
+                            .clipShape(Capsule())
+                    }
+                }
+                if let summary = collapsedSummary {
+                    Text(summary)
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        .lineLimit(2)
                 }
             }
             .foregroundStyle(DesignSystem.Colors.textPrimary)
+        }
+        .onAppear {
+            viewModel.refreshGenerationSettingsContext()
+            seedExplicitCustomization()
+            modelSelection = PromptsViewModel.GenerationModelSelection(
+                modelOverride: modelOverride,
+                availableModels: viewModel.generationAvailableModels
+            )
         }
         .onChange(of: errors) { _, newErrors in
             if !newErrors.isEmpty {
                 isExpanded = true
             }
         }
+        .onChange(of: modelOverride) { _, _ in
+            modelSelection.reconcile(
+                modelOverride: modelOverride,
+                availableModels: viewModel.generationAvailableModels
+            )
+        }
+        .onChange(of: viewModel.generationAvailableModels) { _, models in
+            modelSelection.reconcile(modelOverride: modelOverride, availableModels: models)
+        }
     }
 
-    private func numberField(
-        title: String,
-        placeholder: String,
-        text: Binding<String>,
-        field: PromptInferenceSettings.Field
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title)
+    private var presentation: PromptInferencePresentation? {
+        viewModel.generationSettingsPresentation(draft: draft, modelOverride: modelOverride)
+    }
+
+    private var inheritedPresentation: PromptInferencePresentation? {
+        viewModel.generationSettingsPresentation(draft: .init(), modelOverride: modelOverride)
+    }
+
+    private var collapsedSummary: String? {
+        viewModel.generationSettingsCollapsedSummary(draft: draft, modelOverride: modelOverride)
+    }
+
+    private var draftSummary: String? {
+        PromptsViewModel.compactInferenceDraftSummary(draft)
+    }
+
+    private var providerSummary: some View {
+        let providerName = viewModel.generationProviderID?.displayName ?? "AI"
+        let effectiveModel =
+            presentation?.effectiveModel
+            ?? viewModel.generationModelName
+        return VStack(alignment: .leading, spacing: 2) {
+            Text("Using \(providerName)")
                 .font(DesignSystem.Typography.caption.weight(.medium))
                 .foregroundStyle(DesignSystem.Colors.textSecondary)
-            TextField(placeholder, text: text)
+            if !effectiveModel.isEmpty {
+                Text(effectiveModel)
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Using \(providerName) \(effectiveModel)")
+    }
+
+    private var modelModeBinding: Binding<PromptsViewModel.GenerationModelSelection.Source> {
+        Binding(
+            get: { modelSelection.source },
+            set: { mode in
+                switch mode {
+                case .useAISettings:
+                    modelSelection.selectUseAISettings()
+                    modelOverride = ""
+                case .custom:
+                    modelSelection.selectCustom(availableModels: viewModel.generationAvailableModels)
+                }
+            }
+        )
+    }
+
+    private var overrideWarning: String? {
+        guard case .invalid(let reason) = presentation?.modelOverrideStatus else { return nil }
+        return "This model isn't available with the current provider: \(reason)"
+    }
+
+    private var combinationNote: String? {
+        guard presentation?.provider == .anthropic else { return nil }
+        let temperatureCapability = capability(for: .temperature)
+        let topPCapability = capability(for: .topP)
+        guard
+            temperatureCapability?.availability == .supported
+                || topPCapability?.availability == .supported
+        else { return nil }
+        if draft.hasExplicitValue(for: .topP) && draft.hasExplicitValue(for: .temperature) {
+            return "Top P is used instead of Temperature. Temperature is 0 to 1."
+        }
+        return "If you set Top P, it is used instead of Temperature. Temperature is 0 to 1."
+    }
+
+    private var unverifiedSectionNote: String? {
+        let hasUnverified = editableFields.contains { capability(for: $0)?.availability == .unverified }
+        guard hasUnverified else { return nil }
+        if presentation?.provider == .ollama {
+            return
+                "Thinking support for this Ollama model is unverified. It is sent as requested and the model may reject or ignore it."
+        }
+        return
+            "Custom endpoint support is unverified. Values are sent as requested and the endpoint may reject or ignore them."
+    }
+
+    private var editableFields: [PromptInferenceSettings.Field] {
+        Self.fieldOrder.filter { field in
+            if field == .reasoningEffort, draft.thinkingMode != .enabled {
+                return false
+            }
+            if inactiveFields.contains(field) { return false }
+            return isEditable(field)
+        }
+    }
+
+    private var inactiveFields: [PromptInferenceSettings.Field] {
+        Self.fieldOrder.filter { field in
+            draft.hasExplicitValue(for: field) && capability(for: field)?.availability == .unsupported
+        }
+    }
+
+    private func isEditable(_ field: PromptInferenceSettings.Field) -> Bool {
+        guard let capability = capability(for: field) else { return true }
+        switch capability.availability {
+        case .supported, .unverified:
+            return true
+        case .unsupported:
+            return false
+        }
+    }
+
+    private func capability(for field: PromptInferenceSettings.Field) -> PromptInferenceFieldCapability? {
+        presentation?.fieldCapabilities[field]
+    }
+
+    private var modelSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Model")
+                .font(DesignSystem.Typography.caption.weight(.medium))
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
+            Picker("Model source", selection: modelModeBinding) {
+                Text("Use AI settings").tag(PromptsViewModel.GenerationModelSelection.Source.useAISettings)
+                Text("Custom").tag(PromptsViewModel.GenerationModelSelection.Source.custom)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel("Model source")
+
+            if modelSelection.source == .useAISettings {
+                Text(inheritedModelCaption)
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textTertiary)
+            } else {
+                customModelControls
+            }
+        }
+    }
+
+    private var inheritedModelCaption: String {
+        let name = viewModel.generationModelName
+        if name.isEmpty {
+            return "Uses the model from Settings."
+        }
+        return "Uses \(name)"
+    }
+
+    @ViewBuilder
+    private var customModelControls: some View {
+        let models = viewModel.generationAvailableModels
+        if modelSelection.showsCustomIDField(availableModels: models) {
+            TextField("Model ID", text: $modelOverride)
                 .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Custom model ID")
+            if !models.isEmpty {
+                Button("Choose from list") {
+                    modelSelection.chooseFromList()
+                }
+                .parakeetAction(.subtle)
+            } else {
+                Text("Enter a model ID. You can still save it if the list isn't available.")
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } else {
+            Menu {
+                ForEach(models, id: \.self) { model in
+                    Button(model) { modelOverride = model }
+                }
+            } label: {
+                HStack {
+                    Text(
+                        models.contains(modelOverride.trimmingCharacters(in: .whitespacesAndNewlines))
+                            ? modelOverride : "Choose a model"
+                    )
+                    .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .accessibilityLabel("Custom model")
+            Button("Use custom model") {
+                modelSelection.useCustomModelID()
+            }
+            .parakeetAction(.subtle)
+        }
+    }
+
+    @ViewBuilder
+    private func settingRow(for field: PromptInferenceSettings.Field) -> some View {
+        switch field {
+        case .temperature, .topP, .topK, .maxTokens:
+            numericRow(for: field)
+        case .thinkingMode:
+            thinkingRow
+        case .reasoningEffort:
+            reasoningEffortRow
+        }
+    }
+
+    private func numericRow(for field: PromptInferenceSettings.Field) -> some View {
+        let fieldCapability = capability(for: field)
+        let isCustom = isCustomizing(field)
+        return VStack(alignment: .leading, spacing: 5) {
+            Text(PromptsViewModel.displayName(for: field))
+                .font(DesignSystem.Typography.caption.weight(.medium))
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
+            Picker(
+                PromptsViewModel.displayName(for: field),
+                selection: customizingBinding(for: field)
+            ) {
+                Text("Automatic").tag(false)
+                Text("Custom").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            if isCustom {
+                TextField(customPlaceholder(for: field, capability: fieldCapability), text: numericBinding(for: field))
+                    .textFieldStyle(.roundedBorder)
+            } else if let caption = automaticCaption(for: field) {
+                Text(caption)
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textTertiary)
+            }
             if let error = errors[field] {
                 Text(error)
                     .font(DesignSystem.Typography.micro)
                     .foregroundStyle(DesignSystem.Colors.errorRed)
                     .fixedSize(horizontal: false, vertical: true)
+            } else if let help = supportedFieldHelp(fieldCapability) {
+                Text(help)
+                    .font(DesignSystem.Typography.micro)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
-    private var draftSummary: String? {
-        PromptsViewModel.compactInferenceDraftSummary(draft)
+    private var thinkingRow: some View {
+        let fieldCapability = capability(for: .thinkingMode)
+        return VStack(alignment: .leading, spacing: 5) {
+            Text("Thinking")
+                .font(DesignSystem.Typography.caption.weight(.medium))
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
+            Picker("Thinking", selection: $draft.thinkingMode) {
+                Text("Automatic").tag(PromptInferenceSettings.ThinkingMode.providerDefault)
+                Text("On").tag(PromptInferenceSettings.ThinkingMode.enabled)
+                Text("Off").tag(PromptInferenceSettings.ThinkingMode.disabled)
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onChange(of: draft.thinkingMode) { _, mode in
+                if mode != .enabled {
+                    draft.reasoningEffort = nil
+                }
+            }
+            if draft.thinkingMode == .providerDefault, let caption = automaticCaption(for: .thinkingMode) {
+                Text(caption)
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textTertiary)
+            }
+            if let error = errors[.thinkingMode] {
+                Text(error)
+                    .font(DesignSystem.Typography.micro)
+                    .foregroundStyle(DesignSystem.Colors.errorRed)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let help = supportedFieldHelp(fieldCapability) {
+                Text(help)
+                    .font(DesignSystem.Typography.micro)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var reasoningEffortRow: some View {
+        let fieldCapability = capability(for: .reasoningEffort)
+        let allowed =
+            fieldCapability?.allowedReasoningEfforts
+            ?? PromptInferenceSettings.ReasoningEffort.allCases
+        return VStack(alignment: .leading, spacing: 5) {
+            Text("Reasoning effort")
+                .font(DesignSystem.Typography.caption.weight(.medium))
+                .foregroundStyle(DesignSystem.Colors.textSecondary)
+            Picker("Reasoning effort", selection: $draft.reasoningEffort) {
+                Text("Automatic").tag(PromptInferenceSettings.ReasoningEffort?.none)
+                ForEach(allowed, id: \.self) { effort in
+                    Text(PromptsViewModel.displayName(for: effort)).tag(Optional(effort))
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if let error = errors[.reasoningEffort] {
+                Text(error)
+                    .font(DesignSystem.Typography.micro)
+                    .foregroundStyle(DesignSystem.Colors.errorRed)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let help = supportedFieldHelp(fieldCapability) {
+                Text(help)
+                    .font(DesignSystem.Typography.micro)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func inactiveRow(for field: PromptInferenceSettings.Field) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(inactiveValueLabel(for: field))
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundStyle(DesignSystem.Colors.textSecondary)
+                if let reason = capability(for: field)?.reason {
+                    Text(reason)
+                        .font(DesignSystem.Typography.micro)
+                        .foregroundStyle(DesignSystem.Colors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer()
+            Button("Remove") {
+                draft.clearField(field)
+                customizingFields.remove(field)
+            }
+            .parakeetAction(.subtle)
+            .accessibilityLabel("Remove \(PromptsViewModel.displayName(for: field))")
+        }
+    }
+
+    private func inactiveValueLabel(for field: PromptInferenceSettings.Field) -> String {
+        let title = PromptsViewModel.displayName(for: field)
+        switch field {
+        case .temperature:
+            return "\(title) \(draft.temperature.trimmingCharacters(in: .whitespacesAndNewlines))"
+        case .topP:
+            return "\(title) \(draft.topP.trimmingCharacters(in: .whitespacesAndNewlines))"
+        case .topK:
+            return "\(title) \(draft.topK.trimmingCharacters(in: .whitespacesAndNewlines))"
+        case .maxTokens:
+            return "\(title) \(draft.maxTokens.trimmingCharacters(in: .whitespacesAndNewlines))"
+        case .thinkingMode:
+            return "\(title) \(PromptsViewModel.displayName(for: draft.thinkingMode))"
+        case .reasoningEffort:
+            if let effort = draft.reasoningEffort {
+                return "\(title) \(PromptsViewModel.displayName(for: effort))"
+            }
+            return title
+        }
+    }
+
+    private func isCustomizing(_ field: PromptInferenceSettings.Field) -> Bool {
+        customizingFields.contains(field) || draft.hasExplicitValue(for: field)
+    }
+
+    private func customizingBinding(for field: PromptInferenceSettings.Field) -> Binding<Bool> {
+        Binding(
+            get: { isCustomizing(field) },
+            set: { isCustom in
+                if isCustom {
+                    customizingFields.insert(field)
+                } else {
+                    customizingFields.remove(field)
+                    draft.clearField(field)
+                }
+            }
+        )
+    }
+
+    private func numericBinding(for field: PromptInferenceSettings.Field) -> Binding<String> {
+        switch field {
+        case .temperature: return $draft.temperature
+        case .topP: return $draft.topP
+        case .topK: return $draft.topK
+        case .maxTokens: return $draft.maxTokens
+        case .thinkingMode, .reasoningEffort:
+            return .constant("")
+        }
+    }
+
+    private func customPlaceholder(
+        for field: PromptInferenceSettings.Field,
+        capability: PromptInferenceFieldCapability?
+    ) -> String {
+        if let range = capability?.knownRange {
+            return
+                "\(PromptsViewModel.InferenceSettingsDraft.renderNumber(range.minimum))–\(PromptsViewModel.InferenceSettingsDraft.renderNumber(range.maximum))"
+        }
+        switch field {
+        case .temperature: return "0–2"
+        case .topP: return "0–1"
+        case .topK: return "0–1000"
+        case .maxTokens: return "1–131072"
+        case .thinkingMode, .reasoningEffort: return ""
+        }
+    }
+
+    private func automaticCaption(for field: PromptInferenceSettings.Field) -> String? {
+        let capability = inheritedPresentation?.fieldCapabilities[field] ?? capability(for: field)
+        switch capability?.defaultSource {
+        case .application:
+            let inherited = inheritedPresentation?.effectiveSettings
+            switch field {
+            case .temperature:
+                return inherited?.temperature.map {
+                    "App default \(PromptsViewModel.InferenceSettingsDraft.renderNumber($0))"
+                }
+            case .topP:
+                return inherited?.topP.map {
+                    "App default \(PromptsViewModel.InferenceSettingsDraft.renderNumber($0))"
+                }
+            case .topK:
+                return inherited?.topK.map { "App default \($0)" }
+            case .maxTokens:
+                if let value = inherited?.maxTokens {
+                    return "App default \(value)"
+                }
+                return nil
+            case .thinkingMode:
+                guard let mode = inherited?.thinkingMode, mode != .providerDefault else { return nil }
+                return "App default \(PromptsViewModel.displayName(for: mode))"
+            case .reasoningEffort:
+                return nil
+            }
+        case .provider:
+            return "Provider chooses"
+        case .unknown:
+            return "Automatic value isn't known for this endpoint"
+        case .notApplicable, nil:
+            return nil
+        }
+    }
+
+    private func supportedFieldHelp(_ capability: PromptInferenceFieldCapability?) -> String? {
+        guard capability?.availability == .supported else { return nil }
+        return capability?.reason
+    }
+
+    private func seedExplicitCustomization() {
+        customizingFields = Set(
+            Self.fieldOrder.filter { draft.hasExplicitValue(for: $0) }
+        )
+    }
+
+    private func resetAll() {
+        customizingFields = []
+        modelSelection.reset()
+        onReset()
     }
 }
 

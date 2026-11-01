@@ -28,11 +28,19 @@ public actor MockSTTClient: STTClientProtocol, STTDictationPreviewTranscribing, 
     public var warmUpFailuresBeforeSuccess: Int = 0
     public var warmUpProgressPhases: [String]?
     public var warmUpHangIndefinitely = false
+    /// Delay before `warmUp` finishes, to hold onboarding in its loading state.
+    public var warmUpDelay: Duration?
     public var clearModelCacheCalled = false
     public var shutdownCalled = false
     public var speechEngineSwitches: [SpeechEnginePreference] = []
     public var speechEngineSwitchError: Error?
     public var speechEngineSwitchProgressMessages: [String] = []
+    public var speechEngineSwitchHangIndefinitely = false
+    private var speechEngineSwitchHangContinuations: [CheckedContinuation<Void, Error>] = []
+    /// Set only after a hung switch resumes and cooperative cancellation is
+    /// checked — models `STTRuntime` persisting the new engine. Leave-then-late
+    /// success must leave this nil.
+    public var committedSpeechEnginePreference: SpeechEnginePreference?
     public var parakeetModelVariantSwitches: [ParakeetModelVariant] = []
     public var parakeetModelVariantSwitchError: Error?
     public var nemotronModelVariantSwitches: [NemotronModelVariant] = []
@@ -123,6 +131,10 @@ public actor MockSTTClient: STTClientProtocol, STTDictationPreviewTranscribing, 
         self.warmUpProgressPhases = progressPhases
     }
 
+    public func configureWarmUpProgressDelay(_ delay: Duration) {
+        self.warmUpDelay = delay
+    }
+
     public func configureWarmUpFailuresBeforeSuccess(_ count: Int) {
         self.warmUpFailuresBeforeSuccess = max(0, count)
     }
@@ -131,6 +143,29 @@ public actor MockSTTClient: STTClientProtocol, STTDictationPreviewTranscribing, 
     /// download. Lets the onboarding stall watchdog be tested deterministically.
     public func configureWarmUpHangIndefinitely() {
         self.warmUpHangIndefinitely = true
+    }
+
+    /// Make `setSpeechEngine` wait on a continuation until
+    /// `completeHungSpeechEngineSwitch` resumes it. Models a Core ML compile
+    /// that has not returned yet (issue #952).
+    public func configureSpeechEngineSwitchHang() {
+        speechEngineSwitchHangIndefinitely = true
+    }
+
+    public func completeHungSpeechEngineSwitch(error: Error? = nil) {
+        let continuations = speechEngineSwitchHangContinuations
+        speechEngineSwitchHangContinuations.removeAll()
+        for continuation in continuations {
+            if let error {
+                continuation.resume(throwing: error)
+            } else {
+                continuation.resume()
+            }
+        }
+    }
+
+    public func committedSpeechEnginePreferenceSnapshot() -> SpeechEnginePreference? {
+        committedSpeechEnginePreference
     }
 
     public func transcribe(
@@ -334,6 +369,11 @@ public actor MockSTTClient: STTClientProtocol, STTDictationPreviewTranscribing, 
         if let liveBeginError {
             throw liveBeginError
         }
+        // Mirrors STTScheduler: a held append keeps the lane reserved, so a
+        // new live session is refused until it returns.
+        guard liveAppendHoldContinuations.isEmpty else {
+            throw STTError.engineBusy
+        }
         let id = UUID()
         liveSessionID = id
         livePartialHandler = onPartial
@@ -404,6 +444,10 @@ public actor MockSTTClient: STTClientProtocol, STTDictationPreviewTranscribing, 
             // branch deliberately leaves the state machine untouched, so the stream
             // emits nothing further — exactly the stall the watchdog must catch.
             try await Task.sleep(for: .seconds(3600))
+        }
+
+        if let warmUpDelay {
+            try await Task.sleep(for: warmUpDelay)
         }
 
         if let phases = warmUpProgressPhases {
@@ -536,9 +580,18 @@ public actor MockSTTClient: STTClientProtocol, STTDictationPreviewTranscribing, 
         speechEngineSwitches.append(preference)
         onProgress?("Preparing \(preference.displayName)...")
         speechEngineSwitchProgressMessages.append("Preparing \(preference.displayName)...")
+        if speechEngineSwitchHangIndefinitely {
+            // Uncancellable wait, like Core ML / `aned`. Cancellation is observed
+            // only after the test resumes the continuation.
+            try await withCheckedThrowingContinuation { continuation in
+                speechEngineSwitchHangContinuations.append(continuation)
+            }
+        }
+        try Task.checkCancellation()
         if let speechEngineSwitchError {
             throw speechEngineSwitchError
         }
+        committedSpeechEnginePreference = preference
         ready = true
     }
 

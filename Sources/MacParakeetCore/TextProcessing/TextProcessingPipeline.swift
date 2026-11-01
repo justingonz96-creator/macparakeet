@@ -3,7 +3,7 @@ import Foundation
 /// Deterministic 5-step text processing pipeline.
 /// Pure function: same input always produces same output.
 ///
-/// Steps: Filler Removal → Custom Words → Trailing Action Extraction → Snippet Expansion → Whitespace Cleanup
+/// Steps: Filler Removal → Custom Words → Trailing Action Extraction → Snippet Expansion (and spoken punctuation) → Whitespace Cleanup
 public struct TextProcessingPipeline: Sendable {
 
     public init() {}
@@ -14,7 +14,9 @@ public struct TextProcessingPipeline: Sendable {
         customWords: [CustomWord],
         snippets: [TextSnippet],
         normalizeNumbers: Bool = false,
-        insertionStyle: DictationInsertionStyle = .sentence
+        insertionStyle: DictationInsertionStyle = .sentence,
+        spokenPunctuationEnabled: Bool = true,
+        removeUmFiller: Bool = true
     ) -> TextProcessingResult {
         guard !text.isEmpty else {
             return TextProcessingResult(text: "")
@@ -26,7 +28,7 @@ public struct TextProcessingPipeline: Sendable {
         var result = text
 
         // Step 1: Filler removal
-        result = removeFillers(from: result)
+        result = removeFillers(from: result, removeUmFiller: removeUmFiller)
 
         // Step 2: Custom word replacements
         result = applyCustomWords(to: result, words: customWords)
@@ -43,9 +45,13 @@ public struct TextProcessingPipeline: Sendable {
             actionIDs.insert(matchedSnippet.id)
         }
 
-        // Step 4: Text snippet expansion (text-type only)
+        // Step 4: Text snippet expansion (text-type only), then built-in
+        // spoken punctuation. User snippets of the same trigger win.
         let (expandedText, expandedIDs) = expandSnippets(in: result, snippets: textSnippets)
         result = expandedText
+        if spokenPunctuationEnabled {
+            result = SpokenPunctuation.apply(to: result)
+        }
 
         // Step 5: Letter/digit token split — fixes Parakeet-fused tokens like
         // `next30` → `next 30`. Runs *after* custom words / snippets so users
@@ -84,19 +90,27 @@ public struct TextProcessingPipeline: Sendable {
 
     // MARK: - Step 1: Filler Removal
 
-    /// Always-safe fillers (always removed)
+    /// Always-safe fillers (always removed).
     /// Conservative hesitation spellings that do not conflict with supported languages.
     private static let alwaysSafeFillers = [
         "uh", "umm", "uhh",
     ]
 
+    /// English hesitation `um`. On by default; Portuguese/German speakers can
+    /// turn it off because `um` is a real word in those languages.
+    private static let englishUmFiller = "um"
+
     /// Pre-compiled filler regexes — avoids recompilation on every dictation.
-    private static let fillerRegexes: [NSRegularExpression] = alwaysSafeFillers.compactMap { filler in
+    private static let fillerRegexes: [NSRegularExpression] = alwaysSafeFillers.compactMap { fillerRegex(for: $0) }
+
+    private static let umFillerRegex: NSRegularExpression? = fillerRegex(for: englishUmFiller)
+
+    private static func fillerRegex(for filler: String) -> NSRegularExpression? {
         let pattern = "\\b\(NSRegularExpression.escapedPattern(for: filler))\\b"
         return try? NSRegularExpression(pattern: pattern, options: .caseInsensitive)
     }
 
-    func removeFillers(from text: String) -> String {
+    func removeFillers(from text: String, removeUmFiller: Bool = true) -> String {
         var result = text
 
         for regex in Self.fillerRegexes {
@@ -107,6 +121,51 @@ public struct TextProcessingPipeline: Sendable {
             )
         }
 
+        if removeUmFiller, let umRegex = Self.umFillerRegex {
+            result = umRegex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: ""
+            )
+        }
+
+        return cleanupFillerPunctuation(in: result)
+    }
+
+    /// STT often punctuates fillers (`Um, I think`, `I think, um, we`).
+    /// Removing the token alone leaves a leading comma/period or `,,`.
+    private static let doubledCommaRegex = try? NSRegularExpression(pattern: ",\\s*,+")
+    private static let leadingFillerPunctuationRegex = try? NSRegularExpression(
+        pattern: "^\\s*[,.]\\s+",
+        options: .anchorsMatchLines
+    )
+    private static let leftoverCommaAfterSentenceRegex = try? NSRegularExpression(
+        pattern: "([.!?])[ \\t]+,[ \\t]*"
+    )
+
+    private func cleanupFillerPunctuation(in text: String) -> String {
+        var result = text
+        if let regex = Self.doubledCommaRegex {
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: ","
+            )
+        }
+        if let regex = Self.leftoverCommaAfterSentenceRegex {
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: "$1 "
+            )
+        }
+        if let regex = Self.leadingFillerPunctuationRegex {
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: ""
+            )
+        }
         return result
     }
 
@@ -125,7 +184,8 @@ public struct TextProcessingPipeline: Sendable {
         guard !actionSnippets.isEmpty else { return (text, nil) }
 
         // Sort longest-trigger-first (same as expandSnippets)
-        let sorted = actionSnippets
+        let sorted =
+            actionSnippets
             .filter { $0.isEnabled }
             .sorted { $0.trigger.count > $1.trigger.count }
 
@@ -161,7 +221,8 @@ public struct TextProcessingPipeline: Sendable {
         var expandedIDs = Set<UUID>()
 
         // Sort longest-trigger-first to prevent partial matches
-        let sorted = snippets
+        let sorted =
+            snippets
             .filter { $0.isEnabled }
             .sorted { $0.trigger.count > $1.trigger.count }
 
@@ -281,10 +342,12 @@ public struct TextProcessingPipeline: Sendable {
         textSnippets: [TextSnippet],
         expandedSnippetIDs: Set<UUID>
     ) -> [String] {
-        let customTerms = customWords
+        let customTerms =
+            customWords
             .filter(\.isEnabled)
             .map { $0.replacement ?? $0.word }
-        let snippetTerms = textSnippets
+        let snippetTerms =
+            textSnippets
             .filter { $0.isEnabled && expandedSnippetIDs.contains($0.id) }
             .map(\.expansion)
         return customTerms + snippetTerms

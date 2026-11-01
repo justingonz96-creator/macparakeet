@@ -5,6 +5,14 @@ import Testing
 @Suite("TelemetryErrorClassifier")
 struct TelemetryErrorClassifierTests {
 
+    @Test("classifies bounded meeting startup outcomes without free-form details")
+    func meetingStartupErrors() {
+        #expect(TelemetryErrorClassifier.classify(MeetingAudioError.captureStartupTimedOut)
+            == "MeetingAudioError.captureStartupTimedOut")
+        #expect(TelemetryErrorClassifier.classify(MeetingAudioError.microphoneCleanupPending)
+            == "MeetingAudioError.microphoneCleanupPending")
+    }
+
     @Test("classifies AudioProcessorError cases with case name")
     func audioProcessorErrorCases() {
         #expect(TelemetryErrorClassifier.classify(AudioProcessorError.insufficientSamples)
@@ -18,7 +26,11 @@ struct TelemetryErrorClassifierTests {
         #expect(TelemetryErrorClassifier.classify(AudioProcessorError.conversionFailed("test"))
             == "AudioProcessorError.conversionFailed")
         #expect(TelemetryErrorClassifier.classify(AudioProcessorError.inputUnavailable(.noInputBuffers))
-            == "AudioProcessorError.inputUnavailable")
+            == "AudioProcessorError.inputUnavailable.no_input_buffers")
+        #expect(TelemetryErrorClassifier.classify(AudioProcessorError.inputUnavailable(.silentInput))
+            == "AudioProcessorError.inputUnavailable.silent_input")
+        #expect(TelemetryErrorClassifier.classify(AudioProcessorError.inputUnavailable(.engineStartFailed))
+            == "AudioProcessorError.inputUnavailable.engine_start_failed")
     }
 
     @Test("classifies STTError cases with case name")

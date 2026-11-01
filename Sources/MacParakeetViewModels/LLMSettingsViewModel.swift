@@ -156,11 +156,111 @@ public final class LLMSettingsViewModel {
     public private(set) var aiFormatterSmartDefaultsPolicy: AIFormatterSmartDefaultsPolicy
     public let inProcessModelManager: InProcessModelManagerViewModel
     private var discoveredModels: [String] = []
+    /// Keys typed into the draft but not saved, by provider. Browsing other
+    /// providers before Save must not discard a key the user just pasted.
+    private var unsavedAPIKeyInputs: [LLMProviderID: String] = [:]
+    /// The Keychain key for the draft's provider when the draft was loaded.
+    private var draftStoredAPIKey = ""
+    private var draftCredentialAccessError: String?
+    private var taskCredentialAccessError: String?
+    private var committedCredentialAccessError: String?
+    private var taskProvidersWithSavedKeys: Set<LLMProviderID> = []
+    private var draftCredentialError: String? {
+        draftCredentialAccessError ?? taskCredentialAccessError
+    }
+    public var credentialAccessError: String? {
+        draftCredentialError ?? committedCredentialAccessError
+    }
+
+    /// Retry only when requested, preserving any key or model edits in the draft.
+    public func retrySavedCredentialAccess() {
+        guard let configStore else { return }
+        draftCredentialAccessError = nil
+        if let provider = draft.providerID, provider.supportsAPIKey {
+            let hadKeyEdit = draft.apiKeyInput != draftStoredAPIKey
+            do {
+                let key = try configStore.loadAPIKey(for: provider) ?? ""
+                draftStoredAPIKey = key
+                if !hadKeyEdit {
+                    var next = draft
+                    next.apiKeyInput = key
+                    updateDraft(next)
+                }
+            } catch {
+                draftCredentialAccessError = error.localizedDescription
+            }
+        }
+        refreshTaskCredentialAccess()
+        refreshCommittedCredentialAccess()
+        if credentialAccessError == nil {
+            onConfigurationChanged?()
+        }
+    }
+
+    /// Cache failures on route changes, never while rendering status text.
+    private func refreshTaskCredentialAccess() {
+        taskCredentialAccessError = nil
+        taskProvidersWithSavedKeys = []
+        let providers = Set([cleanupOverrideProviderID, analysisOverrideProviderID].compactMap { $0 })
+        for provider in providers where provider.supportsAPIKey {
+            do {
+                if try configStore?.loadAPIKey(for: provider)?.isEmpty == false {
+                    taskProvidersWithSavedKeys.insert(provider)
+                }
+            } catch {
+                taskCredentialAccessError = error.localizedDescription
+                return
+            }
+        }
+    }
+
+    private func refreshCommittedCredentialAccess() {
+        committedCredentialAccessError = nil
+        let providers = Set(
+            LLMTaskGroup.allCases.compactMap {
+                try? configStore?.loadRouteMetadata(for: $0)?.config.id
+            })
+        for provider in providers where provider.supportsAPIKey {
+            do { _ = try configStore?.loadAPIKey(for: provider) } catch {
+                committedCredentialAccessError = error.localizedDescription
+                return
+            }
+        }
+    }
+
+    private func savedAPIKey(for provider: LLMProviderID) -> String {
+        draftCredentialAccessError = nil
+        guard provider.supportsAPIKey else { return "" }
+        do { return try configStore?.loadAPIKey(for: provider) ?? "" } catch {
+            draftCredentialAccessError = error.localizedDescription
+            return ""
+        }
+    }
 
     public var selectedProviderID: LLMProviderID? {
         get { draft.providerID }
         set { applyProviderChange(to: newValue) }
     }
+
+    /// `nil` means inherit the default AI route.
+    public var cleanupOverrideProviderID: LLMProviderID? {
+        didSet {
+            guard cleanupOverrideProviderID != oldValue else { return }
+            cleanupModelName = cleanupOverrideProviderID?.defaultModelName ?? ""
+            if !isLoadingTaskOverrides { refreshTaskCredentialAccess() }
+        }
+    }
+    public var cleanupModelName = ""
+    public var analysisOverrideProviderID: LLMProviderID? {
+        didSet {
+            guard analysisOverrideProviderID != oldValue else { return }
+            analysisModelName = analysisOverrideProviderID?.defaultModelName ?? ""
+            if !isLoadingTaskOverrides { refreshTaskCredentialAccess() }
+        }
+    }
+    public var analysisModelName = ""
+    /// Batches the Keychain check while `loadTaskOverrides()` reassigns both routes.
+    private var isLoadingTaskOverrides = false
 
     public var apiKeyInput: String {
         get { draft.apiKeyInput }
@@ -169,6 +269,31 @@ public final class LLMSettingsViewModel {
             nextDraft.apiKeyInput = newValue
             updateDraft(nextDraft)
         }
+    }
+
+    /// A saved key can be removed once no saved route uses its provider;
+    /// otherwise that route would stop working.
+    public var canRemoveSavedAPIKey: Bool {
+        guard let providerID = draft.providerID, providerID.supportsAPIKey, !draftStoredAPIKey.isEmpty else {
+            return false
+        }
+        return ![savedProviderID, savedCleanupOverrideProviderID, savedAnalysisOverrideProviderID].contains(providerID)
+    }
+
+    /// Deletes the draft provider's saved key. Turning AI off keeps keys, and
+    /// required keys cannot be saved empty, so this is the removal path.
+    public func removeSavedAPIKey() {
+        guard canRemoveSavedAPIKey, let configStore, let providerID = draft.providerID else { return }
+        do {
+            try configStore.deleteAPIKey(for: providerID)
+        } catch {
+            saveState = .error(error.localizedDescription)
+            return
+        }
+        unsavedAPIKeyInputs.removeValue(forKey: providerID)
+        taskProvidersWithSavedKeys.remove(providerID)
+        draftStoredAPIKey = ""
+        apiKeyInput = ""
     }
 
     public var modelName: String {
@@ -219,7 +344,17 @@ public final class LLMSettingsViewModel {
             return "Optional API key"
         case .openai:
             return "sk-..."
-        case .ollama, .localCLI, .inProcessLocal, nil:
+        case .moonshot:
+            return "Moonshot API key"
+        case .deepseek:
+            return "DeepSeek API key"
+        case .qwen:
+            return "DashScope API key"
+        case .zai:
+            return "Z.AI API key"
+        case .minimax:
+            return "MiniMax API key"
+        case .ollama, .localCLI, .inProcessLocal, .appleIntelligence, nil:
             return ""
         }
     }
@@ -243,10 +378,29 @@ public final class LLMSettingsViewModel {
     }
 
     public var isConfigured: Bool {
-        configStore != nil && (try? configStore?.loadConfig()) != nil
+        LLMTaskGroup.allCases.contains { (try? configStore?.loadRouteMetadata(for: $0)) != nil }
+    }
+
+    public var isAnalysisConfigured: Bool {
+        (try? configStore?.loadRouteMetadata(for: .analysis)) != nil
+    }
+
+    public var configuredTasksDescription: String {
+        let routes: [(LLMTaskGroup, String)] = [
+            (.cleanup, "Dictation & cleanup"), (.analysis, "Meetings & library"), (.transform, "Transforms"),
+        ]
+        return routes.map { task, title in
+            let provider = try? configStore?.loadRouteMetadata(for: task)?.config
+            return "\(title): \(provider?.id.displayName ?? "Off")."
+        }.joined(separator: " ")
     }
 
     public var setupStatus: AISetupStatus {
+        if isConfigured, let credentialAccessError = committedCredentialAccessError {
+            return .cannotConnect(
+                displayName: savedAIOptionDisplayName ?? draftAIOptionDisplayName ?? "AI",
+                message: credentialAccessError)
+        }
         if case .error(let message) = connectionTestState,
             !isConfigured || !hasUnsavedChanges
         {
@@ -255,6 +409,14 @@ public final class LLMSettingsViewModel {
         }
         if isConfigured {
             let displayName = savedAIOptionDisplayName ?? draftAIOptionDisplayName ?? "AI"
+            if savedCleanupOverrideProviderID == .appleIntelligence,
+                !appleIntelligenceAvailability.canGenerate
+            {
+                return .cannotConnect(
+                    displayName: "Apple Intelligence",
+                    message: appleIntelligenceAvailability.userMessage
+                )
+            }
             return .ready(displayName: displayName)
         }
         return .setUpNeeded
@@ -262,6 +424,10 @@ public final class LLMSettingsViewModel {
 
     public var hasUnsavedChanges: Bool {
         draftConfigurationSnapshot() != savedConfigurationSnapshot()
+            || cleanupOverrideProviderID != savedCleanupOverrideProviderID
+            || cleanupModelName != savedCleanupModelName
+            || analysisOverrideProviderID != savedAnalysisOverrideProviderID
+            || analysisModelName != savedAnalysisModelName
     }
 
     public var connectionSuccessMessage: String {
@@ -318,7 +484,11 @@ public final class LLMSettingsViewModel {
     }
 
     public var canSave: Bool {
-        if draft.providerID == nil { return isConfigured }
+        guard draftCredentialError == nil else { return false }
+        if draft.providerID == nil {
+            return (isConfigured || cleanupOverrideProviderID != nil || analysisOverrideProviderID != nil)
+                && validationMessage == nil
+        }
         return draft.isValid
     }
 
@@ -354,10 +524,37 @@ public final class LLMSettingsViewModel {
             "Local AI is enabled by a developer override, but this app build does not include the MLX runtime. Build with MACPARAKEET_ENABLE_MLX_LOCAL_LLM=1 to test it. The model download is disabled for this build."
     }
 
+    /// Providers for Default AI and Meetings & library.
     public var selectableProviderIDs: [LLMProviderID] {
         LLMProviderID.userSelectableProviderIDs(
-            inProcessLocalLLMVisible: shouldShowInProcessLocalSetup
+            inProcessLocalLLMVisible: shouldShowInProcessLocalSetup,
+            appleIntelligenceVisible: false
         )
+    }
+
+    /// Dictation & cleanup also offers Apple Intelligence, the one route its
+    /// small context window can serve (`LLMProviderID.canServe(_:)`).
+    public var cleanupProviderIDs: [LLMProviderID] {
+        LLMProviderID.userSelectableProviderIDs(
+            inProcessLocalLLMVisible: shouldShowInProcessLocalSetup,
+            appleIntelligenceVisible: appleIntelligenceAvailability.isUserSelectable
+                || cleanupOverrideProviderID == .appleIntelligence
+        )
+    }
+
+    public private(set) var appleIntelligenceAvailability: AppleIntelligenceAvailability =
+        AppleIntelligenceAvailability.current()
+
+    public var appleIntelligenceStatusMessage: String {
+        appleIntelligenceAvailability.userMessage
+    }
+
+    public var appleIntelligenceSettingsURL: URL? {
+        appleIntelligenceAvailability.settingsURL
+    }
+
+    public func refreshAppleIntelligenceAvailability() {
+        appleIntelligenceAvailability = appleIntelligenceAvailabilityProvider()
     }
 
     private var isInProcessLocalLLMRuntimeAvailable: Bool {
@@ -365,7 +562,16 @@ public final class LLMSettingsViewModel {
     }
 
     public var validationMessage: String? {
-        draft.validationError?.localizedDescription
+        guard draft.providerID == nil else { return draft.validationError?.localizedDescription }
+        do {
+            try validateTaskOverride(
+                providerID: cleanupOverrideProviderID, modelName: cleanupModelName, task: .cleanup)
+            try validateTaskOverride(
+                providerID: analysisOverrideProviderID, modelName: analysisModelName, task: .analysis)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     // Local CLI properties
@@ -420,6 +626,16 @@ public final class LLMSettingsViewModel {
         }
     }
 
+    public var aiFormatterDictationPrompt: String {
+        get { draft.aiFormatterDictationPrompt }
+        set {
+            var nextDraft = draft
+            nextDraft.aiFormatterDictationPrompt = newValue
+            updateDraft(nextDraft)
+            persistAIFormatterDraftIfNeeded()
+        }
+    }
+
     /// Whether the AI Formatter also runs on live dictation. Transcript
     /// formatting has its own routing toggle; dictation remains the
     /// latency-sensitive opt-in path. The value persists immediately through
@@ -436,10 +652,9 @@ public final class LLMSettingsViewModel {
     }
 
     /// Whether the AI Formatter runs on file/meeting transcripts. Default
-    /// `true` preserves the pre-#493 behavior where transcripts followed the
-    /// saved provider config alone; the toggle gives users an opt-out (slow
-    /// providers can spend the entire timeout on long transcripts). The value
-    /// persists immediately through the injected `defaults` store.
+    /// `false` matches dictation: a saved provider does not rewrite file or
+    /// meeting transcripts until the user turns this on. The value persists
+    /// immediately through the injected `defaults` store.
     public var aiFormatterEnabledForTranscriptions: Bool {
         didSet {
             guard aiFormatterEnabledForTranscriptions != oldValue else { return }
@@ -473,12 +688,29 @@ public final class LLMSettingsViewModel {
         }
     }
 
+    public var meetingAIOutputLanguagePolicy: MeetingAIOutputLanguagePolicy {
+        didSet {
+            guard meetingAIOutputLanguagePolicy != oldValue else { return }
+            defaults.set(
+                meetingAIOutputLanguagePolicy.configurationValue,
+                forKey: UserDefaultsAppRuntimePreferences.meetingAIOutputLanguagePolicyKey
+            )
+        }
+    }
+
     public var isAIFormatterAvailable: Bool {
-        draft.providerID != nil && draft.providerID == savedProviderID
+        let provider = cleanupOverrideProviderID ?? draft.providerID
+        return provider != nil && provider == (savedCleanupOverrideProviderID ?? savedProviderID)
     }
 
     public var aiFormatterPromptModeText: String {
         draft.normalizedAIFormatterPrompt == AIFormatter.defaultPromptTemplate
+            ? "Built-in default"
+            : "Customized"
+    }
+
+    public var aiFormatterDictationPromptModeText: String {
+        draft.normalizedAIFormatterDictationPrompt == AIFormatter.defaultDictationPromptTemplate
             ? "Built-in default"
             : "Customized"
     }
@@ -526,32 +758,31 @@ public final class LLMSettingsViewModel {
         {
             return "Smart default"
         }
-        if promptTemplate == draft.normalizedAIFormatterPrompt {
+        if promptTemplate == draft.normalizedAIFormatterDictationPrompt {
             return "Fallback prompt"
         }
         return "Custom prompt"
     }
 
     public var aiFormatterUnavailableReason: String? {
-        if draft.providerID == nil {
-            return "Set up AI to enable the formatter."
+        guard cleanupOverrideProviderID != nil || draft.providerID != nil else {
+            return "Choose an AI provider for Dictation & cleanup."
         }
-        if !isConfigured {
-            return "Save your AI setup first."
-        }
-        if draft.providerID != savedProviderID {
-            return "Save this AI option first."
-        }
-        return nil
+        return isAIFormatterAvailable ? nil : "Save your cleanup setup first."
     }
 
     private var savedProviderID: LLMProviderID? {
         guard let configStore else { return nil }
-        return (try? configStore.loadConfig())?.id
+        return (try? configStore.loadConfigMetadata())?.id
     }
 
     private var savedAIOptionDisplayName: String? {
-        guard let configStore, let config = try? configStore.loadConfig() else { return nil }
+        guard let configStore else { return nil }
+        guard
+            let config = (try? configStore.loadConfigMetadata())
+                ?? (try? configStore.loadRouteMetadata(for: .cleanup)?.config)
+                ?? (try? configStore.loadRouteMetadata(for: .analysis)?.config)
+        else { return nil }
         if config.id == .localCLI {
             return
                 cliConfigStore
@@ -574,6 +805,10 @@ public final class LLMSettingsViewModel {
         draft.aiFormatterPrompt != AIFormatter.defaultPromptTemplate
     }
 
+    public var canResetAIFormatterDictationPrompt: Bool {
+        draft.aiFormatterDictationPrompt != AIFormatter.defaultDictationPromptTemplate
+    }
+
     public var canManageAIFormatterProfiles: Bool {
         aiFormatterProfileRepo != nil
     }
@@ -590,7 +825,12 @@ public final class LLMSettingsViewModel {
     private var cliConfigStore: LocalCLIConfigStore?
     private var aiFormatterProfileRepo: AIFormatterProfileRepositoryProtocol?
     private let defaults: UserDefaults
+    private let appleIntelligenceAvailabilityProvider: () -> AppleIntelligenceAvailability
     private let logger = Logger(subsystem: "com.macparakeet.viewmodels", category: "LLMSettingsViewModel")
+    private var savedCleanupOverrideProviderID: LLMProviderID?
+    private var savedCleanupModelName = ""
+    private var savedAnalysisOverrideProviderID: LLMProviderID?
+    private var savedAnalysisModelName = ""
 
     private enum ConfigurationSnapshot: Equatable {
         case none
@@ -604,17 +844,26 @@ public final class LLMSettingsViewModel {
         )
     }
 
-    public init(defaults: UserDefaults = .standard) {
+    public init(
+        defaults: UserDefaults = .standard,
+        appleIntelligenceAvailabilityProvider: @escaping () -> AppleIntelligenceAvailability = {
+            AppleIntelligenceAvailability.current()
+        }
+    ) {
         self.defaults = defaults
+        self.appleIntelligenceAvailabilityProvider = appleIntelligenceAvailabilityProvider
         self.inProcessModelManager = InProcessModelManagerViewModel()
         self.aiFormatterEnabledForDictation = Self.loadStoredAIFormatterEnabledForDictation(from: defaults)
         self.aiFormatterEnabledForTranscriptions = Self.loadStoredAIFormatterEnabledForTranscriptions(from: defaults)
         self.autoGenerateMeetingTitles = Self.loadStoredAutoGenerateMeetingTitles(from: defaults)
         self.aiFormatterSmartDefaultsPolicy = AIFormatterSmartDefaultsPolicy.current(defaults: defaults)
         self.transcriptAIContextMode = TranscriptAIContextMode.current(defaults: defaults)
+        self.meetingAIOutputLanguagePolicy = MeetingAIOutputLanguagePolicy.current(defaults: defaults)
         self.draft = LLMSettingsDraft(
-            aiFormatterPrompt: Self.loadStoredAIFormatterPrompt(from: defaults)
+            aiFormatterPrompt: Self.loadStoredAIFormatterPrompt(from: defaults),
+            aiFormatterDictationPrompt: Self.loadStoredAIFormatterDictationPrompt(from: defaults)
         )
+        self.appleIntelligenceAvailability = appleIntelligenceAvailabilityProvider()
     }
 
     public func configure(
@@ -641,6 +890,7 @@ public final class LLMSettingsViewModel {
         )
         loadExistingConfig()
         loadAIFormatterProfiles()
+        refreshAppleIntelligenceAvailability()
         Task {
             await inProcessModelManager.refresh()
         }
@@ -648,41 +898,87 @@ public final class LLMSettingsViewModel {
 
     public func saveConfiguration() {
         guard let configStore else { return }
-        guard draft.providerID != nil else {
+        if let error = draftCredentialError {
+            saveState = .error(error)
+            return
+        }
+        guard draft.providerID != nil || cleanupOverrideProviderID != nil || analysisOverrideProviderID != nil else {
             clearConfiguration(finalSaveState: .saved)
             return
         }
         do {
-            guard let config = try buildConfig(from: draft) else { return }
-            let cliConfig = draft.providerID == .localCLI
+            let config = try buildConfig(from: draft)
+            let cliConfig =
+                draft.providerID == .localCLI
                 ? LocalCLIConfig(
                     commandTemplate: draft.trimmedCommandTemplate,
                     timeoutSeconds: draft.cliTimeoutSeconds
                 ) : nil
+            // Validate both task routes before changing the active default.
+            // A bad second route must not leave Save reporting failure after
+            // the first route or the default has already changed.
+            let cleanupOverride = try preparedOverride(
+                providerID: cleanupOverrideProviderID,
+                modelName: cleanupModelName,
+                task: .cleanup,
+                defaultConfig: config,
+                stagedCLIConfig: cliConfig
+            )
+            let analysisOverride = try preparedOverride(
+                providerID: analysisOverrideProviderID,
+                modelName: analysisModelName,
+                task: .analysis,
+                defaultConfig: config,
+                stagedCLIConfig: cliConfig
+            )
             if let cliConfig {
                 guard let cliConfigStore else { throw LocalCLIError.commandNotConfigured }
-                try cliConfigStore.save(cliConfig, providerConfig: config, configStore: configStore)
+                try cliConfigStore.save(cliConfig) {
+                    try configStore.saveConfiguration(
+                        config,
+                        cleanupOverride: cleanupOverride,
+                        analysisOverride: analysisOverride
+                    )
+                }
             } else {
-                try configStore.saveConfig(config)
+                try configStore.saveConfiguration(
+                    config,
+                    cleanupOverride: cleanupOverride,
+                    analysisOverride: analysisOverride
+                )
             }
+            taskProvidersWithSavedKeys = Set(
+                [cleanupOverride, analysisOverride].compactMap { config in
+                    guard let config, config.apiKey?.isEmpty == false else { return nil }
+                    return config.id
+                })
+            savedCleanupOverrideProviderID = cleanupOverrideProviderID
+            savedCleanupModelName = cleanupModelName
+            savedAnalysisOverrideProviderID = analysisOverrideProviderID
+            savedAnalysisModelName = analysisModelName
 
             _ = persistAIFormatterPreferences(from: draft)
             // Rehydrate the exact committed payload, without a fallible credential
             // reread or restarting discovery after the save has already succeeded.
-            loadCommittedDraft(config, cliConfig: cliConfig, suggestedModels: availableModels)
+            if let config {
+                loadCommittedDraft(config, cliConfig: cliConfig, suggestedModels: availableModels)
+            }
 
+            draftCredentialAccessError = nil
+            committedCredentialAccessError = nil
             saveState = .saved
             inProcessModelManager.refreshSelectionState()
             onConfigurationChanged?()
-            let savedConfig = config
-            let snapshot = draft
-            Task {
-                let profile = await ModelProfileService.shared.fetchProfile(
-                    modelName: savedConfig.modelName,
-                    providerConfig: savedConfig
-                )
-                guard draft == snapshot else { return }
-                activeModelProfile = profile
+            if let savedConfig = config {
+                let snapshot = draft
+                Task {
+                    let profile = await ModelProfileService.shared.fetchProfile(
+                        modelName: savedConfig.modelName,
+                        providerConfig: savedConfig
+                    )
+                    guard draft == snapshot else { return }
+                    activeModelProfile = profile
+                }
             }
         } catch {
             saveState = .error(error.localizedDescription)
@@ -737,7 +1033,7 @@ public final class LLMSettingsViewModel {
         guard let configStore else { return }
         // Provider lookup only controls optional CLI cleanup. The store's
         // deletion boundary can also recover undecodable provider metadata.
-        let storedProviderID = (try? configStore.loadConfig())?.id
+        let storedProviderID = (try? configStore.loadConfigMetadata())?.id
         do {
             try configStore.deleteConfig()
         } catch {
@@ -755,23 +1051,31 @@ public final class LLMSettingsViewModel {
         let currentProvider = draft.providerID
         let apiKey: String
         if let currentProvider, currentProvider.supportsAPIKey {
-            apiKey = (try? configStore.loadAPIKey(for: currentProvider)) ?? ""
+            apiKey = savedAPIKey(for: currentProvider)
         } else {
             apiKey = ""
         }
+        // Turning AI off drops keys that were typed but never saved.
+        unsavedAPIKeyInputs.removeAll()
+        draftStoredAPIKey = apiKey
         defaults.removeObject(forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledKey)
         defaults.set(AIFormatter.defaultPromptTemplate, forKey: UserDefaultsAppRuntimePreferences.aiFormatterPromptKey)
+        defaults.set(
+            AIFormatter.defaultDictationPromptTemplate,
+            forKey: UserDefaultsAppRuntimePreferences.aiFormatterDictationPromptKey
+        )
         // Restore the routing preferences to their defaults so a config
         // clear returns the formatter to a fully predictable state.
         aiFormatterEnabledForDictation = false
-        aiFormatterEnabledForTranscriptions = true
+        aiFormatterEnabledForTranscriptions = false
         autoGenerateMeetingTitles = true
         draft = .defaults(
             for: currentProvider,
             apiKey: apiKey,
             defaultModelName: defaultModelNameAfterClearing(currentProvider),
             cliConfig: preservedCLIConfig,
-            aiFormatterPrompt: AIFormatter.defaultPromptTemplate
+            aiFormatterPrompt: AIFormatter.defaultPromptTemplate,
+            aiFormatterDictationPrompt: AIFormatter.defaultDictationPromptTemplate
         )
         if currentProvider == .lmstudio {
             draft.useCustomModel = discoveredModels.isEmpty
@@ -782,12 +1086,17 @@ public final class LLMSettingsViewModel {
         }
         connectionTestState = .idle
         saveState = finalSaveState
+        loadTaskOverrides()
         inProcessModelManager.refreshSelectionState()
         onConfigurationChanged?()
     }
 
     public func resetAIFormatterPrompt() {
         aiFormatterPrompt = AIFormatter.defaultPromptTemplate
+    }
+
+    public func resetAIFormatterDictationPrompt() {
+        aiFormatterDictationPrompt = AIFormatter.defaultDictationPromptTemplate
     }
 
     public func loadAIFormatterProfiles() {
@@ -820,7 +1129,7 @@ public final class LLMSettingsViewModel {
             promptTemplate = categoryDefault.promptTemplate
         } else {
             name = "New app profile"
-            promptTemplate = draft.normalizedAIFormatterPrompt
+            promptTemplate = draft.normalizedAIFormatterDictationPrompt
         }
 
         aiFormatterProfileDraft = AIFormatterProfileDraft(
@@ -902,7 +1211,7 @@ public final class LLMSettingsViewModel {
                 draft.name = "New app profile"
             }
             if isAIFormatterAutoPrompt(normalizedPrompt, previousCategoryDefault: previousSmartDefault) {
-                draft.promptTemplate = self.draft.normalizedAIFormatterPrompt
+                draft.promptTemplate = self.draft.normalizedAIFormatterDictationPrompt
             }
             aiFormatterProfileDraft = draft
             aiFormatterProfileError = nil
@@ -953,7 +1262,7 @@ public final class LLMSettingsViewModel {
         {
             draft.promptTemplate = categoryDefault.promptTemplate
         } else if shouldUseSmartDefaultPrompt {
-            draft.promptTemplate = self.draft.normalizedAIFormatterPrompt
+            draft.promptTemplate = self.draft.normalizedAIFormatterDictationPrompt
         }
         aiFormatterProfileDraft = draft
         aiFormatterProfileError = nil
@@ -975,7 +1284,7 @@ public final class LLMSettingsViewModel {
         return AIFormatterProfileMatcher.resolve(
             profiles: profiles,
             context: context,
-            globalPromptTemplate: self.draft.normalizedAIFormatterPrompt,
+            globalPromptTemplate: self.draft.normalizedAIFormatterDictationPrompt,
             smartDefaultsPolicy: aiFormatterSmartDefaultsPolicy
         )
     }
@@ -1026,7 +1335,7 @@ public final class LLMSettingsViewModel {
             if let categoryDefault = AIFormatterSmartDefaults.categoryDefault(for: appCategory) {
                 draft.promptTemplate = categoryDefault.promptTemplate
             } else {
-                draft.promptTemplate = self.draft.normalizedAIFormatterPrompt
+                draft.promptTemplate = self.draft.normalizedAIFormatterDictationPrompt
             }
         }
         aiFormatterProfileDraft = draft
@@ -1052,7 +1361,8 @@ public final class LLMSettingsViewModel {
         {
             return true
         }
-        return normalizedPrompt == draft.normalizedAIFormatterPrompt
+        return normalizedPrompt == draft.normalizedAIFormatterDictationPrompt
+            || normalizedPrompt == AIFormatter.defaultDictationPromptTemplate
             || normalizedPrompt == AIFormatter.defaultPromptTemplate
     }
 
@@ -1150,25 +1460,40 @@ public final class LLMSettingsViewModel {
 
     private func applyProviderChange(to providerID: LLMProviderID?) {
         guard draft.providerID != providerID else { return }
+        if let previousProviderID = draft.providerID, previousProviderID.supportsAPIKey {
+            // Remember only real edits, so a key rotated elsewhere is not
+            // overwritten by a stale copy of the old one.
+            unsavedAPIKeyInputs[previousProviderID] =
+                draft.apiKeyInput == draftStoredAPIKey ? nil : draft.apiKeyInput
+        }
+        draftStoredAPIKey = ""
+        draftCredentialAccessError = nil
         let formatterPrompt = draft.aiFormatterPrompt
+        let dictationPrompt = draft.aiFormatterDictationPrompt
         guard let providerID else {
             resetDiscoveredModels()
             updateDraft(
                 LLMSettingsDraft(
-                    aiFormatterPrompt: formatterPrompt
+                    aiFormatterPrompt: formatterPrompt,
+                    aiFormatterDictationPrompt: dictationPrompt
                 )
             )
             return
         }
         resetDiscoveredModels()
-        let apiKey = providerID.supportsAPIKey ? ((try? configStore?.loadAPIKey(for: providerID)) ?? "") : ""
+        refreshAppleIntelligenceAvailability()
+        if providerID.supportsAPIKey {
+            draftStoredAPIKey = savedAPIKey(for: providerID)
+        }
+        let apiKey = unsavedAPIKeyInputs[providerID] ?? draftStoredAPIKey
         let cliConfig = providerID == .localCLI ? cliConfigStore?.load() : nil
         var nextDraft = LLMSettingsDraft.defaults(
             for: providerID,
             apiKey: apiKey,
             defaultModelName: Self.defaultModelName(for: providerID),
             cliConfig: cliConfig,
-            aiFormatterPrompt: formatterPrompt
+            aiFormatterPrompt: formatterPrompt,
+            aiFormatterDictationPrompt: dictationPrompt
         )
         // Auto-switch to custom model input when provider has no fallback list.
         if Self.suggestedModels(for: providerID).isEmpty && providerID != .localCLI {
@@ -1181,15 +1506,25 @@ public final class LLMSettingsViewModel {
     }
 
     private func loadExistingConfig() {
-        guard let configStore, let config = try? configStore.loadConfig() else {
+        draftCredentialAccessError = nil
+        // Read metadata and the key separately so only Keychain failures become
+        // credential errors. A locked/denied key is not a missing route.
+        guard let metadata = try? configStore?.loadConfigMetadata() else {
+            draftStoredAPIKey = ""
             draft = LLMSettingsDraft(
-                aiFormatterPrompt: Self.loadStoredAIFormatterPrompt(from: defaults)
+                aiFormatterPrompt: Self.loadStoredAIFormatterPrompt(from: defaults),
+                aiFormatterDictationPrompt: Self.loadStoredAIFormatterDictationPrompt(from: defaults)
             )
             resetDiscoveredModels()
             connectionTestState = .idle
             saveState = .idle
+            loadTaskOverrides()
             return
         }
+        let apiKey = savedAPIKey(for: metadata.id)
+        let config = LLMProviderConfig(
+            id: metadata.id, baseURL: metadata.baseURL, apiKey: apiKey.isEmpty ? nil : apiKey,
+            modelName: metadata.modelName, isLocal: metadata.isLocal)
         let cliConfig = config.id == .localCLI ? cliConfigStore?.load() : nil
         loadCommittedDraft(config, cliConfig: cliConfig, suggestedModels: Self.suggestedModels(for: config.id))
         if Self.usesDiscoveredModelList(config.id) {
@@ -1212,6 +1547,122 @@ public final class LLMSettingsViewModel {
             guard draft == snapshot else { return }
             activeModelProfile = profile
         }
+        loadTaskOverrides()
+    }
+
+    private func loadTaskOverrides() {
+        isLoadingTaskOverrides = true
+        defer { isLoadingTaskOverrides = false }
+        cleanupOverrideProviderID = nil
+        cleanupModelName = ""
+        analysisOverrideProviderID = nil
+        analysisModelName = ""
+        if let cleanup = try? configStore?.loadTaskOverrideMetadata(.cleanup) {
+            cleanupOverrideProviderID = cleanup.id
+            cleanupModelName = cleanup.modelName
+        }
+        if let analysis = try? configStore?.loadTaskOverrideMetadata(.analysis) {
+            analysisOverrideProviderID = analysis.id
+            analysisModelName = analysis.modelName
+        }
+        savedCleanupOverrideProviderID = cleanupOverrideProviderID
+        savedCleanupModelName = cleanupModelName
+        savedAnalysisOverrideProviderID = analysisOverrideProviderID
+        savedAnalysisModelName = analysisModelName
+        refreshTaskCredentialAccess()
+        committedCredentialAccessError = isConfigured ? draftCredentialError : nil
+    }
+
+    /// Render-time validation uses metadata and the last explicit credential check.
+    private func validateTaskOverride(providerID: LLMProviderID?, modelName: String, task: LLMTaskGroup) throws {
+        guard let configStore, let providerID else { return }
+        if providerID == .localCLI {
+            guard cliConfigStore?.load() != nil else {
+                throw LLMSettingsDraft.ValidationError.taskOverrideUnavailable
+            }
+            return
+        }
+        let trimmed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !(trimmed.isEmpty ? providerID.defaultModelName : trimmed).isEmpty else {
+            throw LLMSettingsDraft.ValidationError.missingCustomModel
+        }
+        if providerID.requiresAPIKey, !taskProvidersWithSavedKeys.contains(providerID) {
+            throw LLMSettingsDraft.ValidationError.taskOverrideUnavailable
+        }
+        if try configStore.loadTaskOverrideMetadata(task)?.id == providerID { return }
+        guard !providerID.requiresCustomEndpoint, !providerID.defaultBaseURL.isEmpty,
+            URL(string: providerID.defaultBaseURL) != nil
+        else {
+            throw LLMSettingsDraft.ValidationError.taskOverrideUnavailable
+        }
+    }
+
+    private func preparedOverride(
+        providerID: LLMProviderID?,
+        modelName: String,
+        task: LLMTaskGroup,
+        defaultConfig: LLMProviderConfig?,
+        stagedCLIConfig: LocalCLIConfig?
+    ) throws -> LLMProviderConfig? {
+        guard let configStore, let providerID else { return nil }
+        let trimmed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedModel = trimmed.isEmpty ? providerID.defaultModelName : trimmed
+
+        if providerID == .localCLI {
+            guard stagedCLIConfig != nil || cliConfigStore?.load() != nil else {
+                throw LLMSettingsDraft.ValidationError.taskOverrideUnavailable
+            }
+            return .localCLI()
+        }
+        guard !resolvedModel.isEmpty else { throw LLMSettingsDraft.ValidationError.missingCustomModel }
+
+        if let defaultConfig, defaultConfig.id == providerID {
+            return LLMProviderConfig(
+                id: providerID,
+                baseURL: defaultConfig.baseURL,
+                apiKey: defaultConfig.apiKey,
+                modelName: resolvedModel,
+                isLocal: defaultConfig.isLocal
+            )
+        }
+
+        // A task route is a full provider route. Keep its endpoint when the
+        // default provider changes; editing the model must not redirect a
+        // saved local server to the stock localhost port.
+        if let existing = try configStore.loadTaskOverride(task), existing.id == providerID {
+            guard !providerID.requiresAPIKey || existing.apiKey?.isEmpty == false else {
+                throw LLMSettingsDraft.ValidationError.taskOverrideUnavailable
+            }
+            return LLMProviderConfig(
+                id: providerID,
+                baseURL: existing.baseURL,
+                apiKey: existing.apiKey,
+                modelName: resolvedModel,
+                isLocal: existing.isLocal
+            )
+        }
+
+        if providerID.requiresCustomEndpoint || providerID.defaultBaseURL.isEmpty {
+            throw LLMSettingsDraft.ValidationError.taskOverrideUnavailable
+        }
+
+        let apiKey = try configStore.loadAPIKey(for: providerID)
+        if providerID.requiresAPIKey {
+            guard let apiKey, !apiKey.isEmpty else {
+                throw LLMSettingsDraft.ValidationError.taskOverrideUnavailable
+            }
+        }
+        guard let baseURL = URL(string: providerID.defaultBaseURL) else {
+            throw LLMSettingsDraft.ValidationError.taskOverrideUnavailable
+        }
+
+        return LLMProviderConfig(
+            id: providerID,
+            baseURL: baseURL,
+            apiKey: apiKey,
+            modelName: resolvedModel,
+            isLocal: providerID.isLocal
+        )
     }
 
     private func loadCommittedDraft(
@@ -1219,13 +1670,18 @@ public final class LLMSettingsViewModel {
         cliConfig: LocalCLIConfig?,
         suggestedModels: [String]
     ) {
+        // The saved key is now the stored key; a stale typed value must not
+        // replace it when the user returns to this provider.
+        unsavedAPIKeyInputs.removeValue(forKey: config.id)
+        draftStoredAPIKey = config.apiKey ?? ""
         draft = .fromStoredConfig(
             config,
             suggestedModels: suggestedModels,
             defaultModelName: Self.defaultModelName(for: config.id),
             defaultBaseURL: Self.defaultBaseURL(for: config.id),
             cliConfig: cliConfig,
-            aiFormatterPrompt: Self.loadStoredAIFormatterPrompt(from: defaults)
+            aiFormatterPrompt: Self.loadStoredAIFormatterPrompt(from: defaults),
+            aiFormatterDictationPrompt: Self.loadStoredAIFormatterDictationPrompt(from: defaults)
         )
     }
 
@@ -1335,12 +1791,12 @@ public final class LLMSettingsViewModel {
     }
 
     private func savedConfigurationSnapshot() -> ConfigurationSnapshot {
-        guard let configStore, let config = try? configStore.loadConfig() else { return .none }
+        guard let configStore, let config = try? configStore.loadConfigMetadata() else { return .none }
         return .provider(
             id: config.id,
             baseURL: config.baseURL.absoluteString,
             modelName: config.modelName,
-            apiKey: config.id.supportsAPIKey ? (config.apiKey ?? "") : nil,
+            apiKey: config.id.supportsAPIKey ? draftStoredAPIKey : nil,
             isLocal: config.isLocal,
             localCLIConfig: config.id == .localCLI ? cliConfigStore?.load() : nil
         )
@@ -1358,11 +1814,16 @@ public final class LLMSettingsViewModel {
         providerID.supportsModelListing
     }
 
-    private func persistAIFormatterPreferences(from draft: LLMSettingsDraft) -> String {
-        let enabled = draft.providerID != nil
-        let normalizedPrompt = draft.normalizedAIFormatterPrompt
+    private func persistAIFormatterPreferences(from draft: LLMSettingsDraft) -> (
+        transcript: String,
+        dictation: String
+    ) {
+        let enabled = cleanupOverrideProviderID != nil || draft.providerID != nil
+        let transcriptPrompt = draft.normalizedAIFormatterPrompt
+        let dictationPrompt = draft.normalizedAIFormatterDictationPrompt
         defaults.set(enabled, forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledKey)
-        defaults.set(normalizedPrompt, forKey: UserDefaultsAppRuntimePreferences.aiFormatterPromptKey)
+        defaults.set(transcriptPrompt, forKey: UserDefaultsAppRuntimePreferences.aiFormatterPromptKey)
+        defaults.set(dictationPrompt, forKey: UserDefaultsAppRuntimePreferences.aiFormatterDictationPromptKey)
         if defaults.object(forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForDictationKey) == nil {
             defaults.set(
                 aiFormatterEnabledForDictation,
@@ -1375,15 +1836,18 @@ public final class LLMSettingsViewModel {
                 forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForTranscriptionsKey
             )
         }
-        return normalizedPrompt
+        return (transcriptPrompt, dictationPrompt)
     }
 
     private func persistAIFormatterDraftIfNeeded() {
         guard isAIFormatterAvailable else { return }
-        let persistedPrompt = persistAIFormatterPreferences(from: draft)
-        if draft.aiFormatterPrompt != persistedPrompt {
+        let persisted = persistAIFormatterPreferences(from: draft)
+        if draft.aiFormatterPrompt != persisted.transcript
+            || draft.aiFormatterDictationPrompt != persisted.dictation
+        {
             var normalizedDraft = draft
-            normalizedDraft.aiFormatterPrompt = persistedPrompt
+            normalizedDraft.aiFormatterPrompt = persisted.transcript
+            normalizedDraft.aiFormatterDictationPrompt = persisted.dictation
             updateDraft(normalizedDraft)
         }
     }
@@ -1394,7 +1858,7 @@ public final class LLMSettingsViewModel {
 
     private static func loadStoredAIFormatterEnabledForTranscriptions(from defaults: UserDefaults) -> Bool {
         defaults.object(forKey: UserDefaultsAppRuntimePreferences.aiFormatterEnabledForTranscriptionsKey) as? Bool
-            ?? true
+            ?? false
     }
 
     private static func loadStoredAutoGenerateMeetingTitles(from defaults: UserDefaults) -> Bool {
@@ -1405,6 +1869,10 @@ public final class LLMSettingsViewModel {
         AIFormatter.normalizedPromptTemplate(
             defaults.string(forKey: UserDefaultsAppRuntimePreferences.aiFormatterPromptKey) ?? ""
         )
+    }
+
+    private static func loadStoredAIFormatterDictationPrompt(from defaults: UserDefaults) -> String {
+        UserDefaultsAppRuntimePreferences.resolvedAIFormatterDictationPrompt(from: defaults)
     }
 
     private static func aiFormatterProfileCategoryName(_ category: TelemetryAppCategory) -> String {

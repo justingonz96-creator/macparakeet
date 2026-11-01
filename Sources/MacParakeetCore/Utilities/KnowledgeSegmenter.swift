@@ -2,7 +2,7 @@ import Foundation
 
 /// Frozen versioned rules for deriving the rebuildable transcript search layer.
 public enum KnowledgeSegmenter {
-    public static let currentVersion = 4
+    public static let currentVersion = 6
 
     private static let targetMinimumScalars = 200
     private static let targetMaximumScalars = 500
@@ -106,38 +106,42 @@ public enum KnowledgeSegmenter {
     public static func deriveSegments(for transcription: Transcription) -> [Segment] {
         guard transcription.status == .completed else { return [] }
 
-        let storedSegments = (transcription.transcriptSegments ?? []).compactMap {
-            source -> TranscriptSegmentRecord? in
-            guard let text = usableText(source.text) else { return nil }
-            var normalized = source
-            normalized.text = text
-            return normalized
-        }
-        let durableSegments: [TranscriptSegmentRecord]
-        if !storedSegments.isEmpty {
-            durableSegments = storedSegments
-        } else if let words = transcription.wordTimestamps,
-            words.contains(where: { usableText($0.word) != nil })
-        {
-            durableSegments = materializeFileTranscriptSegments(
-                words: words,
-                speakers: transcription.speakers
-            )
-        } else {
-            durableSegments = []
-        }
-
-        if !durableSegments.isEmpty {
-            return durableSegments.enumerated().map { seq, source in
-                Segment(
-                    transcriptionId: transcription.id,
-                    seq: seq,
-                    startMs: source.startMs,
-                    endMs: source.endMs,
-                    speaker: source.speakerId == nil ? nil : normalizedSpeaker(source.speakerLabel),
-                    text: source.text,
-                    segmenterVersion: currentVersion
+        // A whole-text edit supersedes durable timing/segments: the edited text
+        // is what the user sees, and it is no longer aligned to those words.
+        if !transcription.isTranscriptEdited {
+            let storedSegments = (transcription.transcriptSegments ?? []).compactMap {
+                source -> TranscriptSegmentRecord? in
+                guard let text = usableText(source.text) else { return nil }
+                var normalized = source
+                normalized.text = text
+                return normalized
+            }
+            let durableSegments: [TranscriptSegmentRecord]
+            if !storedSegments.isEmpty {
+                durableSegments = storedSegments
+            } else if let words = transcription.wordTimestamps,
+                words.contains(where: { usableText($0.word) != nil })
+            {
+                durableSegments = materializeFileTranscriptSegments(
+                    words: words,
+                    speakers: transcription.speakers
                 )
+            } else {
+                durableSegments = []
+            }
+
+            if !durableSegments.isEmpty {
+                return durableSegments.enumerated().map { seq, source in
+                    Segment(
+                        transcriptionId: transcription.id,
+                        seq: seq,
+                        startMs: source.startMs,
+                        endMs: source.endMs,
+                        speaker: source.speakerId == nil ? nil : normalizedSpeaker(source.speakerLabel),
+                        text: source.text,
+                        segmenterVersion: currentVersion
+                    )
+                }
             }
         }
 
@@ -166,6 +170,38 @@ public enum KnowledgeSegmenter {
         effectiveAttribution: EffectiveSpeakerAttribution
     ) -> [Segment] {
         guard transcription.status == .completed else { return [] }
+        // A whole-text edit supersedes speaker-corrected timing, matching the
+        // untimed override in `Transcription.transcriptTextAlignment`.
+        guard !transcription.isTranscriptEdited else {
+            return deriveSegments(for: transcription)
+        }
+        if effectiveAttribution.hasTextCorrections {
+            let labels = Dictionary(
+                effectiveAttribution.speakers.map { ($0.id, normalizedSpeaker($0.label)) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            var result: [Segment] = []
+            for source in effectiveAttribution.editableSegments {
+                guard let text = usableText(source.text) else { continue }
+                let speaker: String?
+                switch source.assignment {
+                case .speaker(let id):
+                    speaker = labels[id] ?? AudioSource(rawValue: id)?.displayLabel ?? id
+                case .unassigned:
+                    speaker = nil
+                }
+                result.append(Segment(
+                    transcriptionId: transcription.id,
+                    seq: result.count,
+                    startMs: source.startMs,
+                    endMs: source.endMs,
+                    speaker: speaker,
+                    text: text,
+                    segmenterVersion: currentVersion
+                ))
+            }
+            return result
+        }
         guard !effectiveAttribution.durableSegments.isEmpty,
               !effectiveAttribution.words.isEmpty
         else {
@@ -283,10 +319,15 @@ public enum KnowledgeSegmenter {
     }
 
     private static func joinedWordText(_ words: [WordTimestamp]) -> String? {
+        joinedTokenText(words.lazy.map(\.word))
+    }
+
+    static func joinedTokenText<Tokens: Sequence>(_ rawTokens: Tokens) -> String?
+    where Tokens.Element == String {
         var result = ""
-        for word in words {
-            guard let token = usableText(word.word) else { continue }
-            result += tokenSeparator(before: token, rawToken: word.word, currentText: result) + token
+        for rawToken in rawTokens {
+            guard let token = usableText(rawToken) else { continue }
+            result += tokenSeparator(before: token, rawToken: rawToken, currentText: result) + token
         }
         return usableText(result)
     }

@@ -131,6 +131,7 @@ public final class SharedMicrophoneStream: @unchecked Sendable {
     private let callbackQueue = DispatchQueue(label: "com.macparakeet.shared-mic-stream.callbacks")
     private let platform: any MicrophoneEnginePlatform
     private let bufferSize: AVAudioFrameCount
+    private let makeQueueWaitDiagnostics: @Sendable (Bool, AVAudioFrameCount) -> AudioEngineLifecycleDiagnostics
     private let prewarmRefreshDebounce: TimeInterval
     private let prewarmRefreshGeneration = OSAllocatedUnfairLock(initialState: 0)
     /// When true, the engine re-prepares the raw (non-VPIO) dictation path each
@@ -138,14 +139,38 @@ public final class SharedMicrophoneStream: @unchecked Sendable {
     /// `audioEngine.start()`. See `prewarmDictation()`.
     private let autoPrewarmWhenIdle: Bool
 
-    public init(
+    public convenience init(
         platform: any MicrophoneEnginePlatform,
         bufferSize: AVAudioFrameCount = 4096,
         autoPrewarmWhenIdle: Bool = false,
         prewarmRefreshDebounce: TimeInterval = 0.5
     ) {
+        self.init(
+            platform: platform,
+            bufferSize: bufferSize,
+            autoPrewarmWhenIdle: autoPrewarmWhenIdle,
+            prewarmRefreshDebounce: prewarmRefreshDebounce,
+            makeQueueWaitDiagnostics: { wantsVPIO, bufferSize in
+                AudioEngineLifecycleDiagnostics(
+                    operation: .start,
+                    scope: .sharedSubscriptionQueue,
+                    vpioEnabled: wantsVPIO,
+                    bufferSize: bufferSize
+                )
+            }
+        )
+    }
+
+    init(
+        platform: any MicrophoneEnginePlatform,
+        bufferSize: AVAudioFrameCount = 4096,
+        autoPrewarmWhenIdle: Bool = false,
+        prewarmRefreshDebounce: TimeInterval = 0.5,
+        makeQueueWaitDiagnostics: @escaping @Sendable (Bool, AVAudioFrameCount) -> AudioEngineLifecycleDiagnostics
+    ) {
         self.platform = platform
         self.bufferSize = bufferSize
+        self.makeQueueWaitDiagnostics = makeQueueWaitDiagnostics
         self.autoPrewarmWhenIdle = autoPrewarmWhenIdle
         self.prewarmRefreshDebounce = max(0, prewarmRefreshDebounce)
         platform.setUnexpectedStopHandler { [weak self] in
@@ -191,10 +216,12 @@ public final class SharedMicrophoneStream: @unchecked Sendable {
         }
     }
 
-    /// Rebuild an idle preparation after microphone-route notifications settle.
-    /// Bursts are trailing-debounced so Bluetooth profile churn does not cause
-    /// repeated device acquisition. If capture starts meanwhile, its eventual
-    /// unsubscribe performs the normal auto-prewarm against the final route.
+    /// Rebuild an idle preparation after an explicit microphone selection
+    /// change. Bursts are trailing-debounced. If capture starts meanwhile, its
+    /// eventual unsubscribe performs the normal auto-prewarm against the final
+    /// route. Do not call this for Core Audio route notifications: acquiring a
+    /// device while macOS is still switching routes can block the native call
+    /// for hours and keep coreaudiod busy (#1227).
     public func refreshIdlePrewarm() {
         guard autoPrewarmWhenIdle else { return }
         let generation = prewarmRefreshGeneration.withLock { value in
@@ -240,7 +267,12 @@ public final class SharedMicrophoneStream: @unchecked Sendable {
         handler: @escaping BufferHandler
     ) async throws -> SubscriberToken {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<SubscriberToken, Error>) in
+            // Idle preparation can block this upstream queue before native-start
+            // observation begins. Retain the user workflow when the request queues.
+            let queueWaitDiagnostics = blocksVPIOPromotion ? makeQueueWaitDiagnostics(wantsVPIO, bufferSize) : nil
             engineQueue.async { [weak self] in
+                // Only measure waiting for queue entry; native work has its own recorder.
+                queueWaitDiagnostics?.finish()
                 guard let self else {
                     cont.resume(throwing: SubscribeError.engineStartFailed("stream deallocated"))
                     return

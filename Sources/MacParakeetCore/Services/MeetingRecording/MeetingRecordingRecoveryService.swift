@@ -47,6 +47,8 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
     private let lockFileStore: any MeetingRecordingLockFileStoring & MeetingFinalizationOwnershipClaiming
     private let transcriptionService: TranscriptionServiceProtocol
     private let transcriptionRepo: TranscriptionRepositoryProtocol
+    private let meetingArtifactStore: MeetingArtifactStoring
+    private let promptResultRepo: PromptResultRepositoryProtocol
     private let settlement: MeetingRecordingSettlement
     private let audioConverter: AudioFileConverting
     private let fileManager: FileManager
@@ -66,6 +68,8 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
             MeetingRecordingLockFileStore(),
         transcriptionService: TranscriptionServiceProtocol,
         transcriptionRepo: TranscriptionRepositoryProtocol,
+        meetingArtifactStore: MeetingArtifactStoring,
+        promptResultRepo: PromptResultRepositoryProtocol,
         audioConverter: AudioFileConverting = AudioFileConverter(),
         fileManager: FileManager = .default,
         echoSuppressionConfiguration: MeetingEchoSuppressionConfiguration = .fromEnvironment()
@@ -75,6 +79,8 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
             lockFileStore: lockFileStore,
             transcriptionService: transcriptionService,
             transcriptionRepo: transcriptionRepo,
+            meetingArtifactStore: meetingArtifactStore,
+            promptResultRepo: promptResultRepo,
             audioConverter: audioConverter,
             fileManager: fileManager,
             micConditionerFactory: {
@@ -91,6 +97,8 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
             MeetingRecordingLockFileStore(),
         transcriptionService: TranscriptionServiceProtocol,
         transcriptionRepo: TranscriptionRepositoryProtocol,
+        meetingArtifactStore: MeetingArtifactStoring,
+        promptResultRepo: PromptResultRepositoryProtocol,
         settlement: MeetingRecordingSettlement? = nil,
         audioConverter: AudioFileConverting = AudioFileConverter(),
         fileManager: FileManager = .default,
@@ -104,6 +112,8 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
         self.lockFileStore = lockFileStore
         self.transcriptionService = transcriptionService
         self.transcriptionRepo = transcriptionRepo
+        self.meetingArtifactStore = meetingArtifactStore
+        self.promptResultRepo = promptResultRepo
         self.settlement =
             settlement
             ?? MeetingRecordingSettlement(
@@ -224,7 +234,6 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
         let mixedURL = folderURL.appendingPathComponent(MeetingArtifactAudioFileNames.playback)
 
         if let existing = try existingCompletedTranscription(in: folderURL) {
-            await writeNotesSidecar(for: lock, folderURL: folderURL)
             let completed = try await completeExistingTranscription(
                 existing,
                 folderURL: folderURL,
@@ -356,7 +365,7 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
             0,
             recordingDurationProvider(recoveredSources.map(\.duration), lock.startedAt)
         )
-        let cleanedMicrophoneReadiness = scheduleCleanedMicrophoneRender(
+        let cleanedMicrophoneReadiness = prepareCleanedMicrophoneReadiness(
             folderURL: folderURL,
             microphoneURL: recoveredBySource[.microphone],
             systemURL: recoveredBySource[.system],
@@ -367,7 +376,7 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
 
         let recording = MeetingRecordingOutput(
             sessionID: lock.sessionId,
-            displayName: lock.displayName,
+            displayName: lock.titleOverride ?? lock.displayName,
             folderURL: folderURL,
             mixedAudioURL: mixedURL,
             microphoneAudioURL: microphoneAudio.url,
@@ -383,7 +392,10 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
             startContext: recoveredMetadata.startContext,
             userNotes: lock.notes,
             calendarEventSnapshot: recoveredMetadata.calendarEventSnapshot,
-            meetingTypeId: recoveredMetadata.meetingTypeId
+            meetingTypeId: recoveredMetadata.meetingTypeId,
+            startedAt: lock.startedAt,
+            audioRetentionStartedAt: lock.audioRetentionStartedAt,
+            titleOverride: lock.titleOverride
         )
 
         do {
@@ -460,8 +472,9 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
 
     /// Re-derive `microphone-cleaned.m4a` from recovered mic + system audio on
     /// the same readiness gate as the normal stop path. Recovery does not block
-    /// here; final STT owns the bounded wait and observable raw fallback.
-    private func scheduleCleanedMicrophoneRender(
+    /// here; final STT starts the writer after preflight and owns the bounded
+    /// wait and observable raw fallback.
+    private func prepareCleanedMicrophoneReadiness(
         folderURL: URL,
         microphoneURL: URL?,
         systemURL: URL?,
@@ -471,28 +484,34 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
     ) -> MeetingCleanedMicrophoneReadiness {
         let outputURL = folderURL.appendingPathComponent(
             MeetingCleanedMicRenderer.cleanedMicrophoneFileName)
-        guard
+        let shouldAttemptRender =
             MeetingCleanedMicrophoneReadinessPolicy.production.shouldAttemptRender(
                 for: recordingDuration
             )
-        else {
-            return MeetingCleanedMicrophoneRenderScheduler.skipPredictedRenderTimeout(
+        let fileManager = UncheckedSendableBox(fileManager)
+        let conditionerFactory = micConditionerFactory
+        return .deferred(
+            outputURL: shouldAttemptRender && microphoneURL != nil && systemURL != nil ? outputURL : nil
+        ) {
+            guard shouldAttemptRender else {
+                return MeetingCleanedMicrophoneRenderScheduler.skipPredictedRenderTimeout(
+                    outputURL: outputURL,
+                    sessionID: sessionID,
+                    fileManager: fileManager.value,
+                    eventName: "meeting_recovery_cleaned_mic"
+                )
+            }
+            return MeetingCleanedMicrophoneRenderScheduler.schedule(
                 outputURL: outputURL,
+                microphoneURL: microphoneURL,
+                systemURL: systemURL,
+                sourceAlignment: sourceAlignment,
                 sessionID: sessionID,
-                fileManager: fileManager,
+                conditionerFactory: conditionerFactory,
+                fileManager: fileManager.value,
                 eventName: "meeting_recovery_cleaned_mic"
             )
         }
-        return MeetingCleanedMicrophoneRenderScheduler.schedule(
-            outputURL: outputURL,
-            microphoneURL: microphoneURL,
-            systemURL: systemURL,
-            sourceAlignment: sourceAlignment,
-            sessionID: sessionID,
-            conditionerFactory: micConditionerFactory,
-            fileManager: fileManager,
-            eventName: "meeting_recovery_cleaned_mic"
-        )
     }
 
     private func makeRecoveredAlignment(
@@ -636,6 +655,9 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
         lock: MeetingRecordingLockFile
     ) async throws -> Transcription {
         if lock.state == .awaitingTranscription {
+            // A completed row is canonical, including explicit nil/empty notes.
+            // A retained lock can contain older notes and must not restore them.
+            try await refreshArtifacts(for: transcription)
             try await settlement.settleCompletedTranscription(
                 folderURL: folderURL,
                 transcriptionID: transcription.id,
@@ -655,16 +677,9 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
     ) async throws -> Transcription {
         var recovered = transcription
         recovered.recoveredFromCrash = true
-        // Carry forward any notes the user typed during the meeting (ADR-020 §9).
-        // Lock file's `notes` is `nil` for pre-v0.8 recordings or recordings
-        // where the user typed nothing. We only overwrite when the lock file
-        // actually has notes — never clobber notes a recovered transcription
-        // somehow already carries.
-        if let lockNotes = lock.notes, recovered.userNotes == nil {
-            recovered.userNotes = lockNotes
-        }
         recovered.updatedAt = Date()
         try transcriptionRepo.save(recovered)
+        try await refreshArtifacts(for: recovered)
         try await settlement.settleCompletedTranscription(
             folderURL: folderURL,
             transcriptionID: recovered.id,
@@ -672,6 +687,18 @@ public final class MeetingRecordingRecoveryService: MeetingRecordingRecoveryServ
         )
         logger.info("meeting_recovery_completed session=\(lock.sessionId.uuidString, privacy: .public)")
         return recovered
+    }
+
+    /// Refresh from the saved row before releasing the recovery lock. A failed
+    /// materialization leaves the completed row and lock available for a retry
+    /// without running STT again. Keep existing prompt results and the store's
+    /// configured speaker corrections/classification when rebuilding artifacts.
+    private func refreshArtifacts(for transcription: Transcription) async throws {
+        let promptResults = try promptResultRepo.fetchAll(transcriptionId: transcription.id)
+        try await meetingArtifactStore.materialize(
+            transcription: transcription,
+            promptResults: promptResults
+        )
     }
 
     private func repairIfNeeded(_ url: URL) async throws -> (url: URL, duration: TimeInterval, sampleRate: Double) {

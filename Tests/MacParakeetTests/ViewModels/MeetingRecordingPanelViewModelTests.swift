@@ -292,7 +292,7 @@ final class MeetingRecordingPanelViewModelTests: XCTestCase {
             viewModel.statusMessage.contains("Library"), "Wrapper points the user at the Library for recovery")
         XCTAssertEqual(
             viewModel.compactErrorRecoveryMessage,
-            "Meeting interrupted. Open Library to retry transcription or export captured audio."
+            "Meeting interrupted. If audio was captured, open Library to retry transcription or export it."
         )
         XCTAssertFalse(viewModel.showsElapsedTime)
     }
@@ -358,20 +358,55 @@ final class MeetingRecordingPanelViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.transcriptEmptyStateDetail)
     }
 
-    func testUnsupportedLiveTranscriptStatusUsesEngineSpecificCopy() {
+    func testPreviewOffStatusReassuresThatAudioIsRecording() {
         let viewModel = MeetingRecordingPanelViewModel()
         viewModel.state = .recording
 
-        viewModel.updateLiveTranscriptStatus(.previewUnsupported(engine: .cohere))
+        viewModel.updateLiveTranscriptStatus(.previewOff)
 
-        XCTAssertEqual(viewModel.transcriptEmptyStateTitle, "Live preview off for Cohere")
+        XCTAssertEqual(viewModel.transcriptEmptyStateTitle, "Live transcription is off")
         XCTAssertEqual(
             viewModel.transcriptEmptyStateDetail,
             "Audio will be transcribed after you stop recording."
         )
         XCTAssertEqual(
             viewModel.statusMessage,
-            "Live preview is off for Cohere. Audio is still recording for final transcription."
+            "Audio is recording. Your transcript will be ready after you stop."
+        )
+        XCTAssertTrue(
+            viewModel.isTranscriptRosetteQuiet,
+            "Live-off empty state should sit the seed-of-life still and faded"
+        )
+    }
+
+    func testTranscriptRosetteIsQuietOnlyWhenLivePreviewIsOff() {
+        let viewModel = MeetingRecordingPanelViewModel()
+        viewModel.state = .recording
+
+        XCTAssertFalse(viewModel.isTranscriptRosetteQuiet)
+
+        viewModel.updateLiveTranscriptStatus(.startingAudio)
+        XCTAssertFalse(viewModel.isTranscriptRosetteQuiet)
+
+        viewModel.updateLiveTranscriptStatus(.listening)
+        XCTAssertFalse(viewModel.isTranscriptRosetteQuiet)
+
+        viewModel.updateLiveTranscriptStatus(.live)
+        XCTAssertFalse(viewModel.isTranscriptRosetteQuiet)
+
+        viewModel.updateLiveTranscriptStatus(.previewUnavailable)
+        XCTAssertFalse(
+            viewModel.isTranscriptRosetteQuiet,
+            "Unavailable preview is still a waiting/recovering state, not a quiet opt-out"
+        )
+
+        viewModel.updateLiveTranscriptStatus(.previewOff)
+        XCTAssertTrue(viewModel.isTranscriptRosetteQuiet)
+
+        viewModel.isPaused = true
+        XCTAssertTrue(
+            viewModel.isTranscriptRosetteQuiet,
+            "Pause is a separate freeze; live-off remains the quiet mark"
         )
     }
 
@@ -403,7 +438,7 @@ final class MeetingRecordingPanelViewModelTests: XCTestCase {
 
         XCTAssertEqual(
             viewModel.speechRouteAttribution,
-            "Live preview: Off (Cohere (fr)) · Final transcript: Whisper (ko) after recording ends"
+            "Final transcript: Whisper (ko) after recording ends"
         )
     }
 
@@ -436,6 +471,19 @@ final class MeetingRecordingPanelViewModelTests: XCTestCase {
 
         XCTAssertEqual(viewModel.liveTranscriptStatus, .live)
         XCTAssertEqual(viewModel.previewLines, lines)
+    }
+
+    func testShowsMicrophoneMuteControlWhenStartMutedEvenIfToggleDisabled() {
+        let viewModel = MeetingRecordingPanelViewModel()
+        viewModel.state = .starting
+        viewModel.isMicrophoneMuted = true
+        viewModel.canToggleMicrophoneMute = false
+
+        XCTAssertTrue(viewModel.showsMicrophoneMuteControl)
+
+        viewModel.isMicrophoneMuted = false
+
+        XCTAssertFalse(viewModel.showsMicrophoneMuteControl)
     }
 
     func testResetClearsTranscriptPreview() {

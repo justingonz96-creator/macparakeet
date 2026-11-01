@@ -162,16 +162,13 @@ struct DictationHistoryView: View {
                             },
                             onDownloadAudio: { viewModel.downloadAudio(for: dictation) },
                             onToggleAIEdit: { viewModel.toggleDisplayRawTranscript(for: dictation) },
-                            onBeginBulkSelection: { viewModel.beginBulkSelection(startingWith: dictation) }
+                            onBeginBulkSelection: { viewModel.beginBulkSelection(startingWith: dictation) },
+                            isRetrying: viewModel.retryingDictationIDs.contains(dictation.id),
+                            onRetry: viewModel.canRetryTranscription(for: dictation)
+                                ? { viewModel.retryTranscription(for: dictation) } : nil
                         )
                         .padding(.horizontal, DesignSystem.Spacing.lg)
                         .padding(.bottom, DesignSystem.Spacing.sm)
-                        .onAppear {
-                            collapseExpansionIfUnavailable(for: dictation)
-                        }
-                        .onChange(of: dictation.displayText) { _, _ in
-                            collapseExpansionIfUnavailable(for: dictation)
-                        }
                     }
                 }
             }
@@ -328,55 +325,32 @@ struct DictationHistoryView: View {
         withAnimation(DesignSystem.Animation.contentSwap) {
             if expandedDictationIDs.contains(dictation.id) {
                 expandedDictationIDs.remove(dictation.id)
-            } else if DictationTranscriptPresentation.isExpandable(dictation.displayText) {
+            } else {
                 expandedDictationIDs.insert(dictation.id)
             }
         }
     }
 
-    private func collapseExpansionIfUnavailable(for dictation: Dictation) {
-        guard expandedDictationIDs.contains(dictation.id),
-              !DictationTranscriptPresentation.isExpandable(dictation.displayText) else {
-            return
-        }
-
-        withAnimation(DesignSystem.Animation.contentSwap) {
-            _ = expandedDictationIDs.remove(dictation.id)
-        }
-    }
 }
 
 enum DictationTranscriptPresentation {
     static let collapsedLineLimit = 3
-    static let expansionCharacterThreshold = 220
-    static let expansionLineBreakThreshold = 3
     static let expandedBoxMaxHeight: CGFloat = 280
     static let remeasuringExpandedContentHeight = expandedBoxMaxHeight + 1
 
-    static func isExpandable(_ text: String, canToggleExpansion: Bool = true) -> Bool {
-        guard canToggleExpansion else { return false }
-
-        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedText.isEmpty else { return false }
-
-        let lineBreakCount = trimmedText
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .filter(\.isNewline)
-            .count
-        return trimmedText.count > expansionCharacterThreshold
-            || lineBreakCount >= expansionLineBreakThreshold
+    static func isExpandable(
+        fullHeight: CGFloat,
+        collapsedHeight: CGFloat,
+        canToggleExpansion: Bool = true
+    ) -> Bool {
+        canToggleExpansion
+            && fullHeight > 0
+            && collapsedHeight > 0
+            && fullHeight > collapsedHeight + 0.5
     }
 
-    static func lineLimit(
-        for text: String,
-        isExpanded: Bool,
-        canToggleExpansion: Bool = true
-    ) -> Int? {
-        guard !isExpanded,
-              isExpandable(text, canToggleExpansion: canToggleExpansion) else {
-            return nil
-        }
-        return collapsedLineLimit
+    static func previewLineLimit(canToggleExpansion: Bool) -> Int? {
+        canToggleExpansion ? collapsedLineLimit : nil
     }
 
     static func expandedViewportHeight(forMeasuredContentHeight measuredContentHeight: CGFloat) -> CGFloat? {
@@ -409,9 +383,14 @@ struct DictationCardRow: View {
     var onDownloadAudio: (() -> Void)?
     var onToggleAIEdit: (() -> Void)?
     var onBeginBulkSelection: (() -> Void)?
+    /// Failed takes only: a History retry is in flight.
+    var isRetrying: Bool = false
+    /// Failed takes that still have their recording.
+    var onRetry: (() -> Void)?
 
     @State private var isHovered = false
     @State private var expandedTranscriptContentHeight: CGFloat = 0
+    @State private var transcriptOverflowMeasurement = TranscriptOverflowMeasurement.zero
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
@@ -441,6 +420,26 @@ struct DictationCardRow: View {
                         Text(dictation.durationMs.formattedDuration)
                             .font(DesignSystem.Typography.duration)
                             .foregroundStyle(.tertiary)
+
+                        if dictation.status == .cancelled {
+                            Text("\u{2009}\u{00B7}\u{2009}")
+                                .font(DesignSystem.Typography.caption)
+                                .foregroundStyle(.quaternary)
+
+                            Text("Cancelled")
+                                .font(DesignSystem.Typography.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+
+                        if isFailed {
+                            Text("\u{2009}\u{00B7}\u{2009}")
+                                .font(DesignSystem.Typography.caption)
+                                .foregroundStyle(.quaternary)
+
+                            Text("Failed")
+                                .font(DesignSystem.Typography.caption)
+                                .foregroundStyle(.secondary)
+                        }
 
                         if dictation.audioPath != nil {
                             Text("\u{2009}\u{00B7}\u{2009}")
@@ -510,15 +509,17 @@ struct DictationCardRow: View {
                         )
                     }
 
-                    CardActionButton(
-                        icon: isCopied ? "checkmark" : "doc.on.clipboard",
-                        color: isCopied ? DesignSystem.Colors.successGreen : .secondary,
-                        help: isCopied ? "Copied" : "Copy dictation",
-                        action: { onCopy() }
-                    )
-                    .animation(DesignSystem.Animation.hoverTransition, value: isCopied)
+                    if !isFailed {
+                        CardActionButton(
+                            icon: isCopied ? "checkmark" : "doc.on.clipboard",
+                            color: isCopied ? DesignSystem.Colors.successGreen : .secondary,
+                            help: isCopied ? "Copied" : "Copy dictation",
+                            action: { onCopy() }
+                        )
+                        .animation(DesignSystem.Animation.hoverTransition, value: isCopied)
+                    }
 
-                    if transcriptIsExpandable {
+                    if transcriptIsExpandable || isExpanded {
                         CardActionButton(
                             icon: isExpanded ? "chevron.up" : "chevron.down",
                             color: .secondary,
@@ -540,12 +541,19 @@ struct DictationCardRow: View {
                 }
             }
 
-            transcriptContent
-                .background(alignment: .topLeading) {
-                    if transcriptIsExpandable && !isExpanded {
-                        expandedTranscriptMeasurementProbe
+            if isFailed {
+                failedTranscriptionContent
+            } else {
+                transcriptContent
+                    .background(alignment: .topLeading) {
+                        if !isExpanded && canToggleTranscriptExpansion {
+                            transcriptOverflowMeasurementProbe
+                            if transcriptIsExpandable {
+                                expandedTranscriptMeasurementProbe
+                            }
+                        }
                     }
-                }
+            }
         }
         .padding(DesignSystem.Spacing.md)
         .scaleEffect(isPlayingThis ? 1.005 : 1.0)
@@ -571,11 +579,16 @@ struct DictationCardRow: View {
         .animation(DesignSystem.Animation.selectionChange, value: isSelected)
         .animation(DesignSystem.Animation.contentSwap, value: isExpanded)
         .onChange(of: transcriptPlainText) { _, _ in
-            expandedTranscriptContentHeight = DictationTranscriptPresentation
+            expandedTranscriptContentHeight =
+                DictationTranscriptPresentation
                 .resetMeasuredExpandedContentHeight(isCurrentlyExpanded: isExpanded)
+            transcriptOverflowMeasurement = .zero
         }
         .onPreferenceChange(ExpandedTranscriptHeightKey.self) { height in
             updateExpandedTranscriptContentHeight(height)
+        }
+        .onPreferenceChange(TranscriptOverflowMeasurementKey.self) { measurement in
+            updateTranscriptOverflowMeasurement(measurement)
         }
     }
 
@@ -599,18 +612,67 @@ struct DictationCardRow: View {
         return DesignSystem.Colors.border.opacity(0.5)
     }
 
+    private var isFailed: Bool {
+        dictation.status == .error
+    }
+
+    /// Body of a take whose transcription failed. The recording stays until a
+    /// retry succeeds or the user deletes the row.
+    private var failedTranscriptionContent: some View {
+        HStack(spacing: DesignSystem.Spacing.sm) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(
+                    dictation.audioPath == nil
+                        ? "Transcription failed. The recording is no longer available."
+                        : "Transcription failed. The recording is saved."
+                )
+                .font(DesignSystem.Typography.body)
+                .foregroundStyle(.secondary)
+
+                // The latest failure, including a failed retry, stays visible
+                // so the reason is readable without hovering.
+                if let errorMessage = dictation.errorMessage, !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+            }
+            .accessibilityElement(children: .combine)
+
+            Spacer(minLength: 0)
+
+            if let onRetry {
+                Button {
+                    onRetry()
+                } label: {
+                    if isRetrying {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Retrying")
+                        }
+                    } else {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                    }
+                }
+                .parakeetAction(.secondary)
+                .disabled(isRetrying)
+                .accessibilityLabel(isRetrying ? "Retrying transcription" : "Retry transcription")
+            }
+        }
+    }
+
     @ViewBuilder
     private var transcriptContent: some View {
         let isExpandable = transcriptIsExpandable
-        if isExpanded && isExpandable {
+        if isExpanded {
             expandedTranscriptContent
         } else {
-            let lineLimit = isExpandable
-                ? DictationTranscriptPresentation.lineLimit(
-                    for: transcriptPlainText,
-                    isExpanded: isExpanded
-                )
-                : nil
+            let lineLimit = DictationTranscriptPresentation.previewLineLimit(
+                canToggleExpansion: canToggleTranscriptExpansion
+            )
             if isExpandable {
                 transcriptText(lineLimit: lineLimit)
                     .contentShape(Rectangle())
@@ -674,15 +736,72 @@ struct DictationCardRow: View {
             .allowsHitTesting(false)
     }
 
+    private var transcriptOverflowMeasurementProbe: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .topLeading) {
+                transcriptLayoutText(lineLimit: nil)
+                    .frame(width: proxy.size.width, alignment: .leading)
+                    .background {
+                        GeometryReader { textProxy in
+                            Color.clear.preference(
+                                key: TranscriptOverflowMeasurementKey.self,
+                                value: TranscriptOverflowMeasurement(
+                                    fullHeight: textProxy.size.height,
+                                    collapsedHeight: 0
+                                )
+                            )
+                        }
+                    }
+
+                transcriptLayoutText(lineLimit: DictationTranscriptPresentation.collapsedLineLimit)
+                    .frame(width: proxy.size.width, alignment: .leading)
+                    .background {
+                        GeometryReader { textProxy in
+                            Color.clear.preference(
+                                key: TranscriptOverflowMeasurementKey.self,
+                                value: TranscriptOverflowMeasurement(
+                                    fullHeight: 0,
+                                    collapsedHeight: textProxy.size.height
+                                )
+                            )
+                        }
+                    }
+            }
+            .opacity(0)
+            .accessibilityHidden(true)
+            .allowsHitTesting(false)
+        }
+    }
+
     private func updateExpandedTranscriptContentHeight(_ height: CGFloat) {
         guard height > 0,
-              abs(height - expandedTranscriptContentHeight) > 0.5 else {
+            abs(height - expandedTranscriptContentHeight) > 0.5
+        else {
             return
         }
 
         withAnimation(nil) {
             expandedTranscriptContentHeight = height
         }
+    }
+
+    private func updateTranscriptOverflowMeasurement(_ measurement: TranscriptOverflowMeasurement) {
+        guard measurement.fullHeight > 0,
+            measurement.collapsedHeight > 0,
+            measurement != transcriptOverflowMeasurement
+        else {
+            return
+        }
+
+        transcriptOverflowMeasurement = measurement
+    }
+
+    private func transcriptLayoutText(lineLimit: Int?) -> some View {
+        Text(highlightedTranscript)
+            .font(DesignSystem.Typography.body)
+            .lineLimit(lineLimit)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func transcriptText(lineLimit: Int?) -> some View {
@@ -714,9 +833,14 @@ struct DictationCardRow: View {
 
     private var transcriptIsExpandable: Bool {
         DictationTranscriptPresentation.isExpandable(
-            transcriptPlainText,
-            canToggleExpansion: onToggleExpanded != nil
+            fullHeight: transcriptOverflowMeasurement.fullHeight,
+            collapsedHeight: transcriptOverflowMeasurement.collapsedHeight,
+            canToggleExpansion: canToggleTranscriptExpansion
         )
+    }
+
+    private var canToggleTranscriptExpansion: Bool {
+        onToggleExpanded != nil
     }
 
     // MARK: - Highlighted Transcript
@@ -798,6 +922,27 @@ private struct ExpandedTranscriptHeightKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+private struct TranscriptOverflowMeasurement: Equatable {
+    var fullHeight: CGFloat
+    var collapsedHeight: CGFloat
+
+    static let zero = Self(fullHeight: 0, collapsedHeight: 0)
+}
+
+private struct TranscriptOverflowMeasurementKey: PreferenceKey {
+    static let defaultValue = TranscriptOverflowMeasurement.zero
+
+    static func reduce(value: inout TranscriptOverflowMeasurement, nextValue: () -> TranscriptOverflowMeasurement) {
+        let next = nextValue()
+        if next.fullHeight > 0 {
+            value.fullHeight = next.fullHeight
+        }
+        if next.collapsedHeight > 0 {
+            value.collapsedHeight = next.collapsedHeight
+        }
     }
 }
 

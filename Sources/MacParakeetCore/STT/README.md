@@ -23,7 +23,10 @@ serves dictation and meeting preview. **Final Transcription** serves durable
 post-meeting STT and file/media work; it inherits Live Speech unless the user
 enables an Advanced override. A meeting captures an immutable
 `MeetingSpeechPlan` at start: preview is the leased live selection when the
-current renderer supports it, while final is the captured authoritative route.
+current renderer supports it and the user has enabled live meeting
+transcription, while final is the captured authoritative route. The live
+transcription preference applies to the next recording; disabling it skips
+meeting preview warm-up and inference without changing capture or final STT.
 
 ## What's here
 
@@ -144,8 +147,9 @@ backlog limit is reached; durable file and finalization jobs are retained.
 
 **Meeting stop does not create a second ASR lane.** Back-to-back meeting
 recording is implemented by returning the recorder to idle after the stopped
-meeting's audio files, `awaitingTranscription` lock, and processing Library row
-are durable. The queued final STT still enters the shared background slot as
+meeting's source audio files, metadata, `awaitingTranscription` lock, and
+processing Library row are durable. Playback preparation runs in the existing
+meeting queue before STT, so it cannot delay the next capture. The queued final STT still enters the shared background slot as
 `meetingFinalize`. If a file, folder, YouTube, podcast, or media URL
 transcription is already running, it is not preempted; the stopped meeting
 waits for that job to finish. Once the slot is free, `meetingFinalize` outranks
@@ -159,15 +163,23 @@ session via `beginLiveDictationTranscription` / `appendLiveDictationSamples` /
 `finishLiveDictationTranscription` / `cancelLiveDictationTranscription`. The
 runtime routes the session to the active native streaming build through
 `NativeLiveDictating`.
-The session owns the interactive slot for its duration: competing
-dictation transcribe jobs are rejected with `engineBusy`, engine-switch
-availability reports `transcribing`, and quiesce/shutdown cancels the
-session (or waits out an in-flight finish). Meeting live chunks and
-finalize are unaffected — they stay on the background slot.
+The session owns the interactive slot for its duration: a new live session
+is rejected with `engineBusy`, recorded-file dictation jobs wait in the
+interactive queue until the session finishes or cancels (rejecting them
+would cost the caller its WAV, #1131), engine-switch availability reports
+`transcribing`, and quiesce/shutdown cancels the session (or waits out an
+in-flight finish). Meeting live chunks and finalize are unaffected — they
+stay on the background slot. A cancel keeps the reservation until any
+in-flight append returns, so a late append never shares the native manager
+with the next interactive job.
 `DictationService` always records the WAV alongside the live stream and uses
 recorded-file transcription for the final paste/history result. Native live
-partials remain display-only; if the live stream fails, drops samples, or
-finishes empty, only the preview is degraded.
+partials remain display-only, so stop, dismiss, and restart cancel the
+session and never flush a live final. That wait is bounded: if a native
+append or cancel does not return, the take continues, a replacement take
+records without live partials, and its recorded-file job queues behind the
+stalled session. If the live stream fails or drops samples, only the preview
+is degraded.
 
 **Display-only dictation preview (Parakeet/Whisper-capable path).**
 Dictation can request a single-flight tail-window preview via
@@ -209,6 +221,24 @@ captures the actor-owned, non-Sendable `AsrManager`, which Swift 6 only lets the
 gate close over inline. A new call site that invokes `AsrManager.transcribe`
 directly **must** wrap it the same way — calling the manager bare reopens the
 crash for whichever lane runs unguarded.
+
+**Long-file TDT chunk workers are serialized on macOS 14 (issue #997).**
+`ANEInferenceGate` wraps the outer `transcribe(audioURL:)` call only. FluidAudio
+still splits hour-class files into 15 s windows and, with `ASRConfig.default`,
+runs four Core ML `prediction()` calls on the same compiled models. That inner
+pool is what crashed Sonoma file / YouTube / meeting jobs with Apple's
+"asynchronous prediction using ML Program" error. `ParakeetTDTASRConfig.make()`
+sets `parallelChunkConcurrency: 1` when the ANE gate requires serialization
+(macOS 14) and keeps FluidAudio's default of 4 on macOS 15+. Serial chunks were
+not enough: Cluster A still SIGBUS/SIGSEGV minutes into Sonoma long-file TDT
+after 0.8.1. `ParakeetTDTASRConfig.encoderComputeUnits()` therefore moves the
+v3 conformer encoder to `.cpuAndGPU` on 14 (FluidAudio's documented override;
+preprocessor is already CPU). 15+ passes `nil` and stays on ANE. One shared
+model bundle, so Sonoma dictation uses the same encoder units. Do not construct
+TDT `AsrManager(config: .default)` from a new site — go through
+`ParakeetTDTASRConfig`. Diagnosis:
+`docs/research/2026-09-09-issue-997-coreml-long-file-stt/` and
+`docs/research/2026-09-17-085-cluster-a-residual.md`.
 
 **Engine routing is per-job.** Parakeet stays default. Settings persists Live
 Speech plus an optional Final Transcription override. Missing override state
@@ -264,3 +294,9 @@ real events into the controller's input shape.
   /path/to/japanese.m4a` and
   `swift run macparakeet-cli transcribe --engine whisper --language ja
   /path/to/japanese.m4a`, then confirm the requested engine is used.
+
+## Optional Orukeet preview
+
+`ParakeetModelVariant.orukeet` runs Oruk's Parakeet v3 adaptation through the same two TDT managers and inference gates. It explicitly assembles the portable Core ML components; it has no stock `AsrModelVersion` selector and its cache and result identity are separate from NVIDIA v3. Existing defaults are unchanged. Native streaming, tail-window dictation preview, and recognition-time vocabulary boosting are disabled for this preview.
+
+`OrukeetModelStore` installs the [Hugging Face model](https://huggingface.co/oruk/orukeet) at immutable revision `43142dd1897f9ddadcd70173fcb5ff45c08aa951`. It consumes the JSON integrity manifest, verifies archive size and SHA-256, and compiles the four portable components on the destination Mac. Cached loading is local. The weights use CC BY-SA 4.0.

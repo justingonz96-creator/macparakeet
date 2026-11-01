@@ -445,6 +445,78 @@ public final class ExportService: ExportServiceProtocol, Sendable {
         transcription.cleanTranscript ?? transcription.rawTranscript ?? ""
     }
 
+    /// Echo: the words the caption pipeline lays out. Timed corrections live
+    /// in `transcriptSegments` (`.segment` alignment), but Echo's cue builder
+    /// works from words, so this mirrors `TranscriptCueBuilder`: untouched
+    /// lines keep their real word timings, omitted passages are dropped, and
+    /// an edited line's words are spread across that line's time span.
+    /// Returns nil when there is nothing timed to lay out.
+    public func captionSource(
+        for transcription: Transcription
+    ) -> (words: [WordTimestamp], cleanedTranscript: String?, engineSegments: [STTSegment]?)? {
+        guard transcription.transcriptTextAlignment != .untimed,
+              let words = transcription.wordTimestamps,
+              !words.isEmpty
+        else {
+            return nil
+        }
+        let cleaned = transcription.cleanTranscript ?? transcription.rawTranscript
+        guard transcription.transcriptTextAlignment == .segment,
+              let segments = transcription.transcriptSegments
+        else {
+            return (words, cleaned, transcription.engineSegments)
+        }
+
+        var effective: [WordTimestamp] = []
+        for segment in segments {
+            let range = segment.wordRange
+            let rangeIsValid = range.startIndex >= 0
+                && range.startIndex < range.endIndexExclusive
+                && range.endIndexExclusive <= words.count
+            if segment.isTextEdited != true, rangeIsValid {
+                effective += words[range.startIndex..<range.endIndexExclusive]
+            } else {
+                effective += Self.evenlyTimedWords(
+                    segment.text,
+                    startMs: segment.startMs,
+                    endMs: segment.endMs,
+                    speakerId: segment.speakerId
+                )
+            }
+        }
+        guard !effective.isEmpty else { return nil }
+        return (effective, cleaned, transcription.engineSegments)
+    }
+
+    /// Splits corrected line text into words timed in proportion to their
+    /// length across the line's span (no per-word timing survives an edit).
+    static func evenlyTimedWords(
+        _ text: String,
+        startMs: Int,
+        endMs: Int,
+        speakerId: String?
+    ) -> [WordTimestamp] {
+        let tokens = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !tokens.isEmpty else { return [] }
+        let span = max(endMs - startMs, tokens.count)
+        let totalChars = tokens.reduce(0) { $0 + $1.count }
+        var result: [WordTimestamp] = []
+        var consumed = 0
+        for token in tokens {
+            let wordStart = startMs + span * consumed / totalChars
+            consumed += token.count
+            let wordEnd = startMs + span * consumed / totalChars
+            result.append(WordTimestamp(
+                word: token,
+                startMs: wordStart,
+                endMs: max(wordEnd, wordStart + 1),
+                confidence: 1.0,
+                speakerId: speakerId
+            ))
+        }
+        return result
+    }
+
     private func editedTranscriptText(transcription: Transcription) -> String? {
         guard transcription.isTranscriptEdited,
               let text = transcription.cleanTranscript?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -518,7 +590,7 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             try srt.write(to: url, atomically: true, encoding: .utf8)
             return
         }
-        guard let words = transcription.wordTimestamps, !words.isEmpty else {
+        guard let source = captionSource(for: transcription) else {
             let text = preferredText(transcription: transcription)
             let duration = transcription.durationMs ?? 0
             let srt = "1\n00:00:00,000 --> \(srtTimestamp(ms: duration))\n\(singleCueSubtitleText(text))\n"
@@ -526,15 +598,15 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             return
         }
         let text = try await formatSRT(
-            words: words,
+            words: source.words,
             speakers: transcription.speakers,
             config: config,
             includeSpeakerLabels: includeSpeakerLabels,
             llmService: llmService,
             onRefinementProgress: onRefinementProgress,
             onExportProgress: onExportProgress,
-            cleanedTranscript: transcription.cleanTranscript ?? transcription.rawTranscript,
-            engineSegments: transcription.engineSegments
+            cleanedTranscript: source.cleanedTranscript,
+            engineSegments: source.engineSegments
         )
         try text.write(to: url, atomically: true, encoding: .utf8)
     }
@@ -555,7 +627,7 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             try vtt.write(to: url, atomically: true, encoding: .utf8)
             return
         }
-        guard let words = transcription.wordTimestamps, !words.isEmpty else {
+        guard let source = captionSource(for: transcription) else {
             let text = preferredText(transcription: transcription)
             let duration = transcription.durationMs ?? 0
             let vtt = "WEBVTT\n\n\(vttTimestamp(ms: 0)) --> \(vttTimestamp(ms: duration))\n\(singleCueSubtitleText(text))\n"
@@ -563,15 +635,15 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             return
         }
         let text = try await formatVTT(
-            words: words,
+            words: source.words,
             speakers: transcription.speakers,
             config: config,
             includeSpeakerLabels: includeSpeakerLabels,
             llmService: llmService,
             onRefinementProgress: onRefinementProgress,
             onExportProgress: onExportProgress,
-            cleanedTranscript: transcription.cleanTranscript ?? transcription.rawTranscript,
-            engineSegments: transcription.engineSegments
+            cleanedTranscript: source.cleanedTranscript,
+            engineSegments: source.engineSegments
         )
         try text.write(to: url, atomically: true, encoding: .utf8)
     }
@@ -601,18 +673,18 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             return "1\n00:00:00,000 --> \(srtTimestamp(ms: duration))\n\(singleCueSubtitleText(text))\n"
         }
 
-        guard let words = transcription.wordTimestamps, !words.isEmpty else {
+        guard let source = captionSource(for: transcription) else {
             let text = preferredText(transcription: transcription)
             let duration = transcription.durationMs ?? 0
             return "1\n00:00:00,000 --> \(srtTimestamp(ms: duration))\n\(singleCueSubtitleText(text))\n"
         }
         return formatSRT(
-            words: words,
+            words: source.words,
             speakers: transcription.speakers,
             config: config,
             includeSpeakerLabels: includeSpeakerLabels,
-            cleanedTranscript: transcription.cleanTranscript ?? transcription.rawTranscript,
-            engineSegments: transcription.engineSegments
+            cleanedTranscript: source.cleanedTranscript,
+            engineSegments: source.engineSegments
         )
     }
 
@@ -631,18 +703,18 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             return "WEBVTT\n\n\(vttTimestamp(ms: 0)) --> \(vttTimestamp(ms: duration))\n\(singleCueSubtitleText(text))\n"
         }
 
-        guard let words = transcription.wordTimestamps, !words.isEmpty else {
+        guard let source = captionSource(for: transcription) else {
             let text = preferredText(transcription: transcription)
             let duration = transcription.durationMs ?? 0
             return "WEBVTT\n\n\(vttTimestamp(ms: 0)) --> \(vttTimestamp(ms: duration))\n\(singleCueSubtitleText(text))\n"
         }
         return formatVTT(
-            words: words,
+            words: source.words,
             speakers: transcription.speakers,
             config: config,
             includeSpeakerLabels: includeSpeakerLabels,
-            cleanedTranscript: transcription.cleanTranscript ?? transcription.rawTranscript,
-            engineSegments: transcription.engineSegments
+            cleanedTranscript: source.cleanedTranscript,
+            engineSegments: source.engineSegments
         )
     }
 
@@ -1532,6 +1604,28 @@ public final class ExportService: ExportServiceProtocol, Sendable {
         if let text = editedTranscriptText(transcription: transcription) {
             lines.append(text)
             lines.append("")
+        } else if let segments = segmentTimedRecords(transcription) {
+            if options.includeTimestamps || options.includeSpeakerLabels {
+                var lastSpeakerId: String? = nil
+                for (index, segment) in segments.enumerated() {
+                    if options.includeSpeakerLabels,
+                       let label = paragraphSpeakerLabel(for: segment.speakerId, in: transcription.speakers),
+                       index == 0 || segment.speakerId != lastSpeakerId {
+                        lines.append("**\(label)**")
+                        lines.append("")
+                    }
+                    lastSpeakerId = segment.speakerId
+                    if options.includeTimestamps {
+                        lines.append("**[\(formatReadableTimestamp(ms: segment.startMs))]** \(segment.text)")
+                    } else {
+                        lines.append(segment.text)
+                    }
+                    lines.append("")
+                }
+            } else {
+                lines.append(preferredText(transcription: transcription))
+                lines.append("")
+            }
         } else if let timestamps = transcription.wordTimestamps, !timestamps.isEmpty {
             let paragraphs = TranscriptParagraphBuilder.build(from: timestamps)
             if options.includeTimestamps || options.includeSpeakerLabels {
@@ -3735,6 +3829,19 @@ public final class ExportService: ExportServiceProtocol, Sendable {
         return "\(label): \(cue.text)"
     }
 
+    public func buildSubtitleCues(from transcription: Transcription) -> [SubtitleCue] {
+        TranscriptCueBuilder.build(from: transcription)
+    }
+
+    private func segmentTimedRecords(_ transcription: Transcription) -> [TranscriptSegmentRecord]? {
+        guard transcription.transcriptTextAlignment == .segment,
+              let segments = transcription.transcriptSegments
+        else {
+            return nil
+        }
+        return segments
+    }
+
     /// Resolve a speakerId to a display label using the speakers mapping.
     /// Returns nil if speakerId is nil or speakers mapping is nil (no diarization).
     func speakerLabel(for speakerId: String?, in speakers: [SpeakerInfo]?) -> String? {
@@ -3796,6 +3903,28 @@ public final class ExportService: ExportServiceProtocol, Sendable {
 
         if let text = editedTranscriptText(transcription: transcription) {
             lines.append(text)
+        } else if let segments = segmentTimedRecords(transcription) {
+            if options.includeTimestamps || options.includeSpeakerLabels {
+                var lastSpeakerId: String? = nil
+                for (index, segment) in segments.enumerated() {
+                    if !lines.isEmpty, lines.last != "" {
+                        lines.append("")
+                    }
+                    if options.includeSpeakerLabels,
+                       let label = paragraphSpeakerLabel(for: segment.speakerId, in: transcription.speakers),
+                       index == 0 || segment.speakerId != lastSpeakerId {
+                        lines.append("\(label):")
+                    }
+                    lastSpeakerId = segment.speakerId
+                    if options.includeTimestamps {
+                        lines.append("[\(formatReadableTimestamp(ms: segment.startMs))] \(segment.text)")
+                    } else {
+                        lines.append(segment.text)
+                    }
+                }
+            } else {
+                lines.append(preferredText(transcription: transcription))
+            }
         } else if let timestamps = transcription.wordTimestamps, !timestamps.isEmpty {
             let paragraphs = TranscriptParagraphBuilder.build(from: timestamps)
             if options.includeTimestamps || options.includeSpeakerLabels {
@@ -3924,40 +4053,38 @@ public final class ExportService: ExportServiceProtocol, Sendable {
                 NSAttributedString(
                     string: text,
                     attributes: [.font: bodyFont, .foregroundColor: primaryColor]))
-        } else if let timestamps = transcription.wordTimestamps, !timestamps.isEmpty {
-            let cues = buildSubtitleCues(
-                from: timestamps,
-                cleanedTranscript: transcription.cleanTranscript ?? transcription.rawTranscript,
-                engineSegments: transcription.engineSegments
-            )
-            var lastSpeakerId: String? = nil
-            for cue in cues {
-                if let label = speakerLabel(for: cue.speakerId, in: transcription.speakers),
-                   cue.speakerId != lastSpeakerId {
-                    let speakerAttr = NSAttributedString(
-                        string: "\(label)\n",
-                        attributes: [.font: headerFont, .foregroundColor: primaryColor])
-                    result.append(speakerAttr)
-                }
-                lastSpeakerId = cue.speakerId
-
-                let ts = "[" + formatReadableTimestamp(ms: cue.startMs) + "] "
-                let attrTs = NSAttributedString(
-                    string: ts,
-                    attributes: [.font: timestampFont, .foregroundColor: secondaryColor])
-                result.append(attrTs)
-
-                let attrText = NSAttributedString(
-                    string: cue.text + "\n\n",
-                    attributes: [.font: bodyFont, .foregroundColor: primaryColor])
-                result.append(attrText)
-            }
         } else {
-            let text = preferredText(transcription: transcription)
-            result.append(
-                NSAttributedString(
-                    string: text,
-                    attributes: [.font: bodyFont, .foregroundColor: primaryColor]))
+            let cues = buildSubtitleCues(from: transcription)
+            if cues.isEmpty {
+                let text = preferredText(transcription: transcription)
+                result.append(
+                    NSAttributedString(
+                        string: text,
+                        attributes: [.font: bodyFont, .foregroundColor: primaryColor]))
+            } else {
+                var lastSpeakerId: String? = nil
+                for cue in cues {
+                    if let label = speakerLabel(for: cue.speakerId, in: transcription.speakers),
+                       cue.speakerId != lastSpeakerId {
+                        let speakerAttr = NSAttributedString(
+                            string: "\(label)\n",
+                            attributes: [.font: headerFont, .foregroundColor: primaryColor])
+                        result.append(speakerAttr)
+                    }
+                    lastSpeakerId = cue.speakerId
+
+                    let ts = "[" + formatReadableTimestamp(ms: cue.startMs) + "] "
+                    let attrTs = NSAttributedString(
+                        string: ts,
+                        attributes: [.font: timestampFont, .foregroundColor: secondaryColor])
+                    result.append(attrTs)
+
+                    let attrText = NSAttributedString(
+                        string: cue.text + "\n\n",
+                        attributes: [.font: bodyFont, .foregroundColor: primaryColor])
+                    result.append(attrText)
+                }
+            }
         }
 
         return result

@@ -24,6 +24,12 @@ public final class SettingsViewModel {
         case failed(String)
     }
 
+    public enum CalendarListLoadState: Equatable {
+        case notLoaded
+        case loading
+        case loaded
+    }
+
     public struct MicrophoneDeviceOption: Identifiable, Equatable, Sendable {
         public let id: String
         public let uid: String
@@ -118,6 +124,22 @@ public final class SettingsViewModel {
             Telemetry.send(.settingChanged(setting: .hidePill, value: Self.settingValue(!showIdlePill)))
         }
     }
+    public var dictationOverlayPlacement: DictationOverlayPlacement {
+        didSet {
+            guard dictationOverlayPlacement != oldValue else { return }
+            defaults.set(
+                dictationOverlayPlacement.rawValue,
+                forKey: UserDefaultsAppRuntimePreferences.dictationOverlayPlacementKey
+            )
+            NotificationCenter.default.post(
+                name: .macParakeetDictationOverlayPlacementDidChange,
+                object: nil
+            )
+            Telemetry.send(
+                .settingChanged(setting: .overlayPlacement, value: dictationOverlayPlacement.rawValue)
+            )
+        }
+    }
     /// Show the Discover card in the main sidebar. Defaults to `true`, so
     /// nothing changes for existing users until they turn it off.
     ///
@@ -174,6 +196,19 @@ public final class SettingsViewModel {
             Telemetry.send(pushToTalkHotkeyTrigger.customizedEvent(surface: .pushToTalk))
         }
     }
+    public var alternateHandsFreeHotkeyTrigger: HotkeyTrigger {
+        didSet {
+            alternateHandsFreeHotkeyTrigger.save(to: defaults, defaultsKey: HotkeyTrigger.alternateHandsFreeDefaultsKey)
+            NotificationCenter.default.post(name: .macParakeetHotkeyTriggerDidChange, object: nil)
+        }
+    }
+    public var alternatePushToTalkHotkeyTrigger: HotkeyTrigger {
+        didSet {
+            alternatePushToTalkHotkeyTrigger.save(
+                to: defaults, defaultsKey: HotkeyTrigger.alternatePushToTalkDefaultsKey)
+            NotificationCenter.default.post(name: .macParakeetPushToTalkHotkeyTriggerDidChange, object: nil)
+        }
+    }
     public var meetingHotkeyTrigger: HotkeyTrigger {
         didSet {
             meetingHotkeyTrigger.save(to: defaults, defaultsKey: HotkeyTrigger.meetingDefaultsKey)
@@ -204,6 +239,16 @@ public final class SettingsViewModel {
             Telemetry.send(youtubeTranscriptionHotkeyTrigger.customizedEvent(surface: .youtubeTranscription))
         }
     }
+    public var dictationAIPolishHotkeyTrigger: HotkeyTrigger {
+        didSet {
+            dictationAIPolishHotkeyTrigger.save(to: defaults, defaultsKey: HotkeyTrigger.dictationAIPolishDefaultsKey)
+            NotificationCenter.default.post(
+                name: .macParakeetDictationAIPolishHotkeyTriggerDidChange,
+                object: nil
+            )
+            Telemetry.send(dictationAIPolishHotkeyTrigger.customizedEvent(surface: .dictationAIPolish))
+        }
+    }
     public var silenceAutoStop: Bool {
         didSet {
             defaults.set(silenceAutoStop, forKey: UserDefaultsAppRuntimePreferences.silenceAutoStopKey)
@@ -225,6 +270,18 @@ public final class SettingsViewModel {
             ))
         }
     }
+    public var dictationStreamingCursorEnabled: Bool {
+        didSet {
+            defaults.set(
+                dictationStreamingCursorEnabled,
+                forKey: UserDefaultsAppRuntimePreferences.dictationStreamingCursorEnabledKey
+            )
+            Telemetry.send(.settingChanged(
+                setting: .streamingCursor,
+                value: Self.settingValue(dictationStreamingCursorEnabled)
+            ))
+        }
+    }
     public var selectedMicrophoneDeviceUID: String {
         didSet {
             let normalized = Self.normalizedMicrophoneSelection(selectedMicrophoneDeviceUID)
@@ -242,6 +299,12 @@ public final class SettingsViewModel {
             microphoneTestState = .idle
             microphoneTestLevel = 0
             NotificationCenter.default.post(name: .macParakeetMicrophoneSelectionDidChange, object: nil)
+            // Only an explicit selection rebuilds the idle preparation. Route
+            // notifications from Core Audio do not (#1227). The warm hold owns
+            // its own refresh while Instant Dictation is on.
+            if !instantDictationEnabled {
+                sharedMicStream?.refreshIdlePrewarm()
+            }
             Telemetry.send(.settingChanged(setting: .microphoneSelection))
         }
     }
@@ -252,6 +315,28 @@ public final class SettingsViewModel {
                 forKey: UserDefaultsAppRuntimePreferences.meetingAudioSourceModeKey
             )
             Telemetry.send(.settingChanged(setting: .meetingAudioSourceMode, value: meetingAudioSourceMode.rawValue))
+        }
+    }
+    public var dictationURLControlEnabled: Bool {
+        didSet {
+            defaults.set(dictationURLControlEnabled, forKey: UserDefaultsAppRuntimePreferences.dictationURLControlEnabledKey)
+        }
+    }
+    public var meetingURLControlEnabled: Bool {
+        didSet {
+            defaults.set(meetingURLControlEnabled, forKey: UserDefaultsAppRuntimePreferences.meetingURLControlEnabledKey)
+        }
+    }
+    public var startMeetingsMuted: Bool {
+        didSet {
+            defaults.set(
+                startMeetingsMuted,
+                forKey: UserDefaultsAppRuntimePreferences.startMeetingsMutedKey
+            )
+            Telemetry.send(.settingChanged(
+                setting: .startMeetingsMuted,
+                value: Self.settingValue(startMeetingsMuted)
+            ))
         }
     }
     public var showMeetingRecordingPill: Bool {
@@ -310,6 +395,43 @@ public final class SettingsViewModel {
             Telemetry.send(.settingChanged(
                 setting: .pauseMediaDuringDictation,
                 value: Self.settingValue(pauseMediaDuringDictation)
+            ))
+        }
+    }
+    public var playDictationCaptureSounds: Bool {
+        didSet {
+            defaults.set(
+                playDictationCaptureSounds,
+                forKey: UserDefaultsAppRuntimePreferences.playDictationCaptureSoundsKey
+            )
+            Telemetry.send(.settingChanged(
+                setting: .playDictationCaptureSounds,
+                value: Self.settingValue(playDictationCaptureSounds)
+            ))
+        }
+    }
+
+    public var escapeCancelsDictation: Bool {
+        didSet {
+            defaults.set(
+                escapeCancelsDictation,
+                forKey: UserDefaultsAppRuntimePreferences.escapeCancelsDictationKey
+            )
+            Telemetry.send(.settingChanged(
+                setting: .escapeCancelsDictation,
+                value: Self.settingValue(escapeCancelsDictation)
+            ))
+        }
+    }
+    public var preserveDiscardedDictations: Bool {
+        didSet {
+            defaults.set(
+                preserveDiscardedDictations,
+                forKey: UserDefaultsAppRuntimePreferences.preserveDiscardedDictationsKey
+            )
+            Telemetry.send(.settingChanged(
+                setting: .preserveDiscardedDictations,
+                value: Self.settingValue(preserveDiscardedDictations)
             ))
         }
     }
@@ -464,6 +586,18 @@ public final class SettingsViewModel {
             Telemetry.send(.processingModeChanged(mode: processingMode))
         }
     }
+    public var spokenPunctuationEnabled: Bool {
+        didSet {
+            defaults.set(
+                spokenPunctuationEnabled,
+                forKey: UserDefaultsAppRuntimePreferences.spokenPunctuationEnabledKey
+            )
+            Telemetry.send(.settingChanged(
+                setting: .spokenPunctuation,
+                value: Self.settingValue(spokenPunctuationEnabled)
+            ))
+        }
+    }
     public var dictationInsertionStyle: DictationInsertionStyle {
         didSet {
             defaults.set(
@@ -486,6 +620,12 @@ public final class SettingsViewModel {
         }
     }
 
+    public var removeUmFiller: Bool {
+        didSet {
+            defaults.set(removeUmFiller, forKey: UserDefaultsAppRuntimePreferences.removeUmFillerKey)
+            Telemetry.send(.settingChanged(setting: .removeUmFiller, value: Self.settingValue(removeUmFiller)))
+        }
+    }
     public var customVocabularyRecognitionStatus: CustomVocabularyBoostingSupportPresentation {
         guard let capabilities = SpeechEngineCapabilityRegistry.capabilities(
             for: engine.speechEnginePreference,
@@ -614,6 +754,74 @@ public final class SettingsViewModel {
         whisperTuningPreset = .default
         whisperTuning = WhisperEngineTuning.default
     }
+    public var meetingLiveTranscriptionEnabled: Bool {
+        didSet {
+            defaults.set(
+                meetingLiveTranscriptionEnabled,
+                forKey: UserDefaultsAppRuntimePreferences.meetingLiveTranscriptionEnabledKey
+            )
+            Telemetry.send(
+                .settingChanged(
+                    setting: .meetingLiveTranscriptionEnabled,
+                    value: Self.settingValue(meetingLiveTranscriptionEnabled)
+                ))
+        }
+    }
+
+    /// Set through `requestRememberSpeakers` / `acknowledgeVoiceprintConsent`,
+    /// never bound straight to a toggle: turning this on with no consent on
+    /// record would start keeping voices, and the resolver would still read it
+    /// as off, so the switch would look on and do nothing.
+    public private(set) var rememberSpeakers: Bool {
+        didSet {
+            defaults.set(rememberSpeakers, forKey: UserDefaultsAppRuntimePreferences.rememberSpeakersKey)
+            Telemetry.send(.settingChanged(
+                setting: .rememberSpeakers,
+                value: Self.settingValue(rememberSpeakers)
+            ))
+        }
+    }
+
+    /// When the user acknowledged the voice-profile notice.
+    public private(set) var voiceprintConsentAcknowledgedAt: Date?
+
+    /// True while the consent sheet should be shown. Set by asking to turn the
+    /// preference on without consent on record.
+    public var isRequestingVoiceprintConsent = false
+
+    /// Turning it off is immediate; turning it on needs consent first. Returns
+    /// whether the caller should present the consent sheet.
+    @discardableResult
+    public func requestRememberSpeakers(_ enabled: Bool) -> Bool {
+        guard enabled else {
+            rememberSpeakers = false
+            return false
+        }
+        guard voiceprintConsentAcknowledgedAt == nil else {
+            rememberSpeakers = true
+            return false
+        }
+        isRequestingVoiceprintConsent = true
+        return true
+    }
+
+    /// Accepting both records the date and turns the preference on. Declining
+    /// leaves both untouched, so the switch stays off.
+    public func resolveVoiceprintConsent(accepted: Bool, now: Date = Date()) {
+        isRequestingVoiceprintConsent = false
+        guard accepted else { return }
+        voiceprintConsentAcknowledgedAt = now
+        defaults.set(now, forKey: UserDefaultsAppRuntimePreferences.voiceprintConsentAcknowledgedAtKey)
+        rememberSpeakers = true
+    }
+
+    /// Withdrawing consent also turns the preference off. Stored voices are
+    /// removed separately, from the profile administration surface.
+    public func withdrawVoiceprintConsent() {
+        rememberSpeakers = false
+        voiceprintConsentAcknowledgedAt = nil
+        defaults.removeObject(forKey: UserDefaultsAppRuntimePreferences.voiceprintConsentAcknowledgedAtKey)
+    }
     public private(set) var pendingMeetingRecoveryCount = 0
     public var onRecoverPendingMeetingRecordings: (() -> Void)?
 
@@ -741,6 +949,22 @@ public final class SettingsViewModel {
             Telemetry.send(.settingChanged(setting: .calendarIncludedCalendars))
         }
     }
+    public var calendarSkippedOccurrences: Set<String> {
+        didSet {
+            defaults.set(Array(calendarSkippedOccurrences), forKey: CalendarAutoStartPreferences.skippedOccurrencesKey)
+            guard !isResolvingCalendarSettings else { return }
+            NotificationCenter.default.post(name: .macParakeetCalendarSettingsDidChange, object: nil)
+            Telemetry.send(.settingChanged(setting: .calendarEventSkip, value: "occurrence"))
+        }
+    }
+    public var calendarSkippedEvents: Set<String> {
+        didSet {
+            defaults.set(Array(calendarSkippedEvents), forKey: CalendarAutoStartPreferences.skippedEventsKey)
+            guard !isResolvingCalendarSettings else { return }
+            NotificationCenter.default.post(name: .macParakeetCalendarSettingsDidChange, object: nil)
+            Telemetry.send(.settingChanged(setting: .calendarEventSkip, value: "event"))
+        }
+    }
     /// Three-state Calendar permission. Settings UI needs to distinguish
     /// `.denied` from `.notDetermined` because macOS only shows the
     /// EventKit prompt once — after denial, the only recovery path is
@@ -751,6 +975,9 @@ public final class SettingsViewModel {
     public var calendarPermissionGranted: Bool {
         calendarPermissionStatus == .granted
     }
+    public private(set) var availableCalendars: [CalendarInfo] = []
+    public private(set) var calendarListLoadState: CalendarListLoadState = .notLoaded
+    public private(set) var isRefreshingCalendars = false
     /// Whether macOS notification authorization is granted. Calendar reminders
     /// (`.notify`, and the pre-meeting reminder in `.autoStart`) are delivered
     /// via `UNUserNotificationCenter`, a *separate* TCC scope from Calendar —
@@ -760,7 +987,11 @@ public final class SettingsViewModel {
     public var calendarNotificationsAuthorized: Bool = true
 
     // Permission status
-    public var microphoneGranted = false
+    /// Three-state microphone permission. Settings needs `.denied` vs
+    /// `.notDetermined` because macOS only shows the TCC prompt once — after
+    /// denial the recovery path is System Settings, matching Calendar.
+    public private(set) var microphoneStatus: PermissionStatus = .notDetermined
+    public var microphoneGranted: Bool { microphoneStatus == .granted }
     public var accessibilityGranted = false
     public var screenRecordingGranted = false
     /// Reinstall shortcuts after macOS grants access to a running app.
@@ -804,8 +1035,6 @@ public final class SettingsViewModel {
     private var dictationRepo: DictationRepositoryProtocol?
     private var transcriptionRepo: TranscriptionRepositoryProtocol?
     private var transformHistoryRepo: TransformHistoryRepositoryProtocol?
-    private var customWordRepo: CustomWordRepositoryProtocol?
-    private var snippetRepo: TextSnippetRepositoryProtocol?
     private var entitlementsService: EntitlementsService?
     private var launchAtLoginService: LaunchAtLoginControlling?
     private var meetingRecoveryService: MeetingRecordingRecoveryServicing?
@@ -816,8 +1045,11 @@ public final class SettingsViewModel {
     private let inputDevicesProvider: @Sendable () -> [AudioDeviceManager.InputDevice]
     private let defaultInputDeviceUIDProvider: @Sendable () -> String?
     private let permissionPollingInterval: Duration
+    private let calendarService: CalendarServicing
+    private let openURL: (URL) -> Bool
     private var isApplyingLaunchAtLoginState = false
     private var storageStatsRefreshGeneration = 0
+    private var calendarRefreshGeneration = 0
     // `deinit` is nonisolated even though this type is `@MainActor`.
     // These handles are only mutated on the main actor during the view
     // model lifetime; unsafe access lets deinit cancel/unregister.
@@ -838,6 +1070,7 @@ public final class SettingsViewModel {
         parakeetModelVariantCached: @escaping @Sendable (ParakeetModelVariant) -> Bool = {
             // Unified is a separate FluidAudio runtime with no `AsrModelVersion`;
             // dispatch it to its own engine's cache check.
+            if $0 == .orukeet { return OrukeetModelStore.isInstalled }
             if $0.usesUnifiedEngine { return ParakeetUnifiedEngine.isModelCached() }
             guard let version = $0.asrModelVersion else { return false }
             return STTRuntime.isModelCached(version: version)
@@ -849,6 +1082,7 @@ public final class SettingsViewModel {
             CohereTranscribeEngine.isModelCached()
         },
         deleteParakeetModelOnDisk: @escaping @Sendable (ParakeetModelVariant) -> Bool = {
+            if $0 == .orukeet { return OrukeetModelStore.delete() }
             if $0.usesUnifiedEngine { return ParakeetUnifiedEngine.deleteModel() }
             guard let version = $0.asrModelVersion else { return false }
             return STTRuntime.deleteParakeetModel(version: version)
@@ -865,7 +1099,9 @@ public final class SettingsViewModel {
         defaultInputDeviceUIDProvider: @escaping @Sendable () -> String? = {
             AudioDeviceManager.defaultInputDeviceInfo()?.uid
         },
-        permissionPollingInterval: Duration = .seconds(2)
+        permissionPollingInterval: Duration = .seconds(2),
+        calendarService: CalendarServicing = CalendarService.shared,
+        openURL: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }
     ) {
         AutoSaveService.migrateLegacyMeetingSettingsIfNeeded(defaults: defaults)
         self.defaults = defaults
@@ -874,6 +1110,8 @@ public final class SettingsViewModel {
         self.inputDevicesProvider = inputDevicesProvider
         self.defaultInputDeviceUIDProvider = defaultInputDeviceUIDProvider
         self.permissionPollingInterval = permissionPollingInterval
+        self.calendarService = calendarService
+        self.openURL = openURL
         self.engine = EngineSettingsViewModel(
             defaults: defaults,
             parakeetModelVariantCached: parakeetModelVariantCached,
@@ -896,6 +1134,7 @@ public final class SettingsViewModel {
         }
         appAppearanceMode = AppPreferences.appearanceMode(defaults: defaults)
         showIdlePill = defaults.object(forKey: UserDefaultsAppRuntimePreferences.showIdlePillKey) as? Bool ?? true
+        dictationOverlayPlacement = DictationOverlayPlacement.current(defaults: defaults)
         showDiscover = defaults.object(forKey: UserDefaultsAppRuntimePreferences.showDiscoverKey) as? Bool ?? true
         telemetryEnabled = AppPreferences.isTelemetryEnabled(defaults: defaults)
         notifyOnTranscriptionComplete = defaults.object(
@@ -910,6 +1149,12 @@ public final class SettingsViewModel {
         if resolvedDictationHotkeys.shouldPersistPushToTalk {
             resolvedDictationHotkeys.pushToTalk.save(to: defaults, defaultsKey: HotkeyTrigger.pushToTalkDefaultsKey)
         }
+        alternateHandsFreeHotkeyTrigger = HotkeyTrigger.current(
+            defaults: defaults, defaultsKey: HotkeyTrigger.alternateHandsFreeDefaultsKey, fallback: .disabled
+        )
+        alternatePushToTalkHotkeyTrigger = HotkeyTrigger.current(
+            defaults: defaults, defaultsKey: HotkeyTrigger.alternatePushToTalkDefaultsKey, fallback: .disabled
+        )
         meetingHotkeyTrigger = Self.resolveMeetingHotkeyTrigger(defaults: defaults)
         fileTranscriptionHotkeyTrigger = Self.resolveTranscriptionHotkeyTrigger(
             defaults: defaults,
@@ -919,16 +1164,26 @@ public final class SettingsViewModel {
             defaults: defaults,
             defaultsKey: HotkeyTrigger.youtubeTranscriptionDefaultsKey
         )
+        dictationAIPolishHotkeyTrigger = Self.resolveTranscriptionHotkeyTrigger(
+            defaults: defaults,
+            defaultsKey: HotkeyTrigger.dictationAIPolishDefaultsKey
+        )
         silenceAutoStop = defaults.bool(forKey: UserDefaultsAppRuntimePreferences.silenceAutoStopKey)
         let delay = defaults.double(forKey: UserDefaultsAppRuntimePreferences.silenceDelayKey)
         silenceDelay = delay == 0 ? 2.0 : delay
         keepDictationOnClipboard = defaults.bool(
             forKey: UserDefaultsAppRuntimePreferences.keepDictationOnClipboardKey
         )
+        dictationStreamingCursorEnabled = defaults.object(
+            forKey: UserDefaultsAppRuntimePreferences.dictationStreamingCursorEnabledKey
+        ) as? Bool ?? false
         selectedMicrophoneDeviceUID = Self.normalizedMicrophoneSelection(
             defaults.string(forKey: UserDefaultsAppRuntimePreferences.selectedMicrophoneDeviceUIDKey)
         )
         meetingAudioSourceMode = MeetingAudioSourceMode.current(defaults: defaults)
+        dictationURLControlEnabled = UserDefaultsAppRuntimePreferences.dictationURLControlEnabled(defaults: defaults)
+        meetingURLControlEnabled = UserDefaultsAppRuntimePreferences.meetingURLControlEnabled(defaults: defaults)
+        startMeetingsMuted = UserDefaultsAppRuntimePreferences.startMeetingsMuted(defaults: defaults)
         showMeetingRecordingPill = UserDefaultsAppRuntimePreferences.showMeetingRecordingPill(defaults: defaults)
         openAppAfterMeetingEnd = UserDefaultsAppRuntimePreferences.openAppAfterMeetingEnd(defaults: defaults)
         notifyOnMeetingEnd = UserDefaultsAppRuntimePreferences.notifyOnMeetingEnd(defaults: defaults)
@@ -938,6 +1193,9 @@ public final class SettingsViewModel {
         pauseMediaDuringDictation = defaults.object(
             forKey: UserDefaultsAppRuntimePreferences.pauseMediaDuringDictationKey
         ) as? Bool ?? false
+        playDictationCaptureSounds = UserDefaultsAppRuntimePreferences.playDictationCaptureSounds(defaults: defaults)
+        escapeCancelsDictation = UserDefaultsAppRuntimePreferences.escapeCancelsDictation(defaults: defaults)
+        preserveDiscardedDictations = UserDefaultsAppRuntimePreferences.preserveDiscardedDictations(defaults: defaults)
         instantDictationEnabled = defaults.object(
             forKey: UserDefaultsAppRuntimePreferences.instantDictationEnabledKey
         ) as? Bool ?? false
@@ -955,7 +1213,9 @@ public final class SettingsViewModel {
         // is set (or has never been set, in which case .off is the right default).
         numberRefinementMode = defaults.string(forKey: UserDefaultsAppRuntimePreferences.numberRefinementModeKey)
             ?? NumberRefinementMode.off.rawValue
+        spokenPunctuationEnabled = UserDefaultsAppRuntimePreferences.spokenPunctuationEnabled(defaults: defaults)
         dictationInsertionStyle = DictationInsertionStyle.current(defaults: defaults)
+        removeUmFiller = UserDefaultsAppRuntimePreferences.removeUmFiller(defaults: defaults)
         saveDictationHistory = defaults.object(forKey: UserDefaultsAppRuntimePreferences.saveDictationHistoryKey) as? Bool ?? true
         saveAudioRecordings = defaults.object(forKey: UserDefaultsAppRuntimePreferences.saveAudioRecordingsKey) as? Bool ?? true
         saveTranscriptionAudio = defaults.object(forKey: UserDefaultsAppRuntimePreferences.saveTranscriptionAudioKey) as? Bool ?? true
@@ -976,6 +1236,16 @@ public final class SettingsViewModel {
                 SpeechEnginePreference.whisperTuning(defaults: defaults)
             )
         }
+        meetingLiveTranscriptionEnabled = UserDefaultsAppRuntimePreferences.meetingLiveTranscriptionEnabled(
+            defaults: defaults
+        )
+        // The stored preference, not the resolved gate: the switch has to show
+        // what the user last chose even while the feature flag is off.
+        rememberSpeakers = defaults.object(
+            forKey: UserDefaultsAppRuntimePreferences.rememberSpeakersKey
+        ) as? Bool ?? UserDefaultsAppRuntimePreferences.defaultRememberSpeakersEnabled
+        voiceprintConsentAcknowledgedAt = UserDefaultsAppRuntimePreferences
+            .voiceprintConsentAcknowledgedAt(defaults: defaults)
         // Ensure auto-save folders are configured before reading paths.
         // Idempotent: existing user-chosen folders are preserved; only
         // unset bookmarks get the default. This guarantees the read
@@ -1003,6 +1273,8 @@ public final class SettingsViewModel {
         calendarReminderMinutes = Self.resolveCalendarReminderMinutes(defaults: defaults)
         meetingTriggerFilter = Self.resolveMeetingTriggerFilter(defaults: defaults)
         calendarExcludedIdentifiers = Self.resolveCalendarExcludedIdentifiers(defaults: defaults)
+        calendarSkippedOccurrences = CalendarAutoStartPreferences.skippedOccurrences(defaults: defaults)
+        calendarSkippedEvents = CalendarAutoStartPreferences.skippedEvents(defaults: defaults)
 
         // Keep the transcription toggle consistent with its resolved folder.
         // Meeting auto-save deliberately preserves its enabled preference when
@@ -1043,7 +1315,9 @@ public final class SettingsViewModel {
         }
     }
 
-    private func reloadCalendarSettings() {
+    /// Refresh persisted policy synchronously before a calendar effect or
+    /// reconciliation; notification observers may run in either order.
+    public func reloadCalendarSettings() {
         // Avoid the `didSet` → post-notification → reload → `didSet` loop:
         // re-resolving has to skip the `didSet` write-through. The flag
         // guards the entire batch so partial updates can't fire telemetry
@@ -1063,6 +1337,38 @@ public final class SettingsViewModel {
 
         let resolvedExcluded = Self.resolveCalendarExcludedIdentifiers(defaults: defaults)
         if calendarExcludedIdentifiers != resolvedExcluded { calendarExcludedIdentifiers = resolvedExcluded }
+
+        let resolvedSkippedOccurrences = CalendarAutoStartPreferences.skippedOccurrences(defaults: defaults)
+        if calendarSkippedOccurrences != resolvedSkippedOccurrences {
+            calendarSkippedOccurrences = resolvedSkippedOccurrences
+        }
+        let resolvedSkippedEvents = CalendarAutoStartPreferences.skippedEvents(defaults: defaults)
+        if calendarSkippedEvents != resolvedSkippedEvents {
+            calendarSkippedEvents = resolvedSkippedEvents
+        }
+    }
+
+    public func skipOccurrence(_ event: CalendarEvent) {
+        calendarSkippedOccurrences.insert(event.dedupeKey)
+    }
+
+    public func skipEvent(_ event: CalendarEvent) {
+        calendarSkippedEvents.insert(event.eventKey)
+    }
+
+    public func unskipOccurrence(_ event: CalendarEvent) {
+        calendarSkippedOccurrences.remove(event.dedupeKey)
+    }
+
+    public func unskipEvent(_ event: CalendarEvent) {
+        calendarSkippedEvents.remove(event.eventKey)
+        calendarSkippedOccurrences.remove(event.dedupeKey)
+    }
+
+    public func pruneSkippedOccurrences(now: Date = Date()) {
+        let pruned = CalendarSkip.prunedOccurrences(calendarSkippedOccurrences, now: now)
+        guard pruned != calendarSkippedOccurrences else { return }
+        calendarSkippedOccurrences = pruned
     }
 
     public func setMeetingAudioRetention(_ retention: MeetingAudioRetention) {
@@ -1282,8 +1588,6 @@ public final class SettingsViewModel {
         entitlementsService: EntitlementsService,
         launchAtLoginService: LaunchAtLoginControlling? = nil,
         checkoutURL: URL?,
-        customWordRepo: CustomWordRepositoryProtocol? = nil,
-        snippetRepo: TextSnippetRepositoryProtocol? = nil,
         sttClient: STTClientProtocol? = nil,
         speechEngineSwitcher: SpeechEngineSwitching? = nil,
         speechEngineSwitchAvailabilityProvider: SpeechEngineSwitchAvailabilityProviding? = nil,
@@ -1297,8 +1601,6 @@ public final class SettingsViewModel {
         self.entitlementsService = entitlementsService
         self.launchAtLoginService = launchAtLoginService
         self.checkoutURL = checkoutURL
-        self.customWordRepo = customWordRepo
-        self.snippetRepo = snippetRepo
         engine.configure(
             sttClient: sttClient,
             speechEngineSwitcher: speechEngineSwitcher,
@@ -1354,7 +1656,7 @@ public final class SettingsViewModel {
                 let micStatus = await service.checkMicrophonePermission()
                 let accStatus = service.checkAccessibilityPermission()
                 let screenRecordingStatus = service.checkScreenRecordingPermission()
-                microphoneGranted = micStatus == .granted
+                microphoneStatus = micStatus
                 screenRecordingGranted = screenRecordingStatus
                 applyAccessibilityStatus(accStatus)
             }
@@ -1475,10 +1777,36 @@ public final class SettingsViewModel {
         microphoneTestState = .idle
     }
 
+    public func requestMicrophoneAccess() {
+        guard let permissionService else { return }
+        Telemetry.send(.permissionPrompted(permission: .microphone))
+        Task {
+            let granted = await permissionService.requestMicrophonePermission()
+            if granted {
+                microphoneStatus = .granted
+                Telemetry.send(.permissionGranted(permission: .microphone))
+                sharedMicStream?.prewarmDictation()
+            } else {
+                microphoneStatus = .denied
+                Telemetry.send(.permissionDenied(permission: .microphone))
+            }
+            refreshPermissions()
+        }
+    }
+
+    public func openMicrophoneSystemSettings() {
+        permissionService?.openMicrophoneSettings()
+    }
+
     public func requestScreenRecordingAccess() {
         guard let permissionService else { return }
         Telemetry.send(.permissionPrompted(permission: .screenRecording))
-        _ = permissionService.requestScreenRecordingPermission()
+        // The request prompts only while access is undetermined; after a
+        // denial it returns false silently. Access is granted in System
+        // Settings either way, so take the user there.
+        if !permissionService.requestScreenRecordingPermission() {
+            permissionService.openScreenRecordingSettings()
+        }
         refreshPermissions()
     }
 
@@ -1490,7 +1818,64 @@ public final class SettingsViewModel {
     /// network or disk; just reads `EKEventStore.authorizationStatus` (which
     /// is `nonisolated` on the actor, so no await needed).
     public func refreshCalendarPermission() {
-        calendarPermissionStatus = CalendarService.shared.permissionStatus
+        let status = calendarService.permissionStatus
+        let previousStatus = calendarPermissionStatus
+        calendarPermissionStatus = status
+
+        guard status == .granted else {
+            guard
+                previousStatus == .granted
+                    || !availableCalendars.isEmpty
+                    || calendarListLoadState != .notLoaded
+            else { return }
+
+            calendarRefreshGeneration += 1
+            availableCalendars = []
+            calendarListLoadState = .notLoaded
+            isRefreshingCalendars = false
+            return
+        }
+
+        guard previousStatus != .granted, calendarListLoadState == .notLoaded else { return }
+        Task { await refreshCalendarAccess() }
+    }
+
+    /// Reload Calendar permission and the calendars EventKit currently exposes.
+    /// Multiple lifecycle and user actions can overlap, so only the newest
+    /// request may update the list. A permission change also invalidates any
+    /// in-flight result before it can become visible.
+    public func refreshCalendarAccess() async {
+        calendarRefreshGeneration += 1
+        let generation = calendarRefreshGeneration
+
+        let status = calendarService.permissionStatus
+        calendarPermissionStatus = status
+        guard status == .granted else {
+            availableCalendars = []
+            calendarListLoadState = .notLoaded
+            isRefreshingCalendars = false
+            return
+        }
+
+        if calendarListLoadState != .loaded {
+            calendarListLoadState = .loading
+        }
+        isRefreshingCalendars = true
+        let calendars = await calendarService.availableCalendars()
+
+        guard generation == calendarRefreshGeneration else { return }
+        let refreshedStatus = calendarService.permissionStatus
+        calendarPermissionStatus = refreshedStatus
+        guard refreshedStatus == .granted else {
+            availableCalendars = []
+            calendarListLoadState = .notLoaded
+            isRefreshingCalendars = false
+            return
+        }
+
+        availableCalendars = calendars
+        calendarListLoadState = .loaded
+        isRefreshingCalendars = false
     }
 
     /// Trigger the EventKit permission prompt if not yet decided. Returns the
@@ -1500,12 +1885,12 @@ public final class SettingsViewModel {
     @discardableResult
     public func requestCalendarPermission() async -> Bool {
         Telemetry.send(.permissionPrompted(permission: .calendar))
-        let granted = await CalendarService.shared.requestPermission()
+        let granted = await calendarService.requestPermission()
         // Re-read the status (rather than just assigning .granted/.denied
         // from the bool) so `.restricted` from MDM-managed Macs is reflected
         // accurately — the service maps it to `.denied` so callers don't
         // need a fourth case, but a fresh read is the source of truth.
-        calendarPermissionStatus = CalendarService.shared.permissionStatus
+        calendarPermissionStatus = calendarService.permissionStatus
         Telemetry.send(granted ? .permissionGranted(permission: .calendar) : .permissionDenied(permission: .calendar))
         if granted {
             await CalendarNotificationAuthorization.requestIfNeeded()
@@ -1521,7 +1906,18 @@ public final class SettingsViewModel {
     }
 
     public func openCalendarSystemSettings() {
-        if NSWorkspace.shared.open(CalendarService.settingsURL) { return }
+        _ = openURL(CalendarService.settingsURL)
+    }
+
+    /// Opens the account source used by EventKit. Pane identifiers have changed
+    /// across macOS releases, and a successful open does not guarantee the pane
+    /// was selected, so the UI also keeps the manual navigation path visible.
+    public func openInternetAccountsSystemSettings() {
+        openFirstSystemSettingsURL(from: [
+            "x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension",
+            "x-apple.systempreferences:com.apple.preference.internetaccounts",
+            "x-apple.systempreferences:",
+        ])
     }
 
     /// Refresh the cached notification-authorization state. Cheap async read
@@ -1534,12 +1930,15 @@ public final class SettingsViewModel {
     /// Deep-link to the Notifications pane in System Settings. The pane id
     /// changed across macOS versions, so try the modern one first.
     public func openNotificationSystemSettings() {
-        let candidates = [
+        openFirstSystemSettingsURL(from: [
             "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
             "x-apple.systempreferences:com.apple.preference.notifications",
-        ]
+        ])
+    }
+
+    private func openFirstSystemSettingsURL(from candidates: [String]) {
         for string in candidates {
-            if let url = URL(string: string), NSWorkspace.shared.open(url) { return }
+            if let url = URL(string: string), openURL(url) { return }
         }
     }
 
@@ -1567,10 +1966,6 @@ public final class SettingsViewModel {
         guard let repo = dictationRepo else { return }
         do { dictationCount = try repo.stats().visibleCount }
         catch { logger.error("Failed to load dictation stats: \(error.localizedDescription)") }
-        do { customWordCount = try customWordRepo?.fetchAll().count ?? 0 }
-        catch { logger.error("Failed to load custom word count: \(error.localizedDescription)") }
-        do { snippetCount = try snippetRepo?.fetchAll().count ?? 0 }
-        catch { logger.error("Failed to load snippet count: \(error.localizedDescription)") }
 
         refreshStorageStats()
     }
@@ -1777,22 +2172,22 @@ public final class SettingsViewModel {
             return
         }
 
-        do {
-            try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-            try TranscriptionAssetCleanup.removeManagedMeetingAudioFiles(under: dir, fileManager: fm)
-        } catch {
-            logger.error("Failed to clear meeting audio files error=\(error.localizedDescription, privacy: .public)")
-            storageCleanupError = "Could not clear meeting audio: \(error.localizedDescription)"
+        guard let repo = transcriptionRepo else {
+            storageCleanupError = "Could not clear meeting audio: transcription storage is unavailable."
             refreshStats()
             refreshPendingMeetingRecoveries()
             return
         }
 
         do {
-            try transcriptionRepo?.clearStoredAudioPathsForMeetingTranscriptions(under: dir)
+            try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            try TranscriptionAssetCleanup.clearManagedMeetingAudio(under: dir, repository: repo, fileManager: fm)
         } catch {
-            logger.error("Failed to clear stored meeting audio paths error=\(error.localizedDescription, privacy: .public)")
-            storageCleanupError = "Could not detach meeting audio from transcripts: \(error.localizedDescription)"
+            logger.error("Failed to clear meeting audio error=\(error.localizedDescription, privacy: .public)")
+            storageCleanupError = "Could not clear meeting audio: \(error.localizedDescription)"
+            refreshStats()
+            refreshPendingMeetingRecoveries()
+            return
         }
         refreshStats()
         refreshPendingMeetingRecoveries()

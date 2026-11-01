@@ -49,6 +49,121 @@ final class LLMHTTPAdapterTests: XCTestCase {
         AdapterRequestURLProtocol.handler = nil
     }
 
+    func testKnowledgeCardRecoveryUsesOpenAIWireLimitsFinishReasonAndUsage() async throws {
+        var requestCount = 0
+        AdapterRequestURLProtocol.handler = { request in
+            let body = try self.jsonBody(from: request)
+            let limit = try XCTUnwrap(body["max_tokens"] as? Int)
+            requestCount += 1
+            XCTAssertEqual(limit, requestCount == 1 ? 700 : 4_096)
+            XCTAssertNotNil(body["response_format"])
+            let output =
+                requestCount == 1
+                ? "{\"synopsis\":"
+                : """
+                {"synopsis":"Synthetic release review.","topics":[],"decisions":[],"actions":[]}
+                """
+            let response: [String: Any] = [
+                "model": "gpt-4.1",
+                "choices": [
+                    [
+                        "message": ["role": "assistant", "content": output],
+                        "finish_reason": requestCount == 1 ? "length" : "stop",
+                    ]
+                ],
+                "usage": ["prompt_tokens": 100, "completion_tokens": requestCount == 1 ? 700 : 900],
+            ]
+            return (self.okResponse(for: request), try JSONSerialization.data(withJSONObject: response))
+        }
+        let service = LLMService(
+            client: LLMClient(session: session),
+            contextResolver: StaticLLMExecutionContextResolver(
+                context: LLMExecutionContext(providerConfig: .openai(apiKey: "test", model: "gpt-4.1"))))
+
+        let result = try await service.generateKnowledgeCard(transcript: "Synthetic release review.", source: .file)
+
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(result.stopReason, "stop")
+        XCTAssertEqual(result.usage?.completionTokens, 1_600)
+    }
+
+    func testKnowledgeCardKeepsInitialLimitAcceptedByCustomOpenAIEndpoint() async throws {
+        var limits: [Int] = []
+        AdapterRequestURLProtocol.handler = { request in
+            let body = try self.jsonBody(from: request)
+            let limit = try XCTUnwrap(body["max_tokens"] as? Int)
+            limits.append(limit)
+            if limit > 1_024 {
+                let response = try XCTUnwrap(
+                    HTTPURLResponse(url: request.url!, statusCode: 400, httpVersion: nil, headerFields: nil))
+                return (response, Data(#"{"error":{"message":"max_tokens exceeds endpoint capacity"}}"#.utf8))
+            }
+            let output = """
+                {"synopsis":"Synthetic card.","topics":[],"decisions":[],"actions":[]}
+                """
+            let response: [String: Any] = [
+                "model": "custom-small",
+                "choices": [["message": ["role": "assistant", "content": output], "finish_reason": "stop"]],
+            ]
+            return (self.okResponse(for: request), try JSONSerialization.data(withJSONObject: response))
+        }
+        let context = LLMExecutionContext(
+            providerConfig: .openai(
+                apiKey: "test", model: "custom-small", baseURL: URL(string: "https://small-model.invalid/v1")!))
+        let client = LLMClient(session: session)
+        // Negative control: this supported endpoint rejects the proposed larger first request.
+        await XCTAssertThrowsErrorAsync {
+            _ = try await client.chatCompletion(
+                messages: [ChatMessage(role: .user, content: "Synthetic transcript.")], context: context,
+                options: ChatCompletionOptions(maxTokens: 2_048, responseFormat: LLMService.knowledgeCardResponseFormat)
+            )
+        }
+        let service = LLMService(
+            client: client, contextResolver: StaticLLMExecutionContextResolver(context: context))
+
+        let result = try await service.generateKnowledgeCard(transcript: "Synthetic transcript.", source: .file)
+
+        XCTAssertEqual(limits, [2_048, 700])
+        XCTAssertEqual(result.stopReason, "stop")
+    }
+
+    func testOllamaKnowledgeCardActuallySendsBoundedOptionsWithoutChangingGenericRequests() async throws {
+        var requestCount = 0
+        AdapterRequestURLProtocol.handler = { request in
+            requestCount += 1
+            let body = try self.jsonBody(from: request)
+            XCTAssertEqual(body["think"] as? Bool, false)
+            let options = try XCTUnwrap(body["options"] as? [String: Any])
+            XCTAssertEqual(options["num_ctx"] as? Int, 8_192)
+            XCTAssertEqual(options["num_predict"] as? Int, 2_048)
+            XCTAssertEqual(options["temperature"] as? Double, 0.1)
+            let output = """
+                {"synopsis":"Synthetic release review.","topics":[],"decisions":[],"actions":[]}
+                """
+            let response: [String: Any] = [
+                "model": "fixture-model", "message": ["role": "assistant", "content": output],
+                "done": true, "done_reason": "stop", "prompt_eval_count": 100, "eval_count": 800,
+            ]
+            return (self.okResponse(for: request), try JSONSerialization.data(withJSONObject: response))
+        }
+        let config = LLMProviderConfig.ollama(model: "fixture-model")
+        let service = LLMService(
+            client: LLMClient(session: session),
+            contextResolver: StaticLLMExecutionContextResolver(context: LLMExecutionContext(providerConfig: config)))
+
+        let result = try await service.generateKnowledgeCard(transcript: "Synthetic release review.", source: .file)
+
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(result.usage?.completionTokens, 800)
+        let genericRequest = try ollamaAdapter.buildRequest(
+            messages: [ChatMessage(role: .user, content: "Synthetic generic request")],
+            config: config, options: ChatCompletionOptions(temperature: 0.1, maxTokens: 700), stream: false)
+        let genericBody = try jsonBody(from: genericRequest)
+        let genericOptions = try XCTUnwrap(genericBody["options"] as? [String: Any])
+        XCTAssertNil(genericOptions["num_predict"])
+        XCTAssertNil(genericOptions["temperature"])
+    }
+
     func testOpenCodeServicePreservesConversationIdentityForNonstreamingChat() async throws {
         let conversationID = UUID()
         var sessionIDs: [String?] = []
@@ -331,7 +446,7 @@ final class LLMHTTPAdapterTests: XCTestCase {
         let request = try XCTUnwrap(capturedRequest)
         XCTAssertEqual(request.url?.absoluteString, "https://api.openai.com/v1/chat/completions")
         XCTAssertEqual(request.httpMethod, "POST")
-        XCTAssertEqual(request.timeoutInterval, 30)
+        XCTAssertEqual(request.timeoutInterval, 300)
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer sk-golden")
         XCTAssertEqual(
@@ -513,20 +628,294 @@ final class LLMHTTPAdapterTests: XCTestCase {
     }
 
     func testOpenAIShouldOmitTemperatureModelMatrix() {
-        let rejecting = ["o3", "o4-mini", "gpt-5.5", "gpt-5.4", "gpt-5.4-nano", "GPT-5.4-Mini", "gpt-10"]
+        let rejecting = [
+            "o3", "o4-mini", "gpt-5.5", "gpt-5.4", "gpt-5.4-nano", "GPT-5.4-Mini", "gpt-10",
+            "gpt-5.6-sol", "gpt-5.6-luna", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
+            "kimi-k2.6", "moonshotai/kimi-k2.6", "kimi-k3", "kimi-k2.7-code",
+        ]
         for model in rejecting {
             XCTAssertTrue(
                 OpenAICompatibleLLMHTTPAdapter.openAIShouldOmitTemperature(model),
                 "\(model) should omit temperature"
             )
         }
-        let accepting = ["gpt-5.3-chat-latest", "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "chatgpt-4o-latest"]
+        let accepting = [
+            "gpt-5.3-chat-latest", "openai/gpt-5.3-chat-latest", "gpt-4.1", "gpt-4.1-mini",
+            "gpt-4o", "chatgpt-4o-latest", "local-model", "gpt-oss-120b",
+            "qwen3.7-max", "glm-5.1", "MiniMax-M2.7", "deepseek-v4-flash",
+        ]
         for model in accepting {
             XCTAssertFalse(
                 OpenAICompatibleLLMHTTPAdapter.openAIShouldOmitTemperature(model),
                 "\(model) should keep temperature"
             )
         }
+    }
+
+    func testGemini3PromptResolutionOmitsInheritedTemperatureButSendsHistoricalOverride() throws {
+        let config = LLMProviderConfig.gemini(apiKey: "key", model: "gemini-3.5-flash")
+        let automatic = try PromptInferenceCapabilityResolver.resolve(config: config, requested: nil)
+        let automaticRequest = try openAIAdapter.buildRequest(
+            messages: goldenMessages,
+            config: config,
+            options: automatic.options,
+            stream: false
+        )
+        XCTAssertNil(try jsonBody(from: automaticRequest)["temperature"])
+
+        let historicalReceipt = try PromptInferenceCapabilityResolver.resolve(
+            config: config,
+            requested: PromptInferenceSettings(temperature: 0.7)
+        )
+        let historicalRequest = try openAIAdapter.buildRequest(
+            messages: goldenMessages,
+            config: config,
+            options: historicalReceipt.options,
+            stream: false
+        )
+        XCTAssertEqual(try jsonBody(from: historicalRequest)["temperature"] as? Double, 0.7)
+    }
+
+    func testKimiRequestsOmitIllegalTemperatureOnEveryCompatiblePath() throws {
+        let options = ChatCompletionOptions(temperature: 0.7, maxTokens: 256)
+        let configs: [LLMProviderConfig] = [
+            .moonshot(apiKey: "key", model: "kimi-k2.6"),
+            .openrouter(apiKey: "key", model: "moonshotai/kimi-k2.6"),
+            .openaiCompatible(
+                apiKey: "key",
+                model: "kimi-k2.6",
+                baseURL: URL(string: "https://api.moonshot.ai/v1")!
+            ),
+        ]
+        for config in configs {
+            let request = try openAIAdapter.buildRequest(
+                messages: goldenMessages,
+                config: config,
+                options: options,
+                stream: false
+            )
+            let body = try jsonBody(from: request)
+            XCTAssertNil(body["temperature"], "\(config.id.rawValue) \(config.modelName) must omit temperature")
+            XCTAssertNil(body["top_p"])
+            XCTAssertEqual(body["model"] as? String, config.modelName)
+        }
+    }
+
+    func testCustomOpenAICompatibleKimiOmitsTemperatureAndUsesLlamaCppKwargs() throws {
+        let config = LLMProviderConfig.openaiCompatible(
+            apiKey: "key",
+            model: "kimi-k2.6",
+            baseURL: URL(string: "https://api.moonshot.ai/v1")!
+        )
+        let resolution = try PromptInferenceCapabilityResolver.resolve(
+            config: config,
+            requested: PromptInferenceSettings(temperature: 0.7, thinkingMode: .disabled)
+        )
+        let request = try openAIAdapter.buildRequest(
+            messages: goldenMessages,
+            config: config,
+            options: resolution.options,
+            stream: false
+        )
+        let body = try jsonBody(from: request)
+        XCTAssertNil(body["temperature"])
+        XCTAssertNil(body["thinking"])
+        XCTAssertEqual(
+            (body["chat_template_kwargs"] as? [String: Any])?["enable_thinking"] as? Bool,
+            false
+        )
+    }
+
+    func testQwenNativeThinkingUsesEnableThinkingFlag() throws {
+        let request = try openAIAdapter.buildRequest(
+            messages: goldenMessages,
+            config: .qwen(apiKey: "key"),
+            options: ChatCompletionOptions(temperature: 0.7, thinkingMode: .enabled),
+            stream: false
+        )
+        let body = try jsonBody(from: request)
+        XCTAssertEqual(body["temperature"] as? Double, 0.7)
+        XCTAssertEqual(body["enable_thinking"] as? Bool, true)
+        XCTAssertNil(body["thinking"])
+    }
+
+    func testMiniMaxEnabledThinkingUsesAdaptiveType() throws {
+        let request = try openAIAdapter.buildRequest(
+            messages: goldenMessages,
+            config: .minimax(apiKey: "key", model: "MiniMax-M3"),
+            options: ChatCompletionOptions(temperature: 0.7, thinkingMode: .enabled),
+            stream: false
+        )
+        let body = try jsonBody(from: request)
+        XCTAssertEqual(body["temperature"] as? Double, 0.7)
+        XCTAssertEqual((body["thinking"] as? [String: String])?["type"], "adaptive")
+    }
+
+    func testOpenRouterDoesNotForwardLabThinkingObjects() throws {
+        let request = try openAIAdapter.buildRequest(
+            messages: goldenMessages,
+            config: .openrouter(apiKey: "key", model: "moonshotai/kimi-k2.6"),
+            options: ChatCompletionOptions(temperature: 0.7, thinkingMode: .disabled),
+            stream: false
+        )
+        let body = try jsonBody(from: request)
+        XCTAssertNil(body["temperature"])
+        XCTAssertNil(body["thinking"])
+        XCTAssertNil(body["enable_thinking"])
+    }
+
+    func testDeepSeekKeepsTemperatureWithThinkingOn() throws {
+        let resolution = try PromptInferenceCapabilityResolver.resolve(
+            config: .deepseek(apiKey: "key"),
+            requested: PromptInferenceSettings(temperature: 0.4, thinkingMode: .enabled)
+        )
+        let request = try openAIAdapter.buildRequest(
+            messages: goldenMessages,
+            config: .deepseek(apiKey: "key"),
+            options: resolution.options,
+            stream: false
+        )
+        let body = try jsonBody(from: request)
+        XCTAssertEqual(body["temperature"] as? Double, 0.4)
+        XCTAssertEqual((body["thinking"] as? [String: String])?["type"], "enabled")
+    }
+
+    func testLocalOpenAICompatibleQwenKeepsLlamaCppKwargs() throws {
+        let config = LLMProviderConfig.openaiCompatible(
+            apiKey: "key",
+            model: "qwen2.5-32b-instruct",
+            baseURL: URL(string: "http://127.0.0.1:8080/v1")!
+        )
+        let resolution = try PromptInferenceCapabilityResolver.resolve(
+            config: config,
+            requested: PromptInferenceSettings(temperature: 0.4, thinkingMode: .disabled)
+        )
+        let request = try openAIAdapter.buildRequest(
+            messages: goldenMessages,
+            config: config,
+            options: resolution.options,
+            stream: false
+        )
+        let body = try jsonBody(from: request)
+        XCTAssertEqual(body["temperature"] as? Double, 0.4)
+        XCTAssertNil(body["enable_thinking"])
+        XCTAssertEqual((body["chat_template_kwargs"] as? [String: Any])?["enable_thinking"] as? Bool, false)
+    }
+
+    func testChinaLabStructuredOutputUsesPromptEmbeddedSchema() {
+        let client = LLMClient()
+        XCTAssertEqual(
+            client.structuredOutputCapability(context: LLMExecutionContext(providerConfig: .deepseek(apiKey: "key"))),
+            .promptEmbeddedJSONSchema
+        )
+        XCTAssertEqual(
+            client.structuredOutputCapability(context: LLMExecutionContext(providerConfig: .qwen(apiKey: "key"))),
+            .promptEmbeddedJSONSchema
+        )
+        XCTAssertEqual(
+            client.structuredOutputCapability(
+                context: LLMExecutionContext(providerConfig: .openai(apiKey: "sk", model: "gpt-4o"))),
+            .nativeJSONSchema
+        )
+    }
+
+    func testOpenAICompatibleGatewayGPT56UsesNativeOpenAIParameterPolicy() async throws {
+        var capturedRequest: URLRequest?
+
+        AdapterRequestURLProtocol.handler = { request in
+            capturedRequest = request
+            return (self.okResponse(for: request), self.validOpenAIResponseData())
+        }
+
+        let providerConfig = LLMProviderConfig.openaiCompatible(
+            apiKey: "vck-test",
+            model: "openai/gpt-5.6-luna",
+            baseURL: URL(string: "https://ai-gateway.vercel.sh/v1")!
+        )
+        let resolution = try PromptInferenceCapabilityResolver.resolve(
+            config: providerConfig,
+            requested: PromptInferenceSettings(
+                temperature: 0.2,
+                topP: 0.9,
+                topK: 20,
+                maxTokens: 4096,
+                thinkingMode: .enabled,
+                reasoningEffort: .medium
+            )
+        )
+
+        _ = try await openAIAdapter.chatCompletion(
+            messages: goldenMessages,
+            config: providerConfig,
+            options: resolution.options
+        )
+
+        try assertJSONBody(
+            try XCTUnwrap(capturedRequest),
+            equals: """
+                {"max_completion_tokens":4096,"messages":[{"content":"System","role":"system"},{"content":"Hello","role":"user"}],"model":"openai/gpt-5.6-luna","stream":false}
+                """
+        )
+        XCTAssertEqual(resolution.effectiveSettings, PromptInferenceSettings(maxTokens: 4096))
+        XCTAssertEqual(
+            resolution.unsupportedSettings,
+            [.temperature, .topP, .topK, .thinkingMode, .reasoningEffort]
+        )
+    }
+
+    func testOpenRouterGatewayGPT56UsesNativeOpenAIParameterPolicy() async throws {
+        var capturedRequest: URLRequest?
+
+        AdapterRequestURLProtocol.handler = { request in
+            capturedRequest = request
+            return (self.okResponse(for: request), self.validOpenAIResponseData())
+        }
+
+        let providerConfig = LLMProviderConfig.openrouter(
+            apiKey: "sk-or-test",
+            model: "openai/gpt-5.6-sol"
+        )
+        let resolution = try PromptInferenceCapabilityResolver.resolve(
+            config: providerConfig,
+            requested: PromptInferenceSettings(temperature: 0.2, maxTokens: 2048)
+        )
+
+        _ = try await openAIAdapter.chatCompletion(
+            messages: goldenMessages,
+            config: providerConfig,
+            options: resolution.options
+        )
+
+        try assertJSONBody(
+            try XCTUnwrap(capturedRequest),
+            equals: """
+                {"max_completion_tokens":2048,"messages":[{"content":"System","role":"system"},{"content":"Hello","role":"user"}],"model":"openai/gpt-5.6-sol","stream":false}
+                """
+        )
+        XCTAssertEqual(resolution.effectiveSettings, PromptInferenceSettings(maxTokens: 2048))
+        XCTAssertEqual(resolution.unsupportedSettings, [.temperature])
+    }
+
+    func testLMStudioKeepsMaxTokensEvenWhenModelIDLooksLikeGPT5() async throws {
+        var capturedRequest: URLRequest?
+
+        AdapterRequestURLProtocol.handler = { request in
+            capturedRequest = request
+            return (self.okResponse(for: request), self.validOpenAIResponseData())
+        }
+
+        _ = try await openAIAdapter.chatCompletion(
+            messages: goldenMessages,
+            config: .lmstudio(model: "gpt-5.5"),
+            options: ChatCompletionOptions(temperature: 0.2, maxTokens: 256)
+        )
+
+        try assertJSONBody(
+            try XCTUnwrap(capturedRequest),
+            equals: """
+                {"max_tokens":256,"messages":[{"content":"System","role":"system"},{"content":"Hello","role":"user"}],"model":"gpt-5.5","stream":false,"temperature":0.2}
+                """
+        )
     }
 
     func testOpenAICompatibleAdapterEncodesNullableKnowledgeCardOwnerSchema() async throws {
@@ -662,7 +1051,7 @@ final class LLMHTTPAdapterTests: XCTestCase {
         let request = try XCTUnwrap(capturedRequest)
         XCTAssertEqual(request.url?.absoluteString, "https://api.anthropic.com/v1/messages")
         XCTAssertEqual(request.httpMethod, "POST")
-        XCTAssertEqual(request.timeoutInterval, 30)
+        XCTAssertEqual(request.timeoutInterval, 300)
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
         XCTAssertEqual(request.value(forHTTPHeaderField: "x-api-key"), "sk-ant-golden")
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))

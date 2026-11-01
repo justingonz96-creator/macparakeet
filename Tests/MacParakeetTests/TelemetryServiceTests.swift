@@ -450,7 +450,8 @@ final class TelemetryServiceTests: XCTestCase {
             let service = TelemetryService(
                 baseURL: URL(string: "https://localhost:9999")!, session: makeSession(),
                 isTransportEligible: {
-                    TelemetryPolicy.guiTransportEligible(env: policy.env, isDebug: policy.debug,
+                    TelemetryPolicy.guiTransportEligible(
+                        env: policy.env, isDebug: policy.debug,
                         buildSource: policy.source, version: "0.8.0")
                 },
                 isEnabled: { false }
@@ -469,7 +470,8 @@ final class TelemetryServiceTests: XCTestCase {
         let service = TelemetryService(
             baseURL: URL(string: "https://localhost:9999")!, session: makeSession(),
             isTransportEligible: {
-                TelemetryPolicy.guiTransportEligible(env: [:], isDebug: false,
+                TelemetryPolicy.guiTransportEligible(
+                    env: [:], isDebug: false,
                     buildSource: "dist-xcodebuild-release", version: "0.8.0")
             },
             isEnabled: { false }
@@ -477,16 +479,20 @@ final class TelemetryServiceTests: XCTestCase {
         service.send(.appLaunched)
         let delivered = await service.sendAndFlush(.telemetryOptedOut)
         XCTAssertTrue(delivered)
-        XCTAssertEqual(TelemetryMockURLProtocol.recordedPayloads().flatMap(\.events).map(\.event),
-                       [TelemetryEventName.telemetryOptedOut.rawValue])
+        XCTAssertEqual(
+            TelemetryMockURLProtocol.recordedPayloads().flatMap(\.events).map(\.event),
+            [TelemetryEventName.telemetryOptedOut.rawValue])
     }
 
     func testGUIDevelopmentPolicyAndConsent() {
-        func enabled(_ env: [String: String] = [:], debug: Bool = false,
-                     source: String = "dist-xcodebuild-release", version: String = "0.8.0",
-                     consent: Bool = true) -> Bool {
-            TelemetryPolicy.guiEnabled(preferenceEnabled: consent, env: env, isDebug: debug,
-                                       buildSource: source, version: version)
+        func enabled(
+            _ env: [String: String] = [:], debug: Bool = false,
+            source: String = "dist-xcodebuild-release", version: String = "0.8.0",
+            consent: Bool = true
+        ) -> Bool {
+            TelemetryPolicy.guiEnabled(
+                preferenceEnabled: consent, env: env, isDebug: debug,
+                buildSource: source, version: version)
         }
         XCTAssertTrue(enabled())
         XCTAssertFalse(enabled(debug: true))
@@ -584,8 +590,9 @@ final class TelemetryServiceTests: XCTestCase {
 
         service.flushForTermination()
 
-        XCTAssertEqual(TelemetryMockURLProtocol.recordedPayloads().count, 1,
-                       "Termination must honor the server retry floor even for the final opt-out event")
+        XCTAssertEqual(
+            TelemetryMockURLProtocol.recordedPayloads().count, 1,
+            "Termination must honor the server retry floor even for the final opt-out event")
         XCTAssertEqual(service.pendingEventCount, 0, "The best-effort termination queue is discarded")
     }
 
@@ -718,7 +725,8 @@ final class TelemetryServiceTests: XCTestCase {
             spec: .errorOccurred(
                 domain: "Test",
                 code: "42",
-                description: "Failed /Users/alice/secret.wav\nvia https://example.com/token?\(String(repeating: "x", count: 600))"
+                description:
+                    "Failed /Users/alice/secret.wav\nvia https://example.com/token?\(String(repeating: "x", count: 600))"
             ),
             appVer: "0.4.2",
             osVer: "15.3",
@@ -828,10 +836,12 @@ final class TelemetryServiceTests: XCTestCase {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         let withPriorProps = try XCTUnwrap(
-            (JSONSerialization.jsonObject(with: try encoder.encode(withPrior)) as? [String: Any])?["props"] as? [String: String]
+            (JSONSerialization.jsonObject(with: try encoder.encode(withPrior)) as? [String: Any])?["props"]
+                as? [String: String]
         )
         let withoutPriorProps = try XCTUnwrap(
-            (JSONSerialization.jsonObject(with: try encoder.encode(withoutPrior)) as? [String: Any])?["props"] as? [String: String]
+            (JSONSerialization.jsonObject(with: try encoder.encode(withoutPrior)) as? [String: Any])?["props"]
+                as? [String: String]
         )
 
         XCTAssertEqual(withPriorProps["source"], "meeting")
@@ -1087,6 +1097,16 @@ final class TelemetryServiceTests: XCTestCase {
         XCTAssertEqual(TelemetryURLPlatform(nil), .other)
     }
 
+    func testDictationURLTriggerSerializesOnlyBoundedMetadata() throws {
+        let event = TelemetryEvent(
+            spec: .dictationStarted(trigger: .urlControl, mode: .persistent),
+            appVer: "test", osVer: "test", locale: "en-US", chip: "test", session: "test"
+        )
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(event)) as? [String: Any])
+        let props = try XCTUnwrap(json["props"] as? [String: String])
+        XCTAssertEqual(props, ["trigger": "url_control", "mode": "persistent"])
+    }
+
     func testCanonicalOperationBucketsUnknownEngineVariant() throws {
         let event = TelemetryEvent(
             spec: .dictationOperation(
@@ -1255,6 +1275,36 @@ final class TelemetryServiceTests: XCTestCase {
         XCTAssertEqual(props["outcome"], "cancelled")
         XCTAssertEqual(props["cancel_reason"], "escape")
         XCTAssertNil(props["error_type"])
+        XCTAssertNil(props["capture_ms"])
+        XCTAssertNil(props["transcribe_ms"])
+    }
+
+    func testDictationInsertSerializesPhaseMilliseconds() throws {
+        let event = TelemetryEvent(
+            spec: .dictationInsert(
+                operationID: "op-dict",
+                captureMs: 40,
+                transcribeMs: 80,
+                pasteMs: 20,
+                e2eMs: 140
+            ),
+            appVer: "0.8.3",
+            osVer: "15.5",
+            locale: "en-US",
+            chip: "Apple M4",
+            session: "test-session"
+        )
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let data = try encoder.encode(event)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let props = try XCTUnwrap(json["props"] as? [String: String])
+        XCTAssertEqual(json["event"] as? String, "dictation_insert")
+        XCTAssertEqual(props["operation_id"], "op-dict")
+        XCTAssertEqual(props["capture_ms"], "40")
+        XCTAssertEqual(props["transcribe_ms"], "80")
+        XCTAssertEqual(props["paste_ms"], "20")
+        XCTAssertEqual(props["e2e_ms"], "140")
     }
 
     func testModelOperationSerializesSafeLifecycleDimensions() throws {
@@ -1558,9 +1608,9 @@ final class TelemetryServiceTests: XCTestCase {
         let cases: [(String, TelemetryAppCategory)] = [
             ("com.apple.Safari", .browser),
             ("com.google.Chrome", .browser),
-            ("com.google.Chrome.canary", .browser),       // prefix match
-            ("company.thebrowser.Browser", .browser),     // Arc
-            ("com.tinyspeck.slackmacgap", .messaging),    // Slack
+            ("com.google.Chrome.canary", .browser),  // prefix match
+            ("company.thebrowser.Browser", .browser),  // Arc
+            ("com.tinyspeck.slackmacgap", .messaging),  // Slack
             ("com.hnc.Discord", .messaging),
             ("com.apple.mail", .email),
             ("com.microsoft.Outlook", .email),
@@ -1570,9 +1620,9 @@ final class TelemetryServiceTests: XCTestCase {
             ("com.microsoft.Word", .docs),
             ("com.apple.dt.Xcode", .code),
             ("com.microsoft.VSCode", .code),
-            ("com.microsoft.VSCodeInsiders", .code),      // prefix match
-            ("com.jetbrains.intellij", .code),            // prefix match
-            ("com.todesktop.230313mzl4w4u92", .code),     // Cursor
+            ("com.microsoft.VSCodeInsiders", .code),  // prefix match
+            ("com.jetbrains.intellij", .code),  // prefix match
+            ("com.todesktop.230313mzl4w4u92", .code),  // Cursor
             ("com.google.android.studio", .code),
             ("com.apple.Terminal", .terminal),
             ("com.googlecode.iterm2", .terminal),
@@ -1697,7 +1747,8 @@ final class TelemetryServiceTests: XCTestCase {
         XCTAssertEqual(event.props?["signature"], "mic_silent")
         XCTAssertEqual(event.props?["elapsed_ms"], "3250")
         XCTAssertEqual(event.props?["stall_count"], "1")
-        XCTAssertEqual(Set(event.props?.keys ?? Dictionary<String, String>().keys), ["signature", "elapsed_ms", "stall_count"])
+        XCTAssertEqual(
+            Set(event.props?.keys ?? Dictionary<String, String>().keys), ["signature", "elapsed_ms", "stall_count"])
     }
 
     func testMicStallDetectedSerializesSummaryShape() {
@@ -1775,6 +1826,106 @@ final class TelemetryServiceTests: XCTestCase {
         }
     }
 
+    func testAudioEngineLifecycleEnvelopePreservesSlowDiagnosticSemantics() throws {
+        let snapshot = sampleAudioEngineLifecycle()
+        let event = TelemetryEvent(
+            spec: .audioEngineLifecycle(snapshot), appVer: "0.8.0", osVer: "26.0",
+            locale: "en-US", chip: "Apple M1", session: "test-session"
+        )
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(event)) as? [String: Any])
+        XCTAssertEqual(json["event"] as? String, "audio_engine_lifecycle")
+        let props = try XCTUnwrap(json["props"] as? [String: String])
+        XCTAssertEqual(props, snapshot.props)
+        XCTAssertEqual(props["outcome"], "slow")
+        XCTAssertNil(props["operation_id"], "Engine diagnostics must not pretend to be product operation outcomes")
+        XCTAssertNotNil(json["event_id"], "Delivery deduplication remains distinct from attempt correlation")
+    }
+
+    func testQueuedEventsCarrySanitizedBuildProvenance() throws {
+        let event = TelemetryEvent(
+            spec: .appLaunched, appVer: "0.8.0", osVer: "26.0",
+            locale: "en-US", chip: "Apple M4", session: "test-session",
+            gitCommit: Observability.sanitizedGitCommit("CA13604B4C7B"),
+            buildNumber: Observability.sanitizedBuildNumber("20260913.1")
+        )
+        XCTAssertEqual(event.props?["git_commit"], "ca13604b4c7b")
+        XCTAssertEqual(event.props?["build_number"], "20260913.1")
+        XCTAssertEqual(Observability.sanitizedGitCommit("/Users/me/secret"), "unknown")
+        XCTAssertEqual(Observability.sanitizedBuildNumber("build number with space"), "unknown")
+    }
+
+    func testMeetingOperationSerializesCaptureStartCompleted() {
+        let event = TelemetryEventSpec.meetingOperation(
+            operationID: "op-meeting",
+            outcome: .failure,
+            trigger: .manual,
+            stage: .startRecording,
+            durationSeconds: 12.5,
+            liveWordCount: nil,
+            liveTranscriptLagged: nil,
+            microphoneTrackPresent: nil,
+            systemTrackPresent: nil,
+            notesUsed: nil,
+            notesLengthBucket: nil,
+            errorType: "timeout",
+            captureStartCompleted: false
+        )
+        XCTAssertEqual(event.props?["capture_start_completed"], "false")
+        XCTAssertEqual(event.props?["stage"], "start_recording")
+    }
+
+    func testBuildProvenanceKeepsSampleEventsUnderIngestionPropCeiling() {
+        for spec in sampleEvents() {
+            let event = TelemetryEvent(
+                spec: spec, appVer: "0.8.0", osVer: "26.0",
+                locale: "en-US", chip: "Apple M4", session: "test-session",
+                gitCommit: "ca13604b4c7b",
+                buildNumber: "20260913.1"
+            )
+            XCTAssertLessThanOrEqual(
+                event.props?.count ?? 0, 40,
+                "Provenance must not push \(spec.name.rawValue) over the Worker 40-prop limit"
+            )
+            XCTAssertEqual(event.props?["git_commit"], "ca13604b4c7b")
+            XCTAssertEqual(event.props?["build_number"], "20260913.1")
+        }
+    }
+
+    func testMeetingOperationSerializesCaptureFactsWithoutTrackClaims() {
+        let event = TelemetryEventSpec.meetingOperation(
+            operationID: "op-meeting",
+            outcome: .failure,
+            trigger: .manual,
+            stage: .stopRecording,
+            durationSeconds: 428,
+            liveWordCount: 0,
+            liveTranscriptLagged: false,
+            microphoneTrackPresent: nil,
+            systemTrackPresent: nil,
+            notesUsed: nil,
+            notesLengthBucket: nil,
+            errorType: "no_audio_captured",
+            captureStartCompleted: true,
+            captureDiagnostics: MeetingCaptureDiagnostics(
+                captureStartCompleted: false,
+                sourceMode: .microphoneAndSystem,
+                elapsedSeconds: 428,
+                microphoneFrames: 0,
+                systemFrames: 16_000
+            )
+        )
+        XCTAssertEqual(
+            event.props?["capture_start_completed"], "false", "Measured facts win over an output-derived fallback")
+        XCTAssertEqual(event.props?["capture_source_mode"], "microphone_and_system")
+        XCTAssertEqual(event.props?["microphone_frames"], "0")
+        XCTAssertEqual(event.props?["system_frames"], "16000")
+        XCTAssertNil(event.props?["microphone_track_present"])
+        XCTAssertNil(event.props?["system_track_present"])
+        XCTAssertLessThanOrEqual(event.props?.count ?? 0, 38, "Leave room for two build provenance properties")
+    }
+
     func testHotkeyCustomizedPropsUseStructuralCategoriesOnly() {
         let cases: [(TelemetryHotkeySurface, TelemetryHotkeyKind, String, String)] = [
             (.dictation, .disabled, "dictation", "disabled"),
@@ -1782,6 +1933,7 @@ final class TelemetryServiceTests: XCTestCase {
             (.meeting, .modifier, "meeting", "modifier"),
             (.fileTranscription, .keyCode, "file_transcription", "key_code"),
             (.youtubeTranscription, .chord, "youtube_transcription", "chord"),
+            (.dictationAIPolish, .modifier, "dictation_ai_polish", "modifier"),
         ]
 
         for (surface, kind, expectedSurface, expectedKind) in cases {
@@ -1802,7 +1954,7 @@ final class TelemetryServiceTests: XCTestCase {
 
     // MARK: - Session UUID
 
-    func testSessionIdIsPerInstance() async {
+    func testSessionIdMatchesSharedProcessIdentityAcrossInstances() async {
         let service1 = makeService()
         let service2 = makeService()
 
@@ -1813,7 +1965,9 @@ final class TelemetryServiceTests: XCTestCase {
 
         let payloads = TelemetryMockURLProtocol.recordedPayloads()
         let sessions = Set(payloads.flatMap(\.events).map(\.session))
-        XCTAssertGreaterThanOrEqual(sessions.count, 2)
+        XCTAssertGreaterThanOrEqual(payloads.flatMap(\.events).count, 2)
+        XCTAssertEqual(sessions, [Observability.processSessionID])
+        XCTAssertNotNil(UUID(uuidString: Observability.processSessionID))
     }
 
     // MARK: - Payload Encoding
@@ -1885,16 +2039,14 @@ final class TelemetryServiceTests: XCTestCase {
     // MARK: - AppPreferences
 
     func testTelemetryEnabledDefault() {
-        let suiteName = "test-telemetry-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("test-telemetry-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         XCTAssertTrue(AppPreferences.isTelemetryEnabled(defaults: defaults))
     }
 
     func testTelemetryEnabledRespectsUserChoice() {
-        let suiteName = "test-telemetry-\(UUID().uuidString)"
+        let suiteName = makeIsolatedDefaultsSuite("test-telemetry-")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set(false, forKey: AppPreferences.telemetryEnabledKey)
         XCTAssertFalse(AppPreferences.isTelemetryEnabled(defaults: defaults))
     }
@@ -1919,8 +2071,20 @@ final class TelemetryServiceTests: XCTestCase {
         XCTAssertEqual(props["stack_trace"]?.count, TelemetryEventSpec.maxCrashStackTraceCharacters)
     }
 
+    private func sampleAudioEngineLifecycle() -> AudioEngineLifecycleSnapshot {
+        AudioEngineLifecycleSnapshot(
+            attemptID: "1c1e5746-0a59-45c3-a365-44a931000001", operation: .start, scope: nil, outcome: .slow,
+            phase: .startEngine, elapsedMilliseconds: 5_000, phaseMilliseconds: 4_800,
+            attemptCount: 1, prepared: false, vpioEnabled: false, bufferSize: 512,
+            routeSource: "selected", transport: "usb", lastErrorType: nil, lastErrorPhase: nil,
+            wasSlow: true, phaseDurationsMilliseconds: [.queueWait: 200, .startEngine: 4_800],
+            workflowID: nil, consumer: nil
+        )
+    }
+
     private func sampleEvents() -> [TelemetryEventSpec] {
         [
+            .audioEngineLifecycle(sampleAudioEngineLifecycle()),
             .appLaunched,
             .appQuit(sessionDurationSeconds: 12.5),
             .dictationStarted(trigger: .hotkey, mode: .persistent),
@@ -1936,7 +2100,16 @@ final class TelemetryServiceTests: XCTestCase {
                 mode: .persistent,
                 durationSeconds: 12.5,
                 wordCount: 84,
-                errorType: nil
+                errorType: nil,
+                captureMs: 40,
+                transcribeMs: 80
+            ),
+            .dictationInsert(
+                operationID: "op-dict",
+                captureMs: 40,
+                transcribeMs: 80,
+                pasteMs: 20,
+                e2eMs: 140
             ),
             .dictationFirstLoadCaptionShown(firstInstall: true),
             .dictationFirstLoadCaptionDuration(durationMs: 8200, outcome: "success"),

@@ -69,17 +69,6 @@ public final class DatabaseManager: Sendable {
         }
     }
 
-    #if DEBUG
-    func recordAppliedMigrationIdentifierForTesting(_ identifier: String) throws {
-        try dbQueue.write { db in
-            try db.execute(
-                sql: "INSERT INTO grdb_migrations (identifier) VALUES (?)",
-                arguments: [identifier]
-            )
-        }
-    }
-    #endif
-
     private static func makeConfiguration() -> Configuration {
         var config = Configuration()
         config.foreignKeysEnabled = true
@@ -87,7 +76,13 @@ public final class DatabaseManager: Sendable {
         #if DEBUG
         if sqlTraceEnabled {
             config.prepareDatabase { db in
-                db.trace { print("SQL: \($0)") }
+                db.trace { event in
+                    if case .statement(let statement) = event,
+                        let sql = Self.safeSQLTrace(statement.sql)
+                    {
+                        print("SQL: \(sql)")
+                    }
+                }
             }
         }
         #endif
@@ -95,6 +90,12 @@ public final class DatabaseManager: Sendable {
     }
 
     #if DEBUG
+    static func safeSQLTrace(_ sql: String) -> String? {
+        // Never include sharing statements, even in opt-in debug output.
+        // statement.sql is unexpanded; bound parameters remain placeholders.
+        sql.lowercased().contains("share_") ? nil : sql
+    }
+
     private static var sqlTraceEnabled: Bool {
         guard let rawValue = ProcessInfo.processInfo.environment[sqlTraceEnvKey] else {
             return false
@@ -109,8 +110,12 @@ public final class DatabaseManager: Sendable {
     #endif
 
     private func migrate() throws {
+        // Historical migrations seed built-ins before newer preference columns
+        // exist. Apply today's defaults only when creating the prompt library;
+        // an existing library's saved preferences belong to the user.
+        let hadPromptLibrary = try dbQueue.read { try $0.tableExists("prompts") }
         try Self.makeMigrator().migrate(dbQueue)
-        try reconcileBuiltInPrompts()
+        try reconcileBuiltInPrompts(initializeMeetingNotesDefaults: !hadPromptLibrary)
         try reconcileBuiltInQuickPrompts()
     }
 
@@ -1838,7 +1843,8 @@ public final class DatabaseManager: Sendable {
         migrator.registerMigration("v0.37-general-transcription-labels") { db in
             let meetingTypes = try MeetingType.fetchAll(db)
             for meetingType in meetingTypes {
-                let existingByName = try MeetingLabel
+                let existingByName =
+                    try MeetingLabel
                     .filter(sql: "name = ? COLLATE NOCASE", arguments: [meetingType.name])
                     .fetchOne(db)
 
@@ -1936,7 +1942,8 @@ public final class DatabaseManager: Sendable {
                         let meetingType = typesByID[typeID]
                     else { continue }
                     scope = .label
-                    labelID = labelsByID[typeID]?.id
+                    labelID =
+                        labelsByID[typeID]?.id
                         ?? labelsByName[
                             meetingType.name.folding(
                                 options: [.caseInsensitive, .diacriticInsensitive],
@@ -1996,6 +2003,497 @@ public final class DatabaseManager: Sendable {
             }
         }
 
+        // v0.39 — Persistent speaker profiles (voiceprints). Biometric data:
+        // local-only, excluded from exports, removable.
+        // See plans/active/2026-07-03-speaker-voiceprints.md.
+        migrator.registerMigration("v0.39-speaker-voiceprints") { db in
+            try db.execute(sql: """
+                CREATE TABLE speaker_profiles (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    displayName TEXT NOT NULL CHECK (length(trim(displayName)) > 0),
+                    normalizedName TEXT NOT NULL CHECK (length(normalizedName) > 0),
+                    embeddingModelId TEXT NOT NULL,
+                    aggregationProfileId TEXT NOT NULL,
+                    createdAt TEXT NOT NULL,
+                    updatedAt TEXT NOT NULL,
+                    lastMatchedAt TEXT,
+                    lastEvaluatedAt TEXT,
+                    lastEvaluatedDistance REAL,
+                    UNIQUE (id, embeddingModelId)
+                )
+                """)
+            // On the normalized key, not `displayName COLLATE NOCASE`: NOCASE
+            // folds only ASCII, so "José" and "JOSÉ" would be distinct rows
+            // that a Unicode-aware lookup then matches both of.
+            try db.execute(sql: """
+                CREATE UNIQUE INDEX idx_speaker_profiles_normalized_name
+                ON speaker_profiles (normalizedName)
+                """)
+            try db.execute(sql: """
+                CREATE TABLE speaker_profile_exemplars (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    profileId TEXT NOT NULL,
+                    vector BLOB NOT NULL CHECK (length(vector) = 1024),
+                    speechSeconds REAL NOT NULL CHECK (speechSeconds > 0),
+                    captureDomain TEXT NOT NULL CHECK (
+                        captureDomain IN ('system', 'microphone', 'file')
+                    ),
+                    origin TEXT NOT NULL CHECK (
+                        origin IN ('manualEnrollment', 'confirmedSuggestion')
+                    ),
+                    embeddingModelId TEXT NOT NULL,
+                    aggregationProfileId TEXT NOT NULL,
+                    sourceTranscriptionId TEXT
+                        REFERENCES transcriptions(id) ON DELETE SET NULL,
+                    sourceSpeakerId TEXT,
+                    createdAt TEXT NOT NULL,
+                    UNIQUE (profileId, sourceTranscriptionId),
+                    -- Composite key rather than a plain reference to the id: a
+                    -- sample from another embedding model shares no space with
+                    -- the profile's, so it could be stored and shown while
+                    -- never scoring against anything. No ON UPDATE CASCADE —
+                    -- changing a profile's model must fail while samples in the
+                    -- old one exist. aggregationProfileId stays out: those
+                    -- remain comparable at a tightened threshold.
+                    FOREIGN KEY (profileId, embeddingModelId)
+                        REFERENCES speaker_profiles(id, embeddingModelId)
+                        ON DELETE CASCADE
+                )
+                """)
+            try db.execute(sql: """
+                CREATE INDEX idx_speaker_profile_exemplars_profile
+                ON speaker_profile_exemplars (profileId, createdAt)
+                """)
+            // Scoped by fingerprint like speaker_corrections: after
+            // re-diarization the old rows no longer apply, so a stale dismissal
+            // cannot permanently suppress a legitimate suggestion.
+            try db.execute(sql: """
+                CREATE TABLE speaker_profile_links (
+                    transcriptionId TEXT NOT NULL
+                        REFERENCES transcriptions(id) ON DELETE CASCADE,
+                    speakerId TEXT NOT NULL,
+                    transcriptFingerprint TEXT NOT NULL,
+                    profileId TEXT NOT NULL
+                        REFERENCES speaker_profiles(id) ON DELETE CASCADE,
+                    status TEXT NOT NULL CHECK (
+                        status IN ('suggested', 'confirmed', 'dismissed')
+                    ),
+                    distance REAL NOT NULL,
+                    runnerUpDistance REAL,
+                    createdAt TEXT NOT NULL,
+                    updatedAt TEXT NOT NULL,
+                    PRIMARY KEY (transcriptionId, speakerId, transcriptFingerprint)
+                )
+                """)
+            try db.execute(sql: """
+                CREATE INDEX idx_speaker_profile_links_profile
+                ON speaker_profile_links (profileId)
+                """)
+        }
+
+        // v0.40 — Local record of every matching decision, so thresholds can be
+        // calibrated on real post-AEC meetings. Distances joined to the label a
+        // user typed are identifying: local-only, never in a support bundle,
+        // and they expire.
+        migrator.registerMigration("v0.40-speaker-match-journal") { db in
+            try db.execute(sql: """
+                CREATE TABLE speaker_match_journal (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    transcriptionId TEXT NOT NULL
+                        REFERENCES transcriptions(id) ON DELETE CASCADE,
+                    speakerId TEXT NOT NULL,
+                    transcriptFingerprint TEXT NOT NULL,
+                    profileId TEXT
+                        REFERENCES speaker_profiles(id) ON DELETE CASCADE,
+                    outcome TEXT NOT NULL CHECK (
+                        outcome IN (
+                            'suggested', 'belowSpeechGate', 'noComparableProfile',
+                            'pastThreshold', 'marginTooSmall', 'notMutualBestMatch'
+                        )
+                    ),
+                    topDistance REAL,
+                    runnerUpDistance REAL,
+                    speechSeconds REAL NOT NULL,
+                    createdAt TEXT NOT NULL
+                )
+                """)
+            try db.execute(sql: """
+                CREATE INDEX idx_speaker_match_journal_created
+                ON speaker_match_journal (createdAt)
+                """)
+        }
+
+        // v0.41 — Enrollment needs a vector the pipeline has already discarded:
+        // the user names a speaker days after the meeting. Written only while
+        // `rememberSpeakers` is on, never read by the matcher, promotable to an
+        // exemplar, and expiring on their own. See the 2026-09-10 amendment in
+        // plans/active/2026-07-03-speaker-voiceprints.md.
+        migrator.registerMigration("v0.41-speaker-embedding-candidates") { db in
+            try db.execute(sql: """
+                CREATE TABLE speaker_embedding_candidates (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    transcriptionId TEXT NOT NULL
+                        REFERENCES transcriptions(id) ON DELETE CASCADE,
+                    speakerId TEXT NOT NULL,
+                    transcriptFingerprint TEXT NOT NULL,
+                    vector BLOB NOT NULL CHECK (length(vector) = 1024),
+                    speechSeconds REAL NOT NULL CHECK (speechSeconds > 0),
+                    captureDomain TEXT NOT NULL CHECK (
+                        captureDomain IN ('system', 'microphone', 'file')
+                    ),
+                    embeddingModelId TEXT NOT NULL,
+                    aggregationProfileId TEXT NOT NULL,
+                    createdAt TEXT NOT NULL,
+                    -- Stored per row, not derived from a constant at read time:
+                    -- raising the window later must not resurrect vectors that
+                    -- were promised a shorter life.
+                    expiresAt TEXT NOT NULL,
+                    UNIQUE (transcriptionId, speakerId, transcriptFingerprint)
+                )
+                """)
+            try db.execute(sql: """
+                CREATE INDEX idx_speaker_embedding_candidates_expiry
+                ON speaker_embedding_candidates (expiresAt)
+                """)
+        }
+
+        // v0.42 — Local sharing ledger + durable outbox (Share Service v1).
+        // Deliberately not cascaded from `transcriptions`: a source deletion
+        // must detach the row (see `SharePublicationRepository`'s
+        // transaction-scoped helper) rather than silently lose revocation
+        // authority. `share_outbox_operations` is safe to cascade from
+        // `share_publications` — that parent is the ledger row itself, not
+        // the transcription.
+        migrator.registerMigration("v0.42-share-publications") { db in
+            try db.execute(sql: """
+                CREATE TABLE share_publications (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    remoteShareId TEXT NOT NULL UNIQUE,
+                    locator TEXT UNIQUE,
+                    locatorCommitment TEXT NOT NULL UNIQUE,
+                    ownerId TEXT NOT NULL,
+                    createdCredentialGeneration INTEGER NOT NULL,
+                    contentRevision INTEGER NOT NULL,
+                    version INTEGER,
+                    accessState TEXT CHECK (accessState IN ('active', 'expired', 'stopped')),
+                    deletionState TEXT NOT NULL DEFAULT 'retained'
+                        CHECK (deletionState IN ('retained', 'pending', 'complete')),
+                    contentWritable INTEGER NOT NULL DEFAULT 1,
+                    createdAt TEXT NOT NULL,
+                    updatedAt TEXT NOT NULL,
+                    expiresAt TEXT NOT NULL,
+                    maxExpiresAt TEXT NOT NULL,
+                    terminalAt TEXT,
+                    transcriptionId TEXT REFERENCES transcriptions(id) ON DELETE SET NULL,
+                    projectionManifest BLOB,
+                    contentDigest TEXT,
+                    isDetached INTEGER NOT NULL DEFAULT 0
+                )
+                """)
+            try db.execute(sql: """
+                CREATE INDEX idx_share_publications_transcription_id
+                ON share_publications(transcriptionId)
+                """)
+            try db.execute(sql: """
+                CREATE INDEX idx_share_publications_deletion_state
+                ON share_publications(deletionState)
+                """)
+
+            try db.execute(sql: """
+                CREATE TABLE share_outbox_operations (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    sharePublicationId TEXT NOT NULL
+                        REFERENCES share_publications(id) ON DELETE CASCADE,
+                    sequence INTEGER NOT NULL UNIQUE,
+                    kind TEXT NOT NULL CHECK (kind IN ('create', 'contentUpdate', 'expiryChange', 'delete')),
+                    idempotencyKey TEXT NOT NULL,
+                    requestBody BLOB NOT NULL,
+                    ifMatch TEXT,
+                    projectionManifest BLOB,
+                    contentDigest TEXT,
+                    createdAt TEXT NOT NULL,
+                    lastAttemptAt TEXT
+                )
+                """)
+            try db.execute(sql: """
+                CREATE INDEX idx_share_outbox_operations_share_sequence
+                ON share_outbox_operations(sharePublicationId, sequence)
+                """)
+            // At most one queued terminal delete per share (Share Service v1's
+            // local lifecycle invariant): detach and explicit stop both enqueue
+            // idempotently against this constraint instead of re-checking by hand.
+            try db.execute(sql: """
+                CREATE UNIQUE INDEX idx_share_outbox_operations_one_delete_per_share
+                ON share_outbox_operations(sharePublicationId)
+                WHERE kind = 'delete'
+                """)
+        }
+
+        // v0.42 — Split and transcribe (spec/contracts/meeting-splitting.md):
+        // a small durable operation receipt so audio publication is
+        // all-or-none and retryable, plus optional child provenance. No
+        // foreign key references `transcriptions`: the receipt and provenance
+        // are plain snapshots that must survive deletion of the source or any
+        // sibling part, not live joins.
+        migrator.registerMigration("v0.42-meeting-split-operations") { db in
+            try db.execute(sql: """
+                CREATE TABLE meeting_split_operations (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    idempotencyKey TEXT NOT NULL,
+                    sourceId TEXT NOT NULL,
+                    request TEXT NOT NULL,
+                    childIds TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (
+                        status IN ('preparing', 'committed', 'discarded')
+                    ),
+                    childProgress TEXT NOT NULL,
+                    createdAt TEXT NOT NULL,
+                    updatedAt TEXT NOT NULL
+                )
+                """)
+            try db.execute(sql: """
+                CREATE UNIQUE INDEX idx_meeting_split_operations_key
+                ON meeting_split_operations (idempotencyKey)
+                """)
+            try db.execute(sql: """
+                CREATE INDEX idx_meeting_split_operations_source
+                ON meeting_split_operations (sourceId)
+                """)
+
+            let columns = try db.columns(in: "transcriptions").map(\.name)
+            if !columns.contains("splitProvenance") {
+                try db.execute(sql: "ALTER TABLE transcriptions ADD COLUMN splitProvenance TEXT")
+            }
+        }
+
+        // Historical meeting chronology is independent of when managed audio was imported.
+        migrator.registerMigration("v0.43-meeting-audio-retention") { db in
+            let columns = try db.columns(in: "transcriptions").map(\.name)
+            if !columns.contains("audioRetentionStartedAt") {
+                try db.execute(sql: "ALTER TABLE transcriptions ADD COLUMN audioRetentionStartedAt TEXT")
+            }
+        }
+
+        // v0.44 — The existing correction journal now also carries timed-line
+        // text replacement and boundary suppression. SQLite cannot widen a
+        // CHECK constraint in place, so rebuild both related tables while
+        // preserving their rows, parent links, and persistent undo cursor.
+        migrator.registerMigration("v0.44-timed-transcript-corrections") { db in
+            try db.execute(
+                sql: """
+                    ALTER TABLE speaker_correction_states
+                    RENAME TO speaker_correction_states_v032
+                    """)
+            try db.execute(
+                sql: """
+                    ALTER TABLE speaker_corrections
+                    RENAME TO speaker_corrections_v032
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TABLE speaker_corrections (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        transcriptionId TEXT NOT NULL
+                            REFERENCES transcriptions(id) ON DELETE CASCADE,
+                        parentId TEXT,
+                        sequence INTEGER NOT NULL CHECK (sequence > 0),
+                        transcriptFingerprint TEXT NOT NULL,
+                        operation TEXT NOT NULL CHECK (
+                            operation IN (
+                                'rename', 'add', 'assign', 'split', 'unsplit',
+                                'merge', 'remove', 'editText', 'mergeSegments', 'reset'
+                            )
+                        ),
+                        payload TEXT NOT NULL,
+                        branchState TEXT NOT NULL CHECK (
+                            branchState IN ('current', 'redo', 'abandoned')
+                        ),
+                        createdAt TEXT NOT NULL,
+                        UNIQUE (transcriptionId, sequence),
+                        UNIQUE (id, transcriptionId),
+                        FOREIGN KEY (parentId, transcriptionId)
+                            REFERENCES speaker_corrections(id, transcriptionId)
+                            ON DELETE CASCADE
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    INSERT INTO speaker_corrections
+                    SELECT * FROM speaker_corrections_v032
+                    ORDER BY transcriptionId, sequence
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TABLE speaker_correction_states (
+                        transcriptionId TEXT PRIMARY KEY NOT NULL
+                            REFERENCES transcriptions(id) ON DELETE CASCADE,
+                        transcriptFingerprint TEXT NOT NULL,
+                        headId TEXT,
+                        revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+                        updatedAt TEXT NOT NULL,
+                        FOREIGN KEY (headId, transcriptionId)
+                            REFERENCES speaker_corrections(id, transcriptionId)
+                            ON DELETE CASCADE
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    INSERT INTO speaker_correction_states
+                    SELECT * FROM speaker_correction_states_v032
+                    """)
+            try db.execute(sql: "DROP TABLE speaker_correction_states_v032")
+            try db.execute(sql: "DROP TABLE speaker_corrections_v032")
+            try db.execute(
+                sql: """
+                    CREATE INDEX idx_speaker_corrections_replay
+                    ON speaker_corrections (
+                        transcriptionId,
+                        transcriptFingerprint,
+                        branchState,
+                        sequence
+                    )
+                    """)
+        }
+
+        // v0.45 — Receipt for the correction revision a prompt result was
+        // generated from, so the summary can offer an update after an edit.
+        migrator.registerMigration("v0.45-summary-source-correction-revision") { db in
+            let columns = try db.columns(in: "summaries").map(\.name)
+            if !columns.contains("sourceCorrectionRevision") {
+                try db.alter(table: "summaries") { t in
+                    t.add(column: "sourceCorrectionRevision", .integer)
+                }
+            }
+        }
+
+        // v0.45 — User edits of saved prompt-result content (issue #884).
+        // Prompt snapshots stay the generation receipt; contentEditedAt marks
+        // that `content` was last written by the user.
+        migrator.registerMigration("v0.45-prompt-result-content-edits") { db in
+            let summaryColumns = try db.columns(in: "summaries").map(\.name)
+            if !summaryColumns.contains("contentEditedAt") {
+                try db.alter(table: "summaries") { t in
+                    t.add(column: "contentEditedAt", .text)
+                }
+            }
+        }
+
+        // v0.46 — Reading-view saves store one `reviseText` command so Undo
+        // restores the whole session. SQLite cannot widen the operation CHECK
+        // in place.
+        migrator.registerMigration("v0.46-reading-transcript-corrections") { db in
+            try db.execute(sql: "ALTER TABLE speaker_correction_states RENAME TO speaker_correction_states_v044")
+            try db.execute(sql: "ALTER TABLE speaker_corrections RENAME TO speaker_corrections_v044")
+            try db.execute(
+                sql: """
+                    CREATE TABLE speaker_corrections (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        transcriptionId TEXT NOT NULL
+                            REFERENCES transcriptions(id) ON DELETE CASCADE,
+                        parentId TEXT,
+                        sequence INTEGER NOT NULL CHECK (sequence > 0),
+                        transcriptFingerprint TEXT NOT NULL,
+                        operation TEXT NOT NULL CHECK (
+                            operation IN (
+                                'rename', 'add', 'assign', 'split', 'unsplit',
+                                'merge', 'remove', 'editText', 'mergeSegments',
+                                'reviseText', 'reset'
+                            )
+                        ),
+                        payload TEXT NOT NULL,
+                        branchState TEXT NOT NULL CHECK (
+                            branchState IN ('current', 'redo', 'abandoned')
+                        ),
+                        createdAt TEXT NOT NULL,
+                        UNIQUE (transcriptionId, sequence),
+                        UNIQUE (id, transcriptionId),
+                        FOREIGN KEY (parentId, transcriptionId)
+                            REFERENCES speaker_corrections(id, transcriptionId)
+                            ON DELETE CASCADE
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    INSERT INTO speaker_corrections
+                    SELECT * FROM speaker_corrections_v044
+                    ORDER BY transcriptionId, sequence
+                    """)
+            try db.execute(
+                sql: """
+                    CREATE TABLE speaker_correction_states (
+                        transcriptionId TEXT PRIMARY KEY NOT NULL
+                            REFERENCES transcriptions(id) ON DELETE CASCADE,
+                        transcriptFingerprint TEXT NOT NULL,
+                        headId TEXT,
+                        revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+                        updatedAt TEXT NOT NULL,
+                        FOREIGN KEY (headId, transcriptionId)
+                            REFERENCES speaker_corrections(id, transcriptionId)
+                            ON DELETE CASCADE
+                    )
+                    """)
+            try db.execute(
+                sql: """
+                    INSERT INTO speaker_correction_states
+                    SELECT * FROM speaker_correction_states_v044
+                    """)
+            try db.execute(sql: "DROP TABLE speaker_correction_states_v044")
+            try db.execute(sql: "DROP TABLE speaker_corrections_v044")
+            try db.execute(
+                sql: """
+                    CREATE INDEX idx_speaker_corrections_replay
+                    ON speaker_corrections (
+                        transcriptionId,
+                        transcriptFingerprint,
+                        branchState,
+                        sequence
+                    )
+                    """)
+        }
+
+        // v0.47 — Snapshot the language policy used to generate a result so
+        // regeneration can replay it after Settings change (issue #975).
+        migrator.registerMigration("v0.47-meeting-ai-output-language") { db in
+            let columns = try db.columns(in: "summaries").map(\.name)
+            if !columns.contains("outputLanguagePolicySnapshot") {
+                try db.alter(table: "summaries") { t in
+                    t.add(column: "outputLanguagePolicySnapshot", .text)
+                }
+            }
+        }
+
+        // v0.48 — New results persist their source text receipt. Earlier
+        // results keep NULL: the transcript may already have changed, so
+        // assigning its current hash would falsely certify an old result.
+        migrator.registerMigration("v0.48-prompt-result-source-transcript") { db in
+            let columns = try db.columns(in: "summaries").map(\.name)
+            if !columns.contains("sourceTranscriptHash") {
+                try db.alter(table: "summaries") { t in
+                    t.add(column: "sourceTranscriptHash", .text)
+                }
+            }
+        }
+
+        // Independent Ask history keeps historical source identities after a
+        // Library recording is removed. The lease coordinates app and CLI runs
+        // through the same SQLite row; there is deliberately no source FK.
+        migrator.registerMigration("v0.49-ask-conversations") { db in
+            try db.create(table: "ask_conversations") { t in
+                t.column("id", .text).primaryKey()
+                t.column("payload", .blob).notNull()
+                t.column("revision", .integer).notNull()
+                t.column("createdAt", .datetime).notNull()
+                t.column("updatedAt", .datetime).notNull()
+                t.column("runToken", .text)
+                t.column("runLeaseUntil", .datetime)
+            }
+            try db.create(
+                index: "idx_ask_conversations_updated_at",
+                on: "ask_conversations",
+                columns: ["updatedAt"]
+            )
+        }
+
         return migrator
     }
 
@@ -2020,7 +2518,7 @@ public final class DatabaseManager: Sendable {
         try repo.seedIfNeeded()
     }
 
-    private func reconcileBuiltInPrompts() throws {
+    private func reconcileBuiltInPrompts(initializeMeetingNotesDefaults: Bool) throws {
         let builtInPrompts = Prompt.builtInPrompts(now: Date())
         let canonicalIDs = builtInPrompts.map { $0.id }
 
@@ -2043,6 +2541,13 @@ public final class DatabaseManager: Sendable {
                     // history without an explicit user action.
                     guard existing.deletedAt == nil, existing.userCustomizedAt == nil else {
                         continue
+                    }
+
+                    if initializeMeetingNotesDefaults {
+                        try db.execute(
+                            sql: "UPDATE prompts SET includeMeetingNotes = ? WHERE id = ?",
+                            arguments: [prompt.includeMeetingNotes, existing.id]
+                        )
                     }
 
                     let canonicalRevision = prompt.lastAppliedCanonicalRevision ?? 1
@@ -2128,10 +2633,11 @@ public final class DatabaseManager: Sendable {
                     continue
                 }
 
-                if let legacyPromptID = try String.fetchOne(
+                var legacyIncludeMeetingNotes: Bool?
+                if let legacyPrompt = try Row.fetchOne(
                     db,
                     sql: """
-                        SELECT id
+                        SELECT id, includeMeetingNotes
                         FROM prompts
                         WHERE name = ? COLLATE NOCASE
                           AND isBuiltIn = 1
@@ -2141,10 +2647,14 @@ public final class DatabaseManager: Sendable {
                 ) {
                     // Preserve the legacy row and its history, but retire it so
                     // the stable canonical identity can be inserted safely.
+                    let legacyPromptID: DatabaseValue = legacyPrompt["id"]
                     try db.execute(
                         sql: "UPDATE prompts SET deletedAt = ?, updatedAt = ? WHERE id = ?",
                         arguments: [prompt.updatedAt, prompt.updatedAt, legacyPromptID]
                     )
+                    if !initializeMeetingNotesDefaults {
+                        legacyIncludeMeetingNotes = legacyPrompt["includeMeetingNotes"]
+                    }
                 }
 
                 // A custom prompt already owns this name. Preserve the user's prompt and
@@ -2173,6 +2683,9 @@ public final class DatabaseManager: Sendable {
                 var promptToInsert = prompt
                 if promptToInsert.isAutoRun && !userHasAnyAutoRunPrompt {
                     promptToInsert.isAutoRun = false
+                }
+                if let legacyIncludeMeetingNotes {
+                    promptToInsert.includeMeetingNotes = legacyIncludeMeetingNotes
                 }
                 try Self.insertCanonicalPrompt(promptToInsert, db: db)
             }

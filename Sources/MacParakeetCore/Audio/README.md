@@ -18,14 +18,18 @@ owned by `AppEnvironment`.
 **Shared mic engine (the core of this folder)**
 - `SharedMicrophoneStream.swift` — fan-out, VPIO state machine,
   subscriber tokens, `Diagnostics` snapshot. ADR-015 + ADR-016.
+  Active subscriptions also observe time waiting to enter the engine queue,
+  before native lifecycle diagnostics begin. Slow upstream waits carry
+  `scope=shared_subscription_queue`; their success means queue entry only.
 - `MicrophoneEnginePlatform.swift` — `AVAudioEngine` wrapper. Device
   fallback chain, VPIO toggle, tap install, engine recreation on
   every teardown (so coreaudiod releases the VPAU aggregate
   device), `AVAudioEngineConfigurationChangeNotification` observer,
   and source-liveness self-healing. Initial starts must produce a usable tap
   buffer before the route is accepted. A stopped graph, a tap that stops
-  delivering callbacks, or a Bluetooth/unresolved route that continuously
-  emits exact-zero PCM converges on the same bounded fresh-engine recovery.
+  delivering callbacks, or a route continuously emitting empty/invalid buffers
+  converges on the same bounded fresh-engine recovery. Valid silence after
+  startup commits never triggers teardown, including on Bluetooth inputs.
   Notifications received while a replacement still awaits its first buffer
   remain in the same recovery episode; they do not replenish the retry budget.
   Removing route observers retires their generation, pending coalesced delivery,
@@ -58,7 +62,8 @@ owned by `AppEnvironment`.
   when `.vpioPreferred` cannot engage. Has its own silent-buffer watchdog
   with a stall observer wired up to the meeting flow. Stop is an ordered async
   boundary: it retires callbacks and awaits shared-stream unsubscription before
-  a replacement meeting may start.
+  the same microphone capture object may be reused. The meeting service can
+  settle independently while retaining ownership of that pending cleanup.
 
 **Meeting-side audio (independent of the mic stream)**
 - `SystemAudioStream.swift` — meeting system audio via
@@ -69,12 +74,29 @@ owned by `AppEnvironment`.
   watchdog. Unexpected `SCStreamDelegate` termination is a typed recoverable
   source loss; ScreenCaptureKit's explicit `userStopped` code remains terminal.
 - `MeetingAudioCaptureService.swift` — composes mic + system audio
-  for meeting recording. It owns partial startup explicitly, so Stop tears
-  down whichever sources have started even before startup reports success.
+  for meeting recording. Selected sources start independently; the first usable
+  buffer (including valid silence) establishes capture. A 12-second initial
+  source-readiness window exposes missing sources without cancelling native
+  microphone calls. Stop retires the meeting's callbacks and start waiter,
+  finalizes available system capture, and retains a microphone lease until
+  both its start and stop settle. New system-only meetings bypass an occupied
+  mic lease; combined meetings report that mic unavailable. Never create a
+  second microphone object to bypass a stuck shared-engine operation.
   Each settled Stop creates a new event-stream session, and system-audio
   callback generations retire before teardown is awaited or a terminal event
   is published. A source failure racing the initial async start is retained
   until the start-to-running handoff, so a dead stream cannot be promoted.
+  In a combined meeting, a retryable failed microphone start (or an occupied
+  lease) is retried in the background for the whole session through the same
+  microphone object and a fresh lease per attempt (#1223); permission denial
+  and required-VPIO failures are not retried. A start that returns but stalls
+  before delivering any audio is stopped through its lease and retried the same
+  way, continuing the same backoff position for the meeting; a stall after audio
+  has flowed stays an interrupted source. The microphone stays `.unavailable`
+  while retrying and becomes ready with its first buffer, so system loss still
+  ends capture; buffers from a retry are held until the actor promotes it. Stop cancels the retry without awaiting a
+  native start; a late success is stopped again through the lease.
+  `meeting_mic_recovery_*` diagnostic lines record each attempt.
 - `MeetingAudioStorageWriter.swift` — fragmented MP4 writer for
   meeting source files (ADR-019 crash recovery). Finalization waits at most five
   seconds for per-source AVFoundation callbacks and marks a timed-out source
@@ -99,6 +121,27 @@ owned by `AppEnvironment`.
   after `CaptureOrchestrator` pairs `MeetingAudioCaptureService` mic/system events.
 
 **Helpers**
+
+- `AudioEngineLifecycleDiagnostics.swift` — records `audio_engine_lifecycle`
+  snapshots for shared microphone start, idle prepare, recovery attempts, and
+  stop. Each observer has a utility timer independent of the platform queue;
+  start/prepare/stop observers begin before waiting for that queue. It can
+  therefore report `queue_wait` or the last entered native phase while the
+  lifecycle call remains blocked. No work is added to the audio render callback.
+  A pending operation has at most one `outcome=slow` checkpoint scheduled at
+  five seconds, then one terminal snapshot if the call returns. Timer scheduling
+  and sink delivery are best effort; this is neither a hard timeout nor a new
+  restart/cancellation path. Fast prepare/stop snapshots, including failures,
+  are suppressed to keep recurring idle work bounded. Start/recovery always
+  publish their terminal snapshot; a slow operation that finishes before the
+  observer runs can publish only a terminal with `was_slow=true`.
+  The local line and optional network event share a generated `attempt_id`,
+  monotonic phase timings, finite route categories, and classified errors.
+  Emission is serial and asynchronous outside the recorder's state lock;
+  local append and telemetry delivery are both best effort. The ID identifies
+  this engine lifecycle call and its fallback attempts, not a recording or
+  product operation. See the [event catalog](../../../docs/telemetry.md#5e-microphone-engine-lifecycle)
+  and [boundary contract](../../../spec/contracts/telemetry-v1.md#microphone-engine-lifecycle-observation).
 - `AudioCaptureDiagnostics.swift` — public `append(_:)` to
   `~/Library/Logs/MacParakeet/dictation-audio.log`. At the 5 MB cap it retains
   the newest complete lines instead of deleting the whole history. Used by every
@@ -226,6 +269,26 @@ result the recorded audio can no longer back. Keep the success path on
 `onFinish` and every early-out on `onCancel`; collapsing them leaks the
 live-transcription continuations on cancelled dictations.
 
+**A dictation restart waits for the previous capture stop to finish.**
+`AudioRecorder.stop()` clears its recording flag before it finishes
+unsubscribing and finalizing the WAV. `DictationService` serializes a normal
+stop through capture-health and device snapshots, then retires the old display
+preview and live STT session before a replacement can start. It releases the
+start permit before recorded-file transcription and AI processing, preserving
+that overlap while keeping recorder and live-session state owned by one capture
+at a time. A replacement capture must also wait while
+an old cancel or confirm-cancel can still update service state or touch the
+recorder. Cancelled-audio persistence happens after this boundary so
+transcription of a discarded take does not delay the new capture. When a
+replacement claims the new session before stopping the old capture, cancellation
+of that replacement must leave the old recorder stop to its cleanup and must
+not announce a stop for a capture the replacement never started. A stop request
+for that provisional replacement must also be rejected rather than transcribing
+the old take under the new session. Its delayed media-pause callback must not
+discard pre-roll from the old capture. The old take's cancel telemetry is
+emitted once when replacement claims it; cancelling the provisional take adds
+no second capture-cancel event.
+
 **Tap closures run on the audio render thread.** No allocation, no
 actor hops, no `await`. State touched from the tap path uses
 `OSAllocatedUnfairLock`-protected nonisolated fields. The buffer
@@ -254,8 +317,7 @@ only `audioEngine.start()` (~tens of ms) instead of the full
 device-acquisition + format negotiation. Raw meetings use the same
 non-VPIO stream configuration and can consume the prepared engine too;
 an explicit VPIO request or different buffer size discards it and does
-a full configure. Idle microphone-route changes trailing-debounce a
-fresh preparation before the next capture. Like the warm hold, prepare
+a full configure. Like the warm hold, prepare
 is **suppressed on Bluetooth or unresolved inputs**: pre-acquiring a
 Bluetooth mic would pin HFP/SCO even while stopped, so the platform
 declines and that press pays the full cold
@@ -265,8 +327,21 @@ key-down without holding the mic open.
 Idle preparation preserves the active routing contract below: a named
 microphone stays explicitly pinned, while System Default stays implicit.
 Preparation validates the resolved leading input for Bluetooth safety but
-does not convert System Default into a `CurrentDevice` write. A default-input
-change invalidates and trailing-debounces a new preparation.
+does not convert System Default into a `CurrentDevice` write.
+
+**Route changes discard an idle preparation but never rebuild it (issue
+#1227).** A configuration change that invalidates the prepared route tears it
+down, and the next capture pays the full cold path. Preparation is rebuilt only
+at launch, after microphone permission is granted, after an explicit microphone
+selection in Settings while Instant Dictation is off (the warm hold refreshes
+itself when it is on), and when the last capture leaves. Core Audio route
+notifications (a headset connecting or disconnecting) must not trigger it.
+Acquiring a device while macOS is still switching the default input can block
+inside `kAudioOutputUnitProperty_CurrentDevice` or the input-format query until
+the next route change. One field log showed six such calls blocked, the
+longest for 22 hours, each holding the platform queue; during one of them
+`coreaudiod` used 73% CPU. A blocked native call cannot be cancelled, so the
+fix is not to make it in that window.
 
 **The warm hold must never pin a Bluetooth input (issue #481).** An
 idle open Bluetooth microphone forces the headset into HFP/SCO, which
@@ -302,13 +377,18 @@ A2DP, they can explicitly select the Mac's built-in mic in Settings. The idle
 warm-capture suppression above remains separate and still prevents Instant
 Dictation from holding a Bluetooth input open between active sessions.
 Each active attempt is accepted only after a usable tap buffer arrives. A route
-that starts but produces no callback is torn down after one second and the
-existing chain advances. On Bluetooth or unresolved input topology, exact-zero
-PCM does not satisfy readiness; the next route can therefore recover issue #541
-without imposing an acoustic threshold on positively identified USB, built-in,
-or virtual inputs. For VPIO buffers, readiness inspects only microphone channel
-0 so render/reference audio cannot hide a failed mic; raw multichannel input
-checks every input channel. System Default generation is captured before route
+that starts but produces no usable buffer is torn down after one second. If an
+implicit System Default attempt resolves to Bluetooth and times out, the
+platform rebuilds the route snapshot and gives the refreshed implicit default
+one fresh-engine attempt before advancing to the built-in fallback (issue
+#1009). The retry stays implicit, follows a concurrent macOS default-input
+change, and is limited to one per engine configure attempt, including recovery.
+On Bluetooth or unresolved input topology, exact-zero PCM does not satisfy
+readiness; the next route can therefore recover issue #541 without imposing an
+acoustic threshold on positively identified USB, built-in, or virtual inputs.
+For VPIO buffers, readiness inspects only microphone channel 0 so
+render/reference audio cannot hide a failed mic; raw multichannel input checks
+every input channel. System Default generation is captured before route
 resolution, and engine-configuration observation begins before `start()`.
 Each usable buffer is stamped with the configuration generation that produced
 it: a Bluetooth profile-change notification before that buffer is accepted,
@@ -320,9 +400,10 @@ and do not invalidate an explicitly pinned named device.
 remains observability-only. The first-buffer watchdog is now also a
 startup readiness signal: `start()` does not report a healthy recording until
 at least one microphone buffer arrives, and a no-buffer start aborts with a
-microphone-input error. Sustained silent input is classified at `stop()` using
-the capture-health snapshot before STT runs. Keep that signal-level heartbeat
-non-disruptive: actual callback liveness belongs to the shared source owner
+microphone-input error. Sustained exact-zero input is classified at `stop()` using
+the capture-health snapshot before STT runs. Quiet nonzero audio reaches STT
+even when every buffer falls below the level used for diagnostics. Keep that
+signal-level heartbeat non-disruptive: actual callback liveness belongs to the shared source owner
 below, so dictation and meeting capture do not invent competing recovery paths.
 
 **The shared mic source self-heals (gated, bounded recovery).** There are three
@@ -333,13 +414,19 @@ the current engine instance, an active capture request, and
 `AVAudioEngine.isRunning == false`; benign notifications around a healthy graph
 are no-ops. Second, once a tap has delivered its first buffer, a five-second gap
 with no further tap callbacks is treated as a stalled source even if
-`AVAudioEngine.isRunning` remains true. Third, a Bluetooth or unresolved route
-that continuously emits exact-zero PCM for two seconds is treated as unusable
-and recovered through the same path. This is exact-zero detection, not a
-voice-activity or loudness threshold: any non-zero sample is valid, and digital
-silence remains valid on every positively identified non-Bluetooth input. VPIO
-liveness uses microphone channel 0; raw multichannel liveness scans all input
-channels.
+`AVAudioEngine.isRunning` remains true. Third, a route that continuously emits
+empty or invalid buffers for two seconds is recovered through the same path.
+Empty buffers, invalid format shape, and nonfinite Float32 microphone samples
+never certify startup or reach consumers. VPIO validates only microphone channel
+0, not discarded reference channels; raw input validates every channel.
+Unexpected non-Float32 formats retain the existing
+fail-open policy and are counted separately as uninspected.
+
+Valid digital silence is not a source-lifecycle failure. After startup commits,
+it is forwarded on every transport, including Bluetooth and unresolved inputs,
+preserving the timeline and allowing speech to resume without engine teardown
+(issue #1032). The nonzero Bluetooth startup requirement above remains intact;
+a first nonzero buffer alone does not relax it before the route commits.
 Callback stalls are route-agnostic because USB, aggregate, and virtual devices
 can fail at the same source-lifecycle seam.
 
@@ -352,8 +439,9 @@ recovery: the same source-owned readiness gate used by initial startup requires
 the replacement's first usable buffer before accepting the attempt. That first
 buffer begins a liveness probation window; only a replacement that remains
 healthy for the full window resets the episode's retry budget. A replacement
-with no usable first buffer is torn down and retried, while one that becomes
-silent during probation consumes the same bounded episode. Explicit Stop
+with no usable first buffer is torn down and retried, while one that loses
+callbacks or delivers invalid buffers during probation consumes the same bounded
+episode. Valid silence can complete probation. Explicit Stop
 cancels that wait as well as the episode, and no queued retry may resurrect
 capture. If every retry fails, the platform reports terminal engine death to
 `SharedMicrophoneStream`, which
@@ -363,7 +451,7 @@ when system audio is also selected, so the healthy sibling source continues;
 microphone-only capture keeps the existing whole-capture failure semantics.
 The watchdog and heartbeat in `AudioRecorder` remain log-only; platform callback
 liveness is the single mid-session recovery owner. Recovery log events include
-`shared_mic_engine_callback_stalled`, `shared_mic_engine_zero_filled`,
+`shared_mic_engine_callback_stalled`, `shared_mic_engine_invalid_buffers`,
 `shared_mic_engine_config_change_recovery_attempt`,
 `shared_mic_engine_config_change_recovery_succeeded`, and
 `shared_mic_engine_config_change_recovery_failed`, plus scheduling and terminal
@@ -372,10 +460,31 @@ exhaustion records. The
 `engine_is_running=` field (actual `AVAudioEngine.isRunning`) alongside the
 existing `isRunning=` (platform `running` flag).
 
+`shared_mic_engine_signal` adds a random per-tap `tap_id`, a bounded `reason`,
+and cumulative pre-filter callback, empty, invalid, silent, nonzero, uninspected,
+and forwarded buffer counts plus last frame count, channels, and sample rate.
+Empty buffers are included in invalid counts. Snapshots are emitted on startup
+readiness/timeout, failure, and teardown; at most one sustained-silence/resumption
+pair is sampled per engine. Brief signal returns between timer polls can be
+absent from transition events but still increment the cumulative counters.
+The render callback only scans PCM and updates
+scalars under its existing lock; formatting and logging happen on the platform
+queue. No audio, transcript text, or raw device identity is added. Counters
+distinguish the old ambiguous `zero_filled` report, but cannot identify a hardware
+mute or establish why a driver supplies valid zeros.
+
 `MicrophoneEnginePlatform` also logs per-phase engine-start timings
 (`shared_mic_engine_start_timing`) so a slow first-buffer report can be split
 between device setting, VPIO toggling, input format lookup, tap install, and
 `AVAudioEngine.start()`.
+Those return-time timings cannot describe a native call that has not returned.
+The independent `audio_engine_lifecycle` checkpoint fills that evidence gap;
+its `phase` is the last entered boundary, not proof of a native root cause.
+This instrumentation does not establish or repair the underlying native failure
+reported in issue #931. Existing first-buffer readiness and source-liveness
+recovery remain separate controls.
+See the [startup investigation](../../../docs/audits/2026-09-13-issue-931-startup-observability.md)
+for incident evidence and the limits of the implemented changes.
 
 **First-buffer can arrive before timers are armed.** When subscribing
 from an actor, the AVAudioEngine tap can fire its first buffer

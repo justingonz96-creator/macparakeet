@@ -36,7 +36,7 @@ final class LLMConfigCommandTests: XCTestCase {
         let options = try LLMInlineOptions.parse([
             "--provider", "ollama",
             "--base-url", "http://127.0.0.1:11435/v1",
-            "--model", "llama3.2"
+            "--model", "llama3.2",
         ])
 
         let config = try options.buildConfig()
@@ -48,7 +48,7 @@ final class LLMConfigCommandTests: XCTestCase {
         let options = try LLMInlineOptions.parse([
             "--provider", "ollama",
             "--base-url", "http://192.168.1.5:11434/v1",
-            "--model", "llama3.2"
+            "--model", "llama3.2",
         ])
 
         let config = try options.buildConfig()
@@ -62,7 +62,7 @@ final class LLMConfigCommandTests: XCTestCase {
             "--provider", "openai-compatible",
             "--api-key", "sk-third-party",
             "--base-url", "https://api.example.com/v1",
-            "--model", "vendor/model"
+            "--model", "vendor/model",
         ])
 
         let config = try options.buildConfig()
@@ -76,12 +76,36 @@ final class LLMConfigCommandTests: XCTestCase {
         let options = try LLMInlineOptions.parse([
             "--provider", "openai-compatible",
             "--base-url", "https://api.example.com/v1",
-            "--model", "vendor/model"
+            "--model", "vendor/model",
         ])
 
         let config = try options.buildConfig()
         XCTAssertEqual(config.id, .openaiCompatible)
         XCTAssertNil(config.apiKey)
+    }
+
+    func testInlineOptionsBuildMoonshotConfigFromKimiAlias() throws {
+        let options = try LLMInlineOptions.parse([
+            "--provider", "kimi",
+            "--api-key", "sk-kimi",
+        ])
+
+        let config = try options.buildConfig()
+        XCTAssertEqual(config.id, .moonshot)
+        XCTAssertEqual(config.apiKey, "sk-kimi")
+        XCTAssertEqual(config.modelName, "kimi-k2.6")
+        XCTAssertEqual(config.baseURL.absoluteString, "https://api.moonshot.ai/v1")
+    }
+
+    func testInlineOptionsBuildDeepSeekConfigFromEnvironment() throws {
+        let options = try LLMInlineOptions.parse([
+            "--provider", "deepseek",
+        ])
+
+        let config = try options.buildConfig(environment: ["DEEPSEEK_API_KEY": "ds-key"])
+        XCTAssertEqual(config.id, .deepseek)
+        XCTAssertEqual(config.apiKey, "ds-key")
+        XCTAssertEqual(config.modelName, "deepseek-v4-flash")
     }
 
     func testInlineOptionsBuildLMStudioConfigWithOptionalAPIKeyEnvironment() throws {
@@ -135,8 +159,41 @@ final class LLMConfigCommandTests: XCTestCase {
             environment: ["ANTHROPIC_API_KEY": "sk-env"])
         let openRouterConfig = try openRouterOptions.buildConfig(
             environment: ["OPENROUTER_API_KEY": "sk-env"])
-        XCTAssertEqual(anthropicConfig.modelName, "claude-sonnet-5")
-        XCTAssertEqual(openRouterConfig.modelName, "anthropic/claude-sonnet-5")
+        XCTAssertEqual(anthropicConfig.modelName, "claude-sonnet-5-5")
+        XCTAssertEqual(openRouterConfig.modelName, "anthropic/claude-sonnet-5.5")
+    }
+
+    func testInlineOneOffOmittedModelKeepsHistoricalCompatibilityDefault() throws {
+        let openAIOptions = try LLMInlineOptions.parse(["--provider", "openai"])
+        let geminiOptions = try LLMInlineOptions.parse(["--provider", "gemini"])
+
+        let openAIConfig = try openAIOptions.buildConfig(environment: ["OPENAI_API_KEY": "sk-env"])
+        let geminiConfig = try geminiOptions.buildConfig(environment: ["GEMINI_API_KEY": "sk-env"])
+
+        XCTAssertEqual(openAIConfig.modelName, "gpt-4.1")
+        XCTAssertEqual(geminiConfig.modelName, "gemini-2.5-flash")
+    }
+
+    func testPersistedRouteOmittedModelUsesCurrentProviderDefaultNotCompatibilityDefault() throws {
+        let openAIOptions = try LLMInlineOptions.parse(["--provider", "openai"])
+        let geminiOptions = try LLMInlineOptions.parse(["--provider", "gemini"])
+
+        let openAIConfig = try openAIOptions.buildConfig(
+            environment: ["OPENAI_API_KEY": "sk-env"], persistedRouteDefault: true)
+        let geminiConfig = try geminiOptions.buildConfig(
+            environment: ["GEMINI_API_KEY": "sk-env"], persistedRouteDefault: true)
+
+        XCTAssertEqual(openAIConfig.modelName, LLMProviderID.openai.defaultModelName)
+        XCTAssertEqual(geminiConfig.modelName, LLMProviderID.gemini.defaultModelName)
+        XCTAssertNotEqual(openAIConfig.modelName, "gpt-4.1")
+        XCTAssertNotEqual(geminiConfig.modelName, "gemini-2.5-flash")
+    }
+
+    func testPersistedRouteDefaultDoesNotOverrideExplicitModel() throws {
+        let options = try LLMInlineOptions.parse(["--provider", "openai", "--model", "gpt-4.1"])
+        let config = try options.buildConfig(
+            environment: ["OPENAI_API_KEY": "sk-env"], persistedRouteDefault: true)
+        XCTAssertEqual(config.modelName, "gpt-4.1")
     }
 
     func testInlineOptionsReadExplicitAPIKeyEnvironment() throws {
@@ -182,7 +239,7 @@ final class LLMConfigCommandTests: XCTestCase {
         let options = try LLMInlineOptions.parse([
             "--provider", "openai-compatible",
             "--base-url", "http://localhost:8000/v1",
-            "--model", "local-model"
+            "--model", "local-model",
         ])
 
         let config = try options.buildConfig()
@@ -194,7 +251,7 @@ final class LLMConfigCommandTests: XCTestCase {
         let options = try LLMInlineOptions.parse([
             "--provider", "openai-compatible",
             "--base-url", "http://192.168.1.5:8000/v1",
-            "--model", "local-model"
+            "--model", "local-model",
         ])
 
         XCTAssertThrowsError(try options.buildConfig(emitWarnings: false)) { error in
@@ -208,7 +265,7 @@ final class LLMConfigCommandTests: XCTestCase {
             "--provider", "openai-compatible",
             "--base-url", "http://192.168.1.5:8000/v1",
             "--allow-insecure-http",
-            "--model", "local-model"
+            "--model", "local-model",
         ])
 
         let config = try options.buildConfig(emitWarnings: false)
@@ -222,7 +279,7 @@ final class LLMConfigCommandTests: XCTestCase {
             "--provider", "openai",
             "--api-key-env", "OPENAI_API_KEY",
             "--base-url", "http://api.example.com/v1",
-            "--model", "gpt-4.1"
+            "--model", "gpt-4.1",
         ])
 
         XCTAssertThrowsError(
@@ -242,7 +299,7 @@ final class LLMConfigCommandTests: XCTestCase {
             "--api-key-env", "OPENAI_API_KEY",
             "--base-url", "http://api.example.com/v1",
             "--allow-insecure-http",
-            "--model", "gpt-4.1"
+            "--model", "gpt-4.1",
         ])
 
         let config = try options.buildConfig(
@@ -271,7 +328,7 @@ final class LLMConfigCommandTests: XCTestCase {
             "--provider", "openai-compatible",
             "--base-url", "https://lan-proxy.example/v1",
             "--model", "self-hosted-model",
-            "--local"
+            "--local",
         ])
 
         let config = try options.buildConfig()
@@ -300,6 +357,39 @@ final class LLMConfigCommandTests: XCTestCase {
 
         XCTAssertThrowsError(try options.buildExecutionContext()) { error in
             XCTAssertTrue(error is ValidationError)
+        }
+    }
+
+    func testAppleIntelligenceAliasesBuildOnDeviceConfig() throws {
+        for alias in ["appleIntelligence", "apple-intelligence", "apple"] {
+            let options = try LLMInlineOptions.parse(["--provider", alias])
+            let config = try options.buildConfig()
+            XCTAssertEqual(config.id, .appleIntelligence, alias)
+            XCTAssertEqual(config.modelName, "apple-intelligence", alias)
+            XCTAssertEqual(config.baseURL.absoluteString, "appleintelligence://system", alias)
+            XCTAssertNil(config.apiKey, alias)
+            XCTAssertTrue(config.isLocal, alias)
+        }
+    }
+
+    func testAppleIntelligenceRejectsModelBaseURLAndAPIKey() throws {
+        XCTAssertThrowsError(
+            try LLMInlineOptions.parse(["--provider", "apple", "--model", "gpt-5.5"]).buildConfig()
+        ) { error in
+            XCTAssertTrue("\(error)".contains("on-device system model"))
+        }
+        XCTAssertThrowsError(
+            try LLMInlineOptions.parse([
+                "--provider", "apple",
+                "--base-url", "https://example.com/v1",
+            ]).buildConfig()
+        ) { error in
+            XCTAssertTrue("\(error)".contains("--base-url"))
+        }
+        XCTAssertThrowsError(
+            try LLMInlineOptions.parse(["--provider", "apple", "--api-key", "sk-test"]).buildConfig()
+        ) { error in
+            XCTAssertTrue("\(error)".contains("API key"))
         }
     }
 

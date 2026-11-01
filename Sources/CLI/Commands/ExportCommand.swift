@@ -206,32 +206,18 @@ struct ExportCommand: AsyncParsableCommand {
         }
     }
 
-    /// LLMConfigStore defaults to `UserDefaults.standard`, which for a
-    /// bundle-less CLI binary resolves to a different domain than the
-    /// GUI app's. Echo saves its provider config under either
-    /// `com.echelonfit.echo.dev` (debug build) or `com.echelonfit.echo`
-    /// (release). Try both, prefer whichever has a saved config.
+    /// `LLMConfigStore()` opens the app's shared preferences domain
+    /// (`AppPaths.preferencesSuiteName`), so the CLI uses the same AI
+    /// provider the Echo app has configured. With none saved, each chunk
+    /// throws `notConfigured` and the deterministic layout is used.
     private func buildLLMServiceFromGUIDefaults() -> LLMService {
-        let candidates = [
-            "com.echelonfit.echo.dev",
-            AppPaths.preferencesSuiteName,
-        ]
-        for suite in candidates {
-            guard let defaults = UserDefaults(suiteName: suite) else { continue }
-            if defaults.data(forKey: "llm_provider_config") != nil {
-                let store = LLMConfigStore(defaults: defaults)
-                return LLMService(
-                    client: RoutingLLMClient(),
-                    contextResolver: StoredLLMExecutionContextResolver(
-                        configStore: store,
-                        cliConfigStore: LocalCLIConfigStore()
-                    )
-                )
-            }
-        }
-        // No GUI config found — fall through to default-everything
-        // (which will throw `notConfigured` per chunk).
-        return LLMService()
+        LLMService(
+            client: RoutingLLMClient(),
+            contextResolver: StoredLLMExecutionContextResolver(
+                configStore: LLMConfigStore(),
+                cliConfigStore: LocalCLIConfigStore()
+            )
+        )
     }
 
     private func projectedJSON(_ projection: SpeakerAttributionProjection) throws -> String {

@@ -8,6 +8,12 @@
 agents, and external tools. JSON modes must remain machine-readable on stdout,
 with human progress/status kept off stdout.
 
+`voice-control replay` is the sole experimental output-shape exception. It
+routes a saved Voice Control observation for diagnosis and never observes or
+acts on the live screen. Its report fields may change while Voice Control is
+release-gated; the shared stdout, stderr, and failure-envelope rules below
+still apply.
+
 ## Producers
 
 - `CLIHelpers.printJSON`
@@ -54,6 +60,11 @@ with human progress/status kept off stdout.
   user's local calendar and time zone: `--since` starts at local midnight and
   `--until` includes the full local day. Full ISO-8601 timestamps with `Z` or
   an explicit offset retain that stated zone.
+- `calendar upcoming --json` returns a flat array of event objects. Existing
+  `CalendarEvent` fields are unchanged. Additive fields are `skipped`
+  (boolean) and `skipScope` (`"occurrence"`, `"event"`, or `null`). Recurrence
+  is not exposed. Membership, `--filter`, and declined-fetch behavior stay as
+  before this feature.
 - `transcript --json` returns one object with transcription metadata and an
   ordered `segments` array. Segment objects contain `seq`, nullable timing and
   speaker fields, `text`, and `segmenterVersion`. Its Local-file `title` follows
@@ -62,6 +73,24 @@ with human progress/status kept off stdout.
   `Transcription` object. It is zero-based and non-null only when a local-file
   audio stream was selected explicitly; this additive field does not change
   stdout/stderr or envelope shapes.
+- `retranscribe --update` returns the completed row already committed by the
+  shared transcription service for saved transcriptions and meetings. Concurrent
+  notes/chat edits or clears, renames, favorites and audio metadata changes
+  merged by that service remain authoritative. The CLI performs no second save
+  after completion, including when the row is deleted before output is emitted.
+  A recording deleted before the completion transaction cannot be recreated.
+  Dictation reruns require the row still to exist with its original status;
+  for non-empty results, deletion or a status change yields the existing
+  `lookup` error with exit `1`. A blank failed-dictation retry is rejected as
+  `emptyTranscript` before the completion status guard.
+  That status check is not a general revision check for same-status dictation
+  edits. These rules do not change JSON fields or exit-code meanings.
+- Transcription-shaped JSON payloads include nullable `splitProvenance`. It is
+  non-null only for a saved child created by Split and transcribe, with
+  `operationId`, `sourceId`, the snapshotted `sourceTitle`, approved
+  `approvedStartMs`/`approvedEndMs`, zero-based `ordinal`, and ISO-8601
+  `splitCreatedAt`. The provenance is historical and remains valid when the
+  source row, operation receipt, or a sibling is later deleted.
 - `cards list --json` returns an array; `--ndjson` returns the same card objects
   one compact object per line. Each object has exactly `transcriptionId`,
   `title`, `date`, nullable `durationMs`, `source`, nullable `attendees`, the
@@ -102,7 +131,10 @@ with human progress/status kept off stdout.
   that every field is supported by the provider selected for a later run.
 - The same prompt JSON objects include additive Boolean
   `includeMeetingNotes`, the result prompt's automatic meeting-notes context
-  preference. Its default is `false`. The `--include-meeting-notes` flag on
+  preference. Its generic default is `false`; newly seeded built-in Summary
+  prompts set it to `true`. Existing saved settings and historical result
+  snapshots are preserved. `prompts restore-defaults` preserves this preference.
+  The `--include-meeting-notes` flag on
   `prompts set <prompt>` enables it and `--no-include-meeting-notes` disables
   it; the flags are mutually exclusive and rejected for Transform prompts.
   Explicit `{{userNotes}}` custom-template substitution remains
@@ -155,14 +187,19 @@ with human progress/status kept off stdout.
   its model identifiers and aliases during generation. Model discovery results
   are not an exhaustive allow-list. For the Local CLI provider, an override
   differing from the configured model is rejected before command execution:
-  changing a model string cannot reconfigure its command template.
+  changing a model string cannot reconfigure its command template. Apple
+  Intelligence likewise rejects a model override before generation; it always
+  uses the on-device system model.
 - LLM result JSON envelopes include additive optional `effectiveSettings` with
   the same object shape. For `prompts run --json`, a present value is the
   normalized adapter receipt after provider/model filtering. Absence means no
   effective receipt is available; callers must not reinterpret it as raw
   upstream-provider defaults. `llm summarize --json` uses the same generation
   path and may report its resolved baseline settings without loading a saved
-  prompt. Chat and Transform commands omit this receipt.
+  prompt. For Gemini 3 models, inherited prompt-generation sampling omits
+  temperature so the provider chooses its default; an explicit saved temperature
+  remains an override. This applies to `prompts run` and the shared `llm summarize`
+  path. Historical receipts are not rewritten. Chat and Transform commands omit this receipt.
   `prompts set` can create or clear versioned model and inference overrides with
   `--model|--active-model`, sampling, thinking, and
   `--provider-default-settings` flags. Results do not include requested-settings
@@ -171,7 +208,7 @@ with human progress/status kept off stdout.
   Optional usage totals are derived from two reported component counts only
   when the sum is representable; otherwise the total remains unknown while
   reported components are preserved.
-- `meetings results list|add --json` prompt-result objects include additive
+- `meetings results list|add|edit --json` prompt-result objects include additive
   optional `inferenceSettingsSnapshot` with the same settings shape. When
   present it is the effective receipt stored with the result; imported results
   created by `meetings results add` omit it.
@@ -180,17 +217,95 @@ with human progress/status kept off stdout.
   that generation. `false` covers migrated and externally imported results.
   Nullable `userNotesSnapshot` contains the exact normalized, bounded notes
   value supplied to prompt assembly, not necessarily the full canonical note.
+  Results saved by older versions can hold uncapped notes.
+  Provider context limits can further trim the assembled prompt before dispatch;
+  this snapshot records assembly input, not byte-exact network payloads.
+- `meetings results list|add|edit --json` prompt-result objects may include
+  `sourceTranscriptHash`, a
+  SHA-256 receipt of cue words when timed cues are available on an unedited
+  transcript, otherwise trimmed automatic clean/raw text. The field is
+  omitted when the source is unknown; existing rows retain that unknown
+  source on migration because the transcript may already have changed.
+- Saved prompt-result JSON objects include additive nullable
+  `outputLanguagePolicySnapshot` (`follow-transcript` or a language code).
+  Omission means no meeting AI language policy was recorded, including earlier
+  and externally imported results; regeneration then uses the current setting.
 - Prompt-result objects may additionally include nullable `promptId`,
   `promptVersionId`, `providerSnapshot`, and `modelSnapshot`. Library-driven
   CLI/app generation populates those execution receipts. Historical and
   externally imported results may omit them; omission never means the current
   prompt/provider/model should be inferred.
+- Saved prompt-result JSON objects include additive nullable `contentEditedAt`.
+  When present it is the timestamp of the last in-place user edit of `content`.
+  Omission means no in-place edit is recorded. Generated, historical, and
+  externally imported results can all omit it; absence does not establish who
+  wrote the content.
+- `meetings results edit <meeting> <result-uuid>` changes the existing result's
+  content without changing its ID or generation provenance. Supply exactly one
+  `--content`, `--file` or `--stdin` input and exactly one `--expected-content`
+  or `--expected-content-file` precondition. The precondition is compared
+  exactly, including whitespace, in the conditional database write. Blank new
+  content is rejected. A stale content precondition returns `conflict`, exit
+  `1`, without overwriting the result. Success returns a
+  `MeetingPromptResultRecord` and sets `contentEditedAt`. Artifact refresh is
+  best-effort: a failure warns on stderr without rolling back the saved database
+  edit. The
+  command never deletes audio. Missing/wrong-meeting result IDs fail
+  instead of editing another recording's result.
+  The GUI follows the same exact-content precondition, captured when its editor
+  opens. Reloading that recording cannot replace the editor's original baseline
+  with a newer CLI edit; a conflicting save keeps the draft without overwriting
+  the current result.
+- Task overrides may exist without a default provider. In that state the
+  default and unconfigured inherited tasks report `configured:false`, while an
+  explicit cleanup or analysis route reports `configured:true` and
+  `inherited:false`. `llm routes reset` returns an unconfigured route if there
+  is no default. Apple Intelligence is accepted for `cleanup` only by
+  `llm routes set`; analysis selection fails validation before persistence.
+- `llm routes list --json` returns `{ok:true,routes:[...]}`. Each entry has
+  `task` (`default`, `cleanup`, `analysis`, `transform`), `inherited` and
+  `configured`; configured entries also include `provider`, `model`, `isLocal`
+  and a redacted `endpoint` origin. Credentials, URL userinfo, path, query and
+  fragment are never emitted. `llm routes set|reset <cleanup|analysis> --json`
+  returns `{ok:true,route:{...}}` with the same entry shape. Listing and route
+  descriptions do not read Keychain. Set accepts the
+  inline provider options but saves a task override instead of making an LLM
+  request; when `--model` is omitted it uses the provider's current GUI default.
+  Apple Intelligence can serve only `cleanup`; setting an `analysis` override
+  with `--provider appleIntelligence` fails validation before credentials or
+  route metadata are changed.
+  Explicit inline Apple Intelligence requests for summaries, chat, Ask, and Transforms
+  also fail before dispatch through the shared service, including streams. They
+  use the existing runtime-error envelope and exit code 1.
+  Explicit models and custom-provider model requirements remain unchanged;
+  one-off inline commands keep their historical compatibility defaults.
+  Reset removes only that override. Explicit credential flags win,
+  then saved provider credentials, then provider environment variables. Keys
+  remain shared per provider, so an explicitly supplied replacement key applies
+  to every route using that provider. Local CLI reuses the configured shared
+  template and rejects a different `--command`. A running GUI may cache
+  configuration until refreshed or relaunched. `configured` describes saved
+  route configuration, not provider reachability. App availability is determined
+  per task route; Default AI may be None when an explicit task route is configured. An already-open AI Settings draft can overwrite CLI
+  changes when saved; close it before CLI mutations and reopen afterward.
+  GUI model selection conditionally updates the route it displayed and refreshes
+  instead of applying a stale choice to a concurrently changed route. Route
+  metadata writers coordinate across app and CLI processes; this does not make
+  credential changes and preference writes a single transaction.
+  A busy rejection occurs before credential or route changes. A publication
+  failure after mutation reports an unconfirmed save; read the current routes
+  before deciding whether to retry, because the attempted change may have applied.
 - `meetings show --json` and `meetings transcript --format json` expose
   `transcriptSegments` when the meeting row has durable segments. Each segment
   contains `id`, `startMs`, `endMs`, `speakerId`, `speakerLabel`, `text`, and
   `wordRange.startIndex` / `wordRange.endIndexExclusive` into the same payload's
-  `wordTimestamps` array. Callers that need stable citations should prefer
-  these persisted segments over re-segmenting words.
+  `wordTimestamps` array. Effective corrected segments may additionally contain
+  `isTextEdited: true`; omission means no text/boundary correction is claimed
+  for that segment. A one-to-one text correction retains the durable segment
+  `id`. A structurally split or merged effective segment receives a deterministic
+  effective `id` and includes `anchorTranscriptSegmentIDs` containing the
+  durable source IDs. Callers that need stable citations should prefer these
+  segments over re-segmenting words.
 - Since CLI 4.0.0, `export --stdout --format txt` uses the same formatted output as TXT file
   export, with default metadata, timestamps, and speaker labels. JSON transcript
   text fields remain available for callers needing bare stored text. TXT/Markdown
@@ -198,13 +313,58 @@ with human progress/status kept off stdout.
   paragraphs may be headed `Unassigned`. CLI 3.x returned bare stored text on
   this path; callers needing that content can select `cleanTranscript` with a
   `rawTranscript` fallback from JSON. This does not change JSON schema version 1.
-- `prompts run` sends rich timestamped speaker context when timings exist;
-  edited transcripts and untimed recordings use the stored-text fallback.
+- `prompts run` sends rich timestamped speaker context when honest automatic or
+  segment timing exists. A corrected line uses its complete segment envelope;
+  legacy whole-text edits and untimed recordings use the stored-text fallback.
 - `export --format json`, `meetings show --json`, `meetings transcript
   --format json`, and `meetings export --stdout --format json` expose the
   effective speaker attribution. They include additive
   `speakerCorrectionsApplied` and `speakerCorrectionRevision` fields; revision
-  `0` with `false` means the automatic baseline is active.
+  `0` with `false` means the automatic baseline is active. The legacy
+  `speakerCorrectionsApplied` name reports any active entry in the shared
+  speaker/transcript correction journal, including text-only corrections; it
+  does not assert that a speaker identity changed. Use `textCorrectionsApplied`
+  for the independent timed-text/boundary signal.
+- `meetings show --json` and `meetings transcript --format json` additionally
+  include `textCorrectionsApplied` and `transcriptTextAlignment`. Alignment is
+  `automatic`, `segment`, or `untimed`; `automatic` requires present automatic
+  word timestamps, `segment` means rewritten text is timed only to segment
+  envelopes, and `untimed` covers rows without word timestamps plus legacy
+  whole-text edits. The same payload's `wordTimestamps` retain the
+  automatic recognized text and timing as immutable evidence, so consumers
+  must not substitute them for corrected-word timing.
+- `meetings corrections edit-line|revise-text|merge-lines|rename|assign|merge-speakers|undo|redo|reset`
+  mutates the
+  same reversible correction journal as the app. Every command requires
+  `--expected-revision` from the last transcript read; edit/merge/assign
+  target current
+  segment UUIDs from `meetings transcript --format json`. Speaker rename and
+  merge-speakers use speaker ids from that same JSON. A stale revision or
+  segment is rejected without advancing history. An identical speaker rename
+  (trimmed label already on that speaker) succeeds without inserting a journal
+  row or advancing revision. JSON success output is the
+  updated `MeetingTranscriptRecord`, including the new revision and effective
+  projection. JSON failures use `conflict` for a stale expected revision,
+  `validation` for stale/unsupported segment targets and correction commands,
+  and `input_empty` for blank replacement text. Conflict exits `1`; validation
+  and empty-input misuse exit `2`.
+- `meetings corrections revise-text` takes `--file PATH` or `--stdin` JSON:
+  an array of `{"segment":"UUID","text":"replacement"}` or
+  `{"segment":"UUID","omit":true}` entries. It requires
+  `--expected-revision` and targets current effective segment IDs. Empty
+  batches, duplicate IDs, unknown fields, blank replacements and ambiguous
+  text/omit entries are rejected before a write. The batch is one atomic
+  correction and one Undo step, matching the GUI reading editor. Omission
+  removes a passage from the effective transcript, exports and AI context;
+  automatic text, timings and audio remain intact.
+- `history favorite|unfavorite --json` returns `ok`, `id`, and `isFavorite`.
+- `history rename --title --json` returns `ok`, `kind` (`meeting` or `file`),
+  `id`, and `title` (the effective display title). An identical title still
+  succeeds without writing. YouTube and podcast rows are rejected before JSON
+  success.
+- `vocab words add --json` returns `ok` plus the stored `word` object,
+  including `id`. `vocab snippets add --json` returns `ok` plus the stored
+  `snippet` object, including `id`.
 - `meetings show --json` meeting objects can include optional `startContext`
   for meeting rows. When present it contains `triggerKind`, `sourceMode`, and
   optional `frontmostApplication` (`bundleIdentifier`, `localizedName`).
@@ -216,11 +376,30 @@ with human progress/status kept off stdout.
   no labels. `meetings types list --json` and `meetings labels list --json`
   return arrays of those objects. Classification mutation JSON returns the
   meeting id plus its resolved optional type and complete label array.
+- `meetings labels set <label> [--name <name>] [--color <token> |
+  --automatic-color] --json` returns the stored `MeetingLabel` object and
+  requires at least one change. The explicit canonical color tokens are
+  `coral`, `green`, `amber`, `red`, `purple`, and `blue`; `orange` and `yellow`
+  input is normalized to `coral` and `amber`. `--automatic-color` clears
+  `colorToken` and omits it from the returned object. It
+  cannot be combined with `--color`.
 - `meetings list --type` and `--label` resolve a full UUID, an unambiguous UUID
   prefix, or an exact case-insensitive name before applying the filter in SQL.
   Multiple repeated filters use ANY semantics. `--unclassified` cannot be
   combined with `--type`. Archived types/labels remain resolvable for meetings
   that already use them but are excluded from default vocabulary lists.
+
+- `meetings import <path> --json` returns one camelCase `MeetingImportRecord`:
+  `id`, `completion` (`completed`, `partial`, or `needsRetry`), persisted
+  `status`, `title`, historical `startedAt`, nullable `durationMs`, nullable
+  `managedAudioPath`, and `warnings`. Warning objects contain stable `kind`
+  and plain-language `message`, plus nullable `promptId` and `promptName` for
+  a failed enabled prompt. Progress is stderr-only. Complete and partial
+  records exit 0. A `needsRetry` record is printed first, then the command
+  exits 1 without a failure envelope; if SIGINT caused the stopped result, the
+  same record is printed before exit 130. Callers must open that saved meeting
+  and retry transcription instead of importing the source again. Date-only
+  `--started-at` is local midnight; ISO-8601 timestamps preserve their instant.
 - `meetings show --json` and `meetings export --stdout --format json` may
   include `calendarEventSnapshot` for meeting recordings started from, or
   probably overlapping, a calendar event. The field is additive and local-only;
@@ -230,8 +409,9 @@ with human progress/status kept off stdout.
   additive artifact path fields for meeting rows when the session folder can be
   resolved: `artifactMarkdownPath` points to `meeting.md`, and optional
   `rawMicrophoneAudioPath`, `cleanedMicrophoneAudioPath`,
-  `rawSystemAudioPath`, and `playbackAudioPath` point to retained meeting
-  audio artifacts.
+  and `rawSystemAudioPath` point to retained meeting audio artifacts.
+  `playbackAudioPath` is the canonical expected playback path and may precede
+  preparation; its presence does not prove the file is available.
 - `meetings artifact --json` and `--envelope` return additive
   `MeetingArtifactSnapshot` fields `markdownPath`, optional
   `rawMicrophoneAudioPath`, optional `cleanedMicrophoneAudioPath`, optional
@@ -261,6 +441,29 @@ with human progress/status kept off stdout.
   `meetings classify`, and meeting list classification filters. Classification
   names and prompt content are local user data and never become telemetry dimensions.
 
+## Split operation payloads
+
+`meetings split preview --json` (and `create --dry-run --json`) returns
+`sourceId`, `sourceTitle`, `totalDurationMs`, ordered `ranges` with `startMs`
+and `endMs`, track-presence Booleans, and an opaque `sourceIdentity` string.
+Pass that string unchanged to `create --expected-identity`. Preview, dry-run
+and status use a read-only database connection without migrations.
+
+`create`, `resume`, `discard`, and `status` return a `MeetingSplitOperation`;
+`status --source` returns an array. Its `id`, `idempotencyKey`, `sourceId`,
+frozen `request`, ordered `childIds`, `status`, timestamps and `childProgress`
+describe durable creation and processing separately. Progress entries carry
+`childId`, `stage`, `outcome`, optional `errorMessage`, and `updatedAt`.
+Operation `committed` means all recordings were saved, not that transcription
+succeeded. Any failed child causes exit 1 after emitting the complete receipt,
+without a second failure envelope. Deleted children may remain in the
+historical receipt and are never recreated.
+
+See [Split and transcribe](meeting-splitting.md) for stage values, ownership,
+retry and original-preservation semantics. These are additive v1 commands;
+progress stays on stderr. The default creation key uses canonical sorted JSON
+so identical source/cuts/titles remain idempotent across CLI processes.
+
 ## Failure Envelope
 
 After argument parsing succeeds, JSON-aware command failures emit this shape on
@@ -274,6 +477,11 @@ stdout:
 
 The process exit code remains the source of truth for branching. The envelope
 explains why the command failed.
+
+For `vocab import`, malformed or unsupported bundles use `import_schema` and
+exit `2`; an empty `replace-all` bundle uses `input_empty` and exit `2`.
+A stale import preview uses `conflict` and exit `1`; file I/O failures remain
+runtime errors.
 
 ## Exit Codes
 
@@ -319,6 +527,7 @@ version/changelog treatment.
 
 - `SpecCommandTests`
 - `LLMJSONOutputTests`
+- `LLMRoutesCommandTests`
 - `MeetingsCommandTests`
 - `MeetingVADSimCommandTests`
 - `TranscribeCommandTests`
@@ -330,6 +539,7 @@ version/changelog treatment.
 - `SearchCommandTests`
 - `CardsCommandTests`
 - `VocabCommandTests`
+- `CalendarUpcomingJSONTests`
 
 Focused coverage pins spec conventions, failure-envelope fields, exit code
 entries, JSON wrapper failure envelopes, JSON validation exit-code
@@ -337,8 +547,34 @@ normalization, agent-facing meeting commands including durable transcript
 segments and additive artifact paths, command-level JSON failure envelopes, and
 `--json`/`--envelope` mutual exclusion.
 
+## Optional Orukeet model identity
+
+`models list` may include the additive `parakeet-orukeet` entry. Its engine is `parakeet` and variant is `orukeet`; it does not change the default v3 selection. `models download/select/delete parakeet-orukeet`, `config set parakeet-model orukeet`, and `transcribe --parakeet-model orukeet` address the independent preview cache. Transcription results attribute this model as `engineVariant: "orukeet"`, never `v3`.
+
 ## When this changes
 
 Update this file, `Sources/CLI/CHANGELOG.md`, `docs/cli-testing.md`,
 `integrations/README.md` if external callers are affected, and the focused CLI
 tests in the same PR.
+
+### Experimental Ask streaming progress
+
+Developer-gated `ask send --stream` retains its existing `activity`, `text`,
+and terminal `conversation` NDJSON records and adds `phase` and `step` records.
+Phase records contain `phase` (`planning`, `writing`, `validating`). Step
+records contain `step`, an `AskActivity`; upsert by its `id`. Completed
+conversations expose optional `messages[].activities`, preserving compatibility
+with older messages. Limits, count semantics, and fields are defined in
+[the Ask workspace contract](ask-workspace.md). Consumers should ignore unknown
+event types and optional fields.
+
+### Meetings awaiting playback preparation
+
+A processing meeting may have durable source audio before its canonical
+playback file exists (#1291). Its `filePath` and `playbackAudioPath` remain the
+intended canonical path for identity/recovery; optional `durationMs` is absent
+while unknown. Consumers must not infer file availability from either path.
+This also applies to `playbackAudioPath` in artifact snapshots and exports;
+source artifact paths continue to report retained files under their existing rules. Completed meetings
+retain measured playback durations and the existing schema. There are no new
+CLI capture start/stop commands.

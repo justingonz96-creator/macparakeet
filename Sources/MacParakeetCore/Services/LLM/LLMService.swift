@@ -171,16 +171,19 @@ public extension LLMServiceProtocol {
             let task = Task {
                 do {
                     guard try inferenceSettings?.validated() == nil else {
-                        throw LLMError.providerError("This LLM service does not support per-prompt generation settings.")
+                        throw LLMError.providerError(
+                            "This LLM service does not support per-prompt generation settings.")
                     }
                     let source = generatePromptResultStream(transcript: transcript, systemPrompt: systemPrompt)
                     for try await text in source {
                         continuation.yield(.text(text))
                     }
-                    continuation.yield(.completed(LLMStreamTerminal(
-                        provider: "unknown",
-                        model: "unknown"
-                    )))
+                    continuation.yield(
+                        .completed(
+                            LLMStreamTerminal(
+                                provider: "unknown",
+                                model: "unknown"
+                            )))
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -231,6 +234,7 @@ public extension LLMServiceProtocol {
 public final class LLMService: LLMServiceProtocol, Sendable {
     private let client: LLMClientProtocol
     private let contextResolver: any LLMExecutionContextResolving
+    private let cardRetrySleep: @Sendable (UInt64) async throws -> Void
     private struct MessageAssembly {
         let messages: [ChatMessage]
         let inputTruncated: Bool
@@ -312,13 +316,131 @@ public final class LLMService: LLMServiceProtocol, Sendable {
     internal static let cloudContextBudget = 500_000  // ≈140K tokens
     internal static let localContextBudget = 80_000  // ≈ 22K tokens
     internal static let lmStudioContextBudget = 8_000  // ≈2K tokens; LM Studio defaults vary by loaded model
+    /// Apple's on-device window is 4096 tokens including instructions and output.
+    /// ~3.5 chars/token with a 512-token output reserve ≈ 12k input characters.
+    /// Short answers (summary, Ask) use this ceiling.
+    internal static let appleIntelligenceContextBudget = 12_000
+    /// Transforms and dictation cleanup answer at about the length of the source.
+    /// Half the window, in the same character unit, leaves room for that rewrite.
+    internal static let appleIntelligenceRoundTripBudget = 6_000
+    /// Anthropic sends this when `maxTokens` is omitted. A cleanup rewrite is
+    /// about as long as the source, so a longer transcript needs an explicit
+    /// allowance or the provider stops at `max_tokens` and the partial text
+    /// is discarded.
+    static let formatterInheritedOutputTokenLimit = 4_096
+    /// Ceiling for an Anthropic section that no longer fits the inherited
+    /// 4096-token default. Current Claude defaults accept this output window.
+    static let formatterMaximumOutputTokenLimit = 16_384
 
-    public init(
+    /// `nil` keeps the provider default. Anthropic turns a missing value into
+    /// 4096, so a section past that estimate asks for the ceiling instead of a
+    /// tight count. Other providers, including GPT-5 where the same field
+    /// counts reasoning tokens, are left unset.
+    static func formatterOutputTokenLimit(transcriptChars: Int) -> Int? {
+        let estimated = max(0, transcriptChars) / 3 + 256
+        guard estimated > formatterInheritedOutputTokenLimit else { return nil }
+        return formatterMaximumOutputTokenLimit
+    }
+
+    /// One cleanup section has to finish inside the 300-second body wait and
+    /// the output-token ceiling. At the pace in #1253 (~230 characters per
+    /// second) this is about a minute of generation and about 4,000 output
+    /// tokens. Longer meetings are cleaned as successive sections.
+    static let formatterMaxSectionCharacters = 12_000
+
+    /// Largest slice of `transcript` whose rendered prompt still fits
+    /// `contextBudget`, and never more than one timeout-safe section.
+    static func formatterSectionCharacterLimit(contextBudget: Int, promptTemplate: String) -> Int {
+        func renderedCount(_ characters: Int) -> Int {
+            let sample = String(repeating: "x", count: characters)
+            return Prompts.formatter.count
+                + AIFormatter.renderPrompt(template: promptTemplate, transcript: sample).count
+        }
+        guard renderedCount(1) <= contextBudget else { return 0 }
+        let ceiling = min(formatterMaxSectionCharacters, max(contextBudget, 1))
+        if renderedCount(ceiling) <= contextBudget { return ceiling }
+        var low = 1
+        var high = ceiling - 1
+        while low < high {
+            let mid = low + (high - low + 1) / 2
+            if renderedCount(mid) <= contextBudget {
+                low = mid
+            } else {
+                high = mid - 1
+            }
+        }
+        return low
+    }
+
+    /// Split on a paragraph, sentence, or word boundary. A slice with no
+    /// whitespace is cut at `limit`.
+    static func formatterSections(of transcript: String, limit: Int) -> [String] {
+        let budget = max(limit, 1)
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        guard trimmed.count > budget else { return [trimmed] }
+
+        var sections: [String] = []
+        var rest = trimmed[trimmed.startIndex...]
+        while !rest.isEmpty {
+            if rest.count <= budget {
+                sections.append(String(rest))
+                break
+            }
+            let windowEnd = rest.index(rest.startIndex, offsetBy: budget)
+            let cut = preferredFormatterCut(in: rest[..<windowEnd]) ?? windowEnd
+            let piece = rest[..<cut].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !piece.isEmpty {
+                sections.append(String(piece))
+            }
+            let next = rest[cut...].drop(while: \.isWhitespace)
+            if next.startIndex == rest.startIndex {
+                break
+            }
+            rest = next
+        }
+        return sections
+    }
+
+    private static func preferredFormatterCut(in window: Substring) -> String.Index? {
+        let separators = ["\n\n", "\n", ". ", "? ", "! ", " "]
+        for separator in separators {
+            if let range = window.range(of: separator, options: .backwards),
+                range.lowerBound > window.startIndex
+            {
+                return range.upperBound
+            }
+        }
+        return nil
+    }
+
+    /// Largest output-token request that still leaves input under the
+    /// ceil(3.5 characters per token) reservation used by prompt results.
+    static func maximumOutputTokensLeavingInputRoom(in contextBudget: Int) -> Int {
+        guard contextBudget > 1 else { return 0 }
+        return (contextBudget * 2 - 1) / 7
+    }
+
+    public convenience init(
         client: LLMClientProtocol = RoutingLLMClient(),
         contextResolver: any LLMExecutionContextResolving = StoredLLMExecutionContextResolver()
     ) {
+        self.init(
+            client: client, contextResolver: contextResolver,
+            cardRetrySleep: {
+                try await Task.sleep(nanoseconds: $0)
+            })
+    }
+
+    // Card-only clock seam: no configuration mutation or generic operation retries.
+    init(
+        client: LLMClientProtocol,
+        contextResolver: any LLMExecutionContextResolving,
+        cardRetrySleep: @escaping @Sendable (UInt64) async throws -> Void
+    ) {
         self.client = client
         self.contextResolver = contextResolver
+        self.cardRetrySleep = cardRetrySleep
     }
 
     public convenience init(
@@ -349,13 +471,8 @@ public final class LLMService: LLMServiceProtocol, Sendable {
     public func generateKnowledgeCard(transcript: String, source: CardSource) async throws -> LLMResult {
         let operationID = Observability.operationID()
         let startedAt = Date()
-        let context = try loadContextForLLMOperation(
-            operationID: operationID,
-            feature: "knowledge_card",
-            streaming: false,
-            startedAt: startedAt,
-            inputChars: transcript.count,
-            messageCount: 2
+        let context = try await loadKnowledgeCardContext(
+            operationID: operationID, startedAt: startedAt, inputChars: transcript.count
         )
         let capability = client.structuredOutputCapability(context: context)
         let sourceInstructions: String
@@ -377,38 +494,77 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                 for: capability
             ))
             """
-        let assembly = buildPromptResultMessages(
-            transcript: """
-                <untrusted_transcript_data>
-                \(transcript)
-                </untrusted_transcript_data>
-                """,
-            systemPrompt: systemPrompt,
-            config: context.providerConfig
-        )
         let responseFormat: ChatResponseFormat? =
             capability == .nativeJSONSchema ? Self.knowledgeCardResponseFormat : nil
-        let attemptCount = capability == .promptEmbeddedJSONSchema ? 2 : 1
+        // Preserve successful first requests where model/endpoint capacity is
+        // unknown. JSON syntax and citations get more room after truncation.
+        let (initialLimit, recoveryLimit): (Int, Int) =
+            switch context.providerConfig.id {
+            case .ollama: (2_048, 4_096)
+            case .lmstudio: (1_024, 1_536)
+            // Custom servers expose no context-window contract. Preserve their
+            // successful first requests; spend more only after explicit truncation.
+            case .openaiCompatible: (700, 2_048)
+            default: (700, 4_096)
+            }
+        var outputLimit = initialLimit
+        var correction = ""
         var promptTokens: Int?
         var completionTokens: Int?
+        var receivedResponse = false
         var retryCount = 0
+        var inputTruncated = false
         do {
-            for attempt in 0..<attemptCount {
+            // One recovery request across both native and embedded-schema routes.
+            for attempt in 0..<2 {
+                try Task.checkCancellation()
                 retryCount = attempt
-                let response = try await client.chatCompletion(
-                    messages: assembly.messages,
-                    context: context,
-                    options: ChatCompletionOptions(
-                        temperature: 0.1,
-                        maxTokens: 700,
-                        responseFormat: responseFormat
+                let options = try PromptInferenceCapabilityResolver.resolve(
+                    config: context.providerConfig,
+                    baseline: ChatCompletionOptions(responseFormat: responseFormat),
+                    requested: PromptInferenceSettings(temperature: 0.1, maxTokens: outputLimit)
+                ).options
+                let assembly = buildPromptResultMessages(
+                    transcript: """
+                        <untrusted_transcript_data>
+                        \(transcript)
+                        </untrusted_transcript_data>
+                        """,
+                    systemPrompt: systemPrompt + correction,
+                    config: context.providerConfig,
+                    inputBudget: try promptResultInputBudget(
+                        for: context.providerConfig, maxOutputTokens: options.maxTokens
                     )
                 )
-                if let usage = response.usage {
-                    promptTokens = (promptTokens ?? 0) + usage.promptTokens
-                    completionTokens = (completionTokens ?? 0) + usage.completionTokens
+                inputTruncated = inputTruncated || assembly.inputTruncated
+                let response = try await client.chatCompletion(
+                    messages: assembly.messages, context: context, options: options
+                )
+                promptTokens = LLMUsage.derivedTotal(
+                    promptTokens: receivedResponse ? promptTokens : 0, completionTokens: response.usage?.promptTokens
+                )
+                completionTokens = LLMUsage.derivedTotal(
+                    promptTokens: receivedResponse ? completionTokens : 0,
+                    completionTokens: response.usage?.completionTokens
+                )
+                receivedResponse = true
+                try Task.checkCancellation()
+                let truncated = ["length", "max_tokens", "max_output_tokens"]
+                    .contains(response.finishReason?.lowercased() ?? "")
+                guard !truncated, Self.isValidKnowledgeCardJSON(response.content) else {
+                    // Never replay partial/untrusted model output as instructions.
+                    // With no finish metadata (localCLI), repair format without
+                    // pretending token counts prove truncation.
+                    if truncated { outputLimit = recoveryLimit }
+                    correction = """
+
+                        The previous attempt was incomplete or did not match the card schema.
+                        Generate a fresh, shorter complete JSON object. Include a non-empty synopsis,
+                        topics, decisions and actions; use empty arrays when there are no items.
+                        Include all citation fields. No markdown fences, commentary or reasoning text.
+                        """
+                    continue
                 }
-                guard Self.isValidKnowledgeCardJSON(response.content) else { continue }
                 sendLLMOperation(
                     operationID: operationID,
                     feature: "knowledge_card",
@@ -418,20 +574,31 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                     startedAt: startedAt,
                     inputChars: transcript.count,
                     outputChars: response.content.count,
-                    inputTruncated: assembly.inputTruncated,
-                    messageCount: assembly.messages.count,
+                    inputTruncated: inputTruncated,
+                    messageCount: 2,
                     promptTokens: promptTokens,
                     completionTokens: completionTokens,
                     retryCount: retryCount
                 )
                 return LLMResult(
-                    response: response,
-                    provider: context.providerConfig.id,
-                    latencyMs: Self.latencyMs(since: startedAt)
+                    output: response.content,
+                    provider: context.providerConfig.id.rawValue,
+                    model: response.model,
+                    usage: promptTokens.flatMap { prompt in
+                        completionTokens.map { completion in
+                            LLMUsage(
+                                promptTokens: prompt, completionTokens: completion,
+                                totalTokens: LLMUsage.derivedTotal(promptTokens: prompt, completionTokens: completion))
+                        }
+                    },
+                    stopReason: response.finishReason,
+                    latencyMs: Self.latencyMs(since: startedAt),
+                    effectiveSettings: response.effectiveInferenceSettings
                 )
             }
             throw LLMError.invalidResponse
         } catch {
+            let error: Error = Task.isCancelled ? CancellationError() : error
             let errorType = Self.operationErrorType(for: error)
             if !(error is CancellationError), Self.isProviderUnavailable(error) {
                 Telemetry.send(
@@ -449,12 +616,39 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                 outcome: Self.outcomeForLLMError(error),
                 startedAt: startedAt,
                 inputChars: transcript.count,
-                inputTruncated: assembly.inputTruncated,
-                messageCount: assembly.messages.count,
+                inputTruncated: inputTruncated,
+                messageCount: 2,
                 errorType: errorType,
                 promptTokens: promptTokens,
                 completionTokens: completionTokens,
                 retryCount: retryCount
+            )
+            throw error
+        }
+    }
+
+    private func loadKnowledgeCardContext(
+        operationID: String, startedAt: Date, inputChars: Int
+    ) async throws -> LLMExecutionContext {
+        let delays: [UInt64] = [100_000_000, 300_000_000, 600_000_000]
+        do {
+            var attempt = 0
+            while true {
+                try Task.checkCancellation()
+                do {
+                    return try loadContext(for: .analysis)
+                } catch LLMConfigStore.StoreError.busy where attempt < delays.count {
+                    try await cardRetrySleep(delays[attempt])
+                    attempt += 1
+                }
+            }
+        } catch {
+            let error: Error = Task.isCancelled ? CancellationError() : error
+            sendLLMOperation(
+                operationID: operationID, feature: "knowledge_card", provider: "unknown",
+                streaming: false, outcome: Self.outcomeForLLMSetupError(error),
+                startedAt: startedAt, inputChars: inputChars, messageCount: 2,
+                errorType: Self.operationErrorType(for: error)
             )
             throw error
         }
@@ -478,36 +672,13 @@ public final class LLMService: LLMServiceProtocol, Sendable {
     }
 
     private static func isValidKnowledgeCardJSON(_ output: String) -> Bool {
-        guard let data = output.data(using: .utf8),
-            let object = try? JSONSerialization.jsonObject(with: data),
-            let card = object as? [String: Any],
-            Set(["synopsis", "topics", "decisions", "actions"]).isSubset(of: Set(card.keys)),
-            card["synopsis"] is String,
-            let topics = card["topics"] as? [Any],
-            topics.allSatisfy({ $0 is String }),
-            let decisions = card["decisions"] as? [Any],
-            decisions.allSatisfy({ isValidCitationObject($0, includesOwner: false) }),
-            let actions = card["actions"] as? [Any],
-            actions.allSatisfy({ isValidCitationObject($0, includesOwner: true) })
-        else {
-            return false
-        }
-        return true
-    }
-
-    private static func isValidCitationObject(_ value: Any, includesOwner: Bool) -> Bool {
-        guard let item = value as? [String: Any] else { return false }
-        let requiredKeys: Set<String> = ["text", "quote", "startMs", "endMs"]
-        guard requiredKeys.isSubset(of: Set(item.keys)),
-            item["text"] is String,
-            item["quote"] is String,
-            item["startMs"] is Int,
-            item["endMs"] is Int
-        else {
-            return false
-        }
-        guard includesOwner, let owner = item["owner"] else { return true }
-        return owner is String || owner is NSNull
+        // Share the persistence decoder so JSON booleans cannot bridge to Int
+        // timestamps and produce success before the later save rejects them.
+        guard let draft = try? JSONDecoder().decode(CardDraft.self, from: Data(output.utf8)),
+            !draft.synopsis.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return false }
+        return draft.decisions.allSatisfy { $0.startMs != nil && $0.endMs != nil }
+            && draft.actions.allSatisfy { $0.startMs != nil && $0.endMs != nil }
     }
 
     public func chat(
@@ -868,7 +1039,7 @@ public final class LLMService: LLMServiceProtocol, Sendable {
         let inputChars = transcript.count
         let context = try loadContextForLLMOperation(
             operationID: operationID,
-            feature: "formatter_\(source.rawValue)",
+            feature: TelemetryLLMFeature.formatter.rawValue,
             streaming: false,
             startedAt: startedAt,
             inputChars: inputChars,
@@ -876,47 +1047,74 @@ public final class LLMService: LLMServiceProtocol, Sendable {
             messageCount: 2
         )
         let config = context.providerConfig
-        let budget = contextBudget(for: config)
-        let promptOverhead =
-            Prompts.formatter.count
-            + AIFormatter.renderPrompt(template: promptTemplate, transcript: "").count
-        let transcriptBudget = max(0, budget - promptOverhead)
-        // Compare original transcript length against the transcript-specific
-        // budget. The request also includes formatter instructions and the
-        // rendered template, so the transcript cannot consume the whole model
-        // context by itself.
-        let inputTruncated = transcript.count > transcriptBudget
-        let truncated = Self.truncateMiddle(transcript, limit: transcriptBudget)
-        let renderedPrompt = AIFormatter.renderPrompt(template: promptTemplate, transcript: truncated)
-        let messages = [
-            ChatMessage(role: .system, content: Prompts.formatter),
-            ChatMessage(role: .user, content: renderedPrompt),
-        ]
+        let budget = contextBudget(for: config, roundTrip: true)
+        // A meeting of any length is cleaned. One provider response cannot hold
+        // an hour-long rewrite, so the transcript is sent in sections that each
+        // fit the context budget and the 300-second body wait. Nothing is
+        // middle-truncated.
+        let inputTruncated = false
+        let sectionLimit = Self.formatterSectionCharacterLimit(
+            contextBudget: budget,
+            promptTemplate: promptTemplate
+        )
 
         do {
-            let response: ChatCompletionResponse
-            let output: String
-            if config.id == .lmstudio {
-                response = try await client.chatCompletion(
-                    messages: messages,
+            guard sectionLimit > 0 else { throw LLMError.formatterTruncated }
+            let sections = Self.formatterSections(of: transcript, limit: sectionLimit)
+            guard !sections.isEmpty else { throw LLMError.formatterEmptyResponse }
+
+            var pieces: [String] = []
+            var promptTokens = 0
+            var completionTokens = 0
+            var sawUsage = false
+            var missingUsage = false
+            var usageOverflow = false
+            var model = config.modelName
+            var stopReason: String?
+            for section in sections {
+                try Task.checkCancellation()
+                let response = try await completeFormatterSection(
+                    section,
+                    promptTemplate: promptTemplate,
                     context: context,
-                    options: ChatCompletionOptions(
-                        temperature: 0.2,
-                        responseFormat: .jsonSchema(
-                            name: "formatter_output",
-                            schema: Self.lmStudioFormatterSchema
-                        )
-                    )
+                    budget: budget
                 )
-                if response.finishReason?.lowercased() == "length" {
+                if let reason = response.finishReason?.lowercased(),
+                    reason == "length" || reason == "max_tokens"
+                {
                     throw LLMError.formatterTruncated
                 }
-                let formatted = parseLMStudioFormattedTranscript(response) ?? response.content
-                output = AIFormatter.normalizedFormattedOutput(formatted)
-            } else {
-                response = try await client.chatCompletion(messages: messages, context: context, options: .default)
-                output = AIFormatter.normalizedFormattedOutput(response.content)
+                let raw =
+                    config.id == .lmstudio
+                    ? (parseLMStudioFormattedTranscript(response) ?? response.content)
+                    : response.content
+                let piece = AIFormatter.normalizedFormattedOutput(raw)
+                if piece.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    throw LLMError.formatterEmptyResponse
+                }
+                pieces.append(piece)
+                if let usage = response.usage {
+                    sawUsage = true
+                    let prompt = promptTokens.addingReportingOverflow(usage.promptTokens)
+                    let completion = completionTokens.addingReportingOverflow(usage.completionTokens)
+                    if prompt.overflow || completion.overflow {
+                        usageOverflow = true
+                    } else {
+                        promptTokens = prompt.partialValue
+                        completionTokens = completion.partialValue
+                    }
+                } else {
+                    missingUsage = true
+                }
+                model = response.model
+                stopReason = response.finishReason
             }
+            let output = pieces.joined(separator: "\n\n")
+            let usage: TokenUsage? =
+                sawUsage && !missingUsage && !usageOverflow
+                ? TokenUsage(promptTokens: promptTokens, completionTokens: completionTokens)
+                : nil
+            let messageCount = sections.count * 2
 
             // An empty or whitespace-only response is a failure, not a
             // success: the caller will fall back to the deterministic
@@ -941,7 +1139,7 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                 ))
             sendLLMOperation(
                 operationID: operationID,
-                feature: "formatter_\(source.rawValue)",
+                feature: TelemetryLLMFeature.formatter.rawValue,
                 provider: config.id.rawValue,
                 streaming: false,
                 outcome: .success,
@@ -950,14 +1148,14 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                 outputChars: output.count,
                 inputTruncated: inputTruncated,
                 promptDefaultUsed: defaultPromptUsed,
-                messageCount: 2
+                messageCount: messageCount
             )
             let llmResult = LLMResult(
                 output: output,
                 provider: config.id.rawValue,
-                model: response.model,
-                usage: response.usage.map(LLMUsage.init),
-                stopReason: response.finishReason,
+                model: model,
+                usage: usage.map(LLMUsage.init),
+                stopReason: stopReason,
                 latencyMs: Self.latencyMs(since: startedAt)
             )
             return LLMFormatterResult(
@@ -967,13 +1165,13 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                 outputChars: output.count,
                 inputTruncated: inputTruncated,
                 defaultPromptUsed: defaultPromptUsed,
-                messageCount: messages.count
+                messageCount: messageCount
             )
         } catch {
             if error is CancellationError {
                 sendLLMOperation(
                     operationID: operationID,
-                    feature: "formatter_\(source.rawValue)",
+                    feature: TelemetryLLMFeature.formatter.rawValue,
                     provider: config.id.rawValue,
                     streaming: false,
                     outcome: .cancelled,
@@ -1007,7 +1205,7 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                 }
                 sendLLMOperation(
                     operationID: operationID,
-                    feature: "formatter_\(source.rawValue)",
+                    feature: TelemetryLLMFeature.formatter.rawValue,
                     provider: config.id.rawValue,
                     streaming: false,
                     outcome: Self.outcomeForLLMError(error),
@@ -1092,7 +1290,7 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                 do {
                     let context: LLMExecutionContext
                     do {
-                        let baseContext = try self.loadContext()
+                        let baseContext = try self.loadContext(for: .analysis)
                         context = try self.context(baseContext, overridingModelWith: modelOverride)
                     } catch {
                         self.sendLLMOperation(
@@ -1222,7 +1420,7 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                 do {
                     let context: LLMExecutionContext
                     do {
-                        context = try self.loadContext()
+                        context = try self.loadContext(for: .analysis)
                     } catch {
                         self.sendLLMOperation(
                             operationID: operationID,
@@ -1338,7 +1536,7 @@ public final class LLMService: LLMServiceProtocol, Sendable {
                 do {
                     let context: LLMExecutionContext
                     do {
-                        let baseContext = try self.loadContext()
+                        let baseContext = try self.loadContext(for: .transform)
                         context = try self.context(baseContext, overridingModelWith: modelOverride)
                     } catch {
                         self.sendLLMOperation(
@@ -1429,11 +1627,22 @@ public final class LLMService: LLMServiceProtocol, Sendable {
 
     // MARK: - Private Helpers
 
-    private func loadContext() throws -> LLMExecutionContext {
-        guard let context = try contextResolver.resolveContext() else {
+    private func loadContext(for task: LLMTaskGroup) throws -> LLMExecutionContext {
+        guard let context = try contextResolver.resolveContext(for: task) else {
             throw LLMError.notConfigured
         }
+        guard context.providerConfig.id.canServe(task) else {
+            throw LLMError.providerError(
+                "\(context.providerConfig.id.displayName) supports dictation cleanup only. Choose another provider for \(task.rawValue)."
+            )
+        }
         return context
+    }
+
+    private static func taskGroup(forFeature feature: String) -> LLMTaskGroup {
+        if feature == TelemetryLLMFeature.formatter.rawValue || feature.hasPrefix("formatter_") { return .cleanup }
+        if feature == "transform" { return .transform }
+        return .analysis
     }
 
     /// Returns a request-scoped context with the requested model while keeping
@@ -1443,63 +1652,18 @@ public final class LLMService: LLMServiceProtocol, Sendable {
         _ context: LLMExecutionContext,
         overridingModelWith modelOverride: String?
     ) throws -> LLMExecutionContext {
-        guard let rawModelOverride = modelOverride else { return context }
-        let modelOverride = rawModelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !modelOverride.isEmpty else {
+        switch context.providerConfig.resolvingModelOverride(modelOverride) {
+        case .resolved(let providerConfig):
+            return LLMExecutionContext(
+                providerConfig: providerConfig,
+                localCLIConfig: context.localCLIConfig
+            )
+        case .invalid(let model, let reason):
             throw LLMError.invalidModelOverride(
-                model: rawModelOverride,
+                model: model,
                 provider: context.providerConfig.id,
-                reason: "the model name is empty."
+                reason: reason
             )
-        }
-        guard Self.isLocallyCompatible(modelOverride, with: context.providerConfig.id) else {
-            throw LLMError.invalidModelOverride(
-                model: modelOverride,
-                provider: context.providerConfig.id,
-                reason: "the model identifier does not match this provider."
-            )
-        }
-        guard modelOverride != context.providerConfig.modelName else { return context }
-
-        guard context.providerConfig.id != .localCLI else {
-            throw LLMError.invalidModelOverride(
-                model: modelOverride,
-                provider: .localCLI,
-                reason: "the configured CLI command controls its model. "
-                    + "Remove the override or change the command in Settings."
-            )
-        }
-
-        let config = context.providerConfig
-        return LLMExecutionContext(
-            providerConfig: LLMProviderConfig(
-                id: config.id,
-                baseURL: config.baseURL,
-                apiKey: config.apiKey,
-                modelName: modelOverride,
-                isLocal: config.isLocal
-            ),
-            localCLIConfig: context.localCLIConfig
-        )
-    }
-
-    /// Rejects provider/model combinations that can be disproved without a
-    /// network request. OpenAI-compatible and local runtimes intentionally
-    /// accept arbitrary non-empty identifiers because their installed model
-    /// sets are endpoint-specific. Discovery lists can omit valid aliases, so
-    /// the generation endpoint validates existence without a fallback model.
-    private static func isLocallyCompatible(_ model: String, with provider: LLMProviderID) -> Bool {
-        switch provider {
-        case .anthropic:
-            return model.hasPrefix("claude-")
-        case .gemini:
-            let lowered = model.lowercased()
-            return lowered.hasPrefix("gemini-") || lowered.hasPrefix("gemma-")
-        case .openrouter:
-            let components = model.split(separator: "/", omittingEmptySubsequences: false)
-            return components.count == 2 && components.allSatisfy { !$0.isEmpty }
-        case .openai, .openaiCompatible, .ollama, .lmstudio, .localCLI, .inProcessLocal:
-            return true
         }
     }
 
@@ -1513,7 +1677,7 @@ public final class LLMService: LLMServiceProtocol, Sendable {
         messageCount: Int? = nil
     ) throws -> LLMExecutionContext {
         do {
-            return try loadContext()
+            return try loadContext(for: Self.taskGroup(forFeature: feature))
         } catch {
             sendLLMOperation(
                 operationID: operationID,
@@ -1531,7 +1695,10 @@ public final class LLMService: LLMServiceProtocol, Sendable {
         }
     }
 
-    private func contextBudget(for config: LLMProviderConfig) -> Int {
+    private func contextBudget(for config: LLMProviderConfig, roundTrip: Bool = false) -> Int {
+        if config.id == .appleIntelligence {
+            return roundTrip ? Self.appleIntelligenceRoundTripBudget : Self.appleIntelligenceContextBudget
+        }
         if config.id == .lmstudio {
             return Self.lmStudioContextBudget
         }
@@ -1550,7 +1717,8 @@ public final class LLMService: LLMServiceProtocol, Sendable {
         maxOutputTokens: Int?
     ) throws -> Int {
         // Native Ollama requests explicitly set num_ctx, not the generic local window.
-        let totalBudget = config.id == .ollama
+        let totalBudget =
+            config.id == .ollama
             ? OllamaLLMHTTPAdapter.contextWindowTokens * 7 / 2
             : contextBudget(for: config)
         guard let maxOutputTokens, maxOutputTokens > 0 else {
@@ -1576,10 +1744,14 @@ public final class LLMService: LLMServiceProtocol, Sendable {
     ) -> MessageAssembly {
         let budget = inputBudget ?? contextBudget(for: config)
         let resolvedPrompt = resolveSummaryPrompt(systemPrompt)
-        let promptWasTruncated = resolvedPrompt.count > budget
+        // Long notes or custom context must leave room for the spoken source.
+        let reservedTranscriptBudget =
+            budget > 0 && !transcript.isEmpty ? min(transcript.count, max(1, budget / 2)) : 0
+        let systemPromptBudget = budget - reservedTranscriptBudget
+        let promptWasTruncated = resolvedPrompt.count > systemPromptBudget
         let boundedPrompt =
             promptWasTruncated
-            ? Self.truncateMiddle(resolvedPrompt, limit: budget)
+            ? Self.truncateMiddle(resolvedPrompt, limit: systemPromptBudget)
             : resolvedPrompt
         let transcriptBudget = transcriptBudget(totalBudget: budget, systemPrompt: boundedPrompt)
         let truncated = Self.truncateMiddle(transcript, limit: transcriptBudget)
@@ -1602,7 +1774,8 @@ public final class LLMService: LLMServiceProtocol, Sendable {
         let separator = "\n\n---\n\n"
         let available = max(
             0,
-            contextBudget(for: config) - systemPrompt.count - instructionPrefix.count - separator.count
+            contextBudget(for: config, roundTrip: true) - systemPrompt.count - instructionPrefix.count
+                - separator.count
         )
         let promptBudget = prompt.count <= available ? prompt.count : available / 2
         let boundedPrompt = Self.truncateMiddle(prompt, limit: promptBudget)
@@ -1620,6 +1793,46 @@ public final class LLMService: LLMServiceProtocol, Sendable {
     private func resolveSummaryPrompt(_ systemPrompt: String?) -> String {
         let trimmed = systemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed?.isEmpty == false ? trimmed : nil) ?? Prompts.summary
+    }
+
+    private func completeFormatterSection(
+        _ section: String,
+        promptTemplate: String,
+        context: LLMExecutionContext,
+        budget: Int
+    ) async throws -> ChatCompletionResponse {
+        let renderedPrompt = AIFormatter.renderPrompt(template: promptTemplate, transcript: section)
+        let messages = [
+            ChatMessage(role: .system, content: Prompts.formatter),
+            ChatMessage(role: .user, content: renderedPrompt),
+        ]
+        guard messages.reduce(0, { $0 + $1.content.count }) <= budget else {
+            throw LLMError.formatterTruncated
+        }
+        if context.providerConfig.id == .lmstudio {
+            return try await client.chatCompletion(
+                messages: messages,
+                context: context,
+                options: ChatCompletionOptions(
+                    temperature: 0.2,
+                    responseFormat: .jsonSchema(
+                        name: "formatter_output",
+                        schema: Self.lmStudioFormatterSchema
+                    )
+                )
+            )
+        }
+        let maxTokens =
+            context.providerConfig.id == .anthropic
+            ? Self.formatterOutputTokenLimit(transcriptChars: section.count) : nil
+        return try await client.chatCompletion(
+            messages: messages,
+            context: context,
+            options: ChatCompletionOptions(
+                temperature: ChatCompletionOptions.default.temperature,
+                maxTokens: maxTokens
+            )
+        )
     }
 
     private func parseLMStudioFormattedTranscript(_ response: ChatCompletionResponse) -> String? {
@@ -1666,7 +1879,9 @@ public final class LLMService: LLMServiceProtocol, Sendable {
         switch llmError {
         case .connectionFailed, .modelNotFound, .cliError, .authenticationFailed:
             return true
-        case .notConfigured, .invalidModelOverride, .rateLimited, .contextTooLong, .formatterTruncated,
+        case .notConfigured, .requestTimedOut, .invalidModelOverride, .rateLimited, .contextTooLong,
+            .contentFiltered,
+            .formatterTruncated,
             .formatterEmptyResponse, .providerError, .streamingError, .invalidResponse:
             return false
         }
