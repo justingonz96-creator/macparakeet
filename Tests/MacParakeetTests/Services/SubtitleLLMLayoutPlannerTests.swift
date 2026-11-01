@@ -64,6 +64,32 @@ final class SubtitleLLMLayoutPlannerTests: XCTestCase {
         XCTAssertNil(results[0].cues)
     }
 
+    func testFailedChunkIsAskedOnceMoreBeforeFallingBack() async {
+        let ws = words(6)
+        let units = [unit(0, 2), unit(3, 5)]
+        let llm = ScriptedLLM(responses: [
+            "not JSON",
+            #"{"cues":[{"start":0,"end":2},{"start":3,"end":5}]}"#,
+        ])
+        let planner = SubtitleLLMLayoutPlanner(llmService: llm, chunkTargetWords: 100, maxConcurrency: 1)
+        let results = await planner.plan(words: ws, units: units, config: .default)
+        XCTAssertEqual(results[0].cues?.map(\.text), ["w0 w1 w2", "w3 w4 w5"])
+    }
+
+    /// A chunk that fails both attempts carries a rule-based layout of its own
+    /// words (one cue per sentence unit here), so the caller can keep the AI
+    /// layout for every other chunk.
+    func testFailedChunkCarriesRuleBasedFallbackCues() async {
+        let ws = words(6)
+        let units = [unit(0, 2), unit(3, 5)]
+        let planner = SubtitleLLMLayoutPlanner(llmService: FailingLLM(), chunkTargetWords: 100, maxConcurrency: 1)
+        let results = await planner.plan(words: ws, units: units, config: .default)
+        XCTAssertTrue(results[0].didFallBack)
+        XCTAssertEqual(results[0].fallbackCues.map(\.text), ["w0 w1 w2", "w3 w4 w5"])
+        XCTAssertEqual(results[0].fallbackCues.first?.startMs, 0)
+        XCTAssertEqual(results[0].fallbackCues.last?.endMs, ws[5].endMs)
+    }
+
     /// A *wide* coverage gap (4+ skipped indices) still falls back —
     /// silently absorbing that many missing words into the previous
     /// cue would be a worse error than a chunk fallback. Small (1–3

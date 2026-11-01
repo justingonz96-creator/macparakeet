@@ -989,17 +989,17 @@ public final class ExportService: ExportServiceProtocol, Sendable {
             onProgress: layoutProgress
         )
 
-        // Any chunk fell back to nil → use deterministic for the whole
-        // transcript. Mixing per-chunk LLM output with per-chunk
-        // deterministic output is possible but complicates the
-        // post-processing; full fallback is simpler and the user
-        // already opted into one or the other quality bar.
-        guard !chunkResults.contains(where: { $0.didFallBack }) else {
+        // A chunk that failed twice uses the planner's rule-based layout for
+        // its own words; the rest keep the AI layout (one bad chunk used to
+        // discard the whole class's AI layout). When most chunks fail the
+        // model is unreachable or unsuitable, so use the deterministic builder.
+        let failedChunks = chunkResults.filter(\.didFallBack).count
+        guard failedChunks * 2 <= chunkResults.count else {
             return deterministic()
         }
 
         // Stitch chunk cues + timing post-processing.
-        let llmCues = chunkResults.flatMap { $0.cues ?? [] }
+        let llmCues = chunkResults.flatMap { $0.cues ?? $0.fallbackCues }
         // When LLM service is configured, run the review pass between
         // the rebalance and timing passes. Reviewer progress fires
         // through the new combined handler only — the legacy handler

@@ -48,6 +48,10 @@ public actor SubtitleLLMLayoutPlanner {
         public let chunkStartIndex: Int  // first word index this chunk covers
         public let chunkEndIndex: Int    // last word index this chunk covers
         public let cues: [ExportService.SubtitleCue]?
+        /// Rule-based layout of this chunk (sentence units, split at the best
+        /// linguistic point to fit the budget), used when the LLM failed so
+        /// one bad chunk no longer throws away the whole AI layout.
+        public var fallbackCues: [ExportService.SubtitleCue] = []
 
         public var didFallBack: Bool { cues == nil }
     }
@@ -120,6 +124,8 @@ public actor SubtitleLLMLayoutPlanner {
         let startIndex: Int          // first word index of the chunk (into source array)
         let endIndex: Int            // last word index of the chunk (inclusive)
         let words: [WordTimestamp]   // slice of the source array for this chunk
+        /// Sentence units inside the chunk, as chunk-local word ranges.
+        var unitRanges: [LayoutPlanParser.CueRange] = []
     }
 
     /// Build chunks whose boundaries always align with `SentenceUnit`
@@ -142,26 +148,85 @@ public actor SubtitleLLMLayoutPlanner {
             current.append(unit)
             currentWordCount += unit.wordCount
             if currentWordCount >= chunkTargetWords {
-                let s = current.first!.startIndex
-                let e = current.last!.endIndex
-                chunks.append(Chunk(startIndex: s, endIndex: e, words: Array(words[s...e])))
+                chunks.append(makeChunk(current, words: words))
                 current.removeAll()
                 currentWordCount = 0
             }
         }
         if !current.isEmpty {
-            let s = current.first!.startIndex
-            let e = current.last!.endIndex
-            chunks.append(Chunk(startIndex: s, endIndex: e, words: Array(words[s...e])))
+            chunks.append(makeChunk(current, words: words))
         }
         return chunks
+    }
+
+    private nonisolated func makeChunk(_ units: [SentenceUnit], words: [WordTimestamp]) -> Chunk {
+        let s = units.first!.startIndex
+        let e = units.last!.endIndex
+        let ranges = units.map { LayoutPlanParser.CueRange(start: $0.startIndex - s, end: $0.endIndex - s) }
+        return Chunk(startIndex: s, endIndex: e, words: Array(words[s...e]), unitRanges: ranges)
     }
 
     // MARK: - Per-chunk
 
     private static let log = Logger(subsystem: "com.macparakeet.core", category: "SubtitleLLMLayoutPlanner")
 
+    /// LLM replies vary between calls, so a failed chunk is asked once more
+    /// before it falls back to the rule-based layout.
+    static let attemptsPerChunk = 2
+
     private static func runOne(
+        chunk: Chunk,
+        llmService: LLMServiceProtocol,
+        config: SubtitleExportConfig,
+        speakerId: String?,
+        modelProfile: ModelProfile?
+    ) async -> ChunkResult {
+        for attempt in 1...attemptsPerChunk {
+            let result = await runAttempt(
+                chunk: chunk, llmService: llmService, config: config,
+                speakerId: speakerId, modelProfile: modelProfile
+            )
+            if !result.didFallBack { return result }
+            if attempt < attemptsPerChunk {
+                log.info("layout_planner_chunk_retry range=\(chunk.startIndex)-\(chunk.endIndex) attempt=\(attempt + 1)")
+            }
+        }
+        var failed = ChunkResult(chunkStartIndex: chunk.startIndex, chunkEndIndex: chunk.endIndex, cues: nil)
+        failed.fallbackCues = fallbackCues(for: chunk, config: config, speakerId: speakerId)
+        return failed
+    }
+
+    /// Rule-based layout for one chunk: each sentence unit, split at the best
+    /// linguistic point when it exceeds the cue budget.
+    static func fallbackCues(
+        for chunk: Chunk,
+        config: SubtitleExportConfig,
+        speakerId: String?
+    ) -> [ExportService.SubtitleCue] {
+        let units = chunk.unitRanges.isEmpty
+            ? [LayoutPlanParser.CueRange(start: 0, end: chunk.words.count - 1)]
+            : chunk.unitRanges
+        let ranges = autoSplitOversizedRanges(units, words: chunk.words, perCueBudget: config.maxCharsPerLine)
+        return cues(from: ranges, words: chunk.words, speakerId: speakerId)
+    }
+
+    static func cues(
+        from ranges: [LayoutPlanParser.CueRange],
+        words: [WordTimestamp],
+        speakerId: String?
+    ) -> [ExportService.SubtitleCue] {
+        ranges.map { r in
+            let slice = words[r.start...r.end]
+            return ExportService.SubtitleCue(
+                startMs: slice.first!.startMs,
+                endMs: slice.last!.endMs,
+                text: slice.map(\.word).joined(separator: " "),
+                speakerId: speakerId
+            )
+        }
+    }
+
+    private static func runAttempt(
         chunk: Chunk,
         llmService: LLMServiceProtocol,
         config: SubtitleExportConfig,
@@ -205,26 +270,11 @@ public actor SubtitleLLMLayoutPlanner {
             } else {
                 log.debug("layout_planner_chunk_ok range=\(chunk.startIndex)-\(chunk.endIndex) cues=\(ranges.count) budget=\(perCueBudget)")
             }
-            // Map chunk-local indices back to source indices when we build
-            // the cue. Use OUR word array for text + timing.
-            var cues: [ExportService.SubtitleCue] = []
-            cues.reserveCapacity(ranges.count)
-            for r in ranges {
-                let slice = chunk.words[r.start...r.end]
-                let text = slice.map(\.word).joined(separator: " ")
-                let startMs = slice.first!.startMs
-                let endMs = slice.last!.endMs
-                cues.append(ExportService.SubtitleCue(
-                    startMs: startMs,
-                    endMs: endMs,
-                    text: text,
-                    speakerId: speakerId
-                ))
-            }
+            // Chunk-local ranges; OUR word array supplies text + timing.
             return ChunkResult(
                 chunkStartIndex: chunk.startIndex,
                 chunkEndIndex: chunk.endIndex,
-                cues: cues
+                cues: cues(from: ranges, words: chunk.words, speakerId: speakerId)
             )
         case .failure(let reason):
             // Truncated preview of the LLM body so a failure tells us
