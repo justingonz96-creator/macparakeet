@@ -501,7 +501,7 @@ public enum ParakeetModelVariant: String, CaseIterable, Codable, Sendable {
         case .v2: "English only"
         case .unified: "English (Unified)"
         case .orukeet: "Orukeet (preview)"
-        case .ultra: "Ultra (multilingual)"
+        case .ultra: "Higher accuracy"
         }
     }
 

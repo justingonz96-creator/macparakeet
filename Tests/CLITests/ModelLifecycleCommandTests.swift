@@ -134,7 +134,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
             isCohereModelDownloaded: { false }
         )
 
-        XCTAssertEqual(models.count, 8)
+        XCTAssertEqual(models.count, 9)
         XCTAssertEqual(
             models[0],
             SelectableSpeechModel(
@@ -186,6 +186,18 @@ final class ModelLifecycleCommandTests: XCTestCase {
         XCTAssertEqual(
             models[4],
             SelectableSpeechModel(
+                id: "parakeet-ultra",
+                name: "Parakeet Ultra 0.6B (Higher accuracy)",
+                engine: "parakeet",
+                variant: "ultra",
+                size: "~595 MB",
+                installed: false,
+                selected: false,
+                language: nil
+            ))
+        XCTAssertEqual(
+            models[5],
+            SelectableSpeechModel(
                 id: "nemotron-multilingual-1120ms",
                 name: "Nemotron 3.5 ASR Streaming 0.6B (Multilingual Beta)",
                 engine: "nemotron",
@@ -196,7 +208,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
                 language: "auto"
             ))
         XCTAssertEqual(
-            models[5],
+            models[6],
             SelectableSpeechModel(
                 id: "nemotron-english-1120ms",
                 name: "Nemotron Speech Streaming EN 0.6B (English Beta)",
@@ -208,7 +220,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
                 language: "en"
             ))
         XCTAssertEqual(
-            models[6],
+            models[7],
             SelectableSpeechModel(
                 id: "cohere-transcribe",
                 name: "Cohere Transcribe",
@@ -220,7 +232,7 @@ final class ModelLifecycleCommandTests: XCTestCase {
                 language: "en"
             ))
         XCTAssertEqual(
-            models[7],
+            models[8],
             SelectableSpeechModel(
                 id: "whisper-large-v3-v20240930-turbo-632MB",
                 name: "Whisper Large v3 Turbo",

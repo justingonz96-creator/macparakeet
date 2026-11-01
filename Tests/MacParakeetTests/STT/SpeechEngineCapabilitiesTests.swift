@@ -38,6 +38,7 @@ final class SpeechEngineCapabilitiesTests: XCTestCase {
         XCTAssertEqual(customVocabularyKeys, Set([
             .parakeet(.v2),
             .parakeet(.v3),
+            .parakeet(.ultra),
         ]))
     }
 
