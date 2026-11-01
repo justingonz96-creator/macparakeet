@@ -65,8 +65,12 @@ struct ExportCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Convert spelled-out cardinals to digits in SRT/VTT cue text.")
     var normalizeNumbers: Bool = false
 
-    @Flag(name: .long, help: "Use the LLM layout planner for SRT/VTT cue boundaries (reads the same stored LLM provider config as the app).")
-    var llmRefinement: Bool = false
+    @Flag(
+        name: .long,
+        inversion: .prefixedNo,
+        help: "Use the LLM layout planner for SRT/VTT cue boundaries (reads the same stored LLM provider config as the app). Defaults to the preset's setting; --no-llm-refinement keeps a preset's layout without any AI call."
+    )
+    var llmRefinement: Bool?
 
     @Option(name: .long, help: "AI provider for --llm-refinement, instead of the app's saved one (e.g. ollama).")
     var llmProvider: String?
@@ -79,7 +83,7 @@ struct ExportCommand: AsyncParsableCommand {
     var subtitleConfig: SubtitleExportConfig {
         var c = subtitlePreset.config
         c.normalizeNumbers = normalizeNumbers
-        c.useLLMRefinement = llmRefinement || subtitlePreset.config.useLLMRefinement
+        c.useLLMRefinement = llmRefinement ?? subtitlePreset.config.useLLMRefinement
         return c
     }
 
