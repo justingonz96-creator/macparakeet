@@ -222,4 +222,24 @@ final class LLMConfigStoreTests: XCTestCase {
         XCTAssertEqual(try store.loadConfig()?.modelName, "working-model")
         XCTAssertEqual(try store.loadAPIKey(), "working-key")
     }
+
+    // Echo audit 2026-09-09: a config saved before the fix carries
+    // isLocal:true for an Ollama cloud model; loading it must correct that.
+    func testSavedOllamaCloudConfigLoadsAsNotLocal() throws {
+        let json = #"{"id":"ollama","baseURL":"http://localhost:11434/v1","modelName":"gemma4:31b-cloud","isLocal":true}"#
+        let decoded = try JSONDecoder().decode(LLMProviderConfig.self, from: Data(json.utf8))
+        XCTAssertFalse(decoded.isLocal)
+    }
+
+    func testOllamaCloudModelNames() {
+        for name in ["gemma4:31b-cloud", "gpt-oss:120b-cloud", "minimax-m2:cloud", " Kimi-K2:1T-CLOUD "] {
+            XCTAssertTrue(LLMProviderConfig.isOllamaCloudModel(id: .ollama, modelName: name), name)
+        }
+        for name in ["qwen3.8:27b-mlx", "cloudy:latest", "llama3", "cloud"] {
+            XCTAssertFalse(LLMProviderConfig.isOllamaCloudModel(id: .ollama, modelName: name), name)
+        }
+        XCTAssertFalse(LLMProviderConfig.isOllamaCloudModel(id: .lmstudio, modelName: "x:cloud"))
+        XCTAssertFalse(LLMProviderConfig.ollama(model: "gemma4:31b-cloud").isLocal)
+        XCTAssertTrue(LLMProviderConfig.ollama(model: "qwen3.8:27b-mlx").isLocal)
+    }
 }

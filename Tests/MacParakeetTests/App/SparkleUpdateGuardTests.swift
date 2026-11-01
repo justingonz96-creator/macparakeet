@@ -58,4 +58,37 @@ final class SparkleUpdateGuardTests: XCTestCase {
             SparkleUpdateGuard.blockReason(appVersion: "0.6.0", isMeetingRecordingActive: false)
         )
     }
+
+    // MARK: - Upstream feed (Echo audit 2026-09-09)
+
+    func testBlockReasonBlocksUpstreamMacParakeetFeed() {
+        XCTAssertEqual(
+            SparkleUpdateGuard.blockReason(
+                appVersion: "0.6.7-dev",
+                isMeetingRecordingActive: false,
+                feedURL: "https://macparakeet.com/appcast.xml"
+            ),
+            .upstreamFeed
+        )
+    }
+
+    func testBlockReasonAllowsAnEchoOwnedFeed() {
+        XCTAssertNil(
+            SparkleUpdateGuard.blockReason(
+                appVersion: "0.6.7",
+                isMeetingRecordingActive: false,
+                feedURL: "https://echo.example.com/appcast.xml"
+            )
+        )
+    }
+
+    /// The shipped Info.plist must not run background update checks.
+    func testBuildScriptDisablesAutomaticUpdateChecks() throws {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("scripts/dist/build_app_bundle.sh")
+        let text = try String(contentsOf: script, encoding: .utf8)
+        XCTAssertTrue(text.contains("<key>SUEnableAutomaticChecks</key>\n  <false/>"))
+    }
 }

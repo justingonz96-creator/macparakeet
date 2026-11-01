@@ -208,13 +208,13 @@ struct ExportCommand: AsyncParsableCommand {
 
     /// LLMConfigStore defaults to `UserDefaults.standard`, which for a
     /// bundle-less CLI binary resolves to a different domain than the
-    /// GUI app's. The GUI saves its provider config under either
-    /// `com.macparakeet.dev` (debug build) or `com.macparakeet.MacParakeet`
+    /// GUI app's. Echo saves its provider config under either
+    /// `com.echelonfit.echo.dev` (debug build) or `com.echelonfit.echo`
     /// (release). Try both, prefer whichever has a saved config.
     private func buildLLMServiceFromGUIDefaults() -> LLMService {
         let candidates = [
-            "com.macparakeet.dev",
-            "com.macparakeet.MacParakeet",
+            "com.echelonfit.echo.dev",
+            AppPaths.preferencesSuiteName,
         ]
         for suite in candidates {
             guard let defaults = UserDefaults(suiteName: suite) else { continue }

@@ -3,7 +3,9 @@ import Foundation
 
 /// Centralized path management for MacParakeet runtime files.
 public enum AppPaths {
-    public static let preferencesSuiteName = "com.macparakeet.MacParakeet"
+    /// Echo's own preferences domain (its bundle identifier). The upstream
+    /// `com.macparakeet.MacParakeet` domain belongs to the original app.
+    public static let preferencesSuiteName = "com.echelonfit.echo"
     public static let meetingArtifactsFolderKey = "meetingArtifactsFolder"
     #if DEBUG
     public static let debugAppStateDirEnvironmentKey = "MACPARAKEET_DEBUG_APP_STATE_DIR"

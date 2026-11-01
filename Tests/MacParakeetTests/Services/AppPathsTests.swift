@@ -163,7 +163,7 @@ final class AppPathsTests: XCTestCase {
 
     // The two shared-suite cases verify the resolved instance against
     // `sharedAppDefaults()` by writing through it, which targets the real
-    // `com.macparakeet.MacParakeet` domain: that is the only way to observe
+    // `com.echelonfit.echo` domain: that is the only way to observe
     // which suite an opaque `UserDefaults` wraps. The keys carry the
     // `macparakeet.tests.` prefix so any leftover from a killed test run is
     // identifiable, and the `defer` cleanup does not run on SIGKILL/abort.
@@ -196,5 +196,16 @@ final class AppPathsTests: XCTestCase {
             AppPaths.appDefaults(bundleIdentifier: "com.macparakeet.tests.other"),
             "unrelated bundle identifier resolves to the shared suite"
         )
+    }
+
+    // Echo audit 2026-09-09: the CLI reads the app's settings through this
+    // suite, so it must be the bundle id the app is actually built with.
+    func testPreferencesSuiteMatchesBuiltBundleIdentifier() throws {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("scripts/dist/build_app_bundle.sh")
+        let text = try String(contentsOf: script, encoding: .utf8)
+        XCTAssertTrue(text.contains("BUNDLE_ID=\"${BUNDLE_ID:-\(AppPaths.preferencesSuiteName)}\""))
     }
 }

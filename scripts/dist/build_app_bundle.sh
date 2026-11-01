@@ -691,7 +691,7 @@ cat >"$INFO_PLIST" <<EOF
   <key>SUFeedURL</key>
   <string>${SU_FEED_URL}</string>
   <key>SUEnableAutomaticChecks</key>
-  <true/>
+  <false/>
   <key>SUPublicEDKey</key>
   <string>${SU_PUBLIC_ED_KEY}</string>
 $(printf "%b" "$LICENSING_PLIST")

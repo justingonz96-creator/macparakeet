@@ -277,9 +277,11 @@ struct OpenAICompatibleLLMHTTPAdapter: LLMHTTPAdapter {
         try options.validateInferenceSettings(for: config)
         let url = config.baseURL.appendingPathComponent("chat/completions")
 
-        // Local models need longer timeouts for cold starts (model loading from disk)
+        // Local models need longer timeouts for cold starts (model loading from disk).
+        // Ollama cloud models are not local but still go through the local daemon,
+        // so they keep the same generous timeout they had before.
         let timeout: TimeInterval
-        if config.isLocal {
+        if config.isLocal || config.id == .ollama {
             timeout = stream ? 600 : 300
         } else {
             timeout = stream ? 120 : 30

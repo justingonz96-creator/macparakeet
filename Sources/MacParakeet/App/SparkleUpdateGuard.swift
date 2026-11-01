@@ -18,6 +18,11 @@ import Sparkle
 ///    developer running their work-in-progress shouldn't suddenly find their
 ///    app replaced with the production build mid-session.
 ///
+/// 3. **Upstream MacParakeet feed (Echo).** Echo is a fork with no update
+///    channel of its own yet. Its feed still points at macparakeet.com, so any
+///    "update" would replace Echo with the original MacParakeet app and drop
+///    every Echelon feature. Checks against that feed are always refused.
+///
 /// Implemented by throwing from `updater(_:mayPerform:)` so both auto-checks
 /// (background timer) and user-initiated checks (the menu item) are blocked
 /// uniformly, and by returning `false` from `updaterShouldRelaunchApplication`
@@ -28,7 +33,16 @@ import Sparkle
 final class SparkleUpdateGuard: NSObject {
     enum BlockReason: Equatable {
         case devBuild(version: String?)
+        case upstreamFeed
         case meetingRecordingActive
+    }
+
+    /// Hosts whose appcast publishes the original MacParakeet app, never Echo.
+    static let upstreamFeedHosts: Set<String> = ["macparakeet.com", "www.macparakeet.com"]
+
+    static func isUpstreamFeed(_ feedURL: String?) -> Bool {
+        guard let feedURL, let host = URL(string: feedURL)?.host?.lowercased() else { return false }
+        return upstreamFeedHosts.contains(host)
     }
 
     private let isMeetingRecordingActive: () -> Bool
@@ -51,9 +65,16 @@ final class SparkleUpdateGuard: NSObject {
         return false
     }
 
-    static func blockReason(appVersion: String?, isMeetingRecordingActive: Bool) -> BlockReason? {
+    static func blockReason(
+        appVersion: String?,
+        isMeetingRecordingActive: Bool,
+        feedURL: String? = nil
+    ) -> BlockReason? {
         if isDevBuildVersion(appVersion) {
             return .devBuild(version: appVersion)
+        }
+        if isUpstreamFeed(feedURL) {
+            return .upstreamFeed
         }
         if isMeetingRecordingActive {
             return .meetingRecordingActive
@@ -62,20 +83,20 @@ final class SparkleUpdateGuard: NSObject {
     }
 
     private func currentBlockReason() -> BlockReason? {
-        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        if Self.isDevBuildVersion(appVersion) {
-            return .devBuild(version: appVersion)
-        }
-        if isMeetingRecordingActive() {
-            return .meetingRecordingActive
-        }
-        return nil
+        let info = Bundle.main.infoDictionary
+        return Self.blockReason(
+            appVersion: info?["CFBundleShortVersionString"] as? String,
+            isMeetingRecordingActive: isMeetingRecordingActive(),
+            feedURL: info?["SUFeedURL"] as? String
+        )
     }
 
     private static func error(for reason: BlockReason) -> NSError {
         let message: String = switch reason {
         case .devBuild(let version):
             "Dev builds skip update checks (version: \(version ?? "<missing>"))."
+        case .upstreamFeed:
+            "Echo doesn't update itself. New Echo versions are installed by hand, so this can't replace Echo with the original MacParakeet app."
         case .meetingRecordingActive:
             "Update checks are paused while a meeting recording is active. Stop the recording and try again."
         }
@@ -110,6 +131,7 @@ private extension SparkleUpdateGuard.BlockReason {
         switch self {
         case .devBuild: return 1
         case .meetingRecordingActive: return 2
+        case .upstreamFeed: return 3
         }
     }
 }

@@ -11,7 +11,7 @@ final class ConfigCommandTests: XCTestCase {
     override func setUp() {
         super.setUp()
         // Isolate each test in a unique UserDefaults suite so we never touch
-        // the user's real `com.macparakeet.MacParakeet` plist.
+        // the user's real `com.echelonfit.echo` plist.
         suiteName = "macparakeet.test.config.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suiteName)
     }

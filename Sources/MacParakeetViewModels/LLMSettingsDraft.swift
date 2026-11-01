@@ -152,6 +152,9 @@ public struct LLMSettingsDraft: Equatable, Sendable {
                 allowInsecureLocalNetworkHTTP: allowInsecureLocalNetworkHTTP
             )
         }
+        if LLMProviderConfig.isOllamaCloudModel(id: providerID, modelName: effectiveModelName) {
+            return false
+        }
         return providerID.isLocal
     }
 

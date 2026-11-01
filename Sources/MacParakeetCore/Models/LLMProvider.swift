@@ -305,7 +305,7 @@ public struct LLMProviderConfig: Codable, Sendable, Equatable {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.modelName = modelName
-        self.isLocal = isLocal
+        self.isLocal = isLocal && !Self.isOllamaCloudModel(id: id, modelName: modelName)
     }
 
     public init(from decoder: Decoder) throws {
@@ -314,7 +314,19 @@ public struct LLMProviderConfig: Codable, Sendable, Equatable {
         baseURL = try container.decode(URL.self, forKey: .baseURL)
         modelName = try container.decode(String.self, forKey: .modelName)
         isLocal = try container.decode(Bool.self, forKey: .isLocal)
+            && !Self.isOllamaCloudModel(id: id, modelName: modelName)
         apiKey = nil  // Excluded from Codable — hydrated from Keychain separately
+    }
+
+    /// Ollama's hosted models (tag `cloud`, or a tag ending in `-cloud`, e.g.
+    /// `gemma4:31b-cloud`) are reached through the local daemon but run on
+    /// ollama.com, so transcript text leaves this Mac. Never treat them as local.
+    public static func isOllamaCloudModel(id: LLMProviderID, modelName: String) -> Bool {
+        guard id == .ollama else { return false }
+        let name = modelName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let colon = name.lastIndex(of: ":") else { return false }
+        let tag = name[name.index(after: colon)...]
+        return tag == "cloud" || tag.hasSuffix("-cloud")
     }
 
     // MARK: - Factory Methods

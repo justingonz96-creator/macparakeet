@@ -12,7 +12,7 @@ struct CLIConfigKeySpec: Encodable, Equatable {
 /// `macparakeet-cli config` — read or write app preferences from the CLI.
 ///
 /// Stores values in the same UserDefaults suite the GUI reads
-/// (`com.macparakeet.MacParakeet`). This lets users who only install the CLI
+/// (`com.echelonfit.echo`). This lets users who only install the CLI
 /// (no GUI) persist preferences like opting out of telemetry — and a later GUI
 /// install picks the same values up automatically. Without this, CLI-only
 /// users would have no way to opt out of telemetry or set app-default
@@ -23,8 +23,7 @@ struct ConfigCommand: ParsableCommand {
         abstract: "Read or write CLI/app configuration values.",
         discussion: """
         Configuration is stored in the shared Echo UserDefaults suite \
-        (suite ID com.macparakeet.MacParakeet, preserved from the upstream for \
-        existing-settings compatibility). The GUI and CLI read the same suite, so \
+        (suite ID com.echelonfit.echo, Echo's own bundle identifier). The GUI and CLI read the same suite, so \
         values set here apply to later app-default reads. A running GUI may \
         cache some settings until relaunch or an in-app change.
 

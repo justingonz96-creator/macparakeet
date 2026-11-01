@@ -333,4 +333,26 @@ final class LLMSettingsDraftTests: XCTestCase {
         XCTAssertFalse(draft.usesInsecureLocalNetworkHTTP)
         XCTAssertEqual(draft.validationError, .invalidBaseURL)
     }
+
+    // Echo audit 2026-09-09: Ollama "-cloud" models run on ollama.com, so the
+    // privacy lock must not say transcript text stays on this Mac.
+    func testOllamaCloudModelIsNotLocal() throws {
+        let draft = LLMSettingsDraft(
+            providerID: .ollama,
+            suggestedModelName: "gemma4:31b-cloud"
+        )
+
+        XCTAssertFalse(draft.isLocalConfiguration)
+        let config = try draft.buildConfig(defaultBaseURL: "http://localhost:11434/v1")
+        XCTAssertEqual(config?.isLocal, false)
+    }
+
+    func testOllamaOnDeviceModelStaysLocal() {
+        let draft = LLMSettingsDraft(
+            providerID: .ollama,
+            suggestedModelName: "qwen3.8:27b-mlx"
+        )
+
+        XCTAssertTrue(draft.isLocalConfiguration)
+    }
 }
