@@ -49,6 +49,17 @@ for srt in "$OUT"/*.srt; do
 done
 
 echo "Captions written to $OUT ($srt_count SRT file(s), $srt_count VTT file(s) derived):"; ls -1 "$OUT"
+
+# Caption check (Echelon rules) next to each SRT: <name>.check.txt.
+if "$CLI" captions check --help >/dev/null 2>&1; then
+  failed=0
+  for srt in "$OUT"/*.srt; do
+    [ -e "$srt" ] || continue
+    "$CLI" captions check --preset echelon "$srt" > "${srt%.srt}.check.txt" || failed=$((failed + 1))
+    head -2 "${srt%.srt}.check.txt" | tail -1 | sed "s|^|$(basename "$srt"): |"
+  done
+  [ "$failed" -eq 0 ] || echo "WARNING: $failed caption file(s) break the Echelon rules; see the .check.txt files." >&2
+fi
 if [ "$status" -ne 0 ]; then
   echo "WARNING: the transcriber reported failures for some inputs (exit $status); check the output above." >&2
 fi
