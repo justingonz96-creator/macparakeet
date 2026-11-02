@@ -453,7 +453,9 @@ struct ClassWorkspaceView: View {
             .scrollContentBackground(.hidden)
             .onChange(of: model.selectedCueID) { _, id in
                 guard let id else { return }
-                withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo(id, anchor: .center) }
+                // Unanimated: a long jump (strip click, playback) through a
+                // lazy list stops short when animated.
+                DispatchQueue.main.async { proxy.scrollTo(id, anchor: .center) }
             }
         }
     }
