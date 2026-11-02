@@ -6,7 +6,7 @@ import MacParakeetViewModels
 @MainActor
 final class MainWindowStateTests: XCTestCase {
     func testNavigateToSettingsSelectsSettingsAndRecordsRequestedTab() {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
 
         state.navigateToSettings(tab: .ai)
 
@@ -17,7 +17,7 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testNavigateToSettingsCanRequestAnchor() {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
 
         state.navigateToSettings(tab: .capture, anchor: "meeting")
 
@@ -28,7 +28,7 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testRepeatedSettingsTabNavigationAdvancesRevision() {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
 
         state.navigateToSettings(tab: .ai)
         state.navigateToSettings(tab: .ai)
@@ -38,7 +38,7 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testConsumeRequestedSettingsTabClearsTabWithoutChangingRevision() {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
         state.navigateToSettings(tab: .ai)
 
         state.consumeRequestedSettingsTab()
@@ -50,7 +50,7 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testNavigateSelectsRequestedSidebarItem() {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
 
         state.navigate(to: .library)
 
@@ -58,7 +58,7 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testNavigateCanSelectMeetingsWorkspace() {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
 
         state.navigate(to: .meetings)
 
@@ -66,13 +66,13 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testNavigateToAskSelectsWorkspaceWhenEnabled() {
-        let state = MainWindowState(askWorkspaceAvailable: true)
+        let state = MainWindowState(askWorkspaceAvailable: true, echelonCaptionsMode: false)
         state.navigateToAsk()
         XCTAssertEqual(state.selectedItem, .ask)
     }
 
     func testDisabledAskNavigationFallsBackToLibrary() {
-        let state = MainWindowState(askWorkspaceAvailable: false)
+        let state = MainWindowState(askWorkspaceAvailable: false, echelonCaptionsMode: false)
         state.navigateToAsk()
         XCTAssertEqual(state.selectedItem, .library)
 
@@ -84,6 +84,10 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testPrimarySidebarOrderRespectsFeatureFlags() {
+        if AppFeatures.echelonCaptionsMode {
+            XCTAssertEqual(SidebarItem.primaryItems, [.classes])
+            return
+        }
         var expected: [SidebarItem] = [.transcribe, .library]
         if AppFeatures.isAskWorkspaceAvailable() { expected.append(.ask) }
         expected.append(.dictations)
@@ -97,6 +101,10 @@ final class MainWindowStateTests: XCTestCase {
 
     func testPromptsAreManagedInContextRatherThanFromTheSidebar() {
         XCTAssertNil(SidebarItem(rawValue: "Prompts"))
+        if AppFeatures.echelonCaptionsMode {
+            XCTAssertEqual(SidebarItem.configItems, [.vocabulary, .settings])
+            return
+        }
         var expected: [SidebarItem] = [.vocabulary, .feedback, .settings]
         if AppFeatures.transformsEnabled {
             expected.insert(.transforms, at: 0)
@@ -105,7 +113,7 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testStartNewTranscriptionReturnsToTranscribeAndHidesProgressDetail() {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
         state.selectedItem = .library
         state.showingProgressDetail = true
 
@@ -116,7 +124,7 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testBeginCreatingTransformSelectsTransformsAndClearsEditTarget() {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
         state.selectedItem = .settings
         state.editingTransform = Prompt.builtInPrompts().first { $0.category == .transform }
         XCTAssertNotNil(state.editingTransform)
@@ -130,7 +138,7 @@ final class MainWindowStateTests: XCTestCase {
 
     func testOpenTranscriptionLoadsDetailFromLibraryAndMeetings() async {
         for tab in [SidebarItem.library, .meetings] {
-            let state = MainWindowState()
+            let state = MainWindowState(echelonCaptionsMode: false)
             state.selectedItem = tab
             let viewModel = TranscriptionViewModel()
             let load = SuspendedTranscriptionLoad()
@@ -150,7 +158,7 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testOpenTranscriptionPreservesMeetingCompletedDuringLoad() async {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
         state.selectedItem = .library
         let viewModel = TranscriptionViewModel()
         let load = SuspendedTranscriptionLoad()
@@ -168,7 +176,7 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testOpenTranscriptionCapturesSelectionBeforeTaskStarts() async {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
         state.selectedItem = .library
         let viewModel = TranscriptionViewModel()
         var loadCount = 0
@@ -188,7 +196,7 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testSupersededOpenDoesNotStartItsLoader() async {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
         state.selectedItem = .library
         let viewModel = TranscriptionViewModel()
         var olderLoadCount = 0
@@ -209,7 +217,7 @@ final class MainWindowStateTests: XCTestCase {
 
     func testOpenTranscriptionRejectsLeavingAndReturningToItsTab() async {
         for tab in [SidebarItem.library, .meetings] {
-            let state = MainWindowState()
+            let state = MainWindowState(echelonCaptionsMode: false)
             state.selectedItem = tab
             let viewModel = TranscriptionViewModel()
             let load = SuspendedTranscriptionLoad()
@@ -228,7 +236,7 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testNewerOpenWinsEvenWhenOlderLoadFinishesFirst() async {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
         state.selectedItem = .library
         let viewModel = TranscriptionViewModel()
         let olderLoad = SuspendedTranscriptionLoad()
@@ -251,7 +259,7 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testNewerMeetingOpenSurvivesOlderLibraryCompletion() async {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
         state.selectedItem = .library
         let viewModel = TranscriptionViewModel()
         let libraryLoad = SuspendedTranscriptionLoad()
@@ -275,7 +283,7 @@ final class MainWindowStateTests: XCTestCase {
     }
 
     func testMissingTranscriptionDoesNotChangeSelectionOrNavigation() async {
-        let state = MainWindowState()
+        let state = MainWindowState(echelonCaptionsMode: false)
         state.selectedItem = .meetings
         let viewModel = TranscriptionViewModel()
         let open = state.openTranscription(from: .meetings, in: viewModel) { nil }
@@ -309,5 +317,20 @@ private final class SuspendedTranscriptionLoad {
         precondition(continuation != nil, "Wait for the load to start before completing it")
         continuation?.resume(returning: transcription)
         continuation = nil
+    }
+
+    // MARK: - Echo caption-focused navigation
+
+    func testEchelonModeStartsOnClassesAndRedirectsHiddenScreens() {
+        let state = MainWindowState(echelonCaptionsMode: true)
+        XCTAssertEqual(state.selectedItem, .classes)
+        for hidden in [SidebarItem.transcribe, .library, .dictations, .meetings, .transforms, .feedback, .discover] {
+            state.selectedItem = hidden
+            XCTAssertEqual(state.selectedItem, .classes, "\(hidden) should land on Classes")
+        }
+        state.selectedItem = .vocabulary
+        XCTAssertEqual(state.selectedItem, .vocabulary)
+        state.selectedItem = .settings
+        XCTAssertEqual(state.selectedItem, .settings)
     }
 }

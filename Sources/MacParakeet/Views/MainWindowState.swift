@@ -6,12 +6,15 @@ import MacParakeetViewModels
 @Observable
 final class MainWindowState {
     private let askWorkspaceAvailable: Bool
+    /// Echo's caption-focused navigation: jumps to the hidden upstream
+    /// screens land on Classes. Off in tests of the upstream navigation.
+    private let echelonCaptionsMode: Bool
     private var navigationRevision: UInt64 = 0
     private var latestTranscriptionOpen: UUID?
 
-    var selectedItem: SidebarItem = AppFeatures.echelonCaptionsMode ? .classes : .transcribe {
+    var selectedItem: SidebarItem = .transcribe {
         didSet {
-            if AppFeatures.echelonCaptionsMode, !SidebarItem.echelonItems.contains(selectedItem) {
+            if echelonCaptionsMode, !SidebarItem.echelonItems.contains(selectedItem) {
                 selectedItem = .classes
                 return
             }
@@ -29,8 +32,13 @@ final class MainWindowState {
     var requestedSettingsTabRevision = 0
     var showingProgressDetail = false
 
-    init(askWorkspaceAvailable: Bool = AppFeatures.isAskWorkspaceAvailable()) {
+    init(
+        askWorkspaceAvailable: Bool = AppFeatures.isAskWorkspaceAvailable(),
+        echelonCaptionsMode: Bool = AppFeatures.echelonCaptionsMode
+    ) {
         self.askWorkspaceAvailable = askWorkspaceAvailable
+        self.echelonCaptionsMode = echelonCaptionsMode
+        if echelonCaptionsMode { selectedItem = .classes }
     }
 
     func navigateToSettings(tab: SettingsTab? = nil, anchor: String? = nil) {
