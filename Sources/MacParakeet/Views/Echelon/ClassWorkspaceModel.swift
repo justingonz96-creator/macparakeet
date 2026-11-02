@@ -23,7 +23,14 @@ final class ClassWorkspaceModel {
     private let protectedTerms: [String]
 
     var language: CaptionLanguage = .en {
-        didSet { refreshDerived() }
+        didSet {
+            // Keep the same caption number selected across languages
+            // (translations keep the English cue order and timing).
+            let index = documents[oldValue]?.cues.firstIndex { $0.id == selectedCueID } ?? 0
+            let cues = documents[language]?.cues ?? []
+            selectedCueID = cues.isEmpty ? nil : cues[min(index, cues.count - 1)].id
+            refreshDerived()
+        }
     }
     private(set) var documents: [CaptionLanguage: CaptionDocument] = [:]
     private(set) var report: CaptionQualityReport?
@@ -167,6 +174,7 @@ final class ClassWorkspaceModel {
         }
         documents[language] = result.document
         try? store.save(result.document)
+        if self.language == language { selectedCueID = result.document.cues.first?.id }
         job = result.untranslatedCues.isEmpty
             ? .idle
             : .failed("\(result.untranslatedCues.count) captions stayed in English because translation kept failing. Edit them by hand or translate again.")
