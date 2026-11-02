@@ -216,35 +216,8 @@ struct ExportCommand: AsyncParsableCommand {
         }
     }
 
-    /// `--llm-provider` / `--llm-model` pick a provider for this run only.
-    /// Otherwise `LLMConfigStore()` opens the app's shared preferences domain
-    /// (`AppPaths.preferencesSuiteName`), so the CLI uses the same AI
-    /// provider the Echo app has configured. With none saved, each chunk
-    /// throws `notConfigured` and the deterministic layout is used.
     private func buildLLMService() async throws -> LLMService {
-        if let llmProvider {
-            var arguments = ["--provider", llmProvider]
-            if let llmModel { arguments += ["--model", llmModel] }
-            let execution = try LLMInlineOptions.parse(arguments).buildExecutionContext()
-            // The app resolves the model's prompt profile when its AI settings
-            // load; do the same here so the planner uses the matching prompt.
-            let providerConfig = execution.context.providerConfig
-            _ = await ModelProfileService.shared.fetchProfile(
-                modelName: providerConfig.modelName,
-                providerConfig: providerConfig
-            )
-            return LLMService(
-                client: execution.client,
-                contextResolver: StaticLLMExecutionContextResolver(context: execution.context)
-            )
-        }
-        return LLMService(
-            client: RoutingLLMClient(),
-            contextResolver: StoredLLMExecutionContextResolver(
-                configStore: LLMConfigStore(),
-                cliConfigStore: LocalCLIConfigStore()
-            )
-        )
+        try await makeCaptionLLMService(provider: llmProvider, model: llmModel)
     }
 
     private func projectedJSON(_ projection: SpeakerAttributionProjection) throws -> String {
@@ -262,4 +235,35 @@ struct ExportCommand: AsyncParsableCommand {
         }
         return string
     }
+}
+
+/// `--llm-provider` / `--llm-model` pick a provider for this run only.
+/// Otherwise `LLMConfigStore()` opens the app's shared preferences domain
+/// (`AppPaths.preferencesSuiteName`), so the CLI uses the same AI
+/// provider the Echo app has configured. With none saved, each chunk
+/// throws `notConfigured` and the deterministic layout is used.
+func makeCaptionLLMService(provider: String?, model: String?) async throws -> LLMService {
+    if let provider {
+        var arguments = ["--provider", provider]
+        if let model { arguments += ["--model", model] }
+        let execution = try LLMInlineOptions.parse(arguments).buildExecutionContext()
+        // The app resolves the model's prompt profile when its AI settings
+        // load; do the same here so the planner uses the matching prompt.
+        let providerConfig = execution.context.providerConfig
+        _ = await ModelProfileService.shared.fetchProfile(
+            modelName: providerConfig.modelName,
+            providerConfig: providerConfig
+        )
+        return LLMService(
+            client: execution.client,
+            contextResolver: StaticLLMExecutionContextResolver(context: execution.context)
+        )
+    }
+    return LLMService(
+        client: RoutingLLMClient(),
+        contextResolver: StoredLLMExecutionContextResolver(
+            configStore: LLMConfigStore(),
+            cliConfigStore: LocalCLIConfigStore()
+        )
+    )
 }
