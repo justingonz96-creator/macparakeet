@@ -53,7 +53,9 @@ public enum AppAppearanceMode: String, CaseIterable, Hashable, Sendable {
     public static func current(defaults: UserDefaults = .standard) -> AppAppearanceMode {
         guard let raw = defaults.string(forKey: AppPreferences.appearanceModeKey),
               let mode = AppAppearanceMode(rawValue: raw) else {
-            return .system
+            // Echo: the Echelon studio look is dark; people can still choose
+            // System or Light in Settings.
+            return .dark
         }
         return mode
     }

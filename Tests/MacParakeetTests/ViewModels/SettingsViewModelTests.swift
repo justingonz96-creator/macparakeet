@@ -230,7 +230,7 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.launchAtLogin, "launchAtLogin should default to false")
         XCTAssertTrue(viewModel.showMenuBarIcon, "showMenuBarIcon should default to true")
         XCTAssertFalse(viewModel.menuBarOnlyMode, "menuBarOnlyMode should default to false")
-        XCTAssertEqual(viewModel.appAppearanceMode, .system, "appAppearanceMode should default to System")
+        XCTAssertEqual(viewModel.appAppearanceMode, .dark, "Echo defaults to the dark Echelon look")
         XCTAssertTrue(viewModel.showIdlePill, "showIdlePill should default to true")
         XCTAssertFalse(viewModel.silenceAutoStop, "silenceAutoStop should default to false")
         XCTAssertEqual(viewModel.silenceDelay, 2.0, "silenceDelay should default to 2.0")

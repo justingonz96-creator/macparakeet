@@ -416,15 +416,16 @@ final class AppRuntimePreferencesTests: XCTestCase {
         XCTAssertFalse(UserDefaultsAppRuntimePreferences.removeUmFiller(defaults: defaults))
     }
 
-    func testAppAppearanceModeDefaultsToSystemAndIgnoresInvalidValues() {
+    // Echo defaults to the dark Echelon studio look.
+    func testAppAppearanceModeDefaultsToDarkAndIgnoresInvalidValues() {
         let suite = makeIsolatedDefaultsSuite("app-runtime-prefs-")
         let defaults = UserDefaults(suiteName: suite)!
 
-        XCTAssertEqual(AppAppearanceMode.current(defaults: defaults), .system)
+        XCTAssertEqual(AppAppearanceMode.current(defaults: defaults), .dark)
 
         defaults.set("not-a-mode", forKey: AppPreferences.appearanceModeKey)
 
-        XCTAssertEqual(AppAppearanceMode.current(defaults: defaults), .system)
+        XCTAssertEqual(AppAppearanceMode.current(defaults: defaults), .dark)
     }
 
     func testAppAppearanceModeReadsStoredValue() {
