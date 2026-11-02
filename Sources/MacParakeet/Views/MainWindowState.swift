@@ -9,8 +9,12 @@ final class MainWindowState {
     private var navigationRevision: UInt64 = 0
     private var latestTranscriptionOpen: UUID?
 
-    var selectedItem: SidebarItem = .transcribe {
+    var selectedItem: SidebarItem = AppFeatures.echelonCaptionsMode ? .classes : .transcribe {
         didSet {
+            if AppFeatures.echelonCaptionsMode, !SidebarItem.echelonItems.contains(selectedItem) {
+                selectedItem = .classes
+                return
+            }
             if selectedItem == .ask, !askWorkspaceAvailable {
                 selectedItem = .library
             }

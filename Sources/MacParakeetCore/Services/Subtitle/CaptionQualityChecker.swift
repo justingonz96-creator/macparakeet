@@ -59,8 +59,10 @@ public enum CaptionQualityChecker {
     /// A cue shown for less than this is hard to read.
     static let flashCueMs = 700
     /// Reading speed above this is flagged for review (the profile's own CPS
-    /// target is reported as a count only).
-    static let veryFastCPS = 25.0
+    /// target is reported as a count only). Fast instructors put 1 in 10
+    /// captions above 25 CPS, which buried the useful flags in review; above
+    /// 30 a caption is genuinely hard to read.
+    static let veryFastCPS = 30.0
     /// A 1–3 word phrase repeated this many times in a row looks like a
     /// recognition loop. Instructors legitimately repeat a cue word seven
     /// times ("slow, slow, slow…", "drive drive drive…" in a real class).

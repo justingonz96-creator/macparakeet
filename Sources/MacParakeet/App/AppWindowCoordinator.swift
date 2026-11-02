@@ -279,6 +279,17 @@ final class AppWindowCoordinator: NSObject, NSWindowDelegate {
             width: DesignSystem.Layout.sidebarMinWidth + DesignSystem.Layout.contentMinWidth,
             height: DesignSystem.Layout.windowMinHeight
         )
+        if AppFeatures.echelonCaptionsMode {
+            // The class workspace shows video, caption list and editor side by
+            // side: open large, and lift a smaller saved size.
+            window.minSize = NSSize(width: 1180, height: 720)
+            let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+            if window.frame.width < 1180 || window.frame.height < 720 {
+                let size = NSSize(width: min(1440, visible.width), height: min(900, visible.height))
+                window.setFrame(NSRect(origin: .zero, size: size), display: false)
+                window.center()
+            }
+        }
         window.titlebarAppearsTransparent = true
         window.contentView = NSHostingView(rootView: contentView)
         window.delegate = self

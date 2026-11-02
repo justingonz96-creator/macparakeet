@@ -4,6 +4,7 @@ import MacParakeetCore
 import MacParakeetViewModels
 
 enum SidebarItem: String, CaseIterable, Identifiable {
+    case classes = "Classes"
     case transcribe = "Transcribe"
     case library = "Library"
     case ask = "Ask"
@@ -20,6 +21,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
+        case .classes: return "film.stack"
         case .transcribe: return "waveform"
         case .meetings: return "person.2.wave.2"
         case .library: return "square.grid.2x2"
@@ -37,7 +39,16 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     /// Primary features — the core things users do. Library remains the
     /// universal archive; Meetings is the workflow space for live/upcoming
     /// and saved meeting work.
+    /// Sidebar label; the Vocabulary screen is Echo's word list.
+    var title: String {
+        AppFeatures.echelonCaptionsMode && self == .vocabulary ? "Word list" : rawValue
+    }
+
+    /// Screens shown in Echo's caption-focused sidebar.
+    static let echelonItems: Set<SidebarItem> = [.classes, .vocabulary, .settings]
+
     static var primaryItems: [SidebarItem] {
+        if AppFeatures.echelonCaptionsMode { return [.classes] }
         var items: [SidebarItem] = [.transcribe, .library]
         if AppFeatures.isAskWorkspaceAvailable() { items.append(.ask) }
         items.append(.dictations)
@@ -53,6 +64,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     /// Transcript prompts are managed from Library and completed transcripts;
     /// Live Ask questions are managed from Meetings.
     static var configItems: [SidebarItem] {
+        if AppFeatures.echelonCaptionsMode { return [.vocabulary, .settings] }
         var items: [SidebarItem] = [.vocabulary, .feedback, .settings]
         if AppFeatures.transformsEnabled {
             items.insert(.transforms, at: 0)
@@ -116,7 +128,7 @@ struct MainWindowView: View {
 
                     Section {
                         ForEach(SidebarItem.configItems) { item in
-                            Label(item.rawValue, systemImage: item.icon)
+                            Label(item.title, systemImage: item.icon)
                                 .tag(item)
                         }
                     }
@@ -124,7 +136,7 @@ struct MainWindowView: View {
                 .listStyle(.sidebar)
                 .tint(DesignSystem.Colors.accent)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if settingsViewModel.showDiscover {
+                    if settingsViewModel.showDiscover, !AppFeatures.echelonCaptionsMode {
                         DiscoverSidebarCard(
                             viewModel: discoverViewModel,
                             isSelected: state.selectedItem == .discover,
@@ -136,6 +148,14 @@ struct MainWindowView: View {
             } detail: {
                 Group {
                     switch state.selectedItem {
+                    case .classes:
+                        ClassesView(
+                            transcriptionViewModel: transcriptionViewModel,
+                            llmService: promptResultsViewModel.llmService,
+                            protectedTerms: customWordsViewModel.words
+                                .filter { $0.isEnabled && ($0.replacement ?? "").isEmpty }
+                                .map(\.word)
+                        )
                     case .transcribe:
                         TranscribeView(
                             viewModel: transcriptionViewModel,

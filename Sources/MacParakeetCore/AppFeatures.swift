@@ -81,6 +81,12 @@ public enum AppFeatures {
     /// calendars; flip to `true` in a point release once that is done.
     public static let calendarEnabled: Bool = false
 
+    /// Echo's caption-focused layout: the sidebar shows Classes, the word
+    /// list and Settings, and jumps to the hidden upstream screens (Transcribe,
+    /// Library, Dictations, Meetings, …) land on Classes. The upstream screens
+    /// stay in the code so engine updates keep merging.
+    public static let echelonCaptionsMode: Bool = true
+
     /// Activity-based meeting auto-stop (ADR-023). When `true`, Settings shows
     /// the opt-in meeting auto-stop toggle and the app constructs the
     /// coordinator that observes meeting-end signals only while a recording is

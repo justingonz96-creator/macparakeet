@@ -312,6 +312,17 @@ final class MenuBarCoordinator: NSObject, NSMenuDelegate {
 
         let goMenuItem = NSMenuItem()
         let goMenu = NSMenu(title: "Go")
+        if AppFeatures.echelonCaptionsMode {
+            // Hidden screens redirect to Classes (MainWindowState), so the
+            // Transcribe action opens Classes.
+            goMenu.addItem(makeMenuItem(title: "Classes", action: #selector(showTranscribe), key: "1"))
+            goMenu.addItem(makeMenuItem(title: "Word list", action: #selector(showVocabulary), key: "2"))
+            goMenu.addItem(makeMenuItem(title: "Settings...", action: #selector(showSettingsWindow), key: ""))
+            goMenuItem.submenu = goMenu
+            mainMenu.addItem(goMenuItem)
+            appendWindowAndHelpMenus(to: mainMenu)
+            return
+        }
         goMenu.addItem(makeMenuItem(title: "Transcribe", action: #selector(showTranscribe), key: ""))
         goMenu.addItem(makeMenuItem(title: "Library", action: #selector(showLibrary), key: ""))
         goMenu.addItem(makeMenuItem(title: "Dictations", action: #selector(showDictations), key: ""))
@@ -327,7 +338,11 @@ final class MenuBarCoordinator: NSObject, NSMenuDelegate {
         goMenu.addItem(makeMenuItem(title: "Settings...", action: #selector(showSettingsWindow), key: ""))
         goMenuItem.submenu = goMenu
         mainMenu.addItem(goMenuItem)
+        appendWindowAndHelpMenus(to: mainMenu)
+    }
 
+    private func appendWindowAndHelpMenus(to mainMenu: NSMenu) {
+        let appName = Self.appDisplayName
         let windowMenuItem = NSMenuItem()
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(NSMenuItem(
